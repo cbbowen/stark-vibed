@@ -16,11 +16,12 @@
 //! - **`find`** and the four store doors, which hold signals.
 
 use dioxus::html::{Key, Modifiers};
-use dioxus::prelude::{ReadableExt, Signal, WritableExt};
+use dioxus::prelude::{ReadableExt, WritableExt};
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::SelectionOp;
 
+use crate::dialogs::{self, DialogId};
 use crate::platform;
 use crate::state::{AppState, dispatch, update_brush};
 use stark_ui::brush_config::{SIZE_STEP, step_size};
@@ -133,7 +134,7 @@ impl Lit for AppState {
     }
 
     fn hdr_on(&self) -> bool {
-        self.hdr.read().on
+        self.prefs.read().hdr.on
     }
 
     fn pick_scope(&self) -> PickScope {
@@ -197,33 +198,30 @@ pub fn run(command: Command, state: AppState) {
         Command::SelectEllipse => arm_tool(state, Tool::SelectEllipse),
         Command::SelectLasso => arm_tool(state, Tool::SelectLasso),
         Command::MirrorView => dispatch(state, ViewCommand::MirrorH),
-        Command::ToggleHdr => {
-            let on = !state.hdr.peek().on;
-            crate::panels::lighting::set_hdr(state, |h| h.on = on);
-        }
+        Command::ToggleHdr => crate::prefs::set(state, |p| p.hdr.on = !p.hdr.on),
         Command::BrushSmaller => step_radius(state, 1.0 / SIZE_STEP),
         Command::BrushLarger => step_radius(state, SIZE_STEP),
-        Command::NewDocument => open_dialog(state.dialogs.new_document),
+        Command::NewDocument => dialogs::open(state, DialogId::NewDocument),
         Command::OpenDocument => crate::files::open_document(state),
         Command::SaveDocument => crate::files::save_document(state),
         Command::ImportImage => crate::images::import_image(state),
-        Command::ExportImage => open_dialog(state.dialogs.export),
+        Command::ExportImage => dialogs::open(state, DialogId::Export),
         Command::Share => {
             crate::collab::share(state);
-            open_dialog(state.dialogs.session);
+            dialogs::open(state, DialogId::Session);
         }
         // The same dialog, without starting anything: its solo half is where a link
         // is pasted (`collab::SessionModal`). Opening a shared link still joins on
         // load and always will — this is the door for a link that arrives *after* the
         // app is already open, which used to mean pasting it into the address bar and
         // throwing the page away.
-        Command::Join => open_dialog(state.dialogs.session),
+        Command::Join => dialogs::open(state, DialogId::Session),
         Command::ToggleTimeline => {
             let open = *state.timeline.open.peek();
             crate::panels::timeline::set_open(state, !open);
         }
-        Command::TimingStats => open_dialog(state.dialogs.timing),
-        Command::Credits => open_dialog(state.dialogs.credits),
+        Command::TimingStats => dialogs::open(state, DialogId::TimingStats),
+        Command::Credits => dialogs::open(state, DialogId::Credits),
         Command::ToggleNavigator => {
             let open = *state.navigator.peek();
             crate::navigator::set_open(state, !open);
@@ -243,15 +241,15 @@ pub fn run(command: Command, state: AppState) {
         Command::TogglePanel(id) => {
             crate::layout::toggle_panel(state, state.panels, id);
         }
-        Command::Settings => open_dialog(state.dialogs.settings),
+        Command::Settings => dialogs::open(state, DialogId::Settings),
         Command::EditBrush => {
-            open_dialog(state.brush_editor_open);
+            dialogs::open(state, DialogId::BrushEditor);
             // The dialog is frontend state and reaches no engine, so there
             // is no command for the tour to read (§24.2). Its series of
             // cards is the one thing this click owes anybody.
             crate::tutor::did(state, crate::tutor::Deed::OpenedBrushEditor);
         }
-        Command::SavePreset => open_dialog(state.preset_save_open),
+        Command::SavePreset => dialogs::open(state, DialogId::PresetSave),
         // How far a sample reaches is an argument to a *request*
         // (`Engine::pick_color`), read at the moment of the sample. The gate that
         // matters is the sample's, and it is the drag table's
@@ -272,7 +270,7 @@ pub fn run(command: Command, state: AppState) {
         // Enter under a dialog belongs to the dialog's form, and a commit
         // it could not see landing beneath it would be the worse surprise.
         Command::FinishMode => {
-            if !dialog_open(state) {
+            if !dialogs::any_open(state) {
                 crate::modes::finish(state);
             }
         }
@@ -294,14 +292,9 @@ pub fn run(command: Command, state: AppState) {
 /// the browser does nothing with it worth keeping.
 fn claims(command: Command, state: AppState) -> bool {
     match command {
-        Command::FinishMode => crate::modes::is_composing(state) && !dialog_open(state),
+        Command::FinishMode => crate::modes::is_composing(state) && !dialogs::any_open(state),
         _ => true,
     }
-}
-
-/// Raise a root-mounted dialog's flag; the dialog's own `on_close` lowers it.
-fn open_dialog(mut flag: Signal<bool>) {
-    flag.set(true);
 }
 
 /// Step the live brush's radius by `factor` — the keyboard sibling of the Size
@@ -386,7 +379,7 @@ fn escape(state: AppState) {
     if crate::widgets::close_popout(state) {
         return;
     }
-    if close_dialogs(state) {
+    if dialogs::close_top(state) {
         return;
     }
     if crate::modes::is_composing(state) {
@@ -418,34 +411,6 @@ fn composing_layer_selected(state: AppState) -> bool {
         .as_ref()
         .is_some_and(|o| crate::panels::frame::selected_frame_of(o).is_some())
         || crate::panels::filter::selected_filter(state).is_some()
-}
-
-/// Whether any root-mounted dialog is up — Esc's first rung, and the fact that
-/// stands FinishMode down ([`claims`]).
-fn dialog_open(state: AppState) -> bool {
-    state.root_dialogs().iter().any(|flag| *flag.peek())
-}
-
-/// Lower the root dialog on top, if one is up; `true` if one was. Lowering the
-/// flag *is* the dialog's own close — every `on_close` in `rail` and `crate::app`
-/// does nothing else (`AppState::root_dialogs`).
-///
-/// The topmost only, one per press: the list is in stacking order, and the
-/// preset-name dialog stands over the brush editor that raised it — an Esc
-/// meant for the name must not take the editor down with it.
-fn close_dialogs(state: AppState) -> bool {
-    let top = state
-        .root_dialogs()
-        .into_iter()
-        .rev()
-        .find(|flag| *flag.peek());
-    match top {
-        Some(mut flag) => {
-            flag.set(false);
-            true
-        }
-        None => false,
-    }
 }
 
 #[cfg(test)]

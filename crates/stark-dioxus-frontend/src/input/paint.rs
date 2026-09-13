@@ -38,7 +38,7 @@ const DWELL_POLL_MS: i32 = 60;
 /// The signals that stay in [`AppState`] stay there for stated reasons and are
 /// unaffected: `pick.dragging` because the eyedropper's options bar reads it,
 /// `tune_readout` and `tow` because sibling overlays draw them, `canvas_active`
-/// because the whole chrome fades on it, `assist.enabled` because it is a setting.
+/// because the whole chrome fades on it, `prefs.assist` because it is a setting.
 #[derive(Clone, Copy)]
 pub struct Paint {
     state: AppState,
@@ -255,7 +255,7 @@ impl Paint {
     /// no-op when the assist is off.
     fn watch_for_hold(self, at: Vec2) {
         let state = self.state;
-        if !*state.assist.enabled.peek() {
+        if !state.prefs.peek().assist {
             return;
         }
         let mut dwell = self.dwell;

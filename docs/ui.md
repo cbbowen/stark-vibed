@@ -296,7 +296,7 @@ surrounds it.
   gesture is explained on the third (§24.5). Durability is structural rather than
   remembered — `layout::set_open` is the only thing that writes the hidden set and
   it persists after every change, so a new way to close a panel is durable without
-  its author thinking about storage, the same move `settings::SettingToggle` makes
+  its author thinking about storage, the same move `prefs::set` makes
   for the preferences. The **open** set is what is written, not the hidden one, so
   a panel added in a later release arrives closed like everything else instead of
   appearing unbidden in the stack of every existing user.
@@ -2448,7 +2448,7 @@ a stamp id back into bytes.
    and is what catches two types claiming one variant. A `Blob` impl goes in the
    second list there, which checks that bytes never invent a record of their own.
 4. One writer, called by everything that changes the state — the move
-   `layout::set_open`, `navigator::set_open` and `settings::SettingToggle` all
+   `layout::set_open`, `navigator::set_open` and `prefs::set` all
    make. Durability is then structural: a new way to change the thing is
    remembered without its author thinking about storage.
 
@@ -2465,6 +2465,12 @@ to the chrome — §11 says which of them exist and why each is a dialog rather 
 a panel — and because what holds for one holds for all of them by construction
 rather than by each author's care, which is the law the registries above are made
 of, one seam over.
+
+**A dialog is a `dialogs::DialogId` on one stack.** The stack is in opening order
+and `DialogStack` mounts it in that order, so the dialog drawn on top and the one
+Escape closes are the same fact — once a hand-kept array that had to agree with the
+order two files happened to mount their dialogs in. A new dialog is a variant and a
+match arm, and the compiler asks for the arm.
 
 **A dialog is `widgets::Modal`.** The backdrop, the box on it, and the way out of
 it are the component's, not the call site's; a dialog writes what is *inside* the
@@ -2551,8 +2557,8 @@ second handler for a keystroke the window already hears.
 
 Three things follow from being on that list rather than in a local:
 
-- **Escape puts one down**, on its own rung above the dialogs — deliberately not a
-  `Dialogs` flag, since that list is also what stands `FinishMode` down and the
+- **Escape puts one down**, on its own rung above the dialogs — deliberately not on
+  the dialog stack, since that list is also what stands `FinishMode` down and the
   gradient library is opened *from* a bar while a fill is composing.
 - **Whoever owns the well takes the pop-out with it.** A bar that unmounts, a panel
   that is closed: each clears the flag on the way out, or the next time that
@@ -2690,7 +2696,7 @@ the hand off the canvas. A modal over a live stroke takes the canvas away
 mid-mark.
 
 The dialog is the one root dialog **no command opens**, which is why it has no
-rail row and no chord. It is still in `AppState::root_dialogs`, so Esc lowers it
+rail row and no chord. It is still a `dialogs::DialogId` on the one stack, so Esc lowers it
 like any other, and it still owes what §25.7 says every dialog owes. The one
 thing it owes on top is the way back: it says, above its buttons, that ⚙ Settings
 lists these three drags and can change any of them at any time — because an offer

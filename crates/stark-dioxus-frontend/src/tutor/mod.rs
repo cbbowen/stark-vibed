@@ -72,7 +72,7 @@ impl TutorState {
             due: root_signal(|| None),
             showing: root_signal(|| None),
             brings_another: root_signal(|| false),
-            // `prefs::load` overwrites this at app start.
+            // `startup::load_records` sets this from the stored preferences.
             enabled: root_signal(|| stark_ui::prefs::Prefs::default().tips),
             epoch: root_signal(|| 0),
         }
@@ -255,7 +255,7 @@ fn stroke(state: AppState) -> Vec<Deed> {
 /// judged by.
 fn tally(state: AppState, deeds: &[Deed]) {
     let now = platform::now_seconds();
-    let chrome = *state.chrome_hiding.peek();
+    let chrome = state.prefs.peek().chrome_hiding;
     let tips = *state.tutor.enabled.peek();
     step(state, |tour| tour.tally(now, deeds, chrome, tips));
 }
@@ -280,7 +280,7 @@ fn step(state: AppState, f: impl FnOnce(&mut Tour) -> Effects) {
 /// Copy the tour's card into the signals renders read, writing each only if it changed: a
 /// `set` wakes every reader whatever it is handed, and most steps change none of them.
 fn publish(state: AppState) {
-    let chrome = *state.chrome_hiding.peek();
+    let chrome = state.prefs.peek().chrome_hiding;
     let (card, more) = {
         let tour = state.tutor.tour.read();
         let card = tour.card();

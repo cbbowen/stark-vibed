@@ -34,7 +34,7 @@
 //! Durability is structural rather than remembered: [`set_open`] is the only thing
 //! that writes [`PanelLayout::hidden`], and it persists after every change, so a
 //! new way to close a panel is durable without its author thinking about storage.
-//! The same move `settings::SettingToggle` makes for the preferences.
+//! The same move `prefs::set` makes for the preferences.
 //!
 //! **Where** it persists to is not this module's, though the stack was once the only
 //! thing in it: which panels are open is one entry in the browser's picture of what is
@@ -370,7 +370,7 @@ pub fn sleep_panels(state: AppState) {
     // callers: the release that ends a stroke (`input::end_interaction`) and the tour
     // revealing the slice its lesson points at. A browser that has asked the panels to
     // stay put has asked both of them.
-    if !state.chrome_hiding.peek().sleeps() {
+    if !state.prefs.peek().chrome_hiding.sleeps() {
         return;
     }
     let mut asleep = state.panels_asleep;
@@ -386,7 +386,7 @@ pub fn sleep_panels(state: AppState) {
 /// Open or close `id`, and remember it. **The only thing that writes
 /// [`PanelLayout::hidden`]**, which is what makes durability structural rather than
 /// a line every call site has to remember — the move
-/// `settings::SettingToggle` makes for the preferences.
+/// `prefs::set` makes for the preferences.
 ///
 /// The write is guarded on the set actually changing, since this runs from
 /// [`open_panel`], which the tour calls for a panel that is very often already open

@@ -1,5 +1,5 @@
 //! The command rail down the far left (§11): the search palette, the visibility
-//! menu, the ⚙, and the dialogs they open.
+//! menu and the ⚙. The dialogs they open are mounted by `dialogs::DialogStack`.
 //!
 //! Everything here **renders a command rather than restating one**
 //! (`crate::commands`): a row's word, mark, shortcut column, greyed state and
@@ -23,15 +23,11 @@
 use dioxus::prelude::*;
 
 use crate::commands;
-use crate::credits::CreditsModal;
 use crate::icons::{icon, icon_large};
 use crate::layout::chrome_dimmed;
 use crate::platform;
-use crate::settings::SettingsModal;
 use crate::state::{AppState, use_obs_opt};
-use crate::substrates::NewDocumentModal;
 use crate::widgets::{self, PopoutId};
-use crate::{collab, drags, files, timings};
 use stark_ui::commands::{Command, VisibilityToggle};
 
 /// A vertical rail on the far left (§11): the command search, the visibility
@@ -41,27 +37,12 @@ use stark_ui::commands::{Command, VisibilityToggle};
 /// way to every simple command by name — Undo advertises its Ctrl+Z there now, in
 /// the row a query for it turns up.
 ///
-/// The rail ends in a ⚙ that opens [`SettingsModal`] directly rather than dropping
+/// The rail ends in a ⚙ that opens `settings::SettingsModal` directly rather than dropping
 /// a menu: settings are a *destination*, not a list of commands to pick one from,
 /// and the one thing that menu would ever contain is the dialog itself.
 #[component]
 pub fn CommandRail() -> Element {
     let state = use_context::<AppState>();
-    // The dialogs' flags are app state (`state::Dialogs`), raised by the
-    // commands that open them — which is what lets the same act be a menu row
-    // today and whatever reaches for it tomorrow. Local names for the mounts
-    // and their `on_close` below; nothing in this component sets one `true`.
-    let mut show_new_doc = state.dialogs.new_document;
-    let mut show_session = state.dialogs.session;
-    let mut show_export = state.dialogs.export;
-    let mut show_settings = state.dialogs.settings;
-    let mut show_timing = state.dialogs.timing;
-    let mut show_credits = state.dialogs.credits;
-    // The one flag here nothing in the chrome raises: the drag-preset offer is
-    // put up by a canvas release (`drags::settle_offer`, §25.8). Mounted beside
-    // the rest all the same, because where a root dialog lives is
-    // `AppState::root_dialogs`' question — Esc lowers this one like any other.
-    let mut show_drag_presets = state.dialogs.drag_presets;
 
     rsx! {
         div {
@@ -85,27 +66,6 @@ pub fn CommandRail() -> Element {
                 onclick: move |_| commands::run(Command::Settings, state),
                 {icon_large(Command::Settings.icon())}
             }
-        }
-        if show_new_doc() {
-            NewDocumentModal { on_close: move |_| show_new_doc.set(false) }
-        }
-        if show_session() {
-            collab::SessionModal { on_close: move |_| show_session.set(false) }
-        }
-        if show_export() {
-            files::ExportModal { on_close: move |_| show_export.set(false) }
-        }
-        if show_settings() {
-            SettingsModal { on_close: move |_| show_settings.set(false) }
-        }
-        if show_timing() {
-            timings::TimingModal { on_close: move |_| show_timing.set(false) }
-        }
-        if show_credits() {
-            CreditsModal { on_close: move |_| show_credits.set(false) }
-        }
-        if show_drag_presets() {
-            drags::DragPresetModal { on_close: move |_| show_drag_presets.set(false) }
         }
     }
 }

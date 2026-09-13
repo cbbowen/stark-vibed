@@ -14,7 +14,6 @@ use stark_engine::command::ViewCommand;
 use stark_engine::{EnvironmentId, MediaParams};
 use stark_model::{SubstrateId, SubstrateScale};
 use stark_ui::lighting::{Dial, ENVIRONMENTS};
-use stark_ui::prefs::Hdr;
 
 /// Built-in assets, bundled as static files and **fetched at runtime** so they
 /// stay out of the wasm binary (§6.6). The engine is handed the bytes.
@@ -67,11 +66,11 @@ pub fn LightingPanel() -> Element {
     // What a release would lay down (`preview::SUBSTRATE_SCALE`). Held rather than read
     // back off `scale` at commit time, which reports the *preview* mid-drag.
     let laying = use_signal(|| None::<SubstrateScale>);
-    // The display (§6.5): this browser's choice (`state::Signals::hdr`), and what
-    // the canvas in front of it can do. `renderer_ready` is the subscription and
-    // `peek` the read: the renderer signal is written on every dispatch, and this
-    // panel must not wake per pointer sample.
-    let hdr = *state.hdr.read();
+    // The display (§6.5): this browser's choice, and what the canvas in front of it
+    // can do. `renderer_ready` is the subscription and `peek` the read: the renderer
+    // signal is written on every dispatch, and this panel must not wake per pointer
+    // sample.
+    let hdr = use_memo(move || state.prefs.read().hdr)();
     let ready = *state.renderer_ready.read();
     let (hdr_capable, display_headroom) = if ready {
         state
@@ -217,7 +216,7 @@ pub fn LightingPanel() -> Element {
                     class: "setting-check",
                     r#type: "checkbox",
                     checked: hdr.on,
-                    onchange: move |e| set_hdr(state, |h| h.on = e.checked()),
+                    onchange: move |e| crate::prefs::set(state, |p| p.hdr.on = e.checked()),
                 }
             }
             // The slider stands in for a headroom the platform will not report
@@ -226,7 +225,7 @@ pub fn LightingPanel() -> Element {
                 Slider { label: Dial::Headroom.label(), glyph: Dial::Headroom.glyph(),
                     min: Dial::Headroom.range().0, max: Dial::Headroom.range().1,
                     value: hdr.clamped_headroom(),
-                    oninput: move |v| change_hdr(state, move |h| h.headroom = v),
+                    oninput: move |v| crate::prefs::set_unsaved(state, move |p| p.hdr.headroom = v),
                     onsettle: move |_| crate::prefs::save(state) }
             }
         }
@@ -237,7 +236,7 @@ pub fn LightingPanel() -> Element {
 /// browser's choice and the canvas in front of it. Run once the renderer is up
 /// (`prefs::load_engine`) and whenever either half moves.
 pub fn apply_output(state: AppState) {
-    let choice = *state.hdr.peek();
+    let choice = state.prefs.peek().hdr;
     let Some((transfer, display)) = state
         .renderer
         .peek()
@@ -250,21 +249,6 @@ pub fn apply_output(state: AppState) {
         state,
         ViewCommand::SetOutput(stark_ui::lighting::output(choice, transfer, display)),
     );
-}
-
-/// Change this browser's HDR choice and show it — the slider's per-sample half,
-/// which saves nothing.
-fn change_hdr(state: AppState, f: impl FnOnce(&mut Hdr)) {
-    let mut hdr = state.hdr;
-    f(&mut hdr.write());
-    apply_output(state);
-}
-
-/// Change this browser's HDR choice, show it, and keep it — the one door for the
-/// switch and the command.
-pub fn set_hdr(state: AppState, f: impl FnOnce(&mut Hdr)) {
-    change_hdr(state, f);
-    crate::prefs::save(state);
 }
 
 /// The canvas colour's picker, as flown out beside the Lighting panel

@@ -103,7 +103,7 @@ const SETTLE_MS: i32 = (stark_ui::bounds::SETTLE * 1000.0) as i32;
 /// Show the overview or put it away, and remember it — **the only thing that writes
 /// [`Signals::navigator`](crate::state::Signals::navigator)(crate::state::Signals::navigator)**, which is what makes
 /// durability structural rather than a line every call site has to remember (the move
-/// `layout::set_open` makes for the panel stack, and `settings::SettingToggle` for the
+/// `layout::set_open` makes for the panel stack, and `prefs::set` for the
 /// preferences).
 ///
 /// Guarded on the value actually moving, since the tour calls it for an overview that

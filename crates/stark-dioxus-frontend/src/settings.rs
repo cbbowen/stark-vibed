@@ -17,10 +17,8 @@
 //!   Cancel — there is nothing staged to discard, and a preference you can see
 //!   taking effect behind the dialog is one you can judge.
 //! - They are **saved on the click too**, per browser rather than into the
-//!   document (`crate::prefs`). A row does not opt in: [`SettingToggle`] persists
-//!   after calling its handler, so a row added here is durable by construction
-//!   and only its *value* has to be named, in `Prefs`. A future row that is not a
-//!   toggle is the one case that has to call [`prefs::save`] itself.
+//!   document: every row writes through [`prefs::set`], which is the one thing that
+//!   changes a preference and keeps it.
 //! - A row is **a label and one sentence**. The sentence says what turning it on
 //!   does; a note is added only for a caveat the label cannot carry — where the
 //!   row applies, or how to get out of the state it puts you in. A map is read
@@ -36,9 +34,8 @@ use dioxus::prelude::*;
 
 use crate::icons::icon;
 use crate::prefs;
-use crate::state::{AppState, dispatch, use_obs};
+use crate::state::{AppState, use_obs};
 use crate::widgets::{Modal, slider_fill};
-use stark_engine::command::ViewCommand;
 use stark_ui::collab::Phase;
 use stark_ui::prefs::{BUDGET_STEPS, ChromeHiding, budget_step};
 use strum::VariantArray;
@@ -62,13 +59,7 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
     // below is — and unreachable in practice for its reason: the dialog cannot be
     // open before the renderer is up.
     let fast_commit = engine_owned().map_or(stark_engine::DEFAULT_FAST_COMMIT, |(.., f)| f);
-    let mut assist_enabled = state.assist.enabled;
-    let assist = assist_enabled();
-    let mut minimal_enabled = state.minimal;
-    let minimal = minimal_enabled();
-    let tips = (state.tutor.enabled)();
-    let mut chrome_hiding = state.chrome_hiding;
-    let hiding = chrome_hiding();
+    let view = (state.prefs)();
     // Read off the engine's projection, like the peer-outline row above: the engine
     // owns this and a copy here would be one that can disagree. Before the renderer
     // is up the dialog cannot be open, so the fallback is unreachable in practice
@@ -106,8 +97,8 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                 // anybody can see — the dialog is the only place it is written
                 // down (§6.9).
                 description: "Hold the pen still mid-stroke and a rough line or ellipse snaps to the perfect shape; the rest of the drag steers it. Anything else is left as you drew it.",
-                checked: assist,
-                onchange: move |v| assist_enabled.set(v),
+                checked: view.assist,
+                onchange: move |v| prefs::set(state, |p| p.assist = v),
             }
             SettingToggle {
                 id: "fast-commit",
@@ -121,7 +112,7 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                 // rather than as the seam it is measured by.
                 note: Some("Off, every stroke is drawn the one way a saved file, an undo and a collaborator all draw it, so your canvas reproduces exactly. Either way the two differ by at most a level or two of color.".to_string()),
                 checked: fast_commit,
-                onchange: move |v| dispatch(state, ViewCommand::SetFastCommit(v)),
+                onchange: move |v| prefs::set(state, |p| p.fast_commit = v),
             }
             SettingToggle {
                 id: "show-peer-selections",
@@ -131,7 +122,7 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                 // vanishing — see the module comment.
                 note: if shared { None } else { Some("Takes effect while you're sharing a session.".to_string()) },
                 checked: show_peers,
-                onchange: move |v| dispatch(state, ViewCommand::SetShowPeerSelections(v)),
+                onchange: move |v| prefs::set(state, |p| p.show_peer_selections = v),
             }
             SettingSlider {
                 id: "history-budget",
@@ -142,7 +133,7 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                 description: "Graphics memory kept for undo. Past it the oldest steps are given up — saving and sharing always include the whole drawing.",
                 steps: BUDGET_STEPS,
                 value: budget,
-                onchange: move |bytes| dispatch(state, ViewCommand::SetHistoryBudget(bytes)),
+                onchange: move |bytes| prefs::set(state, |p| p.history_budget = bytes),
             }
 
             div { class: "modal-section-label", "INTERFACE" }
@@ -152,8 +143,8 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                 // Says which text goes and that nothing goes with it, because
                 // "minimal" alone could mean either (§11).
                 description: "Drop the words from the panels and bars, keeping the icons — the same controls, in one column. Hover any of them for its name.",
-                checked: minimal,
-                onchange: move |v| minimal_enabled.set(v),
+                checked: view.minimal,
+                onchange: move |v| prefs::set(state, |p| p.minimal = v),
             }
             SettingChoice {
                 label: "Panels and bars while you paint",
@@ -167,17 +158,8 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                     .iter()
                     .map(|c| (*c, c.label(), c.blurb()))
                     .collect::<Vec<_>>(),
-                value: hiding,
-                onchange: move |choice: ChromeHiding| {
-                    chrome_hiding.set(choice);
-                    // A stack already standing down when the choice moves off
-                    // "Hide after painting" has nothing left to bring it back —
-                    // the slice that hears the pointer is mounted on the very
-                    // state being switched off. Waking is idempotent and free
-                    // (`layout::wake_panels`), so it is done on every change
-                    // rather than on the one that needs it.
-                    crate::layout::wake_panels(state);
-                },
+                value: view.chrome_hiding,
+                onchange: move |choice: ChromeHiding| prefs::set(state, |p| p.chrome_hiding = choice),
             }
             SettingToggle {
                 id: "tips",
@@ -185,12 +167,8 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                 // The thing somebody wants to know before leaving this on is
                 // whether it will interrupt them (§24). "Once each" is the answer.
                 description: "Point out where Stark differs from the apps you came from \u{2014} once each, never during a stroke, never over the canvas.",
-                checked: tips,
-                // Through the tour's own door rather than straight onto the
-                // signal: turning tips off has to take down the card that is
-                // already up, which is a fact about the tour and is kept there
-                // (`tutor::set_enabled`).
-                onchange: move |v| crate::tutor::set_enabled(state, v),
+                checked: view.tips,
+                onchange: move |v| prefs::set(state, |p| p.tips = v),
             }
 
             div { class: "modal-section-label", "DRAGS ON THE CANVAS" }
@@ -220,11 +198,6 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
 /// Sliding a **notch index** rather than the value itself, so the control is even
 /// where the quantity is not — see [`BUDGET_STEPS`]. The index never leaves this
 /// component; what the handler is given is the value the notch stands for.
-///
-/// It saves for itself, unlike the toggle: the module comment anticipates exactly
-/// this — "a future row that is not a toggle is the one case that has to call
-/// `prefs::save` itself" — because persistence hangs off `SettingToggle`'s own
-/// input handler and a second control cannot inherit it.
 #[component]
 fn SettingSlider(
     id: String,
@@ -235,7 +208,6 @@ fn SettingSlider(
     value: u64,
     onchange: EventHandler<u64>,
 ) -> Element {
-    let state = use_context::<AppState>();
     let at = budget_step(value);
     let max = steps.len().saturating_sub(1);
 
@@ -265,7 +237,6 @@ fn SettingSlider(
                         let Ok(i) = e.value().parse::<usize>() else { return };
                         let Some((bytes, _)) = steps.get(i) else { return };
                         onchange.call(*bytes);
-                        prefs::save(state);
                     },
                 }
                 if let Some(note) = note {
@@ -289,9 +260,6 @@ fn SettingSlider(
 /// Generic over the choice rather than a component per enum — the same bargain
 /// [`SettingSlider`] makes by sliding an index. The handler is given the value itself,
 /// so a chip cannot offer a name nothing reads back.
-///
-/// It saves for itself, like the slider and unlike the toggle — persistence hangs off
-/// `SettingToggle`'s own input handler, and a second control cannot inherit it.
 #[component]
 fn SettingChoice<T: Copy + PartialEq + 'static>(
     label: String,
@@ -302,8 +270,6 @@ fn SettingChoice<T: Copy + PartialEq + 'static>(
     value: T,
     onchange: EventHandler<T>,
 ) -> Element {
-    let state = use_context::<AppState>();
-
     rsx! {
         div { class: "setting-row",
             // The checkbox's column, kept empty so this row's text starts where every
@@ -322,10 +288,7 @@ fn SettingChoice<T: Copy + PartialEq + 'static>(
                             key: "{name}",
                             class: if option == value { "chip active" } else { "chip" },
                             title: "{about}",
-                            onclick: move |_| {
-                                onchange.call(option);
-                                prefs::save(state);
-                            },
+                            onclick: move |_| onchange.call(option),
                             "{name}"
                         }
                     }
@@ -345,11 +308,6 @@ fn SettingChoice<T: Copy + PartialEq + 'static>(
 /// settings dialog is where a control meets someone who has never seen it, and a
 /// bare label leaves them to guess. The whole row is the `<label>`, so the text is
 /// as clickable as the box.
-///
-/// Persisting is done **here** rather than in each row's handler, so that a row
-/// added to the dialog is durable without its author thinking about storage — the
-/// same "rule out the class" move the rest of the app makes. It runs after the
-/// handler, so what it captures is the state the click produced.
 #[component]
 fn SettingToggle(
     id: String,
@@ -359,8 +317,6 @@ fn SettingToggle(
     checked: bool,
     onchange: EventHandler<bool>,
 ) -> Element {
-    let state = use_context::<AppState>();
-
     rsx! {
         div { class: "setting-row",
             input {
@@ -368,10 +324,7 @@ fn SettingToggle(
                 class: "setting-check",
                 r#type: "checkbox",
                 checked,
-                onchange: move |e| {
-                    onchange.call(e.checked());
-                    prefs::save(state);
-                },
+                onchange: move |e| onchange.call(e.checked()),
             }
             label { r#for: "{id}", class: "setting-text",
                 div { class: "setting-label", "{label}" }

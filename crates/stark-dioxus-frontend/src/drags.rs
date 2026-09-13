@@ -88,8 +88,7 @@ pub fn settle_offer(state: AppState) {
     }
     offer.set(next);
     save(state);
-    let mut showing = state.dialogs.drag_presets;
-    showing.set(true);
+    crate::dialogs::open(state, crate::dialogs::DialogId::DragPresets);
 }
 
 /// Put this browser's stored table and offer mark where the chrome reads them. The

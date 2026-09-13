@@ -633,7 +633,7 @@ pub fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
                 }
                 button {
                     class: "btn btn-primary",
-                    onclick: move |_| new_document(state, choice(), surf_choice(), on_close),
+                    onclick: move |_| new_document(state, choice(), surf_choice()),
                     "Create"
                 }
             }
@@ -646,14 +646,13 @@ pub fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
 /// large bump maps stay out of the wasm binary — §6.6), so this runs async: `pick` is
 /// a name or an id and what `new_document` needs is the resolved `SubstrateId`.
 ///
-/// It owns closing the modal (`on_close`), calling it only once the work is done.
-/// `spawn_forever`, not `spawn`: a plain spawn would tie the task to the
-/// modal's scope, and the backdrop/Cancel still work during the fetch — a
-/// dismissal would cancel it mid-flight *after* `collab::leave` already ran
-/// (session gone, document never replaced). The task must outlive the modal;
-/// calling `on_close` after it unmounted is harmless (the callback lives in
-/// CommandRail's scope, which persists).
-fn new_document(state: AppState, color: ColorSpaceId, pick: Pick, on_close: EventHandler<()>) {
+/// It owns closing the modal, once the work is done. `spawn_forever`, not `spawn`: a
+/// plain spawn would tie the task to the modal's scope, and the backdrop/Cancel still
+/// work during the fetch — a dismissal would cancel it mid-flight *after*
+/// `collab::leave` already ran (session gone, document never replaced). The task
+/// must outlive the modal, so it closes through the dialog stack rather than the
+/// modal's `on_close`, whose owner may be gone by then.
+fn new_document(state: AppState, color: ColorSpaceId, pick: Pick) {
     // Replacing the document abandons any shared session (and clears the
     // ticket from the URL) — the fresh canvas is private until re-shared.
     crate::collab::leave(state);
@@ -667,6 +666,6 @@ fn new_document(state: AppState, color: ColorSpaceId, pick: Pick, on_close: Even
             r.paint();
         });
         tracing::info!(?color, ?pick, ?surface, "new document ready");
-        on_close.call(());
+        crate::dialogs::close(state, crate::dialogs::DialogId::NewDocument);
     });
 }

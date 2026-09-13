@@ -78,7 +78,9 @@ impl Anchor {
             // Exactly as long as the dialog is up. Closing it mid-series is an
             // answer to the card on screen and leaves the rest of the series owed
             // for the next time it is opened (`Tour::abandon`).
-            Anchor::BrushEditor(_) => (state.brush_editor_open)(),
+            Anchor::BrushEditor(_) => {
+                crate::dialogs::is_open(state, crate::dialogs::DialogId::BrushEditor)
+            }
             Anchor::TimelineBar => (state.timeline.open)(),
         }
     }
@@ -122,7 +124,7 @@ fn show(state: AppState) {
 
 /// Acknowledge lesson `i` by its button, which brings the next lesson its deed owes.
 fn dismiss(state: AppState, i: usize) {
-    let chrome = *state.chrome_hiding.peek();
+    let chrome = state.prefs.peek().chrome_hiding;
     super::step(state, |tour| tour.dismiss(i, chrome));
 }
 
@@ -168,10 +170,11 @@ pub fn TutorCard() -> Element {
         }
         // Unless the card points *at* the dialog. The preset-save dialog is over even
         // those, being the one thing the brush editor opens on top of itself.
-        let dialog = (state.brush_editor_open)() && !lesson.anchor.inside_dialog();
+        let dialog = crate::dialogs::is_open(state, crate::dialogs::DialogId::BrushEditor)
+            && !lesson.anchor.inside_dialog();
         let busy = (state.canvas_active)()
             || dialog
-            || (state.preset_save_open)()
+            || crate::dialogs::is_open(state, crate::dialogs::DialogId::PresetSave)
             || crate::modes::composing(state).is_some();
         if busy {
             return;
@@ -193,7 +196,7 @@ pub fn TutorCard() -> Element {
         // rack only while pinned, the editor's parts only while it is open.
         let _ = (state.canvas_active)();
         let _ = (state.slots.pinned)();
-        let _ = (state.brush_editor_open)();
+        let _ = crate::dialogs::is_open(state, crate::dialogs::DialogId::BrushEditor);
         // Closing the thing a card is about answers the card, and latching it instead would
         // end the tour silently at whichever tip the artist closed a panel under. Asked of
         // the app's state rather than the DOM, for `Anchor::on_screen`'s reason.
@@ -335,8 +338,7 @@ pub fn TutorCard() -> Element {
                     onclick: move |_| {
                         // Through the same door as the dialog's switch, which takes
                         // this card down without marking it given (`tutor::set_enabled`).
-                        super::set_enabled(state, false);
-                        crate::prefs::save(state);
+                        crate::prefs::set(state, |p| p.tips = false);
                     },
                     "Stop tips"
                 }

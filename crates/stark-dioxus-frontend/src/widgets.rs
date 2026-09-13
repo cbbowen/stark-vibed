@@ -563,9 +563,9 @@ pub fn Modal(
 /// though no well opens it: reaching it from the ladder is the only way its
 /// Escape is not a *second* handler for a keystroke the window already hears.
 ///
-/// **Not a [`Dialogs`](crate::state::Dialogs) flag**, though the machinery would
+/// **Not on the dialog stack**, though the machinery would
 /// have fitted: that list is also what stands `FinishMode` down
-/// (`commands::dialog_open`), and the gradient library is opened *from* the
+/// (`dialogs::any_open`), and the gradient library is opened *from* the
 /// gradient bar while a fill is composing — so a pop-out on that list would take
 /// Enter's "Done" away for as long as the library was open. It gets a rung of its
 /// own, above the dialogs, and nothing else changes.

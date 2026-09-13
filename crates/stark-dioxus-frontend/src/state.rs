@@ -14,7 +14,7 @@
 //! unrelated command refreshes it (§4, §7). Both the canvas substrate and the lighting
 //! environment are reachable that way, and neither spelling compiles.
 
-use dioxus::dioxus_core::{Subscribers, Task};
+use dioxus::dioxus_core::{Runtime, Subscribers, Task};
 use dioxus::prelude::*;
 
 use crate::collab;
@@ -25,7 +25,7 @@ use stark_engine::command::{Tool, ViewCommand};
 use stark_model::geom::Vec2;
 use stark_ui::commands::PickScope;
 use stark_ui::commands::VisibilityToggle;
-use stark_ui::prefs::Prefs;
+use stark_ui::prefs::{ChromeHiding, Prefs};
 
 /// Create one of [`AppState`]'s signals, owned by the **root** scope rather than by
 /// the component that declares it.
@@ -51,6 +51,11 @@ use stark_ui::prefs::Prefs;
 /// chrome reads, which is the thing §25.3 asks gestures not to do.
 pub(crate) fn root_signal<T: 'static>(init: impl FnOnce() -> T) -> Signal<T> {
     use_hook(|| Signal::new_in_scope(init(), ScopeId::ROOT))
+}
+
+/// [`root_signal`] for a memo: owned by the root scope, for the same reason.
+fn root_memo<T: PartialEq + 'static>(f: impl FnMut() -> T + 'static) -> Memo<T> {
+    use_hook(|| Runtime::current().in_scope(ScopeId::ROOT, || Memo::new(f)))
 }
 
 /// A signal handed out with its `write` half kept back: `read` and `peek` work
@@ -230,30 +235,20 @@ pub struct Signals {
     ///
     /// [`chrome_dimmed`]: crate::layout::chrome_dimmed
     pub panels_asleep: Signal<bool>,
-    /// Whether the chrome gets out of the way at all, and for how long — this
-    /// browser's own choice (`layout::ChromeHiding`, §11), set in the ⚙ dialog and
-    /// stored with the other preferences.
+    /// This browser's preferences (§25.6), seeded from the stored record. Written
+    /// only by [`prefs::set`](crate::prefs::set).
     ///
-    /// Read by the two functions that decide what the fade means
-    /// ([`chrome_dimmed`](crate::layout::chrome_dimmed) and `layout::sleep_panels`), and
-    /// deliberately *not* by the gestures: `canvas_active` above still says the canvas
-    /// is in hand whatever this holds, because half a dozen other things ask that
-    /// question for their own reasons (a thumbnail deferring its work, the eyedropper
-    /// bar). What the setting changes is who looks faded, not what is happening.
-    pub chrome_hiding: Signal<stark_ui::prefs::ChromeHiding>,
-    /// This browser's HDR choice (§6.5), stored with the other preferences. The
-    /// engine's [`Output`](stark_engine::Output) is derived from it and the surface
-    /// (`panels::lighting::apply_output`), never the other way round.
-    pub hdr: Signal<stark_ui::prefs::Hdr>,
-    /// Whether the brush editor dialog is open (rendered at the app root so its
-    /// backdrop escapes the panels' `backdrop-filter` containing blocks).
-    pub brush_editor_open: Signal<bool>,
-    /// Whether the "Save preset" dialog is open — the name a new preset is asked
-    /// for, raised by the brush editor's "Save new preset" and by the command of
-    /// the same name. At the app root, and mounted *after* the editor there, so it
-    /// stacks over the one dialog that opens it rather than being trapped inside
-    /// its box.
-    pub preset_save_open: Signal<bool>,
+    /// The frontend's fields are live here. The three the engine holds —
+    /// `show_peer_selections`, `history_budget`, `fast_commit` — are what was stored
+    /// or last asked for; what the engine holds is the projection's.
+    pub prefs: Signal<Prefs>,
+    /// `prefs.chrome_hiding`, as a memo: every chrome container asks it through
+    /// [`chrome_dimmed`](crate::layout::chrome_dimmed) while a gesture is in flight,
+    /// and none of them should wake for another preference.
+    ///
+    /// Read it, never peek it: a memo's `peek` does not recompute a stale value.
+    /// A handler that must not subscribe reads `prefs.peek()` instead.
+    pub chrome_hiding: Memo<ChromeHiding>,
     /// Bumped whenever the brush color is set from **outside** the color picker —
     /// today only by the eyedropper.
     ///
@@ -315,8 +310,6 @@ pub struct Signals {
     /// signal for the reason [`tune_readout`](Self::tune_readout) is: only the
     /// little overlay re-renders at pointer rate, never the chrome.
     pub tow: Signal<Option<TowUi>>,
-    /// The drag-and-hold drawing assist (§6.9; `crate::input`).
-    pub assist: AssistState,
     /// Which of the three shape tools the Select panel's action row reaches for
     /// (§6.8) — the last one armed, rect until one has been.
     ///
@@ -331,20 +324,6 @@ pub struct Signals {
     /// that hands a tool back without naming one
     /// ([`commands::arm_shape_tool`](crate::commands::arm_shape_tool)).
     pub shape_tool: Signal<Tool>,
-    /// Minimal mode: the chrome over the canvas drops its words and keeps its marks
-    /// (§11).
-    ///
-    /// A client preference like [`AssistState::enabled`], not document state — it is a
-    /// way of *looking* at the application, so it never enters the document and is never
-    /// replicated, and a collaborator's copy is theirs to set. It does follow *this*
-    /// browser between visits (`crate::prefs`).
-    ///
-    /// Nothing reads this but the app root, which turns it into a class on `.app-root`;
-    /// what the class hides is decided in the stylesheet against the `.label` spans the
-    /// components emit. Deliberately not a prop threaded through the tree: every
-    /// control would then have to be handed a boolean it does nothing with but pass on,
-    /// and a control that forgot to would be the one that kept its word.
-    pub minimal: Signal<bool>,
     /// The whole-canvas composing mode in flight, and what it is composing
     /// (`crate::modes`): the transform widget (§16.6, §16.8, §16.9), a
     /// perspective guide being shaped (§20.5), the gradient library's trace
@@ -443,12 +422,13 @@ pub struct Signals {
     /// **One signal for all of them**, on `stark_ui::modes::Composing`'s argument: two open
     /// at once is a state nothing wants and nothing should have to prevent. And
     /// app state rather than the locals these were, so Escape can see them —
-    /// deliberately *not* a [`Dialogs`] flag, which is also the list that stands
+    /// deliberately *not* on the dialog stack, which is also what stands
     /// `FinishMode` down, because the gradient library is opened from a bar while
     /// a fill is composing and must not take Enter's "Done" away.
     pub popout: Signal<Option<crate::widgets::PopoutId>>,
-    /// The root-mounted dialogs' visibility, one flag per modal (see [`Dialogs`]).
-    pub dialogs: Dialogs,
+    /// The root-mounted dialogs, in the order they were opened (`crate::dialogs`,
+    /// the only thing that writes it).
+    pub dialogs: Signal<Vec<crate::dialogs::DialogId>>,
     /// The floating panel stack: order, which are open, and the in-flight
     /// gestures (`crate::layout::PanelLayout`). Here rather than provided as
     /// its own context because the panels' commands live in the registry now
@@ -470,73 +450,10 @@ pub struct Signals {
     /// whether one is waiting for the hand to come off the canvas
     /// (`stark_ui::drags::Offer`, §25.8).
     ///
-    /// Not in [`Dialogs`] though it raises one: the flag there is *whether the
-    /// dialog is up*, and this is the durable fact that decides whether it ever
+    /// Not on the dialog stack though it raises a dialog: the stack says *whether
+    /// the dialog is up*, and this is the durable fact that decides whether it ever
     /// will be — seeded from storage at app start alongside the table above.
     pub drag_offer: Signal<stark_ui::drags::Offer>,
-}
-
-/// The root-mounted dialogs: one flag per modal, raised by the command that
-/// opens it (`crate::commands`) and lowered by the dialog's own `on_close`.
-///
-/// App state rather than locals of the rail that renders them, because opening
-/// one is a *command* — a thing a menu row, a chord, or whatever surface comes
-/// next may ask for — and a command can reach only what [`AppState`] holds. The
-/// brush panel's two dialogs made the same move earlier for their own reason
-/// ([`Signals::brush_editor_open`](crate::state::Signals::brush_editor_open), [`Signals::preset_save_open`](crate::state::Signals::preset_save_open)) and keep
-/// their longer-standing fields.
-#[derive(Clone, Copy)]
-pub struct Dialogs {
-    /// "New document…" (`substrates::NewDocumentModal`).
-    pub new_document: Signal<bool>,
-    /// The share dialog (`collab::SessionModal`). Sharing starts on the command
-    /// that raises this; the dialog exists to hand over the link.
-    pub session: Signal<bool>,
-    /// "Export image…" (`files::ExportModal`).
-    pub export: Signal<bool>,
-    /// The ⚙ preferences (`settings::SettingsModal`).
-    pub settings: Signal<bool>,
-    /// Timing stats (§7.1, `timings::TimingModal`).
-    pub timing: Signal<bool>,
-    /// Credits (`credits::CreditsModal`).
-    pub credits: Signal<bool>,
-    /// The drag-preset offer (`drags::DragPresetModal`, §25.8). The one dialog
-    /// no command opens: it is raised by a release
-    /// (`drags::settle_offer`) and only ever once per browser, which is why it
-    /// has no row in the rail and no chord.
-    pub drag_presets: Signal<bool>,
-}
-
-impl AppState {
-    /// Every root-mounted dialog's flag, the two long-standing brush fields
-    /// included — what Esc's first rung asks and lowers (`crate::commands`,
-    /// MODAL_DESIGN.md). Lowering a flag here *is* the dialog's own close:
-    /// each `on_close` in `rail` and `crate::app` does nothing else.
-    ///
-    /// Kept beside [`Dialogs`] so a new modal's flag joins this list in the
-    /// same edit that adds its field — the one list in the app that has to
-    /// know every dialog, stated once. The GPU-failure modal is deliberately
-    /// absent: it has no flag because it may not be dismissed (§5).
-    ///
-    /// **In stacking order**: the same order `crate::app` mounts them in, so the last
-    /// flag up is the dialog on top — which is what Esc lowers, one per press
-    /// (`commands::close_dialogs`). Only the last pair ever actually stacks: the
-    /// preset-name dialog is raised by the brush editor and has to come down
-    /// without taking the editor with it.
-    pub fn root_dialogs(self) -> [Signal<bool>; 9] {
-        let d = self.dialogs;
-        [
-            d.new_document,
-            d.session,
-            d.export,
-            d.settings,
-            d.timing,
-            d.credits,
-            d.drag_presets,
-            self.brush_editor_open,
-            self.preset_save_open,
-        ]
-    }
 }
 
 /// The quick-brush rack's signals (§18.1.8), grouped because they are one
@@ -575,20 +492,6 @@ pub struct SlotState {
     /// clicks — the only route to a slot for a hand with no keyboard under it, which
     /// is a standing choice about the screen and not a glance at one.
     pub pinned: Signal<bool>,
-}
-
-/// The drag-and-hold drawing assist's setting (§6.9).
-///
-/// The engine owns what a hold *means* ([`GestureCommand::Hold`](stark_engine::command::GestureCommand)),
-/// and noticing that the pointer has stopped is the paint gesture's own state
-/// (`input::Paint`, over `stark_ui::input::Dwell`). What is left here is whether to
-/// notice at all.
-#[derive(Clone, Copy)]
-pub struct AssistState {
-    /// Whether a held pointer snaps the stroke at all. On by default, and off is a
-    /// real answer: assist changes what an ordinary stroke does, so somebody who wants
-    /// their line left crooked has to be able to say so (`crate::settings`).
-    pub enabled: Signal<bool>,
 }
 
 /// What a brush-tuning drag is showing (§18.1.9): the ring while it is about Size,
@@ -697,6 +600,7 @@ impl AppState {
     /// preference a signal opens on, how wide the quick-brush rack is. What is
     /// left is the list, which is what this was always for.
     pub fn new() -> Self {
+        let prefs = root_signal(crate::prefs::stored);
         AppState(Box::leak(Box::new(Signals {
             renderer: ReadOnly(root_signal(|| None)),
             obs: ReadOnly(root_signal(|| None)),
@@ -708,12 +612,8 @@ impl AppState {
             held_mods: root_signal(Default::default),
             canvas_active: root_signal(|| false),
             panels_asleep: root_signal(|| false),
-            chrome_hiding: root_signal(Default::default),
-            // Seeded from the preference defaults rather than written out again:
-            // `prefs::load` overwrites it at app start (`crate::prefs`).
-            hdr: root_signal(|| Prefs::default().hdr),
-            brush_editor_open: root_signal(|| false),
-            preset_save_open: root_signal(|| false),
+            prefs,
+            chrome_hiding: root_memo(move || prefs.read().chrome_hiding),
             color_epoch: root_signal(|| 0),
             pick: PickState::new(),
             tune_readout: root_signal(|| None),
@@ -729,12 +629,7 @@ impl AppState {
                 ..Default::default()
             }),
             tow: root_signal(|| None),
-            assist: AssistState::new(),
             shape_tool: root_signal(|| Tool::SelectRect),
-            // Seeded from the preference defaults rather than written out again here:
-            // `prefs::load` overwrites this at app start, so a default stated in
-            // this file would be the one that never applies (`crate::prefs`).
-            minimal: root_signal(|| Prefs::default().minimal),
             mode: root_signal(|| None),
             gradient_resume: root_signal(|| None),
             paint_queued: root_signal(|| false),
@@ -757,7 +652,7 @@ impl AppState {
             }),
             tutor: crate::tutor::TutorState::new(),
             popout: root_signal(|| None),
-            dialogs: Dialogs::new(),
+            dialogs: root_signal(Vec::new),
             panels: crate::layout::PanelLayout::new(),
             bindings: root_signal(Default::default),
             drags: root_signal(Default::default),
@@ -775,16 +670,6 @@ impl PickState {
             busy: root_signal(|| false),
             dragging: root_signal(|| false),
             loupe: root_signal(|| None),
-        }
-    }
-}
-
-impl AssistState {
-    fn new() -> Self {
-        Self {
-            // Seeded from the preference defaults rather than written out again:
-            // `prefs::load` overwrites it at app start (`crate::prefs`).
-            enabled: root_signal(|| Prefs::default().assist),
         }
     }
 }
@@ -830,20 +715,6 @@ impl SlotState {
             pinned: root_signal(|| {
                 stark_ui::visibility::stored_showing(VisibilityToggle::QuickBrushes)
             }),
-        }
-    }
-}
-
-impl Dialogs {
-    fn new() -> Self {
-        Self {
-            new_document: root_signal(|| false),
-            session: root_signal(|| false),
-            export: root_signal(|| false),
-            settings: root_signal(|| false),
-            timing: root_signal(|| false),
-            credits: root_signal(|| false),
-            drag_presets: root_signal(|| false),
         }
     }
 }

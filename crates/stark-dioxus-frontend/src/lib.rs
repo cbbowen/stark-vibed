@@ -9,15 +9,9 @@
 //!
 //! # What is in this file
 //!
-//! The root, and only the root: [`run`] — all the binary's `main` does — and [`app`], which
-//! is the list of what is on screen and the order it is stacked in, plus the
-//! startup task that builds the engine and everything that has to wait for one.
-//!
-//! Not here: [`crate::canvas`], the painting surface and the press ladder that decides
-//! what a pointer on it means (§25.4); [`crate::overlays`], the chrome that rides over
-//! it — peer cursors, the brush ring, the tow string; and [`crate::rail`], the command
-//! rail, its menus and the search palette. Each is one subject with one long argument,
-//! and `app`'s stacking order should read without scrolling past them.
+//! The root, and only the root: [`run`] — all the binary's `main` does — and `app`,
+//! which is the list of what is on screen and the order it is stacked in. What the app
+//! does once at start is `startup`'s.
 
 // `rsx!` lowers every interpolated attribute and text node — `id: "{CANVAS_ID}"`,
 // `"{title}"` — through `format!`, so clippy sees a `format!` with nothing to
@@ -39,6 +33,7 @@ mod cards;
 mod collab;
 mod commands;
 mod credits;
+mod dialogs;
 mod drags;
 mod failure;
 mod files;
@@ -65,6 +60,7 @@ mod settings;
 mod shapes;
 mod shipped;
 mod slots;
+mod startup;
 mod state;
 mod substrates;
 mod thumbs;
@@ -75,30 +71,24 @@ mod widgets;
 
 use dioxus::prelude::*;
 
-use brush_editor::BrushEditorModal;
 use canvas::Canvas;
+use dialogs::DialogStack;
 use input::{bind_context_menu, bind_pen, bind_shortcuts};
 use layout::PanelStack;
 use layout::{resize_end, resize_move};
 use navigator::NavigatorOverlay;
 use overlays::{BrushCursor, PeerCursors, PickLoupe, TowStringOverlay, TuneReadoutOverlay};
-use panels::brush::PresetSaveModal;
-use panels::lighting::environment_asset;
 use panels::{
     FilterBar, FrameBar, FrameOverlay, GradientBar, GradientBarOverlay, GradientTraceOverlay,
     GuideEditOverlay, PerspectiveGuideBar, PickBar, SelectionBar, StackPopouts, TimelineBar,
     TraceBar, TransformBar, TransformOverlay,
 };
-use platform::canvas_by_id;
 use rail::CommandRail;
-use render::CANVAS_ID;
 use slots::SlotOverlay;
-use stark_engine::command::ViewCommand;
-use stark_ui::lighting::DEFAULT_ENVIRONMENT;
-use state::{AppState, update_brush};
+use state::AppState;
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
-/// every component class referenced below. Linked once by [`app`] so the rsx!
+/// every component class referenced below. Linked once by `app` so the rsx!
 /// blocks carry class names, not inline styles.
 static STARK_CSS: Asset = asset!("/assets/stark.css");
 
@@ -142,34 +132,12 @@ fn app() -> Element {
     // And the way out: the browser asks before the tab goes, if there is committed
     // work here that neither Save nor Export has taken out (`files::guard_unload`).
     // In the root's body rather than at the end of the startup task, unlike the
-    // launch queue and the paste hook below — this one binds a predicate over the
+    // launch queue and the paste hook — this one binds a predicate over the
     // signals, so it wants no engine and cannot be left unbound by a start that
     // fails before there is one.
     use_hook(|| files::guard_unload(state));
 
-    // The brush presets follow the browser rather than the document (seeded with
-    // the built-ins on a browser that has never stored any). The shape library
-    // follows it too, but its bytes are in the blob store now, so reading it is a
-    // fetch — it is loaded in the startup task below instead of here (§25.6).
-    use_hook(|| presets::load(state));
-    // The gradient library follows the browser the same way (§22.3) — and has no
-    // built-ins to install later: every entry is something this user traced.
-    use_hook(|| gradients::load(state));
-    // And so does the quick-brush rack (§18.1.8) — a browser that has never set
-    // a slot is seeded below, once there is a preset library to seed it from.
-    use_hook(|| slots::load(state));
-    // The ⚙ dialog's settings follow the browser the same way. Applied here, in the
-    // root's own body, so the very first render is already in the mode the user left
-    // the app in — the engine-owned half of them waits for the renderer below
-    // (`crate::prefs`).
-    use_hook(|| prefs::load(state));
-    // And this browser's rebound shortcuts (`stark_ui::commands::Bindings`) — before the
-    // first keystroke could ask the table, like everything above it.
-    use_hook(|| commands::load(state));
-    // And its rebound canvas drags (§25.8), which the very first press asks and
-    // which also carry whether the preset offer has already been made — so a
-    // browser that has seen it must not be shown it again on this visit.
-    use_hook(|| drags::load(state));
+    use_hook(|| startup::load_records(state));
 
     // Every brush with a picture to show wants a rendered stroke (`crate::thumbs`,
     // §11): the preset library's rows and the quick-brush rack's overlay
@@ -177,159 +145,28 @@ fn app() -> Element {
     // always mounted — the Brush panel closes, and the rack's overlay exists only
     // while a key is held, which is far too late to start rendering the thing it
     // is there to show. Generation needs the main renderer, so this watches the
-    // renderer signal alongside the two libraries: whichever lands last kicks it
-    // off, and a slot tuned under a hold re-runs it on the release that stores it.
+    // renderer alongside the two libraries: whichever lands last kicks it off, and a
+    // slot tuned under a hold re-runs it on the release that stores it.
     //
-    // The renderer is watched through `renderer_ready` rather than by asking the
-    // renderer signal whether it holds one: reading that signal subscribes to every
-    // *write* of it, and every door into the engine takes it as `&mut` — so this
-    // effect used to re-run on every command and every pointer sample of a stroke,
-    // rescanning the whole library each time, to learn a boolean that moves once
-    // (U2, `state::renderer_ready`).
+    // A memo of what the scan reads, because `thumbs::refresh` peeks: the effect runs
+    // when a brush it would draw changes, and not when a write leaves them as they
+    // were. The renderer through `renderer_ready`, which moves once, rather than the
+    // renderer signal, which every command writes (U2).
+    let wanted = use_memo(move || {
+        (
+            state.presets.read().clone(),
+            state.slots.brushes.read().clone(),
+            (state.renderer_ready)(),
+        )
+    });
     use_effect(move || {
-        let _ = state.presets.read().len();
-        let _ = state.slots.brushes.read().len();
-        let _ = (state.renderer_ready)();
+        wanted.read();
         thumbs::refresh(state);
     });
 
-    use_hook(|| {
-        spawn(async move {
-            // The browser's three answers about WebGPU, all of which used to be
-            // `expect` (`render::StartupFailure`). A browser that has none is the
-            // most likely way this app fails a first-time visitor, and it failed
-            // it by killing this task and leaving the chrome standing over a
-            // canvas that would never take a mark. Now it says so, on the same
-            // surface a device that dies mid-session says it on
-            // (`crate::failure`) — and nothing below runs, which is what it
-            // already did.
-            let mut r = match render::init(canvas_by_id(CANVAS_ID)).await {
-                Ok(r) => r,
-                Err(why) => {
-                    tracing::error!(%why, "the canvas cannot be drawn on");
-                    let mut failed = state.startup_failure;
-                    failed.set(Some(why));
-                    return;
-                }
-            };
-            // Fetch the bundled brush shapes at runtime (kept out of the wasm
-            // binary) and import them once, so the gallery's built-in cards are
-            // ready — and so the default presets have ids to name
-            // (§6.6, `crate::builtins`).
-            builtins::import_all(&mut r).await;
-            // Fetch the default substrate's height map and open the document on it
-            // (§6.4, §6.6). A substrate is named by the hash of its image, so this
-            // cannot be done the other way round any more: the engine boots on
-            // `Flat` — the one substrate it can name without bytes — and the id it
-            // moves to is only knowable once those bytes are in hand.
-            //
-            // `new_document` rather than a `SetSubstrate`, so no bogus first step
-            // lands in the undo history of every fresh document. It replaces a
-            // document nobody has touched: the renderer signal is not published
-            // until this whole block finishes, so nothing can have been painted yet.
-            let color_space = r.color_space();
-            substrates::open_default(&mut r, color_space).await;
-            // Fetch the default environment's HDR and light the canvas with it
-            // (§6.3); until it arrives the procedural neutral one is used,
-            // and the Lighting panel can switch back to it at any time. A no-op while
-            // the default *is* the procedural one, which has no bytes to fetch.
-            if let Some(asset) = environment_asset(DEFAULT_ENVIRONMENT)
-                && let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(asset).await
-            {
-                // Switch only once the bytes are known to decode: the light this
-                // build ships should never fail here, and if it does the canvas
-                // stays on the procedural one rather than on a light that is not
-                // there.
-                match r.register_environment(DEFAULT_ENVIRONMENT, bytes) {
-                    Ok(()) => r.process(ViewCommand::SetEnvironment(DEFAULT_ENVIRONMENT)),
-                    Err(e) => {
-                        tracing::warn!("the bundled environment will not decode: {e}");
-                    }
-                }
-            }
-            // Every fetch above is a window in which the canvas can be laid out —
-            // and any resize reported during it was dropped, because the signal
-            // `state::resize` needs is the one being set two lines down. Re-read
-            // the element here, where a size can no longer go missing, so the
-            // first frame is painted through the viewport the canvas actually has
-            // (`Renderer::sync_to_canvas`). No `await` between this and the set.
-            r.sync_to_canvas();
-            r.paint();
-            // Projection first, then the engine — `publish_renderer` is that order,
-            // so no reader ever sees a renderer the chrome cannot yet describe.
-            state::publish_renderer(state, r);
-
-            // The custom shape library, from the browser's two stores (§25.6). Here
-            // rather than in a `use_hook` above because its bytes are a fetch now —
-            // and *before* `apply_first` below, which is the first thing that turns a
-            // preset's stamp id back into bytes: a library that had not arrived yet
-            // would put those brushes silently on the round tip.
-            library::load::<stark_ui::assets::Shapes>(state).await;
-
-            // And the custom surface library, on the same footing and for a sharper
-            // version of the same reason: a document opened from a file may name a
-            // substrate this browser holds, and a library that had not arrived yet would
-            // leave the gallery unable to say so (§6.4).
-            library::load::<stark_ui::assets::Substrates>(state).await;
-
-            // The app's own presets join the library now rather than at
-            // `presets::load`: they name bundled brush shapes, and a stamp is
-            // named by content id — which the imports just above are what
-            // produce. Every start, not only a first one, so an improved default
-            // reaches a browser that has been running Stark for months.
-            presets::install_builtins(state);
-
-            // And the rack under the number keys, from that library — after it,
-            // because it takes each preset to the digit that preset declares
-            // rather than restating the list here (§18.1.8). A browser that has
-            // already set a slot keeps what it set; only an untouched rack is
-            // filled in.
-            slots::seed_defaults(state);
-
-            // The brush this app start begins on: the library's first preset (an
-            // empty library leaves the app's default brush), and then the color
-            // the Color panel is already showing — the brush signal is seeded
-            // with `INITIAL_COLOR` (`state::Signals::new`) so the picker the
-            // panel mounted before the engine existed shows it, and the
-            // identity write here is what pushes the same configuration to the
-            // engine, which opened on black. Both go through
-            // `ViewCommand::SetBrush`, which is session state, so neither
-            // leaves a step in the undo history. Once per app start, not per
-            // document: a new document keeps the brush the user is holding.
-            presets::apply_first(state);
-            update_brush(state, |_, t| t.color = stark_ui::color::INITIAL_COLOR);
-
-            // The settings that live in the engine rather than in a signal — there is
-            // one, and it is read by the session this block may be about to join, so it
-            // goes in before the join rather than after (`crate::prefs`).
-            prefs::load_engine(state);
-
-            // A `#stark…` fragment in the page URL is a session invitation:
-            // join it now that the engine is up (§12.4).
-            if let Some(ticket) = collab::url_ticket() {
-                tracing::info!("joining shared session from URL fragment");
-                collab::join(state, ticket);
-            }
-
-            // And the other thing a launch can carry: a `.stark` the OS was asked
-            // to open in this app (§11). Bound *here*, at the end of startup,
-            // rather than in the root's body — setting the consumer is what
-            // delivers a queued launch, and a document has nowhere to load until
-            // the renderer above exists.
-            files::bind_file_launch(state);
-            // …and the third way a picture can arrive: pasted (§23). Bound here
-            // beside the launch queue and for a related reason — a paste has an
-            // engine to place into only once the renderer above exists.
-            images::bind_paste(state);
-
-            // And last of all, the guided tour starts listening (§24). Last is the
-            // whole of why it is here: every line above dispatches commands on the
-            // user's behalf — the opening preset, the opening color, the stored
-            // preferences — and a tour armed before them would count the app
-            // starting up as the artist at work.
-            tutor::begin(state);
-        });
-    });
+    use_hook(|| spawn(startup::run(state)));
+    // Readers that re-render at cost read a slice: the whole tree hangs off this one.
+    let minimal = use_memo(move || state.prefs.read().minimal);
 
     rsx! {
         document::Stylesheet { href: STARK_CSS }
@@ -347,7 +184,7 @@ fn app() -> Element {
             // threaded through the tree would have to reach every control, and the one
             // that failed to pass it on would be the one that kept its word.
             class: if (state.timeline.open)() { "timeline-mode" },
-            class: if (state.minimal)() { "minimal" },
+            class: if minimal() { "minimal" },
             // A panel resize by the bottom-edge grip is driven here — events bubble up even
             // over the canvas, so it keeps tracking wherever the pointer goes, and leaving
             // the window ends it so it cannot get stuck. A no-op unless armed.
@@ -550,29 +387,10 @@ fn app() -> Element {
                 TimelineBar {}
             }
 
-            // The brush editor dialog (mounted only while open, so each open
-            // re-inits its preview against the current canvas look).
-            if (state.brush_editor_open)() {
-                BrushEditorModal {
-                    on_close: move |_| {
-                        let mut open = state.brush_editor_open;
-                        open.set(false);
-                    }
-                }
-            }
-
-            // The name for a new preset, asked for by the brush editor's "Save new
-            // preset" (and the command of that name) — after the editor, so it stacks
-            // over it (`AppState::root_dialogs`). Mounted only while open, so each
-            // open proposes a fresh name for the library as it stands now.
-            if (state.preset_save_open)() {
-                PresetSaveModal {
-                    on_close: move |_| {
-                        let mut open = state.preset_save_open;
-                        open.set(false);
-                    }
-                }
-            }
+            // Every open dialog, in the order they were opened, so the last one opened
+            // is drawn over the rest (`crate::dialogs`). Each is mounted only while
+            // open, so it opens fresh.
+            DialogStack {}
 
             // Last, and over everything: the GPU has died and the canvas is showing
             // its final frame (§5, `crate::failure`). It gates on its own read of
