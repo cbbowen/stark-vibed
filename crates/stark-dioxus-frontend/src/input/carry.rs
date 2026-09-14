@@ -15,13 +15,14 @@ use super::*;
 use stark_engine::command::DocCommand;
 use stark_model::geom::IVec2;
 use stark_ui::carry::{self, Carry, Hit, Settle};
+use stark_ui::route::{Gesture, Holder};
 
 /// A carry in flight, and the preview it has on screen.
 #[derive(Copy, Clone)]
 struct InFlight {
     carry: Carry,
     /// The pointer that pressed, the only one whose moves carry.
-    pointer: i32,
+    pointer: Pointer,
     /// The frame the canvas is currently previewing, so a move that rounds to the same
     /// whole canvas pixel costs no dispatch — which at pointer rate is most of them.
     shown: Option<(LayerId, IVec2)>,
@@ -71,10 +72,11 @@ impl PickMove {
         }
     }
 
-    /// Whether a carry holds the pointer. A released carry still waiting on its
-    /// readback does not: the hand has let go, and only the answer is outstanding.
-    pub fn holds_pointer(self) -> bool {
-        in_hand(*self.drag.peek()).is_some()
+    /// The carry in the hand and the pointer holding it, if any. A released carry still
+    /// waiting on its readback holds nothing: the hand has let go, and only the answer is
+    /// outstanding.
+    pub fn holder(self) -> Option<Holder> {
+        in_hand(*self.drag.peek()).map(|d| Holder::Gesture(Gesture::Carry, d.pointer))
     }
 
     /// Begin the carry at `e`: capture the pointer and ask what is under it.
@@ -105,7 +107,7 @@ impl PickMove {
         let deadzone = carry::deadzone(pointer_kind(e));
         let flight = InFlight {
             carry: Carry::press(press, s.pos, page_xy(e), deadzone, pinned),
-            pointer: e.pointer_id(),
+            pointer: pointer_of(e),
             shown: None,
         };
         let mut drag = self.drag;
@@ -294,7 +296,7 @@ fn in_hand(drag: Option<InFlight>) -> Option<InFlight> {
 
 /// The carry a move of `pointer` advances: the one in the hand, if that pointer pressed it.
 fn moved_by(drag: Option<InFlight>, pointer: i32) -> Option<InFlight> {
-    in_hand(drag).filter(|d| d.pointer == pointer)
+    in_hand(drag).filter(|d| d.pointer.id == pointer)
 }
 
 /// [`carry::layer_translation`] against the projection as it stands; zero before
@@ -317,7 +319,10 @@ mod tests {
     fn pressed(press: u64) -> InFlight {
         InFlight {
             carry: Carry::press(press, Vec2::ZERO, Vec2::ZERO, 4.0, None),
-            pointer: MOUSE,
+            pointer: Pointer {
+                id: MOUSE,
+                kind: PointerKind::Mouse,
+            },
             shown: None,
         }
     }

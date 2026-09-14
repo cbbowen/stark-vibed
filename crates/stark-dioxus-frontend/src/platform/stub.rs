@@ -109,6 +109,10 @@ pub fn event_time(_e: &Event<PointerData>) -> f64 {
     0.0
 }
 
+pub fn page_position(_e: &Event<PointerData>) -> Option<(f32, f32)> {
+    None
+}
+
 pub fn coalesced(_e: &Event<PointerData>) -> Option<Vec<Coalesced>> {
     None
 }

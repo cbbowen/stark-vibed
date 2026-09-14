@@ -15,14 +15,15 @@
 
 use super::*;
 use stark_ui::input::{DWELL, Dwell, HeldPress};
+use stark_ui::route::{Gesture, Holder};
 
 /// How often the hold watcher looks, in ms, which is how late a snap can land after
 /// its hold is earned: under a seventh of [`DWELL`], and far too rare to cost anything.
 const DWELL_POLL_MS: i32 = 60;
 
 /// Whether a move of `pointer` feeds the stroke `drawing` holds the pointer of.
-fn drawn_by(drawing: Option<i32>, pointer: i32) -> bool {
-    drawing == Some(pointer)
+fn drawn_by(drawing: Option<Pointer>, pointer: i32) -> bool {
+    drawing.is_some_and(|d| d.id == pointer)
 }
 
 /// The canvas's **paint** gesture: a stroke or a marquee, from the press that
@@ -49,7 +50,7 @@ pub struct Paint {
     state: AppState,
     /// The pointer drawing the gesture in flight, or `None` — the thing the three
     /// entry points below keep in step with the engine.
-    drawing: Signal<Option<i32>>,
+    drawing: Signal<Option<Pointer>>,
     /// The panel's shape action, stashed while a gesture's modifier keys override
     /// it (§6.8) and put back when the gesture ends, however it ends.
     restore: Signal<Option<ShapeAction>>,
@@ -111,7 +112,7 @@ impl Paint {
         } else {
             input_rope(state)
         };
-        self.open(e.pointer_id(), tool, &[sample], tolerance, rope, page_xy(e))
+        self.open(pointer_of(e), tool, &[sample], tolerance, rope, page_xy(e))
     }
 
     /// Open the gesture on samples **already taken**: the press first, then every
@@ -126,7 +127,7 @@ impl Paint {
     /// the frame the hold is measured in.
     fn open(
         self,
-        pointer: i32,
+        pointer: Pointer,
         tool: Tool,
         samples: &[InputSample],
         tolerance: f32,
@@ -364,7 +365,7 @@ struct Held {
     epoch: u64,
     /// The finger holding it. A pen or a second finger arriving is a different
     /// pointer, and its reports must not be fed into this one's stroke.
-    id: i32,
+    pointer: Pointer,
     /// What the press has done so far — its tool, where it is, how far it has
     /// strayed, and every sample since it landed.
     press: HeldPress,
@@ -429,7 +430,7 @@ impl Landing {
         let mut held = self.held;
         held.set(Some(Held {
             epoch: n,
-            id: e.pointer_id(),
+            pointer: pointer_of(e),
             press: HeldPress::new(tool, at, sample),
             tolerance,
             rope: if tool.is_selection() {
@@ -442,9 +443,11 @@ impl Landing {
         true
     }
 
-    /// Whether a held press or a stroke holds the pointer.
-    pub fn holds_pointer(self) -> bool {
-        self.held.peek().is_some() || self.paint.in_flight()
+    /// The held press or the stroke in flight, and the pointer holding it.
+    pub fn holder(self) -> Option<Holder> {
+        let held = self.held.peek().as_ref().map(|h| h.pointer);
+        held.or(*self.paint.drawing.peek())
+            .map(|pointer| Holder::Gesture(Gesture::Paint, pointer))
     }
 
     /// Whether [`advance`](Self::advance) would take a move of `e`'s — asked first
@@ -458,7 +461,7 @@ impl Landing {
         self.held
             .peek()
             .as_ref()
-            .is_some_and(|h| h.id == e.pointer_id())
+            .is_some_and(|h| h.pointer.id == e.pointer_id())
     }
 
     /// Feed a move to whatever this press has become, `samples` being every report
@@ -494,7 +497,7 @@ impl Landing {
     fn open(self) {
         let Some(h) = self.take() else { return };
         self.paint.open(
-            h.id,
+            h.pointer,
             h.press.tool(),
             h.press.samples(),
             h.tolerance,
@@ -587,12 +590,11 @@ impl Landing {
             return;
         };
         let state = self.state;
-        // From here the press is the eyedropper's, and the canvas's own move
-        // handler routes it there on the flag alone — the same flag the chord
-        // binding sets, so a hold and an Alt+drag are one gesture from this point
+        // From here the press is the eyedropper's, held by this finger as the chord's
+        // press holds it, so a hold and an Alt+drag are one gesture from this point
         // and `end_interaction` puts both down the same way (§18.0.2).
-        let mut dragging = state.pick.dragging;
-        dragging.set(true);
+        let mut picker = state.pick.holder;
+        picker.set(Some(h.pointer));
         // The chrome comes **back** rather than staying faded, which is the one
         // thing this differs from a stroke about. A sample's answer is read off the
         // Color panel, and a sample taken behind a hidden panel tells nobody
@@ -618,10 +620,13 @@ mod tests {
 
     #[test]
     fn only_the_pointer_that_began_a_stroke_feeds_it() {
-        const PEN: i32 = 2;
+        const PEN: Pointer = Pointer {
+            id: 2,
+            kind: PointerKind::Pen,
+        };
         const PALM: i32 = 7;
-        assert!(drawn_by(Some(PEN), PEN));
+        assert!(drawn_by(Some(PEN), PEN.id));
         assert!(!drawn_by(Some(PEN), PALM), "a refused palm's move");
-        assert!(!drawn_by(None, PEN), "no stroke in flight");
+        assert!(!drawn_by(None, PEN.id), "no stroke in flight");
     }
 }

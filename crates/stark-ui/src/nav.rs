@@ -215,7 +215,7 @@ const _: () = assert!(
 /// Keyed by pointer id, since no finger is *the* pointer. The last three fields are the
 /// **episode**'s — the first finger landing on an empty surface to the last one leaving —
 /// which is the span a tap is a fact about (§18.1.11), so they reset with the set and never
-/// mid-gesture.
+/// mid-gesture ([`stop`](Self::stop) only spends the tap).
 #[derive(Clone, Debug, Default)]
 pub struct Touch {
     /// Every finger down, in the order it landed. The gesture is made by the **first
@@ -225,7 +225,8 @@ pub struct Touch {
     /// Born when a second finger lands and buried when the last one lifts — outliving the
     /// second finger, so a pinch that ends with one finger still down keeps panning.
     pinch: Option<Pinch>,
-    /// When the episode's first finger landed, seconds on a monotonic clock.
+    /// When the episode's first finger landed, seconds on a monotonic clock; minus infinity
+    /// once [`stop`](Self::stop) has spent the tap.
     since: f64,
     /// The furthest any finger of the episode has been from where it landed. Monotone, and
     /// it outlives the finger that earned it.
@@ -288,14 +289,14 @@ impl Touch {
     /// still listed is a finger whose release never came; one stale entry would make every
     /// lone finger after it a pinch. `now` is seconds on a monotonic clock.
     pub fn finger_down(&mut self, id: i32, at: Vec2, primary: bool, now: f64) -> bool {
-        if primary {
-            *self = Self::default();
-        }
-        // The clock starts on the finger that finds the surface empty: what a tap has to
+        // The episode starts on the finger that finds the surface empty: what a tap has to
         // be short is the whole touch, or a finger that had painted for a minute could be
         // turned into an undo by a second one landing and both lifting quickly.
-        if self.down.is_empty() {
-            self.since = now;
+        if primary || self.down.is_empty() {
+            *self = Self {
+                since: now,
+                ..Self::default()
+            };
         }
         if !self.down.iter().any(|c| c.id == id) {
             self.down.push(Contact { id, from: at, at });
@@ -322,8 +323,13 @@ impl Touch {
 
     /// End the pinch and keep the fingers: the surface putting its gesture down lifts no
     /// hand, so a finger landing next still pairs with the ones on the glass.
+    ///
+    /// The episode can no longer be a tap, since it was interrupted. Spent through its
+    /// age rather than its stray, which is also the deadzone a later pinch of these
+    /// fingers still has to cross.
     pub fn stop(&mut self) {
         self.pinch = None;
+        self.since = f64::NEG_INFINITY;
     }
 
     /// Finger `id` moving to `at`.
@@ -602,6 +608,30 @@ mod tests {
         assert!(touch.finger_down(3, Vec2::new(0.0, 100.0), false, 0.0));
         touch.pinch(0.0);
         assert!(touch.is_pinching());
+    }
+
+    /// A pair the surface stopped — a gesture of another pointer's put down under it — is
+    /// never a tap, however quickly it lifts; and the next hand to land is judged afresh.
+    #[test]
+    fn a_stopped_episode_is_never_a_tap() {
+        let mut touch = pair(100.0);
+        touch.stop();
+        assert_eq!(touch.finger_up(2, 0.1), Lift::Continuing);
+        assert_eq!(touch.finger_up(1, 0.1), Lift::Ended { tap: None });
+
+        let mut refused = Touch::default();
+        assert!(!refused.finger_down(1, Vec2::ZERO, true, 0.0));
+        refused.stop();
+        assert!(refused.finger_down(2, Vec2::new(100.0, 0.0), false, 0.0));
+        refused.pinch(0.0);
+        assert_eq!(refused.finger_up(1, 0.1), Lift::Continuing);
+        assert_eq!(refused.finger_up(2, 0.1), Lift::Ended { tap: None });
+
+        assert!(!refused.finger_down(3, Vec2::ZERO, true, 1.0));
+        assert!(refused.finger_down(4, Vec2::new(100.0, 0.0), false, 1.0));
+        refused.pinch(0.0);
+        assert_eq!(refused.finger_up(3, 1.1), Lift::Continuing);
+        assert_eq!(refused.finger_up(4, 1.1), Lift::Ended { tap: Some(2) });
     }
 
     /// A quick, still pair is judged on the lift that empties the surface.

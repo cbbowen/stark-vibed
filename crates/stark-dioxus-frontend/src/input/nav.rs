@@ -12,6 +12,7 @@
 
 use super::*;
 use stark_ui::nav::{self, Lift, Mode, Moved, Touch};
+use stark_ui::route::{Gesture, Holder, Opens};
 
 /// The view-navigation bindings — two-finger pan/zoom/turn, middle-drag and
 /// space-drag pan, space+accelerator scrubby zoom, cursor-anchored wheel zoom —
@@ -32,8 +33,8 @@ use stark_ui::nav::{self, Lift, Mode, Moved, Touch};
 /// and never by inspecting buttons or pointer types itself.
 ///
 /// A fourth answer is on offer and nobody has to take it: fingers that came and went
-/// without moving the view made a **tap**, which [`take_tap`](Self::take_tap) reports
-/// and the canvas alone spends (§18.1.11).
+/// without moving the view made a **tap**, which [`lift`](Self::lift) reports and the
+/// canvas alone spends (§18.1.11).
 #[derive(Clone, Copy)]
 pub struct Nav {
     state: AppState,
@@ -43,10 +44,6 @@ pub struct Nav {
     /// finger is identified by its id rather than by being *the* pointer — that is
     /// the whole difference touch makes.
     fingers: Signal<Touch>,
-    /// The tap the last release turned out to be, waiting to be spent
-    /// ([`Nav::take_tap`], §18.1.11). Written on every episode that ends, so it
-    /// can never be older than the last hand off the glass.
-    tap: Signal<Option<usize>>,
 }
 
 /// A one-pointer view drag — a middle-drag or a space-drag — and what it does with
@@ -54,7 +51,7 @@ pub struct Nav {
 #[derive(Copy, Clone)]
 struct Drag {
     /// The pointer that pressed, the only one whose moves navigate.
-    pointer: i32,
+    pointer: Pointer,
     /// The pointer's last position in **page px** (the one frame every surface
     /// reports in, whatever its own origin).
     last: Vec2,
@@ -76,6 +73,16 @@ enum Press {
     Drag(Mode),
 }
 
+impl NavPress {
+    /// What the press asks the canvas for (`stark_ui::route::admits`).
+    pub fn opens(self) -> Opens {
+        match self.0 {
+            Press::Pinch => Opens::Pinch,
+            Press::Drag(_) => Opens::Gesture(Gesture::ViewDrag),
+        }
+    }
+}
+
 impl Nav {
     /// A hook: call unconditionally, like any `use_*`.
     pub fn use_nav(state: AppState) -> Self {
@@ -83,13 +90,15 @@ impl Nav {
             state,
             drag: use_signal(|| None),
             fingers: use_signal(Touch::default),
-            tap: use_signal(|| None),
         }
     }
 
-    /// Whether a view drag or a pinch holds this surface's pointer.
-    pub fn holds_pointer(self) -> bool {
-        self.drag.peek().is_some() || self.fingers.peek().is_pinching()
+    /// What holds this surface: a view drag and its pointer, or a pinch.
+    pub fn holder(self) -> Option<Holder> {
+        match *self.drag.peek() {
+            Some(drag) => Some(Holder::Gesture(Gesture::ViewDrag, drag.pointer)),
+            None => self.fingers.peek().is_pinching().then_some(Holder::Pinch),
+        }
     }
 
     /// Whether `e` is a press this takes as navigation — a second finger on the
@@ -163,7 +172,7 @@ impl Nav {
             Press::Drag(mode) => {
                 let mut drag = self.drag;
                 drag.set(Some(Drag {
-                    pointer: e.pointer_id(),
+                    pointer: pointer_of(e),
                     last: page_xy(e),
                     mode,
                 }));
@@ -184,7 +193,7 @@ impl Nav {
             return self.finger_move(e);
         }
         let mut drag = self.drag;
-        let Some(in_flight) = (*drag.peek()).filter(|d| d.pointer == e.pointer_id()) else {
+        let Some(in_flight) = (*drag.peek()).filter(|d| d.pointer.id == e.pointer_id()) else {
             return false;
         };
         let p = page_xy(e);
@@ -204,62 +213,38 @@ impl Nav {
     /// one finger of a pinch ends nothing.
     ///
     /// Always `false` for a mouse or a pen, which have nothing to be the rest of.
-    ///
-    /// The release that empties the surface is also where the episode is *judged*:
-    /// a hand that came and went without ever meaning anything by it made a tap,
-    /// which [`take_tap`](Self::take_tap) hands to whoever asked (§18.1.11).
     pub fn release(self, e: &Event<PointerData>) -> bool {
+        self.lift(e) == Some(Lift::Continuing)
+    }
+
+    /// Record a finger's release or cancel, and what it did to the episode; `None` for a
+    /// mouse or a pen.
+    ///
+    /// The release that empties the surface is where the episode is *judged*: a hand
+    /// that came and went without meaning anything by it made a tap (§18.1.11). What a
+    /// tap is worth is the surface's to say, and only the canvas asks.
+    pub fn lift(self, e: &Event<PointerData>) -> Option<Lift> {
         if !is_finger(e) {
-            return false;
+            return None;
         }
         let now = now_seconds();
         let mut fingers = self.fingers;
-        // Its own statement, so the fingers are released before the write below:
-        // nothing that reads them should find them half-judged.
         let lift = fingers.write().finger_up(e.pointer_id(), now);
-        let Lift::Ended { tap: tapped } = lift else {
-            return true;
-        };
-        let mut tap = self.tap;
-        tap.set(tapped);
-        false
-    }
-
-    /// The tap the last episode turned out to be — the number of fingers at its
-    /// widest — and spend it, so one tap is acted on once (§18.1.11).
-    ///
-    /// Asked by the canvas alone, which is the *policy* half of this file's split:
-    /// [`Nav`] can say that a pair of fingers came and went without meaning
-    /// anything, and only the surface they came and went on can say what that is
-    /// worth. Over the transform box or the gradient trace it is worth nothing, and
-    /// those surfaces simply never ask.
-    pub fn take_tap(self) -> Option<usize> {
-        let taken = *self.tap.peek();
-        let mut tap = self.tap;
-        if taken.is_some() {
-            tap.set(None);
-        }
-        taken
+        Some(lift)
     }
 
     /// End the navigation in flight, whatever it was. Harmless when there is none.
     ///
-    /// The fingers stay recorded ([`Touch::stop`]): each one's own release forgets it.
+    /// The fingers stay recorded, and their episode can no longer be a tap
+    /// ([`Touch::stop`]): each one's own release forgets it.
     pub fn stop(self) {
         let mut drag = self.drag;
         if drag.peek().is_some() {
             drag.set(None);
         }
         let mut fingers = self.fingers;
-        if fingers.peek().is_pinching() {
+        if !fingers.peek().is_idle() {
             fingers.write().stop();
-        }
-        // A tap nobody spent is dropped here rather than kept: this is the canvas
-        // being put down, and an undo that fired on the *next* hand off the glass
-        // would be an act with no gesture behind it.
-        let mut tap = self.tap;
-        if tap.peek().is_some() {
-            tap.set(None);
         }
     }
 

@@ -11,9 +11,9 @@
 //! be read.
 //!
 //! What is **not** here is any gesture's own state: each of `input`'s objects
-//! owns that (§25.3), and `input::Gestures` owns which of them holds the pointer
-//! and the order a move is offered in. This component holds only the answer to
-//! "which of them is this press".
+//! owns that (§25.3), and `input::Gestures` asks `stark_ui::route` what a second
+//! pointer may do and owns the order a move is offered in. This component holds
+//! only the answer to "which of them is this press".
 
 use dioxus::prelude::*;
 
@@ -39,10 +39,6 @@ pub fn Canvas() -> Element {
     // Paint — behind the wait a finger's press is held in (§18.1.11) — navigation,
     // the brush-tuning drag (§18.1.9) and the layer carry (§16.11), as one value.
     let gestures = use_gestures(state);
-    // Whether an Alt+drag is sampling color off the canvas rather than painting on
-    // it (§18.0.2). Shared state rather than one of `gestures`, because the options
-    // bar is mounted on *armed but not dragging*.
-    let mut picking = state.pick.dragging;
     // Set for as long as the canvas is the thing being used, which fades the floating
     // chrome out of the way. Pointer gestures clear it on release (`end_interaction`).
     let mut canvas_active = state.canvas_active;
@@ -145,11 +141,9 @@ pub fn Canvas() -> Element {
             // viewport anyway — and the interaction ends on release/cancel, never by
             // crossing the canvas edge.
             onpointerdown: move |e| {
-                // The pointer holding the canvas pressing again never released, so its
-                // gesture is put down before this press is read (`Gestures::release_lost`).
-                if gestures.release_lost(&e) {
-                    end_interaction(gestures);
-                }
+                // A press that proves the holder's release was lost puts the canvas
+                // down before it is read (`stark_ui::route::release_lost`).
+                gestures.recover_lost_release(&e);
                 // Navigation first: a second finger on the glass, middle-drag, or
                 // space + the primary button (`input::Nav` — the one definition of
                 // the navigation bindings, shared with the transform overlay).
@@ -185,19 +179,12 @@ pub fn Canvas() -> Element {
                     // and the drag keeps sampling — the binding Clip Studio
                     // Paint and Rebelle both put on Alt, so a color is picked
                     // up without putting the brush down (§18.0.2).
-                    Some(DragAction::PickColor) => {
-                        capture_pointer(&e);
-                        // Deliberately *not* `canvas_active`: the chrome fade
-                        // exists to hand the screen back to the painting
-                        // mid-stroke, but the Color panel is where a pick's
-                        // answer shows up, so fading it out would hide the one
-                        // thing this gesture is for.
-                        picking.set(true);
-                        if let Some(s) = sample(state, &e) {
-                            pick_color(state, s.pos);
-                        }
-                        true
-                    }
+                    //
+                    // Deliberately *not* `canvas_active`: the chrome fade exists to
+                    // hand the screen back to the painting mid-stroke, but the Color
+                    // panel is where a pick's answer shows up. Declined as the tuning
+                    // arm is.
+                    Some(DragAction::PickColor) => gestures.begin_pick(&e),
                     // The press picks up whichever layer is showing paint under
                     // it and the drag carries it (§16.11) — the Move tool's
                     // auto-select, without the tool. Declined as the tuning arm is.
@@ -254,7 +241,7 @@ pub fn Canvas() -> Element {
                 // Mapped once, and every branch below returns before the engine
                 // exists: the canvas takes pointer events from the first frame, and
                 // a move with nowhere to land does nothing.
-                let at = if *picking.peek() {
+                let at = if gestures.picks(&e) {
                     let Some(s) = sample(state, &e) else { return };
                     // Alt+drag keeps sampling; `pick_color` drops a move that
                     // arrives while the last sample is still settling.
@@ -297,12 +284,16 @@ pub fn Canvas() -> Element {
                 // have it take.
                 point_at(state, Some(at));
             },
-            onpointerleave: move |_| {
+            onpointerleave: move |e| {
                 // The hover ends where the canvas does — for the brush cursor
                 // (§18.1.10) exactly as for the cursor peers see and the guide
                 // rays hang from (§20.9). A finger's lift arrives here too:
                 // pointer types that cannot hover are owed a leave after every
-                // up, so a touch never strands the circle.
+                // up, so a touch never strands the circle. A palm leaving under
+                // another pointer's gesture was never the hover.
+                if gestures.ignores(&e) {
+                    return;
+                }
                 hover_gone(state);
                 point_at(state, None);
             },

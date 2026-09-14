@@ -2257,10 +2257,14 @@ press mine* and returns; a press no rung takes is paint:
 
 The move and release handlers do not re-ask the table: **a drag is what it
 was begun as** — `Gestures::advance` asks each gesture in the ladder's order,
-each answering only if it has one in flight, and `Gestures::end` puts every
-family down in one place. While a gesture other than paint holds the pointer, a
-second pointer's press may open only the same kind (`Gestures::admits`). When a
-new gesture joins, it joins `Gestures`, not just the press.
+each answering only if it has one in flight, and `Gestures::put_down` puts every
+family down in one place. Each gesture records its own pointer, and
+`stark_ui::route` decides over those records what a second pointer may do: paint
+yields to any press, a pinch admits only a further finger, any other holder
+refuses every second press and ignores its moves, and **a release is routed by
+the holder first** — its own pointer's release ends it whatever else is on the
+glass, and only a pinch waits for the finger count. When a new gesture joins, it
+joins `Gestures`, not just the press.
 
 The move handler has an order of its own, and one rung of it is load-bearing:
 the check for a **composing mode opening under a captured pointer** must sit

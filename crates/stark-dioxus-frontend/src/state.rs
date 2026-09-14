@@ -606,9 +606,15 @@ fn root_pref<T>(prefs: Signal<Prefs>, slice: impl Fn(&Prefs) -> T + 'static) -> 
 where
     T: PartialEq + 'static,
 {
-    use_hook(|| {
-        Runtime::current().in_scope(ScopeId::ROOT, || Memo::new(move || slice(&prefs.read())))
-    })
+    root_memo(move || slice(&prefs.read()))
+}
+
+/// A memo owned by the root scope, for [`root_signal`]'s reason. A hook, like it.
+pub(crate) fn root_memo<T>(f: impl FnMut() -> T + 'static) -> Memo<T>
+where
+    T: PartialEq + 'static,
+{
+    use_hook(|| Runtime::current().in_scope(ScopeId::ROOT, || Memo::new(f)))
 }
 
 /// Repaint the canvas surface on the **next animation frame**, coalescing however

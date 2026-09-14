@@ -86,6 +86,8 @@
 //!   visibility menu's own list (§11, §25.6).
 //! - [`nav`] — what a press, a drag and a wheel notch do to the **view**, at the
 //!   rates both apps travel at, and the two-finger pinch and tap (§18.1.7).
+//! - [`route`] — which of a canvas's gestures a press, a move or a release belongs to
+//!   when more than one pointer is down (§25.4).
 //! - [`carry`] — the layer carry's decisions (§16.11): when a press engages, what it
 //!   previews, and what its release lays down.
 //! - [`tune`] — and what one does to the **brush** (§18.1.9): the size sideways, the
@@ -146,6 +148,7 @@ pub mod pick;
 pub mod prefs;
 pub mod presets;
 pub mod reorder;
+pub mod route;
 pub mod selection;
 pub mod session;
 pub mod slots;

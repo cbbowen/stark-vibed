@@ -15,6 +15,7 @@
 
 use super::*;
 
+use stark_ui::route::{Gesture, Holder};
 use stark_ui::tune::Knob;
 
 /// The brush-tuning drag — sideways for **Size** and up-and-down for **Flow**,
@@ -52,7 +53,7 @@ pub struct Tune {
 #[derive(Copy, Clone)]
 struct TuneDrag {
     /// The pointer that pressed, the only one whose moves tune.
-    pointer: i32,
+    pointer: Pointer,
     /// Where the press landed, what it landed on, and the knob it has committed to —
     /// all of it measured from the press, which is what makes the drag a function of
     /// where the pointer *is* rather than an accumulation of steps
@@ -79,9 +80,9 @@ impl Tune {
         }
     }
 
-    /// Whether a tuning drag holds the pointer.
-    pub fn holds_pointer(self) -> bool {
-        self.drag.peek().is_some()
+    /// The tuning drag in flight and the pointer holding it, if any.
+    pub fn holder(self) -> Option<Holder> {
+        (*self.drag.peek()).map(|d| Holder::Gesture(Gesture::Tune, d.pointer))
     }
 
     /// Begin the tuning drag at `e`: capture the pointer and raise the ring.
@@ -105,7 +106,7 @@ impl Tune {
         capture_pointer(e);
         let at = page_xy(e);
         let in_flight = TuneDrag {
-            pointer: e.pointer_id(),
+            pointer: pointer_of(e),
             gesture: stark_ui::tune::Tune::press(at, was),
             zoom: view.zoom,
         };
@@ -124,7 +125,7 @@ impl Tune {
     /// not see it — including the moves before the knob is chosen, which are this
     /// gesture's even though they change nothing.
     pub fn advance(self, e: &Event<PointerData>) -> bool {
-        let Some(mut in_flight) = (*self.drag.peek()).filter(|d| d.pointer == e.pointer_id())
+        let Some(mut in_flight) = (*self.drag.peek()).filter(|d| d.pointer.id == e.pointer_id())
         else {
             return false;
         };
@@ -158,19 +159,18 @@ impl Tune {
         self.hide_readout();
     }
 
-    /// The one write of the drag in flight, which keeps the tour's bracket (§24.2) open
-    /// for exactly as long as a drag is ([`bracket_edge`]). The brush writes this gesture
+    /// The one write of the drag in flight ([`move_drag`]). The brush writes this gesture
     /// makes are what one of the tour's lessons is about, not evidence that anybody needs
     /// telling about it.
     fn set_drag(self, next: Option<TuneDrag>) {
-        let mut drag = self.drag;
-        let was = drag.peek().is_some();
-        if was || next.is_some() {
-            drag.set(next);
+        let (state, mut drag) = (self.state, self.drag);
+        // Peeked first: a `write` wakes the signal whether or not anything changed.
+        if drag.peek().is_none() && next.is_none() {
+            return;
         }
-        if let Some(open) = bracket_edge(was, next.is_some()) {
-            crate::tutor::not_reaching(self.state, open);
-        }
+        move_drag(&mut *drag.write(), next, |open| {
+            crate::tutor::not_reaching(state, open);
+        });
     }
 
     /// Draw the size ring for `drag`, asking for `radius` (canvas px). Converted to
@@ -208,11 +208,15 @@ impl Tune {
     }
 }
 
-/// The tour bracket a drag going from `was` to `now` in flight opens (`true`) or closes
-/// (`false`). A press over a live drag is neither: the bracket is a depth count, and a
-/// second open would outlive the one close its release makes.
-fn bracket_edge(was: bool, now: bool) -> Option<bool> {
-    (was != now).then_some(now)
+/// Move the drag slot to `next`, opening the tour's bracket (§24.2) as a drag goes live
+/// and closing it as one ends. A write over a live drag is neither: the bracket is a
+/// depth count, and a second open would outlive the one close its release makes.
+fn move_drag<T>(slot: &mut Option<T>, next: Option<T>, bracket: impl FnOnce(bool)) {
+    let was = slot.is_some();
+    *slot = next;
+    if was != slot.is_some() {
+        bracket(!was);
+    }
 }
 
 /// What a brush-tuning drag is showing (§18.1.9): the ring while it is about Size,
@@ -295,26 +299,23 @@ pub struct FlowBar {
 mod tests {
     use super::*;
 
-    /// The depth the tour's bracket is left at by a run of drag writes, each saying
-    /// whether a drag is in flight after it.
-    fn depth_after(writes: &[bool]) -> i32 {
-        let mut live = false;
-        let mut depth = 0;
-        for &now in writes {
-            if let Some(open) = bracket_edge(live, now) {
-                depth += if open { 1 } else { -1 };
-            }
-            live = now;
-        }
-        depth
-    }
-
     #[test]
-    fn a_press_over_a_live_tune_leaves_the_tour_counting() {
-        // Press, moves, a second pointer's press re-admitted over it, its moves, release.
-        assert_eq!(depth_after(&[true, true, true, true, false]), 0);
-        // And the releases every other gesture's end runs close nothing of anybody's.
-        assert_eq!(depth_after(&[false, false, true, false, false]), 0);
-        assert_eq!(depth_after(&[true, true]), 1, "open while the drag is");
+    fn the_tour_bracket_is_open_exactly_while_a_drag_is() {
+        let mut slot = None;
+        let mut depth = 0;
+        // Press, a move, a write over the live drag, the release, and a release that
+        // ended nothing.
+        for (next, open) in [
+            (Some(1), 1),
+            (Some(2), 1),
+            (Some(3), 1),
+            (None, 0),
+            (None, 0),
+        ] {
+            move_drag(&mut slot, next, |opened| {
+                depth += if opened { 1 } else { -1 }
+            });
+            assert_eq!(depth, open, "after writing {next:?}");
+        }
     }
 }

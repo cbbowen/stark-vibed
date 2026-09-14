@@ -10,10 +10,10 @@
 //! (§25.3). They are independent of one another, so they are a file each:
 //! [`Nav`] the view, [`Tune`] the brush, [`PickMove`] the layer carry, and
 //! [`Paint`] with the [`Landing`] that holds a finger's press in front of it.
-//! [`Gestures`](gestures::Gestures) carries the canvas's four as one value — which of them holds the
-//! pointer, the order a move is offered to them in, and the release that puts
-//! them all down ([`end_interaction`]). [`keys`] is not a gesture: it is what the
-//! *window* hears, which is holds rather than acts.
+//! [`Gestures`](gestures::Gestures) carries the canvas's gestures and the eyedropper as
+//! one value: each answers which pointer holds it, `stark_ui::route` says what a second
+//! pointer's event may do, and [`end_interaction`] puts them all down. [`keys`] is not a
+//! gesture: it is what the *window* hears, which is holds rather than acts.
 //!
 //! What is left here is the **vocabulary they are written in**, and it is here
 //! because more than one of them needs it: how a DOM event becomes an
@@ -48,6 +48,7 @@ use stark_model::geom::Vec2;
 use stark_ui::drags::Hand;
 use stark_ui::input::PointerKind;
 use stark_ui::pick::Sampler;
+use stark_ui::route::Pointer;
 use stark_ui::slots::Grip;
 
 mod carry;
@@ -70,6 +71,14 @@ pub(crate) fn pointer_kind(e: &Event<PointerData>) -> PointerKind {
         "pen" => PointerKind::Pen,
         "touch" => PointerKind::Touch,
         _ => PointerKind::Mouse,
+    }
+}
+
+/// The pointer `e` came from, as a gesture records the one that pressed it.
+pub(crate) fn pointer_of(e: &Event<PointerData>) -> Pointer {
+    Pointer {
+        id: e.pointer_id(),
+        kind: pointer_kind(e),
     }
 }
 
@@ -205,10 +214,14 @@ fn tail_says(report: PenReport, raw: &RawPointer) -> Option<Tail> {
 
 /// Pointer position in page coordinates — the frame that stays still while
 /// absolutely-positioned chrome (frame handles, the transform box) moves under
-/// the pointer mid-drag.
+/// the pointer mid-drag. With its fraction where the platform reports one
+/// ([`platform::page_position`]).
 pub fn page_xy(e: &Event<PointerData>) -> Vec2 {
-    let p = e.page_coordinates();
-    Vec2::new(p.x as f32, p.y as f32)
+    let (x, y) = platform::page_position(e).unwrap_or_else(|| {
+        let p = e.page_coordinates();
+        (p.x as f32, p.y as f32)
+    });
+    Vec2::new(x, y)
 }
 
 /// Where `e` lands in canvas space, through `view` ([`page_to_canvas`]).

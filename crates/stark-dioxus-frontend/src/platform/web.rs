@@ -422,6 +422,34 @@ pub fn event_time(e: &Event<PointerData>) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// A pointer event's page position with its fraction; `None` off wasm.
+///
+/// web-sys binds `pageX`/`pageY` as the integers they were before CSSOM View made them
+/// doubles (the double is behind `web_sys_unstable_apis`), and dioxus reads them through
+/// that binding. Whole CSS px would cut a pen's report coarser than the tolerance a fit
+/// prices it at.
+pub fn page_position(e: &Event<PointerData>) -> Option<(f32, f32)> {
+    use dioxus::web::WebEventExt;
+    e.try_as_web_event().map(|raw| page_of(&raw))
+}
+
+/// [`page_position`] off a raw event, the integer getter standing in if the property
+/// cannot be read as a number.
+fn page_of(e: &web_sys::MouseEvent) -> (f32, f32) {
+    use wasm_bindgen::JsValue;
+
+    thread_local! {
+        static KEYS: (JsValue, JsValue) = (JsValue::from_str("pageX"), JsValue::from_str("pageY"));
+    }
+    let read = |key: &JsValue, whole: i32| {
+        js_sys::Reflect::get(e, key)
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(f64::from(whole)) as f32
+    };
+    KEYS.with(|(x, y)| (read(x, e.page_x()), read(y, e.page_y())))
+}
+
 /// Every report the browser folded into a delivered `pointermove`, oldest first,
 /// in page px.
 ///
@@ -431,11 +459,11 @@ pub fn event_time(e: &Event<PointerData>) -> f64 {
 /// input rate to the fitter; reading only the event caps every stroke at display
 /// rate, whatever the device resolved.
 ///
-/// Page px through the getter dioxus's `page_coordinates` reads, so an entry and the
-/// delivered event agree, and no element's box is measured, which could force a
-/// layout per move. The delivered event's own data equals the list's last entry, so
-/// nothing is reported twice. `None` where there is no list — off wasm, or a
-/// synthetic event — and the caller falls back to the event itself.
+/// Page px read as [`page_position`] reads the delivered event, so an entry and the
+/// event agree, and no element's box is measured, which could force a layout per move.
+/// The delivered event's own data equals the list's last entry, so nothing is reported
+/// twice. `None` where there is no list — off wasm, or a synthetic event — and the
+/// caller falls back to the event itself.
 pub fn coalesced(e: &Event<PointerData>) -> Option<Vec<Coalesced>> {
     use dioxus::web::WebEventExt;
     use wasm_bindgen::JsCast;
@@ -445,13 +473,16 @@ pub fn coalesced(e: &Event<PointerData>) -> Option<Vec<Coalesced>> {
     (list.length() > 0).then(|| {
         list.iter()
             .filter_map(|v| v.dyn_into::<web_sys::PointerEvent>().ok())
-            .map(|c| Coalesced {
-                x: c.page_x() as f32,
-                y: c.page_y() as f32,
-                pressure: c.pressure(),
-                tilt_x: c.tilt_x() as f32,
-                tilt_y: c.tilt_y() as f32,
-                time: c.time_stamp() / 1000.0,
+            .map(|c| {
+                let (x, y) = page_of(&c);
+                Coalesced {
+                    x,
+                    y,
+                    pressure: c.pressure(),
+                    tilt_x: c.tilt_x() as f32,
+                    tilt_y: c.tilt_y() as f32,
+                    time: c.time_stamp() / 1000.0,
+                }
             })
             .collect()
     })

@@ -129,11 +129,14 @@ pub struct PickState {
     pub radius: Signal<u32>,
     /// Whether a sample is in flight — see [`crate::input::pick_color`].
     pub busy: Signal<bool>,
-    /// Whether a picking drag is actually sampling. Shared rather than local to
-    /// the canvas, unlike `drawing`/`panning`, because the options bar is mounted
-    /// on *armed but not yet dragging* and so has to be able to tell the two
-    /// apart.
-    pub dragging: Signal<bool>,
+    /// The pointer a picking drag is sampling with: the chord's press, or a finger's
+    /// hold. The canvas's gesture routing reads it as the pick's holder
+    /// (`stark_ui::route`).
+    pub holder: Signal<Option<stark_ui::route::Pointer>>,
+    /// Whether a picking drag is actually sampling, derived from [`holder`](Self::holder).
+    /// Shared rather than local to the canvas because the options bar is mounted on
+    /// *armed but not yet dragging* and so has to be able to tell the two apart.
+    pub dragging: Memo<bool>,
     /// Where a **held touch** pick is showing its answer, element (CSS) px: the
     /// finger's own position, with the swatch drawn clear of it (§18.1.11).
     ///
@@ -148,13 +151,15 @@ pub struct PickState {
 
 impl PickState {
     pub(crate) fn new() -> Self {
-        use crate::state::root_signal;
+        use crate::state::{root_memo, root_signal};
+        let holder = root_signal(|| None);
         Self {
             scope: root_signal(stark_ui::commands::PickScope::default),
             group_only: root_signal(|| true),
             radius: root_signal(|| 0),
             busy: root_signal(|| false),
-            dragging: root_signal(|| false),
+            holder,
+            dragging: root_memo(move || holder.read().is_some()),
             loupe: root_signal(|| None),
         }
     }
