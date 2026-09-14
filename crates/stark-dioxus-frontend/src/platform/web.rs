@@ -423,7 +423,7 @@ pub fn event_time(e: &Event<PointerData>) -> f64 {
 }
 
 /// Every report the browser folded into a delivered `pointermove`, oldest first,
-/// in the target element's own CSS pixels.
+/// in page px.
 ///
 /// The browser delivers roughly one `pointermove` per animation frame and folds
 /// the reports it withheld — most of what a 120–240 Hz pen produces — into the
@@ -431,27 +431,23 @@ pub fn event_time(e: &Event<PointerData>) -> f64 {
 /// input rate to the fitter; reading only the event caps every stroke at display
 /// rate, whatever the device resolved.
 ///
-/// Mapped through the target's bounding rect (measured once per delivered event)
-/// because the entries' client coordinates are the ones the spec guarantees. The
-/// delivered event's own data equals the list's last entry, so nothing is reported
-/// twice. `None` where there is no list — off wasm, or a synthetic event — and the
-/// caller falls back to the event itself.
+/// Page px through the getter dioxus's `page_coordinates` reads, so an entry and the
+/// delivered event agree, and no element's box is measured, which could force a
+/// layout per move. The delivered event's own data equals the list's last entry, so
+/// nothing is reported twice. `None` where there is no list — off wasm, or a
+/// synthetic event — and the caller falls back to the event itself.
 pub fn coalesced(e: &Event<PointerData>) -> Option<Vec<Coalesced>> {
     use dioxus::web::WebEventExt;
     use wasm_bindgen::JsCast;
 
     let raw = e.try_as_web_event()?;
-    let rect = raw
-        .target()
-        .and_then(|t| t.dyn_into::<web_sys::Element>().ok())?
-        .get_bounding_client_rect();
     let list = raw.get_coalesced_events();
     (list.length() > 0).then(|| {
         list.iter()
             .filter_map(|v| v.dyn_into::<web_sys::PointerEvent>().ok())
             .map(|c| Coalesced {
-                x: (c.client_x() as f64 - rect.left()) as f32,
-                y: (c.client_y() as f64 - rect.top()) as f32,
+                x: c.page_x() as f32,
+                y: c.page_y() as f32,
                 pressure: c.pressure(),
                 tilt_x: c.tilt_x() as f32,
                 tilt_y: c.tilt_y() as f32,

@@ -281,14 +281,13 @@ pub enum Lift {
 }
 
 impl Touch {
-    /// Finger `id` landing at `at`. `true` once there are two — where the gesture becomes
-    /// navigation, and the surface should take the pointer.
+    /// Finger `id` landing at `at`, recorded whether or not the surface takes it. `true`
+    /// once there are two: a pinch, if the surface opens one ([`pinch`](Self::pinch)).
     ///
     /// `primary` is the platform saying this is the first contact of its type, so anything
     /// still listed is a finger whose release never came; one stale entry would make every
-    /// lone finger after it a pinch. `angle` is the view's rotation, which a twist is
-    /// measured from, and `now` is seconds on a monotonic clock.
-    pub fn finger_down(&mut self, id: i32, at: Vec2, primary: bool, angle: f32, now: f64) -> bool {
+    /// lone finger after it a pinch. `now` is seconds on a monotonic clock.
+    pub fn finger_down(&mut self, id: i32, at: Vec2, primary: bool, now: f64) -> bool {
         if primary {
             *self = Self::default();
         }
@@ -302,17 +301,29 @@ impl Touch {
             self.down.push(Contact { id, from: at, at });
             self.most = self.most.max(self.down.len());
         }
-        if self.down.len() < 2 {
-            return false;
-        }
-        if self.pinch.is_none() {
+        self.down.len() >= 2
+    }
+
+    /// Open the pinch the fingers down make, its twist measured from the view's `angle`.
+    /// Harmless with one open or fewer than two fingers down.
+    ///
+    /// Apart from [`finger_down`](Self::finger_down) because a surface busy with another
+    /// pointer's gesture still records the finger it refuses, and the next finger to land
+    /// after that gesture must pair with it.
+    pub fn pinch(&mut self, angle: f32) {
+        if self.down.len() >= 2 && self.pinch.is_none() {
             self.pinch = Some(Pinch {
                 from: angle,
                 twist: 0.0,
                 asked: angle,
             });
         }
-        true
+    }
+
+    /// End the pinch and keep the fingers: the surface putting its gesture down lifts no
+    /// hand, so a finger landing next still pairs with the ones on the glass.
+    pub fn stop(&mut self) {
+        self.pinch = None;
     }
 
     /// Finger `id` moving to `at`.
@@ -412,11 +423,12 @@ mod tests {
     use super::*;
     use stark_engine::Extent2;
 
-    /// Two fingers `span` apart along x, landing at time zero on an unturned view.
+    /// Two fingers `span` apart along x, landing at time zero and pinching an unturned view.
     fn pair(span: f32) -> Touch {
         let mut touch = Touch::default();
-        assert!(!touch.finger_down(1, Vec2::ZERO, true, 0.0, 0.0));
-        assert!(touch.finger_down(2, Vec2::new(span, 0.0), false, 0.0, 0.0));
+        assert!(!touch.finger_down(1, Vec2::ZERO, true, 0.0));
+        assert!(touch.finger_down(2, Vec2::new(span, 0.0), false, 0.0));
+        touch.pinch(0.0);
         touch
     }
 
@@ -455,8 +467,9 @@ mod tests {
         assert_eq!(snap_quarter(angle), angle, "clear of the snap");
         assert_eq!(snap_quarter(reach), reach, "clear of the snap");
         let mut touch = Touch::default();
-        assert!(!touch.finger_down(1, Vec2::ZERO, true, angle, 0.0));
-        assert!(touch.finger_down(2, Vec2::new(100.0, 0.0), false, angle, 0.0));
+        assert!(!touch.finger_down(1, Vec2::ZERO, true, 0.0));
+        assert!(touch.finger_down(2, Vec2::new(100.0, 0.0), false, 0.0));
+        touch.pinch(angle);
         // Out past the slop along the pair first, so what follows is twist alone.
         let (_, along) = pinch(touch.finger_move(2, Vec2::new(150.0, 0.0)));
         assert_eq!(along, 0.0);
@@ -479,7 +492,7 @@ mod tests {
     #[test]
     fn a_third_finger_asks_for_nothing() {
         let mut touch = pair(100.0);
-        assert!(touch.finger_down(3, Vec2::new(0.0, 100.0), false, 0.0, 0.0));
+        assert!(touch.finger_down(3, Vec2::new(0.0, 100.0), false, 0.0));
         assert!(matches!(
             touch.finger_move(2, Vec2::new(200.0, 0.0)),
             Moved::Navigation(Some(_))
@@ -522,7 +535,7 @@ mod tests {
     #[test]
     fn a_primary_touch_clears_stale_fingers() {
         let mut touch = pair(100.0);
-        assert!(!touch.finger_down(9, Vec2::new(50.0, 50.0), true, 0.0, 5.0));
+        assert!(!touch.finger_down(9, Vec2::new(50.0, 50.0), true, 5.0));
         assert!(matches!(
             touch.finger_move(1, Vec2::new(90.0, 0.0)),
             Moved::Surface
@@ -539,9 +552,11 @@ mod tests {
     #[test]
     fn a_pinch_runs_from_the_second_landing_to_the_last_lift() {
         let mut touch = Touch::default();
-        assert!(!touch.finger_down(1, Vec2::ZERO, true, 0.0, 0.0));
+        assert!(!touch.finger_down(1, Vec2::ZERO, true, 0.0));
+        touch.pinch(0.0);
         assert!(!touch.is_pinching(), "one finger is the surface's");
-        assert!(touch.finger_down(2, Vec2::new(100.0, 0.0), false, 0.0, 0.0));
+        assert!(touch.finger_down(2, Vec2::new(100.0, 0.0), false, 0.0));
+        touch.pinch(0.0);
         assert!(touch.is_pinching());
         assert_eq!(touch.finger_up(2, 0.1), Lift::Continuing);
         assert!(touch.is_pinching(), "the last finger of a pinch still pans");
@@ -549,8 +564,44 @@ mod tests {
         assert!(!touch.is_pinching());
 
         let mut stale = pair(100.0);
-        assert!(!stale.finger_down(9, Vec2::ZERO, true, 0.0, 5.0));
+        assert!(!stale.finger_down(9, Vec2::ZERO, true, 5.0));
         assert!(!stale.is_pinching(), "a primary press starts over");
+    }
+
+    /// A finger the surface refused, busy with another pointer's gesture, is still on the
+    /// glass: once that gesture is put down, the next finger to land pairs with it.
+    #[test]
+    fn a_refused_finger_pairs_with_the_next_one() {
+        let mut touch = Touch::default();
+        assert!(!touch.finger_down(1, Vec2::ZERO, true, 0.0));
+        assert!(touch.finger_down(2, Vec2::new(100.0, 0.0), false, 0.0));
+        assert!(!touch.is_pinching(), "refused, so recorded and not opened");
+        assert!(matches!(
+            touch.finger_move(2, Vec2::new(200.0, 0.0)),
+            Moved::Surface
+        ));
+        touch.stop();
+        assert_eq!(touch.finger_up(2, 0.1), Lift::Continuing);
+        assert!(touch.finger_down(3, Vec2::new(0.0, 100.0), false, 0.2));
+        touch.pinch(0.0);
+        assert!(touch.is_pinching());
+        assert!(matches!(
+            touch.finger_move(3, Vec2::new(0.0, 300.0)),
+            Moved::Navigation(Some(_))
+        ));
+    }
+
+    /// Stopping a pinch keeps the fingers that made it, so the surface can open another
+    /// from them rather than reading the next finger as a lone press.
+    #[test]
+    fn stopping_a_pinch_keeps_its_fingers() {
+        let mut touch = pair(100.0);
+        touch.stop();
+        assert!(!touch.is_pinching());
+        assert!(!touch.is_idle());
+        assert!(touch.finger_down(3, Vec2::new(0.0, 100.0), false, 0.0));
+        touch.pinch(0.0);
+        assert!(touch.is_pinching());
     }
 
     /// A quick, still pair is judged on the lift that empties the surface.
@@ -567,8 +618,9 @@ mod tests {
     #[test]
     fn a_late_second_finger_does_not_restart_the_clock() {
         let mut touch = Touch::default();
-        assert!(!touch.finger_down(1, Vec2::ZERO, true, 0.0, 0.0));
-        assert!(touch.finger_down(2, Vec2::new(100.0, 0.0), false, 0.0, 5.0));
+        assert!(!touch.finger_down(1, Vec2::ZERO, true, 0.0));
+        assert!(touch.finger_down(2, Vec2::new(100.0, 0.0), false, 5.0));
+        touch.pinch(0.0);
         assert_eq!(touch.finger_up(2, 5.1), Lift::Continuing);
         assert_eq!(touch.finger_up(1, 5.1), Lift::Ended { tap: None });
     }
@@ -579,7 +631,7 @@ mod tests {
     #[test]
     fn a_lift_re_forms_the_pair_without_a_jump() {
         let mut touch = pair(100.0);
-        assert!(touch.finger_down(3, Vec2::new(0.0, 100.0), false, 0.0, 0.0));
+        assert!(touch.finger_down(3, Vec2::new(0.0, 100.0), false, 0.0));
         pinch(touch.finger_move(2, Vec2::new(200.0, 0.0)));
         assert!(matches!(
             touch.finger_move(3, Vec2::new(0.0, 300.0)),

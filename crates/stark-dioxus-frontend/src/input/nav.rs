@@ -53,6 +53,8 @@ pub struct Nav {
 /// the motion.
 #[derive(Copy, Clone)]
 struct Drag {
+    /// The pointer that pressed, the only one whose moves navigate.
+    pointer: i32,
     /// The pointer's last position in **page px** (the one frame every surface
     /// reports in, whatever its own origin).
     last: Vec2,
@@ -61,6 +63,17 @@ struct Drag {
     /// a zoom does not hand the canvas to the pan mid-motion, under a hand that is
     /// still making one gesture.
     mode: Mode,
+}
+
+/// A press [`Nav::record`] found to be navigation's, which only [`Nav::claim`] spends.
+#[derive(Clone, Copy)]
+pub struct NavPress(Press);
+
+#[derive(Clone, Copy)]
+enum Press {
+    /// The fingers down make a pair.
+    Pinch,
+    Drag(Mode),
 }
 
 impl Nav {
@@ -90,40 +103,72 @@ impl Nav {
     /// it did before: the modifier chooses between two navigations rather than
     /// deciding whether this is one.
     ///
+    /// [`record`](Self::record) then [`claim`](Self::claim), for a surface that takes
+    /// every press it records.
+    ///
     /// A *contact* rather than the primary button ([`is_contact`]), so the pen's
     /// eraser end pans under space exactly as its tip does (§18.1.8). Space held
     /// means "this press moves the canvas" whichever end of the stylus is against
     /// it — the alternative is a pan that works one way up and paints the other.
     pub fn begin(self, e: &Event<PointerData>) -> bool {
+        let Some(press) = self.record(e) else {
+            return false;
+        };
+        self.claim(e, press);
+        true
+    }
+
+    /// [`begin`](Self::begin)'s first half: whether `e` is a press navigation would take,
+    /// taking nothing. A finger is recorded either way, since it is on the glass whatever
+    /// the surface does with it and a later finger pairs with it.
+    pub fn record(self, e: &Event<PointerData>) -> Option<NavPress> {
         if is_finger(e) {
-            return self.finger_down(e);
+            let (at, now, primary) = (page_xy(e), now_seconds(), e.is_primary());
+            let mut fingers = self.fingers;
+            let paired = fingers
+                .write()
+                .finger_down(e.pointer_id(), at, primary, now);
+            return paired.then_some(NavPress(Press::Pinch));
         }
         // Which press means what is `stark_ui::nav`'s, so the two frontends
         // cannot come to disagree about what a middle-drag is. What stays here is
         // reading a DOM event for the three facts it takes.
         let button = match e.trigger_button() {
-            Some(MouseButton::Auxiliary) => Some(nav::Button::Middle),
-            _ if is_contact(e) => Some(nav::Button::Left),
-            _ => None,
+            Some(MouseButton::Auxiliary) => nav::Button::Middle,
+            _ if is_contact(e) => nav::Button::Left,
+            _ => return None,
         };
-        let mode = button.and_then(|button| {
-            nav::press(
-                button,
-                page_xy(e),
-                *self.state.space_down.peek(),
-                accel(e.modifiers()),
-            )
-        });
-        let Some(mode) = mode else { return false };
+        let mode = nav::press(
+            button,
+            page_xy(e),
+            *self.state.space_down.peek(),
+            accel(e.modifiers()),
+        )?;
+        Some(NavPress(Press::Drag(mode)))
+    }
+
+    /// [`begin`](Self::begin)'s second half: take the press [`record`](Self::record)
+    /// found — capture the pointer, swallow the event, and make it the navigation.
+    pub fn claim(self, e: &Event<PointerData>, press: NavPress) {
         e.prevent_default(); // suppress middle-click autoscroll
         e.stop_propagation();
         capture_pointer(e);
-        let mut drag = self.drag;
-        drag.set(Some(Drag {
-            last: page_xy(e),
-            mode,
-        }));
-        true
+        match press.0 {
+            Press::Pinch => {
+                // Read before the fingers are locked, so nothing holds two signals at once.
+                let angle = view_of(self.state).map_or(0.0, |v| v.rotation);
+                let mut fingers = self.fingers;
+                fingers.write().pinch(angle);
+            }
+            Press::Drag(mode) => {
+                let mut drag = self.drag;
+                drag.set(Some(Drag {
+                    pointer: e.pointer_id(),
+                    last: page_xy(e),
+                    mode,
+                }));
+            }
+        }
     }
 
     /// Advance the navigation in flight, if any. `true` means the move was
@@ -139,7 +184,7 @@ impl Nav {
             return self.finger_move(e);
         }
         let mut drag = self.drag;
-        let Some(in_flight) = *drag.peek() else {
+        let Some(in_flight) = (*drag.peek()).filter(|d| d.pointer == e.pointer_id()) else {
             return false;
         };
         let p = page_xy(e);
@@ -198,14 +243,16 @@ impl Nav {
     }
 
     /// End the navigation in flight, whatever it was. Harmless when there is none.
+    ///
+    /// The fingers stay recorded ([`Touch::stop`]): each one's own release forgets it.
     pub fn stop(self) {
         let mut drag = self.drag;
         if drag.peek().is_some() {
             drag.set(None);
         }
         let mut fingers = self.fingers;
-        if !fingers.peek().is_idle() {
-            fingers.set(Touch::default());
+        if fingers.peek().is_pinching() {
+            fingers.write().stop();
         }
         // A tap nobody spent is dropped here rather than kept: this is the canvas
         // being put down, and an undo that fired on the *next* hand off the glass
@@ -232,24 +279,6 @@ impl Nav {
         if let Some(command) = nav::wheel(anchor, -dy.signum() as f32) {
             dispatch(self.state, command);
         }
-    }
-
-    /// A finger landing. `true` once there are two of them, which is where the
-    /// gesture becomes navigation and this surface takes the pointer.
-    fn finger_down(self, e: &Event<PointerData>) -> bool {
-        // Read before the fingers are locked, so nothing holds two signals at once.
-        let angle = view_of(self.state).map_or(0.0, |v| v.rotation);
-        let (at, now, primary) = (page_xy(e), now_seconds(), e.is_primary());
-        let mut fingers = self.fingers;
-        let pinching = fingers
-            .write()
-            .finger_down(e.pointer_id(), at, primary, angle, now);
-        if pinching {
-            e.prevent_default();
-            e.stop_propagation();
-            capture_pointer(e);
-        }
-        pinching
     }
 
     /// A finger moving: drives the view once a gesture is in flight, and before then

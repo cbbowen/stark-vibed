@@ -24,8 +24,6 @@
 //! the pinch and the tap, the carry — are `stark_ui`'s (§11.2), so the native frontend
 //! reads the same ones; what is left here is the DOM's side of each.
 
-use std::cell::Cell;
-
 use dioxus::dioxus_core::{Task, spawn_forever};
 use dioxus::html::geometry::ElementPoint;
 use dioxus::html::input_data::MouseButton;
@@ -60,7 +58,7 @@ mod paint;
 mod tune;
 
 pub use carry::PickMove;
-pub use gestures::{Holder, end_interaction, use_gestures};
+pub(crate) use gestures::{end_interaction, use_gestures};
 pub use keys::{bind_context_menu, bind_pen, bind_shortcuts};
 pub use nav::Nav;
 pub use paint::{Landing, Paint};
@@ -213,15 +211,22 @@ pub fn page_xy(e: &Event<PointerData>) -> Vec2 {
     Vec2::new(p.x as f32, p.y as f32)
 }
 
-/// Where `e` lands in canvas space, through `view`.
+/// Where `e` lands in canvas space, through `view` ([`page_to_canvas`]).
+pub fn canvas_xy(view: ViewTransform, e: &Event<PointerData>) -> Vec2 {
+    page_to_canvas(view, page_xy(e))
+}
+
+/// Where page position `at` lands in canvas space, through `view` — the one mapping
+/// every pointer position on the canvas takes, so a stroke's press and its coalesced
+/// moves cannot disagree.
 ///
 /// Page px go straight through the view because the `<canvas>` sits at the page
 /// origin, so the view's screen space *is* the page — which is also what lets an
 /// overlay's handler, whose own element is elsewhere, map through it. Move the canvas
 /// off the origin and every caller of this is wrong by the offset; the native
 /// frontend, whose canvas is not at its window's origin, subtracts it (`screen_at`).
-pub fn canvas_xy(view: ViewTransform, e: &Event<PointerData>) -> Vec2 {
-    view.screen_to_canvas(page_xy(e))
+fn page_to_canvas(view: ViewTransform, at: Vec2) -> Vec2 {
+    view.screen_to_canvas(at)
 }
 
 /// Sample the canvas color under `pos` and load the brush with it — the eyedropper
@@ -290,7 +295,7 @@ pub fn pick_color(state: AppState, pos: Vec2) {
     });
 }
 
-/// Move the held pick's loupe to `at`, element (CSS) px — the finger it belongs to
+/// Move the held pick's loupe to `at`, page px — the finger it belongs to
 /// has dragged on to sample somewhere else (§18.1.11).
 ///
 /// **Silent when no loupe is up**, which is what keeps it to the one gesture that
@@ -321,6 +326,9 @@ fn view_of(state: AppState) -> Option<ViewTransform> {
 }
 
 /// Pointer position within an element, in CSS pixels.
+///
+/// Not for the canvas's handlers, which read page px ([`page_to_canvas`]): the
+/// element offset can force a layout, and mixing frames is how a stroke's head jumps.
 pub fn elem_xy(e: &Event<PointerData>) -> Vec2 {
     let ElementPoint { x, y, .. } = e.element_coordinates();
     Vec2::new(x as f32, y as f32)
@@ -333,34 +341,11 @@ pub fn elem_xy(e: &Event<PointerData>) -> Vec2 {
 /// pixels a CSS one is. A mouse walks the screen in whole physical pixels, so
 /// `1 / devicePixelRatio` CSS px is its floor; a pen or a finger comes off a
 /// digitizer that resolves well below the screen it sits under.
+///
+/// The ratio is read per call rather than held: the read is a property getter, and a
+/// held one goes stale on a move to a monitor of another scale, which fires no resize.
 fn input_resolution(e: &Event<PointerData>) -> f32 {
-    stark_ui::input::resolution(pointer_kind(e)) / pixel_ratio()
-}
-
-thread_local! {
-    /// `devicePixelRatio`, once read. A DOM read is too dear for every hover move,
-    /// and the ratio moves only with browser zoom or a monitor change.
-    static PIXEL_RATIO: Cell<Option<f32>> = const { Cell::new(None) };
-}
-
-/// The device pixel ratio, read on first use and then held until
-/// [`refresh_pixel_ratio`].
-fn pixel_ratio() -> f32 {
-    PIXEL_RATIO.with(|held| {
-        held.get().unwrap_or_else(|| {
-            let read = platform::device_pixel_ratio();
-            held.set(Some(read));
-            read
-        })
-    })
-}
-
-/// Re-read the device pixel ratio. The canvas calls this on resize — zoom and most
-/// monitor moves change its CSS size — and on every press, which covers the move
-/// between two monitors whose scale leaves the CSS size alone before a stroke's
-/// tolerance is priced against a stale ratio.
-pub fn refresh_pixel_ratio() {
-    PIXEL_RATIO.with(|held| held.set(Some(platform::device_pixel_ratio())));
+    stark_ui::input::resolution(pointer_kind(e)) / platform::device_pixel_ratio()
 }
 
 /// The fitting tolerance to declare for a gesture starting with `e`, in canvas px.
@@ -407,7 +392,7 @@ pub fn refresh_tow(state: AppState) {
     }
 }
 
-/// Report the pointer hovering over the canvas at `at`, element (CSS) px — what
+/// Report the pointer hovering over the canvas at `at`, page px — what
 /// the brush cursor is drawn on (§18.1.10, `BrushCursor`). Unconditional, unlike
 /// [`hover_gone`]: a move's position is news by definition, and only the overlay
 /// subscribes.
@@ -550,19 +535,19 @@ pub fn sample(state: AppState, e: &Event<PointerData>) -> Option<InputSample> {
 /// pressure, tilt and timestamp, so the samples land as the hand made them
 /// rather than as delivery batched them.
 ///
-/// The reports come back from [`platform::coalesced`] in the element's own px,
-/// which for the canvas are page px ([`canvas_xy`]). Falls back to the event
-/// itself when there is no list (off-wasm, a synthetic event), so the list is
-/// never empty; `None` before the engine exists, like [`sample`].
+/// The reports come back from [`platform::coalesced`] in page px, mapped as
+/// [`sample`] maps the event ([`page_to_canvas`]). Falls back to the event itself
+/// when there is no list (off-wasm, a synthetic event), so the list is never empty;
+/// `None` before the engine exists, like [`sample`].
 ///
-/// A DOM rect and a list read per call, so the canvas asks this once per move and
-/// only for a move a stroke will take.
+/// A list read per call, so the canvas asks this once per move and only for a move
+/// a stroke will take.
 pub fn samples(state: AppState, e: &Event<PointerData>) -> Option<Vec<InputSample>> {
     let view = view_of(state)?;
     let folded = platform::coalesced(e).map(|list| {
         list.into_iter()
             .map(|c| InputSample {
-                pos: view.screen_to_canvas(Vec2::new(c.x, c.y)),
+                pos: page_to_canvas(view, Vec2::new(c.x, c.y)),
                 pressure: c.pressure,
                 tilt: Vec2::new(c.tilt_x, c.tilt_y) / 90.0,
                 time: c.time,

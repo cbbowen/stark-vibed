@@ -25,11 +25,6 @@ fn drawn_by(drawing: Option<i32>, pointer: i32) -> bool {
     drawing == Some(pointer)
 }
 
-/// A stroke's reports as the moves the engine takes them as.
-fn to_commands(samples: &[InputSample]) -> impl Iterator<Item = GestureCommand> + '_ {
-    samples.iter().map(|&sample| GestureCommand::To { sample })
-}
-
 /// The canvas's **paint** gesture: a stroke or a marquee, from the press that
 /// starts one to the release that commits it (§6.8, §6.9, §6.11).
 ///
@@ -116,7 +111,7 @@ impl Paint {
         } else {
             input_rope(state)
         };
-        self.open(e.pointer_id(), tool, &[sample], tolerance, rope, elem_xy(e))
+        self.open(e.pointer_id(), tool, &[sample], tolerance, rope, page_xy(e))
     }
 
     /// Open the gesture on samples **already taken**: the press first, then every
@@ -127,8 +122,8 @@ impl Paint {
     /// pours what it held in here once the press turns out to be paint (§18.1.11).
     /// A pen's press comes through with a list of one, which is what it always was.
     ///
-    /// `pointer` is the one drawing it. `at` is where the pointer is *now*, in element
-    /// (CSS) px — the frame the hold is measured in.
+    /// `pointer` is the one drawing it. `at` is where the pointer is *now*, in page px —
+    /// the frame the hold is measured in.
     fn open(
         self,
         pointer: i32,
@@ -158,7 +153,7 @@ impl Paint {
         // Everything the hand did while the press was being held, oldest first —
         // so the wait cost the stroke a few milliseconds at its head and none of
         // its shape. Empty for every press that was believed as it landed.
-        crate::state::dispatch_samples(state, to_commands(since));
+        crate::state::dispatch_samples(state, since);
         // Seed the string overlay; a ropeless gesture leaves it `None` and the
         // per-move refresh stays gated off.
         refresh_tow(state);
@@ -194,14 +189,14 @@ impl Paint {
         // In screen px, before the sample is mapped: whether the hand is holding
         // still is a fact about the hand (§6.9). Once the stroke has snapped this
         // stops watching and the same `To` steers the shape instead.
-        self.track_hold(elem_xy(e));
+        self.track_hold(page_xy(e));
         // Every report the browser folded into this event reaches the fitter, not
         // just the one it chose to deliver. `dispatch_samples`, not `dispatch`: a
         // sample changes pixels, not chrome, and the full dispatch's observable
         // refresh re-diffs the chrome per pointer move. The preview fold is rebuilt
         // once per painted frame either way, so extra samples cost a fit push each,
         // not a render.
-        crate::state::dispatch_samples(state, to_commands(samples));
+        crate::state::dispatch_samples(state, samples);
         // The string overlay tracks the tow (§6.11). Gated on its own signal so a
         // plain brush pays nothing here: only a gesture that started with a rope
         // ever reads the engine or dirties the overlay's scope per move.
@@ -259,7 +254,7 @@ impl Paint {
         refresh_tow(state);
     }
 
-    /// Begin watching the gesture for a hold at `at`, element (CSS) px (§6.9). A
+    /// Begin watching the gesture for a hold at `at`, page px (§6.9). A
     /// no-op when the assist is off.
     fn watch_for_hold(self, at: Vec2) {
         let state = self.state;
@@ -295,7 +290,7 @@ impl Paint {
         }
     }
 
-    /// Report a move against the hold being watched, in element (CSS) px. Written
+    /// Report a move against the hold being watched, in page px. Written
     /// only when the pointer has gone somewhere ([`Dwell::moved`]).
     fn track_hold(self, at: Vec2) {
         let mut dwell = self.dwell;
@@ -427,7 +422,7 @@ impl Landing {
         let (Some(sample), Some(tolerance)) = (sample(state, e), input_tolerance(state, e)) else {
             return false;
         };
-        let at = elem_xy(e);
+        let at = page_xy(e);
         let mut epoch = self.epoch;
         let n = *epoch.peek() + 1;
         epoch.set(n);
@@ -477,7 +472,7 @@ impl Landing {
         if !self.held_by(e) {
             return self.paint.advance(e, samples);
         }
-        let at = elem_xy(e);
+        let at = page_xy(e);
         let mut held = self.held;
         let travelled = {
             let mut w = held.write();

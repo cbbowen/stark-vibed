@@ -49,8 +49,7 @@ pub struct RawPointer {
     pub entered_nothing: bool,
 }
 
-/// One report the browser folded into a delivered `pointermove`, in the target
-/// element's own CSS pixels.
+/// One report the browser folded into a delivered `pointermove`, in page px.
 #[derive(Clone, Copy, Debug)]
 pub struct Coalesced {
     pub x: f32,

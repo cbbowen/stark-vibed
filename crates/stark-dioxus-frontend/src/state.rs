@@ -21,7 +21,7 @@ use crate::collab;
 use crate::render::Renderer;
 use stark_engine::ObservableState;
 use stark_engine::command::InputCommand;
-use stark_engine::command::{Tool, ViewCommand};
+use stark_engine::command::{GestureCommand, InputSample, Tool, ViewCommand};
 use stark_model::geom::Vec2;
 use stark_ui::commands::VisibilityToggle;
 use stark_ui::prefs::{ChromeHiding, Prefs};
@@ -939,24 +939,21 @@ pub fn dispatch(state: AppState, command: impl Into<InputCommand>) {
 /// A batch because one delivered `pointermove` carries every report the browser
 /// coalesced into it: the engine door is taken and the frame requested once per
 /// event, not once per report.
-pub fn dispatch_samples<C: Into<InputCommand>>(
-    state: AppState,
-    commands: impl IntoIterator<Item = C>,
-) {
+pub fn dispatch_samples(state: AppState, samples: &[InputSample]) {
+    if samples.is_empty() {
+        return;
+    }
     let processed = with_engine_quiet(state, |r| {
-        let mut processed = false;
-        for command in commands {
+        for &sample in samples {
             // The partner row to `frame`: one span per report that reaches the
             // engine, so its count over the window is the input rate the engine
             // heard — whether a 240 Hz pen is heard at 240 Hz or at 60 is a
             // question only this row answers.
             stark_engine::timing::span!(stark_engine::timing::INPUT_SAMPLE);
-            r.process(command.into());
-            processed = true;
+            r.process(GestureCommand::To { sample });
         }
-        processed
     });
-    if processed == Some(true) {
+    if processed.is_some() {
         request_paint(state);
     }
 }

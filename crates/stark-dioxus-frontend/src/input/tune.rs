@@ -51,6 +51,8 @@ pub struct Tune {
 /// frontend's.
 #[derive(Copy, Clone)]
 struct TuneDrag {
+    /// The pointer that pressed, the only one whose moves tune.
+    pointer: i32,
     /// Where the press landed, what it landed on, and the knob it has committed to —
     /// all of it measured from the press, which is what makes the drag a function of
     /// where the pointer *is* rather than an accumulation of steps
@@ -103,15 +105,11 @@ impl Tune {
         capture_pointer(e);
         let at = page_xy(e);
         let in_flight = TuneDrag {
+            pointer: e.pointer_id(),
             gesture: stark_ui::tune::Tune::press(at, was),
             zoom: view.zoom,
         };
-        let mut drag = self.drag;
-        drag.set(Some(in_flight));
-        // This gesture is what one of the tour's lessons is *about*, so the brush
-        // writes it is going to make are not evidence that anybody needs telling
-        // about it (§24.2). Closed by `stop`, which every release runs.
-        crate::tutor::not_reaching(self.state, true);
+        self.set_drag(Some(in_flight));
         // Up from the press, before the drag has said what it is about, showing the brush
         // at the size it already is — which is the size every ratio this gesture asks for
         // is a ratio *of*, so the circle is the reference and not merely the first frame.
@@ -121,12 +119,13 @@ impl Tune {
         true
     }
 
-    /// Advance the tuning drag in flight, if any. `true` means the move was tuning and
-    /// the caller's own gesture logic should not see it — including the moves before
-    /// the knob is chosen, which are this gesture's even though they change nothing.
+    /// Advance the tuning drag in flight with a move of the pointer that pressed it, if
+    /// any. `true` means the move was tuning and the caller's own gesture logic should
+    /// not see it — including the moves before the knob is chosen, which are this
+    /// gesture's even though they change nothing.
     pub fn advance(self, e: &Event<PointerData>) -> bool {
-        let mut drag = self.drag;
-        let Some(mut in_flight) = *drag.peek() else {
+        let Some(mut in_flight) = (*self.drag.peek()).filter(|d| d.pointer == e.pointer_id())
+        else {
             return false;
         };
         // The in-force effect's own ceiling (`BrushConfig::max_flow`) — read live
@@ -135,7 +134,7 @@ impl Tune {
         // when the write below rewrites the brush signal.
         let max = self.state.brush.peek().max_flow();
         let turn = in_flight.gesture.moved(page_xy(e), max);
-        drag.set(Some(in_flight));
+        self.set_drag(Some(in_flight));
         if let Some(turn) = turn {
             update_brush(self.state, |_, t| turn.write(t));
             match turn.knob {
@@ -155,15 +154,23 @@ impl Tune {
     /// End the tuning drag in flight, taking the readout down with it — and, with the
     /// readout, giving the canvas its crosshair back. Harmless when there is none.
     pub fn stop(self) {
-        let mut drag = self.drag;
-        if drag.peek().is_some() {
-            drag.set(None);
-            // Inside the guard, not beside it: this runs on every release the canvas
-            // sees, and the tour's bracket is a depth count — a close for a drag that
-            // never opened one would cancel somebody else's (§24.2).
-            crate::tutor::not_reaching(self.state, false);
-        }
+        self.set_drag(None);
         self.hide_readout();
+    }
+
+    /// The one write of the drag in flight, which keeps the tour's bracket (§24.2) open
+    /// for exactly as long as a drag is ([`bracket_edge`]). The brush writes this gesture
+    /// makes are what one of the tour's lessons is about, not evidence that anybody needs
+    /// telling about it.
+    fn set_drag(self, next: Option<TuneDrag>) {
+        let mut drag = self.drag;
+        let was = drag.peek().is_some();
+        if was || next.is_some() {
+            drag.set(next);
+        }
+        if let Some(open) = bracket_edge(was, next.is_some()) {
+            crate::tutor::not_reaching(self.state, open);
+        }
     }
 
     /// Draw the size ring for `drag`, asking for `radius` (canvas px). Converted to
@@ -199,6 +206,13 @@ impl Tune {
             readout.set(None);
         }
     }
+}
+
+/// The tour bracket a drag going from `was` to `now` in flight opens (`true`) or closes
+/// (`false`). A press over a live drag is neither: the bracket is a depth count, and a
+/// second open would outlive the one close its release makes.
+fn bracket_edge(was: bool, now: bool) -> Option<bool> {
+    (was != now).then_some(now)
 }
 
 /// What a brush-tuning drag is showing (§18.1.9): the ring while it is about Size,
@@ -275,4 +289,32 @@ pub struct FlowBar {
     pub at: Vec2,
     /// How full, 0..=1 — the flow as a share of the range the sliders allow.
     pub fill: f32,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The depth the tour's bracket is left at by a run of drag writes, each saying
+    /// whether a drag is in flight after it.
+    fn depth_after(writes: &[bool]) -> i32 {
+        let mut live = false;
+        let mut depth = 0;
+        for &now in writes {
+            if let Some(open) = bracket_edge(live, now) {
+                depth += if open { 1 } else { -1 };
+            }
+            live = now;
+        }
+        depth
+    }
+
+    #[test]
+    fn a_press_over_a_live_tune_leaves_the_tour_counting() {
+        // Press, moves, a second pointer's press re-admitted over it, its moves, release.
+        assert_eq!(depth_after(&[true, true, true, true, false]), 0);
+        // And the releases every other gesture's end runs close nothing of anybody's.
+        assert_eq!(depth_after(&[false, false, true, false, false]), 0);
+        assert_eq!(depth_after(&[true, true]), 1, "open while the drag is");
+    }
 }

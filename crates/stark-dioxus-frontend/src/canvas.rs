@@ -20,8 +20,8 @@ use dioxus::prelude::*;
 use crate::commands;
 use crate::drags;
 use crate::input::{
-    self, Holder, elem_xy, end_interaction, hover_at, hover_gone, hover_stroke, move_loupe,
-    pick_color, point_at, sample, samples, use_gestures,
+    self, end_interaction, hover_at, hover_gone, hover_stroke, move_loupe, page_xy, pick_color,
+    point_at, sample, samples, use_gestures,
 };
 use crate::panels;
 use crate::panels::select::current_tool;
@@ -30,6 +30,7 @@ use crate::render::CANVAS_ID;
 use crate::state::{AppState, resize, use_obs};
 use stark_ui::commands::Command;
 use stark_ui::drags::DragAction;
+use stark_ui::nav::Lift;
 
 /// The full-window painting surface (a WebGPU canvas the engine draws into).
 #[component]
@@ -135,8 +136,6 @@ pub fn Canvas() -> Element {
             id: "{CANVAS_ID}",
             class: canvas_class,
             onresize: move |e| {
-                // Browser zoom and a move between monitors both land here.
-                input::refresh_pixel_ratio();
                 if let Ok(size) = e.get_content_box_size() {
                     resize(state, size.width as u32, size.height as u32);
                 }
@@ -146,7 +145,11 @@ pub fn Canvas() -> Element {
             // viewport anyway — and the interaction ends on release/cancel, never by
             // crossing the canvas edge.
             onpointerdown: move |e| {
-                input::refresh_pixel_ratio();
+                // The pointer holding the canvas pressing again never released, so its
+                // gesture is put down before this press is read (`Gestures::release_lost`).
+                if gestures.release_lost(&e) {
+                    end_interaction(gestures);
+                }
                 // Navigation first: a second finger on the glass, middle-drag, or
                 // space + the primary button (`input::Nav` — the one definition of
                 // the navigation bindings, shared with the transform overlay).
@@ -224,37 +227,30 @@ pub fn Canvas() -> Element {
                     return;
                 }
                 // The pen's other end draws too — it is a contact like the tip,
-                // differing only in the brush it arrives holding (§18.1.8). Asked
-                // whether paint may open before the capture and the fade, which a
-                // press another pointer's gesture refuses must not cost.
-                if input::is_contact(&e) && gestures.admits(Holder::Paint) {
+                // differing only in the brush it arrives holding (§18.1.8). Painting
+                // and selecting are the same gesture from here — the tool decides
+                // what the engine builds (§6.8) — and for a finger it is a question
+                // whose answer is *probably* paint (`input::Landing`). The capture and
+                // the fade follow a press paint took, which a palm, a press another
+                // pointer's gesture refuses, or one with no view to land in is not.
+                if input::is_contact(&e) && gestures.begin_paint(&e, current_tool(state)) {
                     capture_pointer(&e);
-                    // Painting and selecting are the same gesture from here — the
-                    // tool decides what the engine builds (§6.8).
-                    let tool = current_tool(state);
                     canvas_active.set(true);
-                    // From here the press is paint — or, for a finger, a question
-                    // whose answer is *probably* paint. What it does with itself
-                    // is the gesture's business rather than this handler's,
-                    // including the case where there is no view to land in yet,
-                    // which opens nothing and leaves the moves after it inert
-                    // (`input::Landing`, `input::Paint`).
-                    gestures.begin_paint(&e, tool);
                 }
             },
             onpointermove: move |e| {
                 // Navigation, tuning, a mode opened under the hand, the layer carry
                 // — in that order, and a move one of them takes is nothing else's
                 // (`input::Gestures::advance`, §25.4).
-                if gestures.advance(&e).is_some() {
+                if gestures.advance(&e) {
                     return;
                 }
                 // The hover, ahead of the mapping below on purpose: the brush
-                // cursor rides the pointer in the element's own px and needs no
-                // view, so it is honest from the first frame — while the engine
-                // is still being built, its overlay simply has no size to give
-                // the position (§18.1.10).
-                hover_at(state, elem_xy(&e));
+                // cursor rides the pointer in page px and needs no view, so it is
+                // honest from the first frame — while the engine is still being
+                // built, its overlay simply has no size to give the position
+                // (§18.1.10).
+                hover_at(state, page_xy(&e));
                 // Mapped once, and every branch below returns before the engine
                 // exists: the canvas takes pointer events from the first frame, and
                 // a move with nowhere to land does nothing.
@@ -267,7 +263,7 @@ pub fn Canvas() -> Element {
                     // finger (§18.1.11). Silent for the chord binding, which
                     // has a cursor and a panel and needs neither
                     // (`input::move_loupe`).
-                    move_loupe(state, elem_xy(&e));
+                    move_loupe(state, page_xy(&e));
                     s.pos
                 } else if gestures.paints(&e) {
                     // Every report the browser coalesced into this event, read
@@ -312,45 +308,43 @@ pub fn Canvas() -> Element {
             },
             // One finger of several lifting ends nothing — the rest are still
             // navigating, and tearing down here would end the gesture on whichever
-            // finger the hand happened to raise first (§18.1.7).
+            // finger the hand happened to raise first (§18.1.7) — and neither does a
+            // pointer other than the one holding the canvas (`Gestures::release`).
             onpointerup: move |e| {
-                let nav = gestures.nav();
-                if !nav.release(&e) {
-                    // The hand has left the glass. If it came and went without ever
-                    // moving the view or laying a mark, it made a **tap** — two
-                    // fingers for undo and three for redo, the pairing every
-                    // touch-first painting app ships and therefore the one nobody
-                    // has to be taught (§18.1.11).
-                    //
-                    // Read *before* the teardown, which is what clears it, and
-                    // spent *after*, because undo puts down whatever is in hand
-                    // (`commands::edit_history`) and this handler is what is
-                    // holding it.
-                    let tap = nav.take_tap();
-                    // A tap never had the canvas in hand, so the chrome it faded on
-                    // the way in comes back rather than being put to sleep behind
-                    // it: `end_interaction` reads this flag to decide, and a
-                    // gesture that lasted a tenth of a second was not somebody
-                    // asking for the panels to get out of the way.
-                    if matches!(tap, Some(2 | 3)) {
-                        canvas_active.set(false);
-                    }
-                    end_interaction(gestures);
-                    match tap {
-                        Some(2) => commands::run(Command::Undo, state),
-                        Some(3) => commands::run(Command::Redo, state),
-                        // One finger is a dot the brush already painted, and four
-                        // is a hand put down on the glass. Neither is an act.
-                        _ => {}
-                    }
+                // The hand has left the glass. If it came and went without ever
+                // moving the view or laying a mark, it made a **tap** — two
+                // fingers for undo and three for redo, the pairing every
+                // touch-first painting app ships and therefore the one nobody
+                // has to be taught (§18.1.11).
+                //
+                // Spent *after* the teardown, because undo puts down whatever is in
+                // hand (`commands::edit_history`) and this handler is what is
+                // holding it.
+                let Lift::Ended { tap } = gestures.release(&e) else {
+                    return;
+                };
+                // A tap never had the canvas in hand, so the chrome it faded on
+                // the way in comes back rather than being put to sleep behind
+                // it: `end_interaction` reads this flag to decide, and a
+                // gesture that lasted a tenth of a second was not somebody
+                // asking for the panels to get out of the way.
+                if matches!(tap, Some(2 | 3)) {
+                    canvas_active.set(false);
+                }
+                end_interaction(gestures);
+                match tap {
+                    Some(2) => commands::run(Command::Undo, state),
+                    Some(3) => commands::run(Command::Redo, state),
+                    // One finger is a dot the brush already painted, and four
+                    // is a hand put down on the glass. Neither is an act.
+                    _ => {}
                 }
             },
             onpointercancel: move |e| {
-                if !gestures.nav().release(&e) {
-                    // No tap is taken here, and `Nav::stop` drops the one the
-                    // release recorded: a cancel is the browser saying the gesture
-                    // never finished, and an undo is not something to do on a
-                    // gesture that was interrupted.
+                // The tap is dropped: a cancel is the browser saying the gesture never
+                // finished, and an undo is not something to do on a gesture that was
+                // interrupted.
+                if let Lift::Ended { .. } = gestures.release(&e) {
                     end_interaction(gestures);
                 }
             },
