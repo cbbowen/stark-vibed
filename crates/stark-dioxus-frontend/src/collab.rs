@@ -148,12 +148,11 @@ pub fn join(state: AppState, link: String) {
                 // Best effort, unlike opening a file: a promise this build cannot keep
                 // is left to the ordinary blob fetch, which pulls it off a peer
                 // (`Joined::owed`).
-                let mut owed_bytes = Vec::with_capacity(owed.len());
-                for &need in &owed {
-                    if let Some(bytes) = crate::builtin_ids::fetch(need).await {
-                        owed_bytes.push((need, bytes));
-                    }
-                }
+                let owed_bytes: Vec<_> = crate::builtin_ids::fetch_each(&owed)
+                    .await
+                    .into_iter()
+                    .filter_map(|(need, bytes)| Some((need, bytes?)))
+                    .collect();
                 let joined = crate::state::replace_document(state, |r| {
                     for (need, bytes) in &owed_bytes {
                         crate::builtin_ids::install(r, *need, bytes);

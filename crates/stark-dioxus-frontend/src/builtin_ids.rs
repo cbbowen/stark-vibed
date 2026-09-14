@@ -19,7 +19,7 @@ use stark_net::AssetNeed;
 /// A local read — same-origin on the web, the file the binary shipped beside
 /// natively. `None` for content this build does not ship or a read that failed, each
 /// logged where it happened. What that costs depends on who asked: a session answering
-/// `ResolveLocally` falls back to fetching it off a peer, while a log about to be
+/// `ResolveLocally` falls back to fetching it off a peer, while a file about to be
 /// replayed has to refuse ([`settle`]).
 pub async fn fetch(need: AssetNeed) -> Option<Vec<u8>> {
     let Some(path) = stark_ui::assets::shipped_at(need.content()).and_then(|row| row.path) else {
@@ -31,18 +31,24 @@ pub async fn fetch(need: AssetNeed) -> Option<Vec<u8>> {
     crate::shipped::fetch_bytes(path).await
 }
 
-/// Fetch everything a file or a joined session owes before its log is replayed — all
-/// of it, or `None` with the shortfall logged.
-///
-/// All or nothing because a replay cannot wait for what is missing: a substrate that is
-/// not registered when its `SetSubstrate` replays deposits every later stroke through the
-/// flat stand-in, and those pixels are stored (§6.4).
-pub async fn settle(owed: &[AssetNeed]) -> Option<Vec<(AssetNeed, Vec<u8>)>> {
+/// [`fetch`] each need in turn, pairing it with what came back.
+pub async fn fetch_each(owed: &[AssetNeed]) -> Vec<(AssetNeed, Option<Vec<u8>>)> {
     let mut fetched = Vec::with_capacity(owed.len());
     for &need in owed {
         fetched.push((need, fetch(need).await));
     }
-    match all_or_short(fetched) {
+    fetched
+}
+
+/// Fetch everything a file owes before its log is replayed — all of it, or `None` with
+/// the shortfall logged.
+///
+/// All or nothing because a file has no peer to fetch what is missing from: a substrate
+/// that is not registered when its `SetSubstrate` replays deposits every later stroke
+/// through the flat stand-in, and those pixels are stored (§6.4). A join is best effort
+/// instead: see [`Joined::owed`](stark_net::Joined::owed).
+pub async fn settle(owed: &[AssetNeed]) -> Option<Vec<(AssetNeed, Vec<u8>)>> {
+    match all_or_short(fetch_each(owed).await) {
         Ok(supplied) => Some(supplied),
         Err(short) => {
             tracing::error!(
@@ -97,6 +103,7 @@ pub fn install(r: &mut crate::render::Renderer, need: AssetNeed, bytes: &[u8]) {
 mod tests {
     use super::*;
     use stark_model::AssetId;
+    use std::task::{Context, Poll, Waker};
 
     fn brush(n: u8) -> AssetNeed {
         AssetNeed::Brush(AssetId([n; 32]))
@@ -130,5 +137,32 @@ mod tests {
     #[test]
     fn nothing_owed_settles_to_nothing() {
         assert_eq!(all_or_short(Vec::new()), Ok(Vec::new()));
+    }
+
+    /// Poll a future that has nothing to wait on.
+    fn ready<T>(fut: impl Future<Output = T>) -> T {
+        let mut cx = Context::from_waker(Waker::noop());
+        match std::pin::pin!(fut).poll(&mut cx) {
+            Poll::Ready(out) => out,
+            Poll::Pending => panic!("the future waited on something"),
+        }
+    }
+
+    /// No build ships these ids, so each is answered without a read — and what
+    /// `fetch_each` hands back is the shape `all_or_short` refuses by name.
+    #[test]
+    fn fetch_each_answers_every_need_in_order() {
+        let owed = [brush(1), AssetNeed::Substrate(AssetId([2; 32])), brush(3)];
+        let fetched = ready(fetch_each(&owed));
+        assert_eq!(
+            fetched,
+            owed.iter().map(|&need| (need, None)).collect::<Vec<_>>()
+        );
+        assert_eq!(all_or_short(fetched), Err(owed.to_vec()));
+    }
+
+    #[test]
+    fn nothing_owed_fetches_nothing() {
+        assert_eq!(ready(fetch_each(&[])), Vec::new());
     }
 }

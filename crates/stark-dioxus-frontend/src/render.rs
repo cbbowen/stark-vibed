@@ -204,15 +204,14 @@ impl Renderer {
 
     /// Start a fresh document in `color_space`, on `surface` (§6.7).
     /// The color space cannot be changed any other way — see
-    /// [`Engine::new_document`].
-    pub fn new_document(&mut self, color_space: ColorSpaceId, surface: SubstrateId) {
-        if let Err(e) = self.engine.new_document(color_space, surface) {
-            // Unreachable from the picker, which only offers spaces this build
-            // carries — but a `Renderer` is also driven from tests and scripts, and
-            // the engine leaves the open document alone when it refuses, so saying so
-            // is better than looking like the New silently did nothing.
-            tracing::error!(?color_space, "cannot open a document in this space: {e}");
-        }
+    /// [`Engine::new_document`], which refuses a space this build lacks and leaves
+    /// the open document alone.
+    pub fn new_document(
+        &mut self,
+        color_space: ColorSpaceId,
+        surface: SubstrateId,
+    ) -> stark_engine::Result<()> {
+        self.engine.new_document(color_space, surface)
     }
 
     /// The document's current canvas surface (§6.4).

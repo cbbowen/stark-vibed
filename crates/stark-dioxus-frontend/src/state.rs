@@ -1092,12 +1092,20 @@ pub fn with_engine<R>(state: AppState, f: impl FnOnce(&mut Renderer) -> R) -> Op
 /// "no engine to move"; `Some(Err)` is the engine refusing with the open document
 /// untouched, which is left unframed.
 ///
+/// **Leaves any live session first**, even when the engine then refuses. A replacement
+/// drops the engine to solo authoring but not the pump, the phase or the ticket in the
+/// URL, which would go on merging peers' actions into the new document (§12.4). Outside
+/// the engine hold because [`collab::leave`] takes the engine for its farewell. A join
+/// leaves nothing: [`collab::join`] installs its session only after this returns.
+///
 /// The paint is inline so the first frame shown is already the framed new document
 /// rather than the old view over it.
+#[must_use = "a refusal leaves the old document on screen, which the caller has to say"]
 pub fn replace_document<R>(
     state: AppState,
     f: impl FnOnce(&mut Renderer) -> stark_engine::Result<R>,
 ) -> Option<stark_engine::Result<R>> {
+    collab::leave(state);
     with_engine(state, |r| {
         let out = f(r)?;
         // A view is per-client and in neither a file nor a snapshot (§18.1.2), so without

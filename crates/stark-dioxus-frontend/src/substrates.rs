@@ -117,7 +117,14 @@ pub async fn open_default(r: &mut Renderer, color_space: stark_model::ColorSpace
     let surface = resolve(r, assets::DEFAULT_SUBSTRATE)
         .await
         .unwrap_or_default();
-    r.new_document(color_space, surface);
+    if let Err(e) = r.new_document(color_space, surface) {
+        // The engine keeps the document it was built with, so startup carries on.
+        tracing::error!(
+            ?color_space,
+            ?surface,
+            "cannot open the first document: {e}"
+        );
+    }
 }
 
 /// [`resolve`], for callers that reach the engine through [`AppState`] rather than
@@ -543,6 +550,9 @@ pub fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
         })
         .unwrap_or(assets::DEFAULT_SUBSTRATE);
     let surf_choice = use_signal(|| current_pick);
+    // Set while a Create is running: a second one would leave the session twice and
+    // rebuild the GPU state twice.
+    let mut pending = use_signal(|| false);
 
     // One selectable color-space card; `selected` toggles the highlight.
     let card = |id: ColorSpaceId, title: &str, desc: &str| {
@@ -633,7 +643,15 @@ pub fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
                 }
                 button {
                     class: "btn btn-primary",
-                    onclick: move |_| new_document(state, choice(), surf_choice()),
+                    disabled: pending(),
+                    onclick: move |_| {
+                        // Checked here too: a second click can be handled before the
+                        // render that disables the button.
+                        if pending.replace(true) {
+                            return;
+                        }
+                        new_document(state, choice(), surf_choice(), pending);
+                    },
                     "Create"
                 }
             }
@@ -646,27 +664,33 @@ pub fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
 /// large bump maps stay out of the wasm binary — §6.6), so this runs async: `pick` is
 /// a name or an id and what `new_document` needs is the resolved `SubstrateId`.
 ///
-/// It owns closing the modal, once the work is done. A scope-tied `spawn` from the
-/// modal's own handler, so the task is the dialog instance's: dismissing it during the
-/// fetch cancels the new document before anything has changed, and a dialog reopened
+/// It owns closing the modal, once the document is replaced; otherwise it clears
+/// `pending` and leaves the dialog up. A scope-tied `spawn` from the modal's own
+/// handler, so the task is the dialog instance's: dismissing it during the fetch
+/// cancels the new document before anything has changed, and a dialog reopened
 /// meanwhile is a new instance this task cannot close.
-fn new_document(state: AppState, color: ColorSpaceId, pick: Pick) {
+fn new_document(state: AppState, color: ColorSpaceId, pick: Pick, mut pending: Signal<bool>) {
     spawn(async move {
         // A substrate that will not fetch opens the document smooth rather than
         // refusing to open it — and the document then honestly *says* it is smooth
         // instead of claiming a substrate it hasn't got.
         let surface = resolve_signal(state, pick).await;
-        // After the fetch, so a dismissal during it leaves the session alone too.
-        // Replacing the document abandons any shared session (and clears the ticket
-        // from the URL) — the fresh canvas is private until re-shared.
-        crate::collab::leave(state);
-        // Framing a fresh document leaves the view alone: nothing is painted and
-        // nothing framed, so there is no piece to show yet.
-        crate::state::replace_document(state, |r| {
-            r.new_document(color, surface);
-            Ok(())
-        });
-        tracing::info!(?color, ?pick, ?surface, "new document ready");
-        crate::dialogs::close(state, crate::dialogs::DialogId::NewDocument);
+        match crate::state::replace_document(state, |r| r.new_document(color, surface)) {
+            Some(Ok(())) => {
+                tracing::info!(?color, ?pick, ?surface, "new document ready");
+                crate::dialogs::close(state, crate::dialogs::DialogId::NewDocument);
+            }
+            // Unreachable from the cards, which offer only the spaces this build
+            // carries; the dialog has nowhere to say it.
+            Some(Err(e)) => {
+                tracing::error!(
+                    ?color,
+                    ?surface,
+                    "cannot start a document in this space: {e}"
+                );
+                pending.set(false);
+            }
+            None => pending.set(false),
+        }
     });
 }
