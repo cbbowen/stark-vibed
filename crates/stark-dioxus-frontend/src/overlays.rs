@@ -54,22 +54,21 @@ pub fn PeerCursors() -> Element {
     let Some(view) = look() else {
         return rsx! {};
     };
+    // Flattened to what a cursor draws before the loop, so its body is one keyed
+    // element: a body that is anything else loses the key to positional diffing.
+    let cursors = peers.into_iter().filter_map(|peer| {
+        let p = view.canvas_to_screen(peer.cursor?);
+        Some((peer.actor.0, p, css_color(&peer), peer.name))
+    });
     rsx! {
         div { class: "peer-cursors",
-            for peer in peers {
-                if let Some(canvas) = peer.cursor {
-                    {
-                        let p = view.canvas_to_screen(canvas);
-                        rsx! {
-                            div {
-                                key: "{peer.actor.0}",
-                                class: "peer-cursor",
-                                style: "left:{p.x}px; top:{p.y}px; --peer:{css_color(&peer)}",
-                                div { class: "peer-cursor-dot" }
-                                div { class: "peer-cursor-name", "{peer.name}" }
-                            }
-                        }
-                    }
+            for (actor, p, color, name) in cursors {
+                div {
+                    key: "{actor}",
+                    class: "peer-cursor",
+                    style: "left:{p.x}px; top:{p.y}px; --peer:{color}",
+                    div { class: "peer-cursor-dot" }
+                    div { class: "peer-cursor-name", "{name}" }
                 }
             }
         }
@@ -251,14 +250,8 @@ pub fn PickLoupe() -> Element {
     let Some(at) = (state.pick.loupe)() else {
         return rsx! {};
     };
-    let [r, g, b] = color;
     // Straight sRGB, which is what a brush color is (`panels::color`).
-    let fill = format!(
-        "background: rgb({:.1}% {:.1}% {:.1}%);",
-        r * 100.0,
-        g * 100.0,
-        b * 100.0
-    );
+    let fill = crate::cards::swatch_style(color);
     // Above the finger, or below it near the top of the window. Flipped rather than
     // clamped: clamping would slide the swatch onto the contact point it exists to
     // stay clear of, which at the top of the canvas is exactly where a hand reaching

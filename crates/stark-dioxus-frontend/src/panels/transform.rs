@@ -145,16 +145,11 @@ pub fn finish(state: AppState) {
 }
 
 /// The transform bar: the family selector, the affine's two flips, Cancel and
-/// "Done". Mounted only while the gesture is in flight, in the same bottom
-/// column as the selection and frame bars — wearing the composing register
-/// (`mode-bar`) those two do not, because this bar fronts a catcher that has
-/// taken the pointer away from painting (MODAL_DESIGN.md).
+/// "Done", for the gesture `ui` (`panels::ModeChrome` mounts it while one is in
+/// flight).
 #[component]
-pub fn TransformBar() -> Element {
+pub fn TransformBar(ui: TransformUi) -> Element {
     let state = use_context::<AppState>();
-    let Some(ui) = crate::modes::composing(state).and_then(Composing::transform) else {
-        return rsx! {};
-    };
     let family = ui.family();
     let families: Vec<_> = <Family as strum::VariantArray>::VARIANTS
         .iter()
@@ -224,7 +219,7 @@ pub fn TransformBar() -> Element {
 /// ellipse, or an SVG of the quad/mesh whose lines are the deformation itself. No
 /// per-handle DOM: the whole viewport is the control surface.
 #[component]
-pub fn TransformOverlay() -> Element {
+pub fn TransformOverlay(ui: TransformUi) -> Element {
     let state = use_context::<AppState>();
     let mut drag = use_signal(|| None::<Grab>);
     // The cursor the resting pointer has earned, for feedback only.
@@ -232,15 +227,10 @@ pub fn TransformOverlay() -> Element {
     // The canvas's own navigation bindings, live on the catcher: composing a
     // transform must not cost the view (see `input::Nav`).
     let nav = Nav::use_nav(state);
-    // The view through a memo, unconditionally and ahead of the early returns
-    // below like any `use_*`. Not a straight read of the projection, which is
-    // what this was: that woke the overlay on every engine write rather than on
-    // the one field it draws with (`state::use_obs`).
+    // The view through a memo, unconditionally and ahead of the early return
+    // below like any `use_*`: the one field it draws with (`state::use_obs`).
     let live_view = use_obs(state, |o| o.view);
 
-    let Some(ui) = crate::modes::composing(state).and_then(Composing::transform) else {
-        return rsx! {};
-    };
     let Some(view) = live_view() else {
         return rsx! {};
     };

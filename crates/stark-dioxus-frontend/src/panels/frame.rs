@@ -175,12 +175,7 @@ pub fn FrameBar() -> Element {
         dispatch(state, DocCommand::SetMatteRect(info.id, min, max));
     };
     let c = matte.paint.swatch();
-    let swatch = format!(
-        "background: rgb({:.1}% {:.1}% {:.1}%);",
-        c[0] * 100.0,
-        c[1] * 100.0,
-        c[2] * 100.0
-    );
+    let swatch = crate::cards::swatch_style(c.get());
     let is_gradient = matches!(matte.paint, Parcel::Gradient(GradientParcel { .. }));
     // Offered only while there is no backing to make. Once there is one it is a
     // row in the Layers panel like any other layer, and a second could not mean
@@ -456,10 +451,11 @@ pub struct FrameDrag {
 
 /// The frame's edges and handles, drawn over the canvas (§15.7).
 ///
-/// Mounted only while a frame is **selected**, together with [`FrameBar`] — one
+/// Drawn only while a frame is **selected**, together with [`FrameBar`] — one
 /// state drives both, so the bar being up is exactly the promise that the handles
 /// are live. Handles have no business sitting over the painting the rest of the
-/// time.
+/// time, nor over a composing mode's catcher (`panels::ModeChrome` mounts this only
+/// while none is live).
 ///
 /// The interior is deliberately **not** interactive (`pointer-events: none` on the
 /// box, `auto` only on the handles): the inside of the frame is exactly where you
@@ -484,15 +480,6 @@ pub fn FrameOverlay() -> Element {
     let Some((rect_min, rect_max)) = matte.rect else {
         return rsx! {};
     };
-    // And while any mode is composing, its catcher owns the pointer — but these
-    // grips are stacked *above* every catcher (`.frame-overlay` sits at 10, the
-    // catchers at 9, so that a panel can still win over a handle), and a grip
-    // floating over a transform box or an axis drag would take presses meant for
-    // it and commit a rect change under its preview. Standing the whole overlay
-    // down is what keeps the catcher's promise true (`crate::modes`).
-    if crate::modes::composing(state).is_some() {
-        return rsx! {};
-    }
     let Some(view) = live_view() else {
         return rsx! {};
     };

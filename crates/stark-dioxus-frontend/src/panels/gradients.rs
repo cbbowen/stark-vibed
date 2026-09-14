@@ -219,17 +219,14 @@ fn GradientRow(entry: stark_ui::gradients::GradientEntry, active: bool) -> Eleme
 /// tick.
 #[component]
 pub fn TraceBar() -> Element {
-    let state = use_context::<AppState>();
     rsx! {
-        if gradients::armed(state) {
-            Bar {
-                class: "selection-bar trace-bar",
-                glyph: stark_ui::icons::GRADIENT,
-                word: "Trace",
-                mode: true,
-                span { class: "bar-sep" }
-                CommandButton { command: Command::CancelMode }
-            }
+        Bar {
+            class: "selection-bar trace-bar",
+            glyph: stark_ui::icons::GRADIENT,
+            word: "Trace",
+            mode: true,
+            span { class: "bar-sep" }
+            CommandButton { command: Command::CancelMode }
         }
     }
 }
@@ -243,19 +240,13 @@ pub fn TraceBar() -> Element {
 pub fn GradientTraceOverlay() -> Element {
     let state = use_context::<AppState>();
     // The trace in flight, canvas space; `None` while armed but not yet pressed.
-    // Local to the overlay: the mode outlives no unmount — disarming is what
-    // unmounts it, and a fresh arm should start clean anyway.
+    // Local to the overlay, which disarming unmounts, so a fresh arm starts clean.
     let mut trace = use_signal(|| None::<Vec<Vec2>>);
     let nav = Nav::use_nav(state);
-    // The view through a memo, unconditionally and ahead of the early returns
-    // below like any `use_*`. Not a straight read of the projection, which is
-    // what this was: that woke the overlay on every engine write rather than on
-    // the one field it draws with (`state::use_obs`).
+    // The view through a memo, unconditionally and ahead of the early return
+    // below like any `use_*`: the one field it draws with (`state::use_obs`).
     let live_view = use_obs(state, |o| o.view);
 
-    if !gradients::armed(state) {
-        return rsx! {};
-    }
     let Some(view) = live_view() else {
         return rsx! {};
     };

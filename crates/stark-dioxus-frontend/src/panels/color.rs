@@ -9,7 +9,7 @@
 
 use dioxus::prelude::*;
 
-use crate::cards::{Mime, bytes_url};
+use crate::cards::{Mime, bytes_url, swatch_style};
 use crate::platform::{capture_pointer, pointer_fraction};
 use crate::state::{AppState, update_brush};
 use stark_model::color::Gamut;
@@ -152,12 +152,7 @@ pub fn OklabPicker(
     let (wx, wy) = (mx * 100.0, my * 100.0);
     let lx = wheel().l * 100.0; // L: 0→left, 1→right
     let rgb = wheel().rgb(WHEEL_GAMUT);
-    let well = format!(
-        "background: rgb({:.2}% {:.2}% {:.2}%);",
-        rgb[0] * 100.0,
-        rgb[1] * 100.0,
-        rgb[2] * 100.0
-    );
+    let well = swatch_style(rgb);
     let shown = draft().unwrap_or_else(|| notation_of(rgb));
 
     rsx! {

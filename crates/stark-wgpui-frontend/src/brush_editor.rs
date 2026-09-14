@@ -703,32 +703,23 @@ fn line(
     match row {
         Row::Shapes => shapes.take().unwrap_or_else(|| div().into_any_element()),
         Row::Orientation => chips(
-            [OrientationSource::FollowStroke, OrientationSource::Pen]
-                .into_iter()
-                .map(|o| {
-                    (
-                        Region::Orientation(o),
-                        orientation_label(o),
-                        shown.brush.orientation == o,
-                        orientation_tip(o),
-                    )
-                }),
+            stark_ui::brush_editor::ORIENTATIONS.into_iter().map(|o| {
+                (
+                    Region::Orientation(o),
+                    stark_ui::brush_editor::orientation_label(o),
+                    shown.brush.orientation == o,
+                    stark_ui::brush_editor::orientation_tip(o),
+                )
+            }),
             regions,
         ),
         Row::Effects => chips(
-            [
-                BrushEffectType::Paint,
-                BrushEffectType::Wet,
-                BrushEffectType::Erase,
-                BrushEffectType::Liquify,
-            ]
-            .into_iter()
-            .map(|e| {
+            stark_ui::brush_editor::EFFECTS.into_iter().map(|e| {
                 (
                     Region::Effect(e),
-                    effect_label(e),
+                    stark_ui::brush_editor::effect_label(e),
                     shown.brush.effect == e,
-                    effect_tip(e),
+                    stark_ui::brush_editor::effect_tip(e),
                 )
             }),
             regions,
@@ -739,7 +730,7 @@ fn line(
                     Region::Noise(k),
                     stark_ui::brush_editor::noise_label(k),
                     shown.brush.color_dynamics.noise == k,
-                    "The field the color wanders across",
+                    stark_ui::brush_editor::NOISE_TIP,
                 )
             }),
             regions,
@@ -832,9 +823,9 @@ fn mod_row(
             .child(chips(
                 std::iter::once((
                     Region::Source(m, None),
-                    "Off",
+                    stark_ui::brush_editor::NO_SOURCE_LABEL,
                     mapping.is_none(),
-                    "Nothing drives this",
+                    stark_ui::brush_editor::source_tip(None),
                 ))
                 .chain(stark_ui::brush_editor::SOURCES.into_iter().map(
                     |source| {
@@ -842,7 +833,7 @@ fn mod_row(
                             Region::Source(m, Some(source)),
                             stark_ui::brush_editor::source_label(source),
                             mapping.is_some_and(|mapping| mapping.source == source),
-                            source_tip(source),
+                            stark_ui::brush_editor::source_tip(Some(source)),
                         )
                     },
                 )),
@@ -1002,52 +993,6 @@ fn curve_plot(mapping: stark_model::document::Modulation) -> impl IntoElement {
             )
             .size_full(),
         )
-}
-
-/// The word an orientation chip wears, and what the hover says it does.
-fn orientation_label(o: OrientationSource) -> &'static str {
-    match o {
-        OrientationSource::FollowStroke => "Follow stroke",
-        OrientationSource::Pen => "Pen angle",
-    }
-}
-
-fn orientation_tip(o: OrientationSource) -> &'static str {
-    match o {
-        OrientationSource::FollowStroke => {
-            "The footprint turns with the travel \u{2014} a nib that follows the line"
-        }
-        OrientationSource::Pen => {
-            "The footprint follows the pen's lean \u{2014} a real conical tip"
-        }
-    }
-}
-
-/// The word an effect chip wears. The marks are the panel's, where a chip has no room
-/// for a word; here the word leads, because the chip is what names the *group* under it.
-fn effect_label(effect: BrushEffectType) -> &'static str {
-    match effect {
-        BrushEffectType::Paint => "Paint",
-        BrushEffectType::Wet => "Wet",
-        BrushEffectType::Erase => "Erase",
-        BrushEffectType::Liquify => "Liquify",
-    }
-}
-
-fn effect_tip(effect: BrushEffectType) -> &'static str {
-    match effect {
-        BrushEffectType::Paint => "Paint \u{2014} lay the colour in hand",
-        BrushEffectType::Wet => "Wet \u{2014} move and mix the paint already on the canvas",
-        BrushEffectType::Erase => "Erase \u{2014} take paint away where the tip passes",
-        BrushEffectType::Liquify => "Liquify \u{2014} push the paint about without adding any",
-    }
-}
-
-fn source_tip(source: ModSource) -> &'static str {
-    match source {
-        ModSource::Pressure => "How hard the pen is pressed",
-        ModSource::Tilt => "How far the pen is leaned over",
-    }
 }
 
 #[cfg(test)]

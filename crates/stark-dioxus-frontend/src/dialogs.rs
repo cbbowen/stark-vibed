@@ -9,15 +9,15 @@ use dioxus::prelude::*;
 use crate::brush_editor::BrushEditorModal;
 use crate::credits::CreditsModal;
 use crate::panels::brush::PresetSaveModal;
+use crate::panels::new_document::NewDocumentModal;
 use crate::settings::SettingsModal;
 use crate::state::AppState;
-use crate::substrates::NewDocumentModal;
 use crate::{collab, drags, files, timings};
 
 /// Every dialog the root can mount.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DialogId {
-    /// "New document…" (`substrates::NewDocumentModal`).
+    /// "New document…" (`panels::new_document::NewDocumentModal`).
     NewDocument,
     /// Share and join (`collab::SessionModal`).
     Session,

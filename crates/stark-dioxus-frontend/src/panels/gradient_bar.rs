@@ -312,22 +312,14 @@ fn ramp_in_hand(state: AppState, ui: &GradientUi) -> Option<Gradient> {
 
 /// The mode's bar, standing in for whichever bar raised it.
 ///
-/// While a trace has the gesture parked (`suspend`), the bar stays on screen
-/// **recessed** rather than vanishing — the one genuine park-and-resume in the
-/// app, drawn as what it is: the place the trace hands back to
-/// (MODAL_DESIGN.md). Recessed chrome is inert (`pointer-events: none`), so
-/// its controls promise nothing the parked gesture cannot honour.
+/// `parked` while a trace has the gesture set aside (`suspend`): the bar stays on
+/// screen **recessed** rather than vanishing — the one genuine park-and-resume in the
+/// app, drawn as what it is: the place the trace hands back to (MODAL_DESIGN.md).
+/// Recessed chrome is inert (`pointer-events: none`), so its controls promise nothing
+/// the parked gesture cannot honour.
 #[component]
-pub fn GradientBar() -> Element {
+pub fn GradientBar(ui: GradientUi, parked: bool) -> Element {
     let state = use_context::<AppState>();
-    let (ui, parked) =
-        if let Some(ui) = crate::modes::composing(state).and_then(Composing::gradient_fill) {
-            (ui, false)
-        } else if let Some(ui) = state.gradient_resume.read().clone() {
-            (ui, true)
-        } else {
-            return rsx! {};
-        };
     // Read reactively so a pick in the library pop-out repaints the strip.
     let strip = ramp_in_hand(state, &ui).map(|g| gradients::css_strip(&g));
     let kinds = Vec::from(
@@ -407,19 +399,14 @@ pub fn GradientBar() -> Element {
 /// axis, it does not paint — the transform catcher's bargain, with `Nav` live
 /// so the view stays reachable mid-compose.
 #[component]
-pub fn GradientBarOverlay() -> Element {
+pub fn GradientBarOverlay(ui: GradientUi) -> Element {
     let state = use_context::<AppState>();
     let mut dragging = use_signal(|| false);
     let nav = Nav::use_nav(state);
-    // The view through a memo, unconditionally and ahead of the early returns
-    // below like any `use_*`. Not a straight read of the projection, which is
-    // what this was: that woke the overlay on every engine write rather than on
-    // the one field it draws with (`state::use_obs`).
+    // The view through a memo, unconditionally and ahead of the early return
+    // below like any `use_*`: the one field it draws with (`state::use_obs`).
     let live_view = use_obs(state, |o| o.view);
 
-    let Some(ui) = crate::modes::composing(state).and_then(Composing::gradient_fill) else {
-        return rsx! {};
-    };
     let Some(view) = live_view() else {
         return rsx! {};
     };

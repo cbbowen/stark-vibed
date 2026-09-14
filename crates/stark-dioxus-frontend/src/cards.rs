@@ -1,5 +1,6 @@
-//! A gallery card's picture, as this frontend puts one on screen (§6.4, §6.6), and the
-//! `data:` URL every picture the chrome makes from bytes travels in.
+//! A gallery card's picture, as this frontend puts one on screen (§6.4, §6.6), the
+//! `data:` URL every picture the chrome makes from bytes travels in, and a swatch's
+//! color.
 //!
 //! What the picture *is* — the canonical field an id names, reduced to a card's size,
 //! and whether it is coverage or height — is `stark_ui::assets::card`. All that is
@@ -22,6 +23,17 @@ pub fn thumb_style(url: Option<&str>) -> String {
         Some(url) => format!("background-image: url({url});"),
         None => "background-image: none;".to_string(),
     }
+}
+
+/// A swatch's `background` declaration for a straight sRGB color — a well, a loupe, the
+/// hex field's patch. Percentages to two places, finer than a 10-bit channel.
+pub fn swatch_style([r, g, b]: [f32; 3]) -> String {
+    format!(
+        "background: rgb({:.2}% {:.2}% {:.2}%);",
+        r * 100.0,
+        g * 100.0,
+        b * 100.0
+    )
 }
 
 /// What a `data:` URL says its bytes are.

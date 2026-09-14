@@ -8,8 +8,10 @@
 
 use dioxus::prelude::*;
 
-use crate::platform::{capture_pointer, guide_boxes, layer_boxes};
+use crate::layout::panel_key;
+use crate::platform::{capture_pointer, guide_boxes, layer_boxes, panel_boxes};
 use stark_model::document::LayerId;
+use stark_ui::panels::PanelId;
 use stark_ui::reorder::{Grab, Motion};
 
 /// How long a displaced row takes to reach its new place. Long enough to be followed
@@ -39,8 +41,8 @@ pub fn css(motion: Motion) -> String {
     format!("transform: translate({dx}px, {dy}px); transition: {ease};")
 }
 
-/// The row a [`Grip`] picks up — and so the list a press measures, which is why the
-/// two are one value: a key cannot be looked up among another list's boxes.
+/// The row a press picks up — and so the list it measures, which is why the two are
+/// one value: a key cannot be looked up among another list's boxes.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum RowKey {
     /// A layer, by id — the tree's rows wear it as `data-layer`.
@@ -48,6 +50,9 @@ pub enum RowKey {
     /// A guide, by its place in the roster — the rows wear it as `data-guide`, since a
     /// drag over drawn rows has no other name for one (`panels::guides`).
     Guide(usize),
+    /// A panel in the stack, by id — the panels wear it as `data-panel`
+    /// (`layout::panel_key`).
+    Panel(PanelId),
 }
 
 impl RowKey {
@@ -55,6 +60,7 @@ impl RowKey {
         match self {
             RowKey::Layer(id) => id.to_string(),
             RowKey::Guide(index) => index.to_string(),
+            RowKey::Panel(id) => panel_key(id),
         }
     }
 
@@ -62,7 +68,36 @@ impl RowKey {
         match self {
             RowKey::Layer(_) => layer_boxes(),
             RowKey::Guide(_) => guide_boxes(),
+            RowKey::Panel(_) => panel_boxes(),
         }
+    }
+}
+
+/// Arm `drag` on a press of `row`: capture the pointer, so the release is delivered here
+/// whatever has moved under it by then, and measure the list as it stands at the press.
+pub fn press(mut drag: Signal<Option<Grab>>, row: RowKey, e: &Event<PointerData>) {
+    capture_pointer(e);
+    let p = e.client_coordinates();
+    drag.set(Some(Grab::begin(
+        row.key(),
+        row.boxes(),
+        (p.x as f32, p.y as f32),
+    )));
+}
+
+/// Follow the pointer for an armed press. A finished grab is not armed — it is a
+/// receipt waiting for its click — and nothing is written while none is, so a hover
+/// dirties no list. Whether a button is still down is passed on, since a grip is also a
+/// thing hovered, and a release it never heard must not leave a drag to steer
+/// (`Grab::track`).
+pub fn follow(mut drag: Signal<Option<Grab>>, e: &Event<PointerData>) {
+    if drag.peek().as_ref().is_none_or(Grab::over) {
+        return;
+    }
+    let p = e.client_coordinates();
+    let held = !e.held_buttons().is_empty();
+    if let Some(d) = drag.write().as_mut() {
+        d.track((p.x as f32, p.y as f32), held);
     }
 }
 
@@ -71,11 +106,14 @@ impl RowKey {
 /// press — a click selects, a double-click renames, and a press that travels is a move —
 /// so the drag arms on the press and only *becomes* one once the pointer has said so.
 ///
-/// All of that is here rather than in each roster: the capture that makes the release
-/// certain (it is delivered to the capturing element whatever the pointer is over, and
-/// here everything under the pointer moves), the armed check that keeps a hover from
-/// dirtying the list, the disarm before the list is written ([`landed`]), and the click a
-/// finished drag leaves behind ([`claimed`]). `onland` hears only a drag that went live.
+/// All of that is here rather than in each roster: the press and the follow
+/// ([`press`], [`follow`]), the disarm before the list is written ([`landed`]), and the
+/// click a finished drag leaves behind ([`claimed`]). `onland` hears only a drag that
+/// went live.
+///
+/// A panel's title bar shares the press and the follow but not this component: it is a
+/// `div` rather than a `button`, and it tells a fold from a reorder at the release
+/// rather than at the browser's `click` (`layout::release_title`).
 #[component]
 pub fn Grip(
     class: &'static str,
@@ -97,25 +135,8 @@ pub fn Grip(
                 }
             },
             ondoubleclick: move |_| ondoubleclick.call(()),
-            onpointerdown: move |e: Event<PointerData>| {
-                capture_pointer(&e);
-                let p = e.client_coordinates();
-                drag.set(Some(Grab::begin(row.key(), row.boxes(), (p.x as f32, p.y as f32))));
-            },
-            onpointermove: move |e: Event<PointerData>| {
-                // A finished grab is not armed: it is a receipt waiting for its click.
-                if drag.peek().as_ref().is_none_or(Grab::over) {
-                    return;
-                }
-                let p = e.client_coordinates();
-                // Whether the press is still down — the name is also a thing hovered, and
-                // a release this row never heard must not leave a drag to steer
-                // (`Grab::track`).
-                let held = !e.held_buttons().is_empty();
-                if let Some(d) = drag.write().as_mut() {
-                    d.track((p.x as f32, p.y as f32), held);
-                }
-            },
+            onpointerdown: move |e| press(drag, row, &e),
+            onpointermove: move |e| follow(drag, &e),
             onpointerup: move |_| {
                 if landed(&mut drag) {
                     onland.call(());

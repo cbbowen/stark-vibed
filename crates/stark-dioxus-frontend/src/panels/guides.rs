@@ -490,20 +490,16 @@ fn GuideRow(
     }
 }
 
-/// The Perspective Guide bar (§20.5): the edit mode's controls, in the same
-/// bottom column as the selection and transform bars. Mounted only while a
-/// guide is being composed.
+/// The Perspective Guide bar (§20.5): the controls for the guide `edit` shapes, in the
+/// same bottom column as the selection and transform bars.
 #[component]
-pub fn PerspectiveGuideBar() -> Element {
+pub fn PerspectiveGuideBar(edit: GuideEdit) -> Element {
     let state = use_context::<AppState>();
     // What the bar's sliders are showing but have not laid down (§20.5). Bar-local,
-    // and hoisted above the early returns because a hook has to be: a bar that
-    // unmounts mid-drag takes the pending value with it, and the mode's own exit
-    // drops the preview it was showing (`end_guide_edit`).
+    // and above the early return because a hook has to be: a bar that unmounts
+    // mid-drag takes the pending value with it, and the mode's own exit drops the
+    // preview it was showing (`end_guide_edit`).
     let pending = use_signal(|| None::<(GuideId, PerspectiveGuide)>);
-    let Some(edit) = crate::modes::composing(state).and_then(Composing::guide_edit) else {
-        return rsx! {};
-    };
     let guides = guides_of(state);
     let Some((index, row)) = guides
         .iter()
@@ -699,7 +695,7 @@ struct Drag {
 /// see `input::Nav`). All gesture math is in canvas space, so panning or
 /// zooming mid-drag cannot corrupt it.
 #[component]
-pub fn GuideEditOverlay() -> Element {
+pub fn GuideEditOverlay(edit: ReadSignal<GuideEdit>) -> Element {
     let state = use_context::<AppState>();
     let mut drag = use_signal(|| None::<Drag>);
     let mut hover = use_signal(|| None::<GuideRegion>);
@@ -712,27 +708,22 @@ pub fn GuideEditOverlay() -> Element {
     // The two things this overlay draws with, through **one** memo — the pair
     // moves together (a drag writes the guide, and the pose it is judged against
     // is the view it is drawn in), which is the case `state::use_obs` asks for a
-    // tuple in. Unconditionally, ahead of the early returns, like any `use_*`;
-    // the guide in hand is read *inside* the memo rather than passed in, so
-    // selecting a different guide recomputes it.
+    // tuple in. Unconditionally, ahead of the early return, like any `use_*`; `edit`
+    // is a signal so that picking up a different guide recomputes it.
     let look = use_obs_opt(state, move |o| {
-        let edit = crate::modes::composing(state).and_then(Composing::guide_edit)?;
+        let id = edit.read().id;
         // Found by id, not by index. The roster is read off the *previewed*
         // document, so mid-drag this is the pose under the hand — which is what the
         // hit test wants: a handle has to be where it is drawn.
         let o = o?;
-        let g = o.guides.iter().find(|g| g.id == edit.id)?;
+        let g = o.guides.iter().find(|g| g.id == id)?;
         Some((o.view, g.guide))
     });
 
-    let Some(edit) = crate::modes::composing(state).and_then(Composing::guide_edit) else {
-        return rsx! {};
-    };
     let Some((view, guide)) = look() else {
         return rsx! {};
     };
-    let id = edit.id;
-    let locked = edit.locked;
+    let GuideEdit { id, locked } = edit();
     // The grabbable geometry, derived once and `Copy`, so the pointer handlers can
     // share the hit test.
     let handles = Handles::of(&guide);

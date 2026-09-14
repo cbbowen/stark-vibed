@@ -80,9 +80,7 @@ use layout::{resize_end, resize_move};
 use navigator::NavigatorOverlay;
 use overlays::{BrushCursor, PeerCursors, PickLoupe, TowStringOverlay, TuneReadoutOverlay};
 use panels::{
-    FilterBar, FrameBar, FrameOverlay, GradientBar, GradientBarOverlay, GradientTraceOverlay,
-    GuideEditOverlay, PerspectiveGuideBar, PickBar, SelectionBar, StackPopouts, TimelineBar,
-    TraceBar, TransformBar, TransformOverlay,
+    FilterBar, FrameBar, ModeChrome, ModePart, PickBar, SelectionBar, StackPopouts, TimelineBar,
 };
 use rail::CommandRail;
 use slots::SlotOverlay;
@@ -211,36 +209,12 @@ fn app() -> Element {
 
             Canvas {}
 
-            // The frame's edges and handles, over the canvas but *under* all the
-            // floating chrome. Mounted only while a frame is selected for composing
-            // (§15.7); its interior passes pointer events through, so
-            // painting inside the frame is unaffected.
-            FrameOverlay {}
-
-            // The transform gesture's box and handles, over the canvas while the
-            // selected paint is being composed (§16.6). Its
-            // catcher blocks canvas painting for the mode's duration.
-            TransformOverlay {}
-
-            // The drawing-guide edit mode's catcher, while a perspective grid
-            // is being composed (§20.5): dragging orbits the camera, the 45°
-            // circle drags the lens, the crosshair moves the construction.
-            GuideEditOverlay {}
-
-            // The gradient trace's catcher and rubber line, while the library
-            // pop-out's Trace is armed (§22.2).
-            GradientTraceOverlay {}
-
-            // The gradient fill's catcher and axis chrome, while the Selection
-            // bar's Gradient is composing (§22.4).
-            GradientBarOverlay {}
-
-            // Order among those four says nothing, because at most one of them
-            // is ever mounted: entering any mode leaves whichever was live
-            // (`modes::leave`). Do not read it as a priority — the four catchers
-            // all sit at the same z-index, where the *last* sibling takes the
-            // pointer rather than the first. A rule that cannot be got wrong is
-            // better than one stated correctly in four places.
+            // Over the canvas but *under* all the floating chrome: the live mode's
+            // catcher — the transform's box (§16.6), the guide edit (§20.5), the
+            // gradient trace (§22.2) or the gradient fill's axis (§22.4) — or, with no
+            // mode composing, the selected frame's edges and handles (§15.7), whose
+            // interior passes pointer events through to the painting.
+            ModeChrome { part: ModePart::Catcher }
 
             // Collaborators' pointers, over the canvas and under the chrome
             // (§17.4). Empty and free when solo.
@@ -339,24 +313,12 @@ fn app() -> Element {
                 // it coexists with painting rather than covering anything — so
                 // it floats above the pile.
                 PickBar {}
-                // The trace's name and its Cancel while one is armed (§22.2) —
-                // the deepest the stack goes, since a trace is the one mode
-                // entered from inside another mode's bar. Before this bar the
-                // mode had no standing indicator at all, only a lit chip inside
-                // a pop-out that closes the moment the mode starts.
-                TraceBar {}
-                // The transform gesture's flips and "Done", standing over the
-                // selection bar while one is composing (§16.6).
-                TransformBar {}
-                // The gradient fill's axis kinds and "Done", standing the same
-                // way while a ramp is being composed (§22.4) — and staying,
-                // recessed under the trace's bar, while one has it parked
-                // (`state::gradient_resume`).
-                GradientBar {}
-                // The drawing-guide edit mode's controls — locks, axis
-                // visibility, cell count, opacity — while a perspective grid is
-                // being composed (§20.5).
-                PerspectiveGuideBar {}
+                // The composing mode's bar, deepest first: the trace's Cancel
+                // (§22.2), the transform's flips (§16.6), the gradient fill's axis
+                // kinds (§22.4) — recessed under the trace's bar while one has it
+                // parked — and the guide edit's locks and dials (§20.5). Each stands
+                // over the standing bars below it.
+                ModeChrome { part: ModePart::Bar }
                 // The whole selection's opacity and commands, present while
                 // there is a selection or a shape tool is armed to make one — so
                 // it doubles as the "canvas is masked" indicator.

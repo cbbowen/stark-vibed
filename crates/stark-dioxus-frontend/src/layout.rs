@@ -47,6 +47,7 @@ use std::collections::{HashMap, HashSet};
 use dioxus::prelude::*;
 
 use crate::icons::icon;
+use crate::panels::reorder::{self, RowKey};
 use crate::panels::{BrushPanel, ColorPanel, GuidesPanel, LayerPanel, LightingPanel, SelectPanel};
 use crate::platform;
 use crate::state::{AppState, root_signal};
@@ -249,11 +250,10 @@ fn landing(visible: &[PanelId], drag: &Grab) -> Option<(Slide, f32)> {
 /// The identity a panel wears in the DOM, and the one a drag resolves against.
 ///
 /// One function because it is asked in four places — the `data-panel` attribute
-/// [`Panel`] writes, the key [`start_drag`] grabs by, the list [`landing`] matches,
-/// and the selector the guided tour's card points at
-/// (`tutor::Anchor`) — and a box matched to the wrong panel
-/// is measured in silence: any box is a plausible box, whichever element it came
-/// from (§11). Stated once, the four cannot disagree; stated four times, `{id:?}`
+/// [`Panel`] writes, the key a press grabs by (`reorder::RowKey::Panel`), the list
+/// [`landing`] matches, and the selector the guided tour's card points at
+/// (`tutor::Anchor`) — and a box matched to the wrong panel is measured in silence:
+/// any box is a plausible box, whichever element it came from (§11). Stated once, the four cannot disagree; stated four times, `{id:?}`
 /// was the agreement.
 pub fn panel_key(id: PanelId) -> String {
     format!("{id:?}")
@@ -788,17 +788,11 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
                 div {
                     class: "panel-title",
                     title: if folded { "Click to unfold, or drag to reorder" } else { "Click to fold, or drag to reorder" },
-                    // The grip captures the pointer and owns the whole gesture, as every
-                    // other drag in the app does (`platform::capture_pointer`). Capture is
-                    // what makes the release certain — it is delivered to the capturing
-                    // element whatever the pointer is over by then, and this is a drag
-                    // where the thing under the pointer moves as you drag it. Left to
-                    // bubble to the app root instead, the release did not arrive at all.
-                    onpointerdown: move |e| {
-                        platform::capture_pointer(&e);
-                        start_drag(layout, id, &e);
-                    },
-                    onpointermove: move |e| drag_move(layout, &e),
+                    // The roster rows' press and follow (`panels::reorder`): the grip
+                    // captures the pointer, so the release arrives here however far the
+                    // stack has moved under it.
+                    onpointerdown: move |e| reorder::press(layout.drag, RowKey::Panel(id), &e),
+                    onpointermove: move |e| reorder::follow(layout.drag, &e),
                     // A press that travelled lands; one that did not folds the panel.
                     onpointerup: move |_| release_title(state, layout, id),
                     // A *cancel* is neither: the browser took the gesture away, and a
@@ -982,46 +976,6 @@ fn visible(layout: PanelLayout) -> Vec<PanelId> {
         .copied()
         .filter(|p| !hidden.contains(p))
         .collect()
-}
-
-/// Begin dragging panel `id` by its title bar: measure the stack and arm the grab.
-/// The pointer tracking and the reorder follow in [`drag_move`] / [`drag_end`].
-///
-/// Every box comes from [`platform::panel_boxes`] and is matched to its panel **by
-/// the id on the same element**, never by position — the stack's children are in a
-/// fixed sequence, not the user's order ([`PanelStack`]). That matching is
-/// `Grab`'s, which is why nothing is resolved here: the measurement is taken whole
-/// and interpreted at the moment it is used, against the list as it stands then.
-///
-/// Synchronous, so the drag is armed on the press rather than a JS round trip later —
-/// which also means no pointer movement is dropped between the two.
-pub fn start_drag(layout: PanelLayout, id: PanelId, e: &Event<PointerData>) {
-    let p = e.client_coordinates();
-    let mut drag = layout.drag;
-    drag.set(Some(Grab::begin(
-        panel_key(id),
-        platform::panel_boxes(),
-        (p.x as f32, p.y as f32),
-    )));
-}
-
-/// Track the pointer for an in-flight panel drag (no-op when idle — the check is what
-/// keeps every pointer move over the app from dirtying the whole stack).
-///
-/// `held` is passed on for the reason the layer tree passes it: a title bar is a
-/// thing the pointer merely travels over as well as a grip, so a release this
-/// handler never heard about must end the gesture rather than leave the panel
-/// following an unpressed pointer around the screen (`Grab::track`).
-pub fn drag_move(layout: PanelLayout, e: &Event<PointerData>) {
-    if layout.drag.peek().as_ref().is_none_or(Grab::over) {
-        return;
-    }
-    let p = e.client_coordinates();
-    let held = !e.held_buttons().is_empty();
-    let mut drag = layout.drag;
-    if let Some(d) = drag.write().as_mut() {
-        d.track((p.x as f32, p.y as f32), held);
-    }
 }
 
 /// End a panel drag: disarm, then write the panel's landing slot into `order`. No-op if

@@ -43,11 +43,9 @@ use stark_ui::assets::Shapes;
 use stark_ui::icons::Icon;
 
 use stark_engine::command::InputSample;
-use stark_model::ColorSpaceId;
 use stark_model::document::{BrushShape, ModSource, Modulation, NoiseKind, OrientationSource};
 use stark_model::geom::Vec2;
-
-use dioxus::html::HasFileData;
+use stark_model::{AssetId, ColorSpaceId};
 
 use crate::commands;
 use crate::icons::icon;
@@ -57,12 +55,12 @@ use crate::platform::{capture_pointer, pick_file, sleep_ms};
 use crate::presets;
 use crate::render::Renderer;
 use crate::state::{AppState, update_brush};
-use crate::widgets::{Choice, Face, Modal, Segmented, Slider};
+use crate::widgets::{AssetCard, AssetGallery, Choice, Face, Modal, Segmented, Slider, Thumb};
 use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_ui::brush_config::{BrushConfig, BrushEffectType, Transient};
 use stark_ui::brush_editor::{
-    ModRow, PREVIEW_STROKE_COLOR, PREVIEW_STROKE_SEED, Row, SECTIONS, Section, Shown, TestStroke,
-    noise_label, source_label,
+    self, ModRow, PREVIEW_STROKE_COLOR, PREVIEW_STROKE_SEED, Row, SECTIONS, Section, Shown,
+    TestStroke, noise_label, source_label,
 };
 use stark_ui::commands::Command;
 
@@ -397,9 +395,13 @@ fn row_element(
     match row {
         Row::Shapes => rsx! { ShapeGallery { key: "{nth}" } },
         Row::Orientation => {
-            let choices = [OrientationSource::FollowStroke, OrientationSource::Pen].map(|source| {
-                let (word, tip) = orientation_face(source);
-                Choice::new(source, Face::Word(word.into()), tip)
+            let choices = brush_editor::ORIENTATIONS.map(|source| {
+                let word = brush_editor::orientation_label(source);
+                Choice::new(
+                    source,
+                    Face::Word(word.into()),
+                    brush_editor::orientation_tip(source),
+                )
             });
             rsx! {
                 Segmented {
@@ -419,15 +421,13 @@ fn row_element(
         // and go with it, which a slider position would not say. The user's own choice:
         // no slider moves this switch (`BrushConfig::effect`).
         Row::Effects => {
-            let choices = [
-                BrushEffectType::Paint,
-                BrushEffectType::Wet,
-                BrushEffectType::Erase,
-                BrushEffectType::Liquify,
-            ]
-            .map(|kind| {
-                let (word, tip) = effect_face(kind);
-                Choice::new(kind, Face::Word(word.into()), tip)
+            let choices = brush_editor::EFFECTS.map(|kind| {
+                let word = brush_editor::effect_label(kind);
+                Choice::new(
+                    kind,
+                    Face::Word(word.into()),
+                    brush_editor::effect_tip(kind),
+                )
             });
             rsx! {
                 Segmented {
@@ -440,11 +440,11 @@ fn row_element(
             }
         }
         Row::Noise => {
-            let choices = stark_ui::brush_editor::NOISE_KINDS.map(|kind| {
+            let choices = brush_editor::NOISE_KINDS.map(|kind| {
                 Choice::new(
                     kind,
                     Face::Word(noise_label(kind).into()),
-                    "The field the color wanders across",
+                    brush_editor::NOISE_TIP,
                 )
             });
             rsx! {
@@ -476,50 +476,6 @@ fn row_element(
             }
         }
         Row::Mod(m) => mod_slider(state, preview, mod_open, m, brush, tune),
-    }
-}
-
-/// The word an effect chip wears, and its tip. The *marks* are the panels' — a chip in
-/// a docked column has no room for a word — and here the word leads, because the chip
-/// is what names the group under it.
-fn effect_face(effect: BrushEffectType) -> (&'static str, &'static str) {
-    match effect {
-        BrushEffectType::Paint => ("Paint", "Paint \u{2014} lay the colour in hand"),
-        BrushEffectType::Wet => (
-            "Wet",
-            "Wet \u{2014} move and mix the paint already on the canvas",
-        ),
-        BrushEffectType::Erase => (
-            "Erase",
-            "Erase \u{2014} take paint away where the tip passes",
-        ),
-        BrushEffectType::Liquify => (
-            "Liquify",
-            "Liquify \u{2014} push the paint about without adding any",
-        ),
-    }
-}
-
-/// The word an orientation chip wears, and its tip.
-fn orientation_face(source: OrientationSource) -> (&'static str, &'static str) {
-    match source {
-        OrientationSource::FollowStroke => (
-            "Follow stroke",
-            "The footprint turns with the travel \u{2014} a nib that follows the line",
-        ),
-        OrientationSource::Pen => (
-            "Pen angle",
-            "The footprint follows the pen's lean \u{2014} a real conical tip",
-        ),
-    }
-}
-
-/// The tip a pen-source chip carries.
-fn source_tip(source: Option<ModSource>) -> &'static str {
-    match source {
-        None => "Nothing drives this",
-        Some(ModSource::Pressure) => "How hard the pen is pressed",
-        Some(ModSource::Tilt) => "How far the pen is leaned over",
     }
 }
 
@@ -569,10 +525,10 @@ fn mod_slider(
         "mod-chip"
     };
     let sources: Vec<_> = std::iter::once(None)
-        .chain(stark_ui::brush_editor::SOURCES.map(Some))
+        .chain(brush_editor::SOURCES.map(Some))
         .map(|src| {
-            let word = src.map_or("Off", source_label);
-            Choice::new(src, Face::Word(word.into()), source_tip(src))
+            let word = src.map_or(brush_editor::NO_SOURCE_LABEL, source_label);
+            Choice::new(src, Face::Word(word.into()), brush_editor::source_tip(src))
         })
         .collect();
 
@@ -691,31 +647,14 @@ fn curve_plot(m: Modulation) -> Element {
 /// No restroke calls here: selection and import go through the brush's `shape`,
 /// and the modal's shape effect re-strokes on any change — which is what lets
 /// an async import (finishing long after its click handler returned) still
-/// refresh the preview. Safe as a child component (unlike the slider rows):
-/// nothing here spawns into this scope — imports are `spawn_forever` in
-/// `crate::library`.
+/// refresh the preview.
 #[component]
 fn ShapeGallery() -> Element {
     let state = use_context::<AppState>();
-    let mut dropping = use_signal(|| false);
 
-    // The one field the gallery reads: which card wears the selected ring moves
-    // when a shape is chosen and at no other time.
+    // Which card wears the selected ring moves when a shape is chosen and at no
+    // other time.
     let brush_shape = (state.brush)().shape;
-    // One card per bundled shape, in table order. A built-in whose fetch is
-    // still in flight has no id yet, so it simply never reads as selected —
-    // clicking it is the same no-op, and both settle when the bytes land. Its
-    // picture waits on the same moment, because the picture is the *coverage the
-    // engine imported* rather than the bundled file (`library::thumbnail`): a
-    // built-in is authored the same way a user's shape is, so it is shown the
-    // same way, and neither has to have put its coverage in an alpha channel.
-    let builtins = crate::builtins::resolved(state)
-        .into_iter()
-        .map(|(builtin, id)| {
-            let active = matches!(brush_shape, BrushShape::Stamp(s) if Some(s) == id);
-            let thumb = id.and_then(|id| library::thumbnail::<Shapes>(state, id));
-            (builtin.name, thumb, active)
-        });
     let entries = state.shapes.entries;
     // Memoized so the list is rebuilt when the library changes rather than on
     // every obs refresh; the encode behind each url is itself remembered per
@@ -727,7 +666,6 @@ fn ShapeGallery() -> Element {
             .map(|e| {
                 (
                     e.id,
-                    e.id.to_hex(),
                     e.name.clone(),
                     library::thumbnail::<Shapes>(state, e.id),
                 )
@@ -735,92 +673,74 @@ fn ShapeGallery() -> Element {
             .collect::<Vec<_>>()
     });
 
-    let card = |active: bool| {
-        if active {
-            "asset-card selected"
-        } else {
-            "asset-card"
-        }
+    let round = AssetCard {
+        key: "round".to_string(),
+        name: stark_ui::assets::ROUND.to_string(),
+        thumb: Thumb::Round,
+        selected: matches!(brush_shape, BrushShape::Round { .. }),
+        blurb: None,
+        pick: Some(ShapePick::Round),
+        remove: None,
     };
-    let is_round = matches!(brush_shape, BrushShape::Round { .. });
+    // A built-in whose fetch is still in flight has no id yet, so it never reads as
+    // selected and its picture waits on the same moment: the picture is the
+    // *coverage the engine imported* rather than the bundled file
+    // (`library::thumbnail`), so a built-in is shown the way a user's shape is.
+    let builtins = crate::builtins::resolved(state)
+        .into_iter()
+        .map(|(builtin, id)| AssetCard {
+            key: format!("builtin:{}", builtin.name),
+            name: builtin.name.to_string(),
+            thumb: Thumb::Picture(id.and_then(|id| library::thumbnail::<Shapes>(state, id))),
+            selected: matches!(brush_shape, BrushShape::Stamp(s) if Some(s) == id),
+            blurb: None,
+            pick: Some(ShapePick::Builtin(builtin.name)),
+            remove: None,
+        });
+    let owned = thumbs().into_iter().map(|(id, name, url)| AssetCard {
+        key: format!("library:{}", id.to_hex()),
+        name,
+        thumb: Thumb::Picture(url),
+        selected: brush_shape == BrushShape::Stamp(id),
+        blurb: None,
+        pick: Some(ShapePick::Library(id)),
+        remove: Some(id),
+    });
+    let cards: Vec<_> = std::iter::once(round)
+        .chain(builtins)
+        .chain(owned)
+        .collect();
 
     rsx! {
-        div {
-            class: if dropping() { "asset-grid dropping" } else { "asset-grid" },
-            // `preventDefault` on dragover is what makes the element a drop
-            // target at all; the class is just the highlight.
-            //
-            // **And `stopPropagation`, which is what claims the drop.** The app root
-            // takes every drop the window sees, so that one landing on a panel is not
-            // handled by the browser navigating away from an unsaved painting (§23.4)
-            // — and it places what it gets as a picture. A stamp dropped into this
-            // library is a different act, so this handler says so rather than letting
-            // the same file be imported twice, two ways.
-            ondragover: move |e| {
-                e.prevent_default();
-                e.stop_propagation();
-                dropping.set(true);
+        AssetGallery {
+            cards,
+            notice: (state.shapes.notice)(),
+            hint: "Import any image or drop one on the grid — white paints, black doesn't, transparency counts.",
+            onpick: move |pick| match pick {
+                ShapePick::Round => set_shape(state, BrushShape::default()),
+                ShapePick::Builtin(name) => crate::builtins::select(state, name),
+                ShapePick::Library(id) => crate::shapes::select(state, id),
             },
-            ondragleave: move |_| dropping.set(false),
-            ondrop: move |e| {
-                e.prevent_default();
-                e.stop_propagation();
-                dropping.set(false);
-                library::import_dropped::<Shapes>(state, e.files(), crate::shapes::select);
+            onremove: move |id| crate::shapes::remove(state, id),
+            onimport: move |()| {
+                pick_file("image/*", move |name, bytes| {
+                    library::import_file::<Shapes>(state, name, bytes, crate::shapes::select);
+                });
             },
-
-            div { class: card(is_round),
-                onclick: move |_| set_shape(state, BrushShape::default()),
-                div { class: "asset-thumb round" }
-                div { class: "asset-name", "{stark_ui::assets::ROUND}" }
-            }
-            for (name, url, active) in builtins {
-                div {
-                    key: "{name}",
-                    class: card(active),
-                    onclick: move |_| crate::builtins::select(state, name),
-                    div { class: "asset-thumb", style: crate::cards::thumb_style(url.as_deref()) }
-                    div { class: "asset-name", title: "{name}", "{name}" }
-                }
-            }
-            for (id, key, name, url) in thumbs() {
-                div {
-                    key: "{key}",
-                    class: card(brush_shape == BrushShape::Stamp(id)),
-                    onclick: move |_| crate::shapes::select(state, id),
-                    div { class: "asset-thumb", style: crate::cards::thumb_style(url.as_deref()) }
-                    div { class: "asset-name", title: "{name}", "{name}" }
-                    // `stark_ui::icons::REMOVE`, as on every other row the application lets you
-                    // take something out of — the library of stamps is one more roster.
-                    button {
-                        class: "asset-remove",
-                        title: "Remove from library",
-                        onclick: move |e| {
-                            e.stop_propagation();
-                            crate::shapes::remove(state, id);
-                        },
-                        {icon(stark_ui::icons::REMOVE)}
-                    }
-                }
-            }
-            div { class: "asset-card import",
-                // `pick_file` must run inside the click gesture — no task hop.
-                onclick: move |_| {
-                    pick_file("image/*", move |name, bytes| {
-                        library::import_file::<Shapes>(state, name, bytes, crate::shapes::select);
-                    });
-                },
-                div { class: "asset-thumb plus", {icon(stark_ui::icons::ADD)} }
-                div { class: "asset-name", "Import\u{2026}" }
-            }
-        }
-        if let Some(notice) = (state.shapes.notice)() {
-            div { class: "asset-notice", "{notice}" }
-        }
-        div { class: "asset-hint",
-            "Import any image or drop one on the grid — white paints, black doesn't, transparency counts."
+            ondrop: move |files| library::import_dropped::<Shapes>(state, files, crate::shapes::select),
         }
     }
+}
+
+/// What a card in [`ShapeGallery`] picks.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum ShapePick {
+    /// The procedural round tip.
+    Round,
+    /// A shape bundled with the app, by its catalog name.
+    Builtin(&'static str),
+    /// A shape in the user's library.
+    Library(AssetId),
 }
 
 // --- grouping chrome ---

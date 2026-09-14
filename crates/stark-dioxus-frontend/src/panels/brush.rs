@@ -4,10 +4,9 @@
 use dioxus::prelude::*;
 
 use crate::icons::icon;
-use crate::platform::select_all;
 use crate::presets;
 use crate::state::{AppState, update_brush};
-use crate::widgets::{CommandButton, Modal, Slider};
+use crate::widgets::{CommandButton, Modal, Slider, focus_selected};
 use stark_model::document::{BrushShape, OrientationSource};
 use stark_ui::brush_config::{MAX_RADIUS, MIN_RADIUS};
 use stark_ui::commands::Command;
@@ -105,60 +104,56 @@ fn PresetSection() -> Element {
                     div { class: "preset-empty", "No presets yet. The brush editor saves the brush you have now." }
                 }
                 for entry in entries {
-                    {
-                        let apply_name = entry.name.clone();
-                        let remove_name = entry.name.clone();
-                        let active = stark_ui::presets::same_tool(&brush, &entry.brush);
+                    PresetRow {
+                        key: "{entry.name}",
+                        active: stark_ui::presets::same_tool(&brush, &entry.brush),
                         // The brush as a stroke (`crate::thumbs`), filling the whole
                         // row as its background: the preview is the star, and the
                         // name floats over it (shadowed in the stylesheet) to tell
                         // apart what the marks cannot.
-                        let bg = crate::cards::thumb_style(
+                        background: crate::cards::thumb_style(
                             crate::thumbs::url(state, &entry.brush, entry.transient).as_deref(),
-                        );
-                        rsx! {
-                            div {
-                                key: "{entry.name}",
-                                class: if active { "preset-row active" } else { "preset-row" },
-                                style: "{bg}",
-                                onclick: move |_| presets::apply(state, &apply_name),
-                                span { class: "preset-row-name", title: "{entry.name}", "{entry.name}" }
-                                if entry.builtin {
-                                    // The app's own, and the row says so where the
-                                    // user's rows offer to remove: a lock instead
-                                    // of a trash (`stark_ui::icons::BUILTIN`), in the same
-                                    // column, so the two kinds are told apart by
-                                    // the one thing that differs between them.
-                                    //
-                                    // Always on, unlike the hover-revealed trash —
-                                    // it is a state rather than an act, and a mark
-                                    // that only appeared under the pointer would
-                                    // distinguish nothing at rest. The eye in the
-                                    // layer rows is the same argument.
-                                    span {
-                                        class: "preset-lock",
-                                        title: "Built in \u{2014} kept up to date with the app",
-                                        {icon(stark_ui::icons::BUILTIN)}
-                                    }
-                                } else {
-                                    // The same trash the Layers and Guides rows wear
-                                    // (`stark_ui::icons::REMOVE`): a third roster, and removing a
-                                    // row from it is the same control, so it is the same
-                                    // mark. The × it replaces was a character standing in
-                                    // for a glyph the set already had.
-                                    button {
-                                        class: "preset-remove",
-                                        title: "Remove preset",
-                                        onclick: move |e| {
-                                            e.stop_propagation();
-                                            presets::remove(state, &remove_name);
-                                        },
-                                        {icon(stark_ui::icons::REMOVE)}
-                                    }
-                                }
-                            }
-                        }
+                        ),
+                        builtin: entry.builtin,
+                        name: entry.name,
                     }
+                }
+            }
+        }
+    }
+}
+
+/// One preset in the library: click applies it, and the user's own offer to remove.
+#[component]
+fn PresetRow(name: String, active: bool, background: String, builtin: bool) -> Element {
+    let state = use_context::<AppState>();
+    let apply_name = name.clone();
+    let remove_name = name.clone();
+    rsx! {
+        div {
+            class: if active { "preset-row active" } else { "preset-row" },
+            style: "{background}",
+            onclick: move |_| presets::apply(state, &apply_name),
+            span { class: "preset-row-name", title: "{name}", "{name}" }
+            if builtin {
+                // The app's own, and the row says so where the user's rows offer to
+                // remove: a lock instead of a trash, in the same column. Always on,
+                // unlike the hover-revealed trash — it is a state rather than an act.
+                span {
+                    class: "preset-lock",
+                    title: "Built in \u{2014} kept up to date with the app",
+                    {icon(stark_ui::icons::BUILTIN)}
+                }
+            } else {
+                // The same trash the Layers and Guides rows wear: a third roster.
+                button {
+                    class: "preset-remove",
+                    title: "Remove preset",
+                    onclick: move |e| {
+                        e.stop_propagation();
+                        presets::remove(state, &remove_name);
+                    },
+                    {icon(stark_ui::icons::REMOVE)}
                 }
             }
         }
@@ -231,13 +226,8 @@ pub fn PresetSaveModal(on_close: EventHandler<()>) -> Element {
                 // Focused and selected as it appears: the dialog exists to take one
                 // word, and the proposed name is there to be typed over. `onmounted`
                 // rather than `autofocus`, which the browser does not honour for an
-                // element inserted after load (see `layer::LayerRow`).
-                onmounted: move |e: Event<MountedData>| {
-                    spawn(async move {
-                        let _ = e.set_focus(true).await;
-                        select_all(&e);
-                    });
-                },
+                // element inserted after load.
+                onmounted: move |e| focus_selected(&e),
                 oninput: move |e| name.set(e.value()),
                 onkeydown: move |e| match e.key() {
                     Key::Enter => save(),

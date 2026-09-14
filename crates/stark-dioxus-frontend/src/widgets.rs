@@ -3,8 +3,9 @@
 use std::borrow::Cow;
 
 use crate::commands;
-use dioxus::html::Key;
+use dioxus::html::{FileData, HasFileData, Key};
 use dioxus::prelude::*;
+use stark_model::AssetId;
 use stark_ui::icons::Icon;
 
 use crate::icons::{icon, label as label_span};
@@ -501,6 +502,134 @@ pub fn InlineRename(
     }
 }
 
+/// What a gallery card shows where its picture goes.
+#[derive(Clone, PartialEq, Debug)]
+pub enum Thumb {
+    /// A `data:` URL, or `None` while there is none yet — a built-in still fetching.
+    Picture(Option<String>),
+    /// No picture, and the flat ground drawn in its place (`.asset-thumb.flat`).
+    Flat,
+    /// The procedural round tip, which the stylesheet draws (`.asset-thumb.round`).
+    Round,
+}
+
+impl Thumb {
+    fn class(&self) -> &'static str {
+        match self {
+            Thumb::Picture(_) => "asset-thumb",
+            Thumb::Flat => "asset-thumb flat",
+            Thumb::Round => "asset-thumb round",
+        }
+    }
+
+    /// The inline picture. `None` only for the round tip, whose disc is a `background`
+    /// an inline `background-image` would override.
+    fn style(&self) -> Option<String> {
+        match self {
+            Thumb::Picture(url) => Some(crate::cards::thumb_style(url.as_deref())),
+            Thumb::Flat => Some(crate::cards::thumb_style(None)),
+            Thumb::Round => None,
+        }
+    }
+}
+
+/// One card in an [`AssetGallery`].
+#[derive(Clone, PartialEq, Debug)]
+pub struct AssetCard<V> {
+    /// Unique among the gallery's cards, and stable for the asset it shows.
+    pub key: String,
+    pub name: String,
+    pub thumb: Thumb,
+    /// Wears the selected ring.
+    pub selected: bool,
+    /// The card's hover, where it has one; a card without one puts its name there, which
+    /// the grid may have cut short.
+    pub blurb: Option<&'static str>,
+    /// What a press on the card picks, or `None` for a card that cannot be picked.
+    pub pick: Option<V>,
+    /// The library id a remove button takes out, on a card the user's library holds.
+    pub remove: Option<AssetId>,
+}
+
+/// A grid of asset cards — the brush editor's stamps, the Lighting panel's surfaces —
+/// with an import card at its end, the library's notice under it and an optional hint.
+///
+/// Every handler is called synchronously from the event it answers, so nothing here
+/// spawns and nothing outlives the gallery: `onimport` runs inside the click gesture a
+/// file picker needs, and the imports a caller starts are its own `spawn_forever`s.
+///
+/// A drop on the grid is claimed (`stopPropagation`): the app root places every other
+/// dropped file as a picture (§23.4), and adding one to a library is a different act.
+#[component]
+pub fn AssetGallery<V: Clone + PartialEq + 'static>(
+    cards: Vec<AssetCard<V>>,
+    notice: Option<String>,
+    #[props(default)] hint: Option<&'static str>,
+    onpick: EventHandler<V>,
+    onremove: EventHandler<AssetId>,
+    onimport: EventHandler<()>,
+    ondrop: EventHandler<Vec<FileData>>,
+) -> Element {
+    let mut dropping = use_signal(|| false);
+    rsx! {
+        div {
+            class: if dropping() { "asset-grid dropping" } else { "asset-grid" },
+            ondragover: move |e| {
+                e.prevent_default();
+                e.stop_propagation();
+                dropping.set(true);
+            },
+            ondragleave: move |_| dropping.set(false),
+            ondrop: move |e| {
+                e.prevent_default();
+                e.stop_propagation();
+                dropping.set(false);
+                ondrop.call(e.files());
+            },
+            for AssetCard { key, name, thumb, selected, blurb, pick, remove } in cards {
+                div {
+                    key: "{key}",
+                    class: if selected { "asset-card selected" } else { "asset-card" },
+                    title: blurb,
+                    onclick: move |_| {
+                        if let Some(pick) = &pick {
+                            onpick.call(pick.clone());
+                        }
+                    },
+                    div { class: thumb.class(), style: thumb.style() }
+                    div {
+                        class: "asset-name",
+                        title: blurb.is_none().then(|| name.clone()),
+                        "{name}"
+                    }
+                    if let Some(id) = remove {
+                        button {
+                            class: "asset-remove",
+                            title: "Remove from library",
+                            onclick: move |e| {
+                                e.stop_propagation();
+                                onremove.call(id);
+                            },
+                            {icon(stark_ui::icons::REMOVE)}
+                        }
+                    }
+                }
+            }
+            div { class: "asset-card import",
+                onclick: move |_| onimport.call(()),
+                div { class: "asset-thumb plus", {icon(stark_ui::icons::ADD)} }
+                div { class: "asset-name", "Import\u{2026}" }
+            }
+        }
+        if let Some(notice) = notice {
+            div { class: "asset-notice", "{notice}" }
+        }
+        if let Some(hint) = hint {
+            div { class: "asset-hint", "{hint}" }
+        }
+    }
+}
+
 /// Take the keyboard and select everything in the field `e` was mounted on — for a field
 /// opened to replace what it holds. Synchronous, so the selection cannot land before the
 /// focus does.
@@ -800,6 +929,50 @@ mod tests {
         assert_eq!(
             rendered_classes(app),
             [vec!["slider", "setting-slider"], vec!["slider"]]
+        );
+    }
+
+    /// A gallery's grid, its cards and their pictures wear the classes the stylesheet
+    /// draws them by: the selected ring, and the flat ground and round tip that stand in
+    /// for a picture.
+    #[test]
+    fn a_gallery_card_wears_its_ring_and_its_picture() {
+        fn app() -> Element {
+            let card = |key: &str, thumb: Thumb, selected: bool| AssetCard {
+                key: key.to_string(),
+                name: key.to_string(),
+                thumb,
+                selected,
+                blurb: None,
+                pick: Some(0u8),
+                remove: None,
+            };
+            rsx! {
+                AssetGallery {
+                    cards: vec![
+                        card("picture", Thumb::Picture(None), true),
+                        card("flat", Thumb::Flat, false),
+                        card("round", Thumb::Round, false),
+                    ],
+                    notice: None,
+                    onpick: |_| {},
+                    onremove: |_| {},
+                    onimport: |_| {},
+                    ondrop: |_| {},
+                }
+            }
+        }
+        assert_eq!(
+            rendered_classes(app),
+            [
+                vec!["asset-grid"],
+                vec!["asset-card", "selected"],
+                vec!["asset-thumb"],
+                vec!["asset-card"],
+                vec!["asset-thumb", "flat"],
+                vec!["asset-card"],
+                vec!["asset-thumb", "round"],
+            ]
         );
     }
 

@@ -115,15 +115,33 @@ impl Anchor {
     }
 }
 
-/// Whether the dialog on top of the stack covers a card pointing at `anchor`: every
-/// dialog does, except the brush editor for a card pointing into it. Only the top is
-/// asked, because a dialog opened over the editor covers its parts as well.
-fn covered(top: Option<DialogId>, anchor: Anchor) -> bool {
-    match top {
-        None => false,
-        Some(DialogId::BrushEditor) => !anchor.inside_dialog(),
-        Some(_) => true,
+/// Where a card pointing at `anchor` stands, under `top`, the dialog on top of the stack.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Standing {
+    /// Among the chrome, with no dialog over it.
+    Chrome,
+    /// Above the dialogs' backdrop, pointing into the brush editor on top of them.
+    OverDialog,
+    /// Under a dialog: neither promoted nor drawn, whether it is waiting or already on
+    /// screen.
+    Covered,
+}
+
+impl Standing {
+    /// Every dialog covers a card, except the brush editor for a card pointing into it.
+    /// Only the top is asked, because a dialog opened over the editor covers its parts.
+    fn of(top: Option<DialogId>, anchor: Anchor) -> Self {
+        match top {
+            None => Standing::Chrome,
+            Some(DialogId::BrushEditor) if anchor.inside_dialog() => Standing::OverDialog,
+            Some(_) => Standing::Covered,
+        }
     }
+}
+
+/// The dialog on top of the stack, if any. Subscribing.
+fn top_dialog(state: AppState) -> Option<DialogId> {
+    state.dialogs.read().last().copied()
 }
 
 /// Put the lesson waiting on screen.
@@ -181,7 +199,7 @@ pub fn TutorCard() -> Element {
         if !tips() {
             return;
         }
-        let dialog = covered(state.dialogs.read().last().copied(), lesson.anchor);
+        let dialog = Standing::of(top_dialog(state), lesson.anchor) == Standing::Covered;
         let busy = (state.canvas_active)() || dialog || crate::modes::composing(state).is_some();
         if busy {
             return;
@@ -239,6 +257,12 @@ pub fn TutorCard() -> Element {
     let Some(lesson) = LESSONS.get(i) else {
         return rsx! {};
     };
+    // A dialog opened over the card takes it down until the dialog goes, as it would have
+    // kept the card from coming up.
+    let standing = Standing::of(top_dialog(state), lesson.anchor);
+    if standing == Standing::Covered {
+        return rsx! {};
+    }
     // Nothing to point at — the anchor went, or the DOM has not caught up. The effect above
     // is still watching, so the card comes back if the anchor does.
     let Some(at) = anchored() else {
@@ -331,7 +355,7 @@ pub fn TutorCard() -> Element {
         div {
             class: "tutor-card chrome {side}",
             class: if chrome_dimmed(state) { "dimmed" },
-            class: if lesson.anchor.inside_dialog() { "over-dialog" },
+            class: if standing == Standing::OverDialog { "over-dialog" },
             style: "{place}",
             div { class: "tutor-head",
                 span { class: "tutor-mark", {icon(stark_ui::icons::TOUR)} }
@@ -368,13 +392,34 @@ mod tests {
     #[test]
     fn every_dialog_covers_a_card_but_the_editor_it_points_into() {
         let inside = Anchor::BrushEditor(BrushPart::Preview);
-        assert!(!covered(None, Anchor::Canvas));
-        assert!(covered(Some(DialogId::Settings), Anchor::Canvas));
-        assert!(covered(Some(DialogId::BrushEditor), Anchor::Canvas));
-        assert!(!covered(Some(DialogId::BrushEditor), inside));
-        assert!(
-            covered(Some(DialogId::PresetSave), inside),
-            "a dialog opened over the editor covers its parts"
+        assert_eq!(Standing::of(None, Anchor::Canvas), Standing::Chrome);
+        assert_eq!(
+            Standing::of(Some(DialogId::Settings), Anchor::Canvas),
+            Standing::Covered
         );
+        assert_eq!(
+            Standing::of(Some(DialogId::BrushEditor), Anchor::Canvas),
+            Standing::Covered
+        );
+        assert_eq!(
+            Standing::of(Some(DialogId::BrushEditor), inside),
+            Standing::OverDialog
+        );
+    }
+
+    /// A card already pointing into the editor stands down when a dialog opens over the
+    /// editor — it wore the rung above every backdrop, so left standing it would float
+    /// over the new dialog's — and wears that rung only while the editor is on top.
+    #[test]
+    fn a_card_in_the_editor_stands_down_under_a_dialog_opened_over_it() {
+        let inside = Anchor::BrushEditor(BrushPart::Group(stark_ui::brush_editor::SECTIONS[0]));
+        for over in [DialogId::PresetSave, DialogId::Settings] {
+            assert_eq!(
+                Standing::of(Some(over), inside),
+                Standing::Covered,
+                "{over:?} opened over the editor"
+            );
+        }
+        assert_ne!(Standing::of(None, inside), Standing::OverDialog);
     }
 }

@@ -81,12 +81,7 @@ pub fn LightingPanel() -> Element {
     } else {
         (false, None)
     };
-    let swatch = format!(
-        "background: rgb({:.1}% {:.1}% {:.1}%);",
-        c[0] * 100.0,
-        c[1] * 100.0,
-        c[2] * 100.0
-    );
+    let swatch = crate::cards::swatch_style(c.get());
     // Lit while its pop-out is open — the well is a column away from what it opened,
     // and nothing else says which press put that surface there.
     let color_open = use_popout(state, PopoutId::SubstrateColor);
@@ -129,7 +124,7 @@ pub fn LightingPanel() -> Element {
         }
         div { class: "slider-row marked", "data-popout": PopoutId::SubstrateGallery.key(),
             div { class: "slider-label", {icon(stark_ui::icons::SURFACE)} {label("Surface")} }
-            crate::substrates::SubstrateWell {}
+            super::substrates::SubstrateWell {}
         }
         // How large the substrate is laid (§6.4). The percentage is the readout
         // because "the same as last time" is judged by the figure.

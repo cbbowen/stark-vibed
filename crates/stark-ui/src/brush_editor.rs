@@ -299,6 +299,18 @@ pub fn source_label(s: ModSource) -> &'static str {
     }
 }
 
+/// The word the chip that maps nothing wears, ahead of the [`SOURCES`] chips.
+pub const NO_SOURCE_LABEL: &str = "Off";
+
+/// What a pen-source chip's hover says it does; `None` is the chip that maps nothing.
+pub fn source_tip(s: Option<ModSource>) -> &'static str {
+    match s {
+        None => "Nothing drives this",
+        Some(ModSource::Pressure) => "How hard the pen is pressed",
+        Some(ModSource::Tilt) => "How far the pen is leaned over",
+    }
+}
+
 /// The word a noise kind wears on its chip.
 pub fn noise_label(kind: NoiseKind) -> &'static str {
     match kind {
@@ -306,6 +318,62 @@ pub fn noise_label(kind: NoiseKind) -> &'static str {
         NoiseKind::White => "White",
         NoiseKind::Voronoi => "Voronoi",
         NoiseKind::Mosaic => "Mosaic",
+    }
+}
+
+/// What every noise chip's hover says: the kinds differ in a picture, not in a sentence.
+pub const NOISE_TIP: &str = "The field the color wanders across";
+
+/// The four effects, in the order the chips offer them.
+pub const EFFECTS: [BrushEffectType; 4] = [
+    BrushEffectType::Paint,
+    BrushEffectType::Wet,
+    BrushEffectType::Erase,
+    BrushEffectType::Liquify,
+];
+
+/// The word an effect chip wears. A docked column draws the effect as a mark; the
+/// editor's chip leads with the word, because it names the groups under it.
+pub fn effect_label(effect: BrushEffectType) -> &'static str {
+    match effect {
+        BrushEffectType::Paint => "Paint",
+        BrushEffectType::Wet => "Wet",
+        BrushEffectType::Erase => "Erase",
+        BrushEffectType::Liquify => "Liquify",
+    }
+}
+
+/// What an effect chip's hover says it does.
+pub fn effect_tip(effect: BrushEffectType) -> &'static str {
+    match effect {
+        BrushEffectType::Paint => "Paint \u{2014} lay the colour in hand",
+        BrushEffectType::Wet => "Wet \u{2014} move and mix the paint already on the canvas",
+        BrushEffectType::Erase => "Erase \u{2014} take paint away where the tip passes",
+        BrushEffectType::Liquify => "Liquify \u{2014} push the paint about without adding any",
+    }
+}
+
+/// The two ways a tip can be turned, in the order the chips offer them.
+pub const ORIENTATIONS: [OrientationSource; 2] =
+    [OrientationSource::FollowStroke, OrientationSource::Pen];
+
+/// The word an orientation chip wears.
+pub fn orientation_label(o: OrientationSource) -> &'static str {
+    match o {
+        OrientationSource::FollowStroke => "Follow stroke",
+        OrientationSource::Pen => "Pen angle",
+    }
+}
+
+/// What an orientation chip's hover says it does.
+pub fn orientation_tip(o: OrientationSource) -> &'static str {
+    match o {
+        OrientationSource::FollowStroke => {
+            "The footprint turns with the travel \u{2014} a nib that follows the line"
+        }
+        OrientationSource::Pen => {
+            "The footprint follows the pen's lean \u{2014} a real conical tip"
+        }
     }
 }
 
@@ -1438,6 +1506,23 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Every chip the editor offers says what it does: a chip is mostly a word, and its
+    /// hover is where the choice is explained, in both frontends.
+    #[test]
+    fn no_chip_goes_without_a_word_or_a_tip() {
+        let words = EFFECTS
+            .map(|e| (effect_label(e), effect_tip(e)))
+            .into_iter()
+            .chain(ORIENTATIONS.map(|o| (orientation_label(o), orientation_tip(o))))
+            .chain(NOISE_KINDS.map(|k| (noise_label(k), NOISE_TIP)))
+            .chain(std::iter::once((NO_SOURCE_LABEL, source_tip(None))))
+            .chain(SOURCES.map(|s| (source_label(s), source_tip(Some(s)))));
+        for (word, tip) in words {
+            assert!(!word.trim().is_empty(), "a chip with no word");
+            assert!(!tip.trim().is_empty(), "the {word} chip has no tip");
         }
     }
 }
