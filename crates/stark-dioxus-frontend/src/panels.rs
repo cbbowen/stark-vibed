@@ -22,7 +22,7 @@
 //!   painting for a mode's duration ([`TransformOverlay`],
 //!   [`GuideEditOverlay`], [`GradientBarOverlay`], [`GradientTraceOverlay`]) —
 //!   or, like [`FrameOverlay`], sits over the canvas and passes presses through
-//!   it. [`ModeChrome`] mounts whichever of those a mode owns;
+//!   it. [`ModeCatcher`] and [`ModeBars`] mount whichever of those a mode owns;
 //! - a **pop-out** is a surface flown open beside the well that opened it, for a
 //!   choice made by looking rather than by reading — a colour, a ramp, a canvas
 //!   surface. `widgets::PopoutId` names every one and keeps at most one open, and
@@ -43,7 +43,7 @@
 use dioxus::prelude::*;
 
 use crate::state::AppState;
-use stark_ui::modes::Composing;
+use stark_ui::modes::{Composing, GradientUi};
 
 pub mod brush;
 pub mod color;
@@ -83,65 +83,152 @@ pub use select::{SelectPanel, SelectionBar};
 pub use timeline::TimelineBar;
 pub use transform::{TransformBar, TransformOverlay};
 
-/// Which half of the composing mode's chrome a [`ModeChrome`] mounts.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ModePart {
-    /// Over the canvas: the live mode's catcher, or the frame's handles while none is.
-    Catcher,
-    /// In the bottom column: the live mode's bar, and the gradient bar a trace parked.
-    Bar,
-}
-
-/// The chrome of whichever mode is composing (`crate::modes`), from one `match` on it.
+/// The live composing mode's catcher over the canvas (`crate::modes`), or the frame's
+/// handles while no mode is live.
 ///
-/// Mounted twice by `app`, once per [`ModePart`], because a catcher and a bar stand in
-/// different stacks. Each half keeps the order `app` gave its members:
+/// At most one catcher is live, since entering a mode leaves the last. The frame's handles
+/// stand down under a mode because they sit above the catchers' rung (`.frame-overlay` at
+/// 10, catchers at 9), where a grip over a transform box or an axis drag would take presses
+/// meant for it.
 ///
-/// - **Catcher.** At most one catcher is live, since entering a mode leaves the last, so
-///   their order says nothing. The frame's handles take the no-mode arm: they sit above
-///   the catchers' rung (`.frame-overlay` at 10, catchers at 9), and a grip floating over
-///   a transform box or an axis drag would take presses meant for it.
-/// - **Bar.** Deepest first — the trace, the transform, the gradient, the guide — so a
-///   trace's bar lands above the gradient bar it parked. Each bar holds its own slot, so
-///   the gradient bar keeps its element (and its recess transition) when a trace parks it
-///   and when the trace hands it back.
+/// The `match` sits inside `rsx!` because a key is honoured only among siblings: at a
+/// component's root it is ignored, and a guide picked up in place of another would keep
+/// the last one's drag and hover.
 #[component]
-pub fn ModeChrome(part: ModePart) -> Element {
+pub fn ModeCatcher() -> Element {
     let state = use_context::<AppState>();
-    let mode = crate::modes::composing(state);
-    match part {
-        ModePart::Catcher => match mode {
-            None => rsx! { FrameOverlay {} },
-            Some(Composing::Transform(ui)) => rsx! { TransformOverlay { ui } },
-            Some(Composing::GuideEdit(edit)) => rsx! { GuideEditOverlay { edit } },
-            Some(Composing::GradientTrace) => rsx! { GradientTraceOverlay {} },
-            Some(Composing::GradientFill(ui)) => rsx! { GradientBarOverlay { ui } },
-        },
-        ModePart::Bar => {
-            // The gesture a trace set aside (`gradient_bar::suspend`), drawn recessed
-            // under whatever mode is live rather than the gradient fill's own.
-            let parked = state.gradient_resume.read().clone().map(|ui| (ui, true));
-            let (trace, transform, gradient, guide) = match mode {
-                Some(Composing::GradientTrace) => (true, None, parked, None),
-                Some(Composing::Transform(ui)) => (false, Some(ui), parked, None),
-                Some(Composing::GradientFill(ui)) => (false, None, Some((ui, false)), None),
-                Some(Composing::GuideEdit(edit)) => (false, None, parked, Some(edit)),
-                None => (false, None, parked, None),
-            };
-            rsx! {
-                if trace {
-                    TraceBar {}
-                }
-                if let Some(ui) = transform {
-                    TransformBar { ui }
-                }
-                if let Some((ui, parked)) = gradient {
-                    GradientBar { ui, parked }
-                }
-                if let Some(edit) = guide {
-                    PerspectiveGuideBar { edit }
-                }
+    rsx! {
+        {
+            match crate::modes::composing(state) {
+                None => rsx! { FrameOverlay {} },
+                Some(Composing::Transform(ui)) => rsx! { TransformOverlay { ui } },
+                Some(Composing::GuideEdit(edit)) => rsx! {
+                    GuideEditOverlay { key: "{edit.id:?}", edit }
+                },
+                Some(Composing::GradientTrace) => rsx! { GradientTraceOverlay {} },
+                Some(Composing::GradientFill(ui)) => rsx! { GradientBarOverlay { ui } },
             }
         }
+    }
+}
+
+/// The live composing mode's bar, and the gradient bar a trace parked.
+///
+/// Deepest first — the trace, the transform, the gradient, the guide — so a trace's bar
+/// lands above the gradient bar it parked. Each bar holds its own slot, so the gradient bar
+/// keeps its element (and its recess transition) when a trace parks it and when the trace
+/// hands it back.
+#[component]
+pub fn ModeBars() -> Element {
+    let state = use_context::<AppState>();
+    let mode = crate::modes::composing(state);
+    let gradient = gradient_slot(mode.as_ref(), state.gradient_resume.read().clone());
+    let trace = matches!(mode, Some(Composing::GradientTrace));
+    let transform = mode.clone().and_then(Composing::transform);
+    let guide = mode.and_then(Composing::guide_edit);
+    rsx! {
+        if trace {
+            TraceBar {}
+        }
+        if let Some(ui) = transform {
+            TransformBar { ui }
+        }
+        if let Some((ui, parked)) = gradient {
+            GradientBar { ui, parked }
+        }
+        if let Some(edit) = guide {
+            PerspectiveGuideBar { edit }
+        }
+    }
+}
+
+/// What the gradient bar composes, and whether it is `parked`: the live fill's own, or
+/// else the gesture a trace set aside (`gradient_bar::suspend`), drawn recessed under
+/// whatever mode is live.
+fn gradient_slot(
+    mode: Option<&Composing>,
+    parked: Option<GradientUi>,
+) -> Option<(GradientUi, bool)> {
+    match mode {
+        Some(Composing::GradientFill(ui)) => Some((ui.clone(), false)),
+        _ => parked.map(|ui| (ui, true)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stark_model::document::{ActionId, ActorId, GuideId, LayerId};
+    use stark_ui::modes::{GradientAxisKind, GradientTarget, GuideEdit};
+
+    fn fill(kind: GradientAxisKind) -> GradientUi {
+        GradientUi {
+            target: GradientTarget::Fill {
+                layer: LayerId::ROOT,
+            },
+            kind,
+            drag: None,
+        }
+    }
+
+    #[test]
+    fn a_parked_gradient_bar_stands_recessed_under_any_mode_but_a_live_fill() {
+        let parked = fill(GradientAxisKind::Linear);
+        for mode in [None, Some(Composing::GradientTrace)] {
+            assert_eq!(
+                gradient_slot(mode.as_ref(), Some(parked.clone())),
+                Some((parked.clone(), true)),
+                "under {mode:?}"
+            );
+        }
+        let live = fill(GradientAxisKind::Radial);
+        assert_eq!(
+            gradient_slot(Some(&Composing::GradientFill(live.clone())), Some(parked)),
+            Some((live, false))
+        );
+        assert_eq!(gradient_slot(Some(&Composing::GradientTrace), None), None);
+    }
+
+    /// Picking up another guide remounts the catcher, so its drag and hover start clean; the
+    /// same guide re-rendered keeps it. With nothing to draw the overlay renders a
+    /// placeholder, so a remount is the only thing that writes to the DOM.
+    #[test]
+    fn a_guide_picked_up_in_place_of_another_gets_a_fresh_catcher() {
+        use dioxus::dioxus_core::{ScopeId, VirtualDom};
+
+        fn app() -> Element {
+            let state = AppState::new();
+            use_context_provider(|| state);
+            rsx! { ModeCatcher {} }
+        }
+        let guide = |lamport| GuideEdit {
+            id: GuideId(ActionId {
+                lamport,
+                actor: ActorId(1),
+            }),
+            locked: [false; 3],
+        };
+        let mut dom = VirtualDom::new(app);
+        dom.rebuild_in_place();
+        let mut enter = |edit: GuideEdit| {
+            dom.in_scope(ScopeId::APP, || {
+                let mut mode = consume_context::<AppState>().mode;
+                mode.set(Some(Composing::GuideEdit(edit)));
+            });
+            dom.process_events();
+            dom.render_immediate_to_vec().edits.len()
+        };
+
+        assert_ne!(
+            enter(guide(1)),
+            0,
+            "the catcher mounts over the frame's handles"
+        );
+        let relocked = GuideEdit {
+            locked: [true, false, false],
+            ..guide(1)
+        };
+        assert_eq!(enter(relocked), 0, "the same guide keeps its catcher");
+        assert_ne!(enter(guide(2)), 0, "another guide gets a fresh one");
     }
 }

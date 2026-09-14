@@ -119,7 +119,18 @@ pub const MAX_FLOW: f32 = 3.0;
 /// configurations it chooses between. A plain switch rather than the model's
 /// [`BrushEffect`] sum, because here the knobs it would carry live on
 /// [`BrushConfig`] where the *other* effects' survive too.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    strum::VariantArray,
+    strum::EnumCount,
+)]
 pub enum BrushEffectType {
     /// Lay paint — the swept, antialiased deposit (§6.2).
     #[default]

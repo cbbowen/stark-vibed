@@ -80,7 +80,7 @@ use layout::{resize_end, resize_move};
 use navigator::NavigatorOverlay;
 use overlays::{BrushCursor, PeerCursors, PickLoupe, TowStringOverlay, TuneReadoutOverlay};
 use panels::{
-    FilterBar, FrameBar, ModeChrome, ModePart, PickBar, SelectionBar, StackPopouts, TimelineBar,
+    FilterBar, FrameBar, ModeBars, ModeCatcher, PickBar, SelectionBar, StackPopouts, TimelineBar,
 };
 use rail::CommandRail;
 use slots::SlotOverlay;
@@ -214,7 +214,7 @@ fn app() -> Element {
             // gradient trace (§22.2) or the gradient fill's axis (§22.4) — or, with no
             // mode composing, the selected frame's edges and handles (§15.7), whose
             // interior passes pointer events through to the painting.
-            ModeChrome { part: ModePart::Catcher }
+            ModeCatcher {}
 
             // Collaborators' pointers, over the canvas and under the chrome
             // (§17.4). Empty and free when solo.
@@ -318,7 +318,7 @@ fn app() -> Element {
                 // kinds (§22.4) — recessed under the trace's bar while one has it
                 // parked — and the guide edit's locks and dials (§20.5). Each stands
                 // over the standing bars below it.
-                ModeChrome { part: ModePart::Bar }
+                ModeBars {}
                 // The whole selection's opacity and commands, present while
                 // there is a selection or a shape tool is armed to make one — so
                 // it doubles as the "canvas is masked" indicator.

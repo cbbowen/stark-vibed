@@ -695,7 +695,7 @@ struct Drag {
 /// see `input::Nav`). All gesture math is in canvas space, so panning or
 /// zooming mid-drag cannot corrupt it.
 #[component]
-pub fn GuideEditOverlay(edit: ReadSignal<GuideEdit>) -> Element {
+pub fn GuideEditOverlay(edit: GuideEdit) -> Element {
     let state = use_context::<AppState>();
     let mut drag = use_signal(|| None::<Drag>);
     let mut hover = use_signal(|| None::<GuideRegion>);
@@ -708,10 +708,10 @@ pub fn GuideEditOverlay(edit: ReadSignal<GuideEdit>) -> Element {
     // The two things this overlay draws with, through **one** memo — the pair
     // moves together (a drag writes the guide, and the pose it is judged against
     // is the view it is drawn in), which is the case `state::use_obs` asks for a
-    // tuple in. Unconditionally, ahead of the early return, like any `use_*`; `edit`
-    // is a signal so that picking up a different guide recomputes it.
+    // tuple in. Unconditionally, ahead of the early return, like any `use_*`. The guide's
+    // id holds for the overlay's life, since `ModeCatcher` keys it by the id.
+    let GuideEdit { id, locked } = edit;
     let look = use_obs_opt(state, move |o| {
-        let id = edit.read().id;
         // Found by id, not by index. The roster is read off the *previewed*
         // document, so mid-drag this is the pose under the hand — which is what the
         // hit test wants: a handle has to be where it is drawn.
@@ -723,7 +723,6 @@ pub fn GuideEditOverlay(edit: ReadSignal<GuideEdit>) -> Element {
     let Some((view, guide)) = look() else {
         return rsx! {};
     };
-    let GuideEdit { id, locked } = edit();
     // The grabbable geometry, derived once and `Copy`, so the pointer handlers can
     // share the hit test.
     let handles = Handles::of(&guide);

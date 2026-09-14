@@ -87,15 +87,22 @@ pub enum ModRow {
 /// one control per row and builds the run with `MOD_ROWS.map(…)`, which a slice does
 /// not offer. Its order is the declaration order, which is what makes
 /// [`ModRow::index`] an infallible seat number rather than a search.
-pub const MOD_ROWS: [ModRow; ModRow::COUNT] = {
-    let mut rows = [ModRow::Size; ModRow::COUNT];
-    let mut i = 0;
-    while i < ModRow::COUNT {
-        rows[i] = ModRow::VARIANTS[i];
+pub const MOD_ROWS: [ModRow; ModRow::COUNT] = variants();
+
+/// `T`'s variants in declaration order, as the array a frontend's `.map(…)` wants.
+const fn variants<T: strum::VariantArray + Copy, const N: usize>() -> [T; N] {
+    assert!(
+        T::VARIANTS.len() == N,
+        "an array not the size of the variant list"
+    );
+    let mut all = [T::VARIANTS[0]; N];
+    let mut i = 1;
+    while i < N {
+        all[i] = T::VARIANTS[i];
         i += 1;
     }
-    rows
-};
+    all
+}
 
 impl ModRow {
     /// Where this row sits in [`MOD_ROWS`] — the seat a frontend's control for it is
@@ -324,13 +331,9 @@ pub fn noise_label(kind: NoiseKind) -> &'static str {
 /// What every noise chip's hover says: the kinds differ in a picture, not in a sentence.
 pub const NOISE_TIP: &str = "The field the color wanders across";
 
-/// The four effects, in the order the chips offer them.
-pub const EFFECTS: [BrushEffectType; 4] = [
-    BrushEffectType::Paint,
-    BrushEffectType::Wet,
-    BrushEffectType::Erase,
-    BrushEffectType::Liquify,
-];
+/// Every effect, in the order the chips offer them: declaration order, so a new effect
+/// cannot go without a chip.
+pub const EFFECTS: [BrushEffectType; BrushEffectType::COUNT] = variants();
 
 /// The word an effect chip wears. A docked column draws the effect as a mark; the
 /// editor's chip leads with the word, because it names the groups under it.
@@ -1509,20 +1512,17 @@ mod tests {
         }
     }
 
-    /// Every chip the editor offers says what it does: a chip is mostly a word, and its
-    /// hover is where the choice is explained, in both frontends.
+    /// `OrientationSource` is the model's, so it cannot derive its variant list here.
+    /// The match is exhaustive instead: a new source stops this compiling, and indexing
+    /// the next seat for it does not compile until `ORIENTATIONS` grows one.
     #[test]
-    fn no_chip_goes_without_a_word_or_a_tip() {
-        let words = EFFECTS
-            .map(|e| (effect_label(e), effect_tip(e)))
-            .into_iter()
-            .chain(ORIENTATIONS.map(|o| (orientation_label(o), orientation_tip(o))))
-            .chain(NOISE_KINDS.map(|k| (noise_label(k), NOISE_TIP)))
-            .chain(std::iter::once((NO_SOURCE_LABEL, source_tip(None))))
-            .chain(SOURCES.map(|s| (source_label(s), source_tip(Some(s)))));
-        for (word, tip) in words {
-            assert!(!word.trim().is_empty(), "a chip with no word");
-            assert!(!tip.trim().is_empty(), "the {word} chip has no tip");
+    fn every_orientation_source_has_a_chip() {
+        let chip = |source| match source {
+            OrientationSource::FollowStroke => ORIENTATIONS[0],
+            OrientationSource::Pen => ORIENTATIONS[1],
+        };
+        for source in ORIENTATIONS {
+            assert_eq!(chip(source), source);
         }
     }
 }

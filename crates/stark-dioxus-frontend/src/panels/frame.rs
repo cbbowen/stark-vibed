@@ -454,7 +454,7 @@ pub struct FrameDrag {
 /// Drawn only while a frame is **selected**, together with [`FrameBar`] — one
 /// state drives both, so the bar being up is exactly the promise that the handles
 /// are live. Handles have no business sitting over the painting the rest of the
-/// time, nor over a composing mode's catcher (`panels::ModeChrome` mounts this only
+/// time, nor over a composing mode's catcher (`panels::ModeCatcher` mounts this only
 /// while none is live).
 ///
 /// The interior is deliberately **not** interactive (`pointer-events: none` on the

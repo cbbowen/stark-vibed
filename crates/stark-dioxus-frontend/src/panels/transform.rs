@@ -145,7 +145,7 @@ pub fn finish(state: AppState) {
 }
 
 /// The transform bar: the family selector, the affine's two flips, Cancel and
-/// "Done", for the gesture `ui` (`panels::ModeChrome` mounts it while one is in
+/// "Done", for the gesture `ui` (`panels::ModeBars` mounts it while one is in
 /// flight).
 #[component]
 pub fn TransformBar(ui: TransformUi) -> Element {

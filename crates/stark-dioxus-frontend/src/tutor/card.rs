@@ -139,6 +139,16 @@ impl Standing {
             Some(_) => Standing::Covered,
         }
     }
+
+    /// How a card already on screen is drawn: the class it wears beyond the chrome's
+    /// (empty for none), or `None` when it is not drawn at all.
+    fn drawn(self) -> Option<&'static str> {
+        match self {
+            Standing::Chrome => Some(""),
+            Standing::OverDialog => Some("over-dialog"),
+            Standing::Covered => None,
+        }
+    }
 }
 
 /// The dialog on top of the stack, if any. Subscribing.
@@ -261,10 +271,9 @@ pub fn TutorCard() -> Element {
     };
     // A dialog opened over the card takes it down until the dialog goes, as it would have
     // kept the card from coming up.
-    let standing = Standing::of(top_dialog(state), lesson.anchor);
-    if standing == Standing::Covered {
+    let Some(rung) = Standing::of(top_dialog(state), lesson.anchor).drawn() else {
         return rsx! {};
-    }
+    };
     // Nothing to point at — the anchor went, or the DOM has not caught up. The effect above
     // is still watching, so the card comes back if the anchor does.
     let Some(at) = anchored() else {
@@ -357,7 +366,7 @@ pub fn TutorCard() -> Element {
         div {
             class: "tutor-card chrome {side}",
             class: if chrome_dimmed(state) { "dimmed" },
-            class: if standing == Standing::OverDialog { "over-dialog" },
+            class: if !rung.is_empty() { "{rung}" },
             style: "{place}",
             div { class: "tutor-head",
                 span { class: "tutor-mark", {icon(stark_ui::icons::TOUR)} }
@@ -423,5 +432,12 @@ mod tests {
             );
         }
         assert_eq!(Standing::of(None, inside), Standing::Covered);
+    }
+
+    #[test]
+    fn a_covered_card_is_not_drawn_and_only_one_over_the_editor_wears_its_rung() {
+        assert_eq!(Standing::Chrome.drawn(), Some(""));
+        assert_eq!(Standing::OverDialog.drawn(), Some("over-dialog"));
+        assert_eq!(Standing::Covered.drawn(), None);
     }
 }
