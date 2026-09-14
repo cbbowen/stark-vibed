@@ -1,25 +1,15 @@
 //! Which gesture a canvas's pointer event belongs to once a second pointer is down
 //! (§25.4).
 //!
-//! A canvas holds at most one gesture, and each gesture records the pointer that
-//! pressed it. A frontend reads those records into a [`Holder`] as each event arrives
-//! and asks this module whether a press proves the holder's release was lost
-//! ([`release_lost`]), whether it may open what it asks for ([`admits`]), whose a move
-//! is ([`moved`]) and whether a release ends the gesture ([`released`]). Nothing here
-//! keeps its own copy of the holding pointer, so no answer can disagree with the
-//! gesture it is about.
-//!
-//! One pointer alone never meets a refusal: with nothing held every press is admitted,
-//! its moves are its gesture's, and its release ends it.
+//! A canvas holds at most one gesture. A frontend builds a [`Holder`] from the gesture's
+//! own record of its pointer on every event, so this module keeps no copy that could
+//! disagree with it. One pointer alone is never refused.
 
 use crate::input::PointerKind;
 use crate::nav::Lift;
 
-/// A pointer, as a gesture records the one that pressed it.
-///
-/// The kind rides with the id because an id does not survive every way a release is
-/// lost: a touch contact comes back with a new one, and a pen can be re-identified
-/// after leaving range.
+/// The pointer that pressed a gesture. The kind rides with the id because a touch
+/// contact, or a pen back in range, can return with a new id after a lost release.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Pointer {
     pub id: i32,
@@ -45,10 +35,9 @@ pub enum Gesture {
 /// What holds the canvas.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Holder {
-    /// Fingers navigating, from the second landing to the last lift. Every finger down is
-    /// the pinch's: a finger pressing under one joins it.
+    /// Fingers navigating, from the second landing to the last lift. Every finger down
+    /// is the pinch's.
     Pinch,
-    /// A one-pointer gesture and the pointer that pressed it.
     Gesture(Gesture, Pointer),
 }
 
@@ -65,15 +54,14 @@ pub enum Opens {
 pub enum Moves {
     /// The holder's own pointer: its gesture advances.
     Holder,
-    /// Another pointer under a gesture that does not yield. Nothing: not a hover, and
-    /// not the cursor peers see.
+    /// Another pointer under a gesture that does not yield: not even a hover or the
+    /// cursor peers see.
     Ignored,
     /// Nothing shuts it out, so paint or the hover decides.
     Free,
 }
 
 impl Holder {
-    /// Whether `pointer` is the one holding.
     pub fn holds(self, pointer: Pointer) -> bool {
         match self {
             Holder::Pinch => pointer.kind == PointerKind::Touch,
@@ -96,12 +84,10 @@ impl Holder {
 }
 
 /// Whether a press of `pointer` proves the holder's release never arrived, so the
-/// holder has to be put down before the press is read.
+/// holder must be put down before the press is read.
 ///
-/// The holder's own pointer cannot press while it is down. Nor can a new **primary**
-/// pointer of the holder's kind appear while that one is: primacy is the platform
-/// saying no other pointer of the type is down, which is the rule `nav::Touch` and a
-/// finger's held press already clear stale state on.
+/// The holder's own pointer cannot press while down, and a **primary** pointer means
+/// no other of its kind is down.
 pub fn release_lost(holder: Option<Holder>, pointer: Pointer, primary: bool) -> bool {
     match holder {
         None => false,
@@ -112,9 +98,9 @@ pub fn release_lost(holder: Option<Holder>, pointer: Pointer, primary: bool) -> 
 
 /// Whether a press may open `opens` while `holder` holds the canvas.
 ///
-/// Paint yields to anything. A pinch admits only a further finger. Every other gesture
-/// refuses every second press, a same-kind one included: a second pointer taking over a
-/// pan, a tune or a carry would leave the first pointer's record behind it.
+/// Paint yields to anything, and a pinch admits only a further finger. Every other
+/// gesture refuses a second press, even of the same kind, since a takeover would strand
+/// the first pointer's record.
 pub fn admits(holder: Option<Holder>, opens: Opens) -> bool {
     match holder {
         None => true,
@@ -137,10 +123,8 @@ pub fn moved(holder: Option<Holder>, pointer: Pointer) -> Moves {
 /// **before** it, and `fingers` what the finger set said about it (`None` for a pointer
 /// that is not a finger).
 ///
-/// The holder decides first. Its own pointer's release ends a one-pointer gesture
-/// whatever else is on the glass, and another pointer's ends nothing. Only a pinch is
-/// ended by the finger count, and only a pinch carries a tap: a pair that was refused
-/// never meant anything by lifting.
+/// A one-pointer gesture ends on its own pointer's release alone. Only a pinch is ended
+/// by the finger count and carries a tap: a refused pair means nothing by lifting.
 pub fn released(holder: Option<Holder>, pointer: Pointer, fingers: Option<Lift>) -> Lift {
     const ENDED: Lift = Lift::Ended { tap: None };
     match holder {
@@ -209,9 +193,8 @@ mod tests {
     }
 
     /// A canvas in miniature, asking the router in the web `input::Gestures`' order: a
-    /// lost release, then a finger recorded and its pair offered as a pinch, then the
-    /// chord, then paint. What it holds is the one-pointer gesture in flight and the real
-    /// finger set, so pairs and taps are `Touch`'s own.
+    /// lost release, a finger recorded and its pair offered as a pinch, the chord, then
+    /// paint. It uses the real `Touch` finger set.
     #[derive(Default)]
     struct Canvas {
         one: Option<(Gesture, Pointer)>,
@@ -388,8 +371,8 @@ mod tests {
         assert_eq!(canvas.moves(finger(7)), Moves::Holder);
     }
 
-    /// Fingers are recorded before admission, so a refused palm's count used to veto the
-    /// holder's own release, and every later press was refused.
+    /// Fingers are recorded before admission, so a refused palm's count must not veto
+    /// the holder's own release.
     #[test]
     fn the_holders_release_ends_its_gesture_past_a_resting_palm() {
         for held in [Gesture::Tune, Gesture::Carry] {
@@ -491,8 +474,8 @@ mod tests {
         assert_eq!(canvas.release(finger(6)), ENDED);
     }
 
-    /// The same finding from the other side: one finger rests under the carry, the second
-    /// lands after it, and the two make a pinch whose episode began under the carry.
+    /// One finger rests under the carry and the second lands after it: their pinch began
+    /// under the carry.
     #[test]
     fn a_pinch_begun_by_a_finger_that_rested_under_a_gesture_is_no_tap() {
         let mut canvas = holding(Gesture::Carry, MOUSE);

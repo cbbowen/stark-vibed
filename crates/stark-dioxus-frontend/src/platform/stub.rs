@@ -1,14 +1,10 @@
-//! The host's half of [`crate::platform`]: what tests and clippy link in place of
-//! `web.rs`, so the crate compiles off wasm.
+//! The host build's half of [`crate::platform`], so the crate compiles off wasm. Items
+//! are documented in `web.rs`.
 //!
-//! Compiling is all it buys. A test that reaches a browser call through here exercises
-//! the answer below rather than a browser's, so a green host build says nothing about
-//! `web.rs`. The answers therefore say that nothing happened — an empty list, a `None`,
-//! a `false`, and an `Err` from every act a caller would otherwise report as done — and
-//! [`Canvas::surface_target`] and [`canvas_by_id`], which cannot answer at all, panic.
-//!
-//! Undocumented item for item: each is the second half of one documented in `web.rs`,
-//! and `tests/platform_parity.rs` holds the two signatures equal.
+//! Every answer says nothing happened — an empty list, `None`, `false`, or an `Err` for
+//! any act a caller would otherwise report as done, so a host test cannot mistake a stub
+//! for a browser. [`Canvas::surface_target`] and [`canvas_by_id`] cannot answer at all,
+//! and panic.
 
 use dioxus::prelude::*;
 use stark_ui::assets::Decoded;

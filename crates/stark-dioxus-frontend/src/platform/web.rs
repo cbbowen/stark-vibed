@@ -1,6 +1,4 @@
-//! The browser's half of [`crate::platform`]: every call that needs `web-sys`,
-//! compiled for wasm32 only. `stub.rs` answers the same signatures off wasm, and
-//! `tests/platform_parity.rs` holds the two to one surface.
+//! The browser's half of [`crate::platform`], compiled for wasm32 only.
 
 use dioxus::prelude::*;
 use stark_ui::assets::Decoded;
@@ -14,15 +12,11 @@ pub fn install_panic_hook() {
     console_error_panic_hook::set_once();
 }
 
-/// Point `tracing` at both of the places this app reads it: the browser console, and
-/// the timing histograms behind `timings::TimingModal` (`stark_engine::timing`, §7.1).
+/// Route `tracing` to the browser console and to the timing histograms (§7.1).
 ///
-/// Two filtered layers over one registry rather than
-/// `tracing_wasm::set_as_global_default`, because `tracing_wasm`'s layer calls
-/// `performance.mark` and `performance.measure` on every span it is shown: unfiltered,
-/// it would report every frame's timing spans into the devtools timeline, sixty times a
-/// second. `TimingFilter::<false>` is the exact complement of the timing layer's own
-/// filter, so no event is dropped and none is handled twice.
+/// The console layer is filtered with `TimingFilter::<false>`, the exact complement of
+/// the timing layer's filter: `tracing_wasm` calls `performance.mark`/`measure` per
+/// span, and unfiltered it would flood the devtools timeline with every frame's spans.
 pub fn install_tracing() {
     use tracing_subscriber::Layer;
     use tracing_subscriber::layer::SubscriberExt;
@@ -33,22 +27,18 @@ pub fn install_tracing() {
     let subscriber = Registry::default()
         .with(stark_engine::timing::layer())
         .with(console);
-    // A second install would be a second set of histograms with the first still
-    // collecting, so it is refused. `run` installs once per page, so only a code change
-    // can reach this.
+    // A second install would leave the first histograms still collecting.
     if tracing::subscriber::set_global_default(subscriber).is_err() {
         web_sys::console::warn_1(&"stark: a tracing subscriber was already installed".into());
     }
 }
 
-/// The page's painting surface, as everything outside this module sees it: the three
-/// things `render` does with a `<canvas>`, and no `web_sys` type.
+/// A `<canvas>` element, exposing only what `render` needs.
 #[derive(Clone)]
 pub struct Canvas(web_sys::HtmlCanvasElement);
 
 impl Canvas {
-    /// The element's laid-out size in CSS pixels (≥1). Measures the *element*, not
-    /// the window, so an embedded or sub-window canvas works.
+    /// The element's (not the window's) laid-out size in CSS px, at least 1.
     pub fn laid_out_size(&self) -> (u32, u32) {
         (
             self.0.client_width().max(1) as u32,
@@ -56,45 +46,34 @@ impl Canvas {
         )
     }
 
-    /// Resize the drawing buffer — the pixels behind the element, which the
-    /// stylesheet's layout size does not set.
+    /// Resize the drawing buffer, which the stylesheet's layout size does not set.
     pub fn set_buffer_size(&self, width: u32, height: u32) {
         self.0.set_width(width);
         self.0.set_height(height);
     }
 
-    /// What `wgpu` binds a surface to.
-    ///
-    /// stark-dioxus-frontend is a web app (§11), so the surface is always the page's
-    /// canvas. The crate still *compiles* for the host — that is what `cargo test` and
-    /// clippy exercise — but there is no native windowing backend behind it, and
-    /// reaching here off the web is a bug rather than a fallback.
+    /// What `wgpu` binds a surface to. There is no native backend (§11): the stub
+    /// panics, because reaching it off the web is a bug rather than a fallback.
     pub fn surface_target(&self) -> wgpu::SurfaceTarget<'static> {
         wgpu::SurfaceTarget::Canvas(self.0.clone())
     }
 }
 
-/// A key press or release at the window, as `input::bind_shortcuts` reads it.
-///
-/// The translation into the app's own vocabulary — dioxus's [`Key`] and
-/// [`Modifiers`] — happens here rather than at the call site, because it is a fact
-/// about the DOM event and not about what the shortcut means.
+/// A key press or release at the window, translated to dioxus's [`Key`] and
+/// [`Modifiers`].
 pub struct KeyEvent(web_sys::KeyboardEvent);
 
 impl KeyEvent {
-    /// The pressed key, in the same typed vocabulary the rsx! handlers read.
     pub fn key(&self) -> Key {
         use std::str::FromStr;
         Key::from_str(&self.0.key()).unwrap_or(Key::Unidentified)
     }
 
-    /// The physical key, layout-independent — what the quick-brush rack reads, so a
-    /// digit is a digit whatever the layout types on it (§18.1.8).
+    /// The physical key, independent of keyboard layout (§18.1.8).
     pub fn code(&self) -> String {
         self.0.code()
     }
 
-    /// The modifier set held during the event.
     pub fn modifiers(&self) -> Modifiers {
         let mut m = Modifiers::empty();
         if self.0.alt_key() {
@@ -112,20 +91,17 @@ impl KeyEvent {
         m
     }
 
-    /// Whether this went to a control that owns its own keystrokes — see
-    /// [`on_text_entry`].
+    /// See [`on_text_entry`].
     pub fn on_text_entry(&self) -> bool {
         self.0.target().is_some_and(|t| on_text_entry(&t))
     }
 
-    /// Take the browser's own action away from this event.
     pub fn prevent_default(&self) {
         self.0.prevent_default();
     }
 }
 
-/// A window event this app only wants to refuse — today the context menu, whose
-/// two questions are "was it over a text field" and "stop it".
+/// A window event the app only refuses, such as the context menu.
 pub struct WindowEvent(web_sys::Event);
 
 impl WindowEvent {
@@ -138,8 +114,7 @@ impl WindowEvent {
     }
 }
 
-/// Resolve after `ms` milliseconds (so a settle animation can finish before the order is
-/// committed). Browser `setTimeout` on web; a no-op off-wasm.
+/// Resolve after `ms` milliseconds, via `setTimeout`.
 pub async fn sleep_ms(ms: i32) {
     called_back(|window, wake| {
         window.set_timeout_with_callback_and_timeout_and_arguments_0(wake, ms)
@@ -149,10 +124,8 @@ pub async fn sleep_ms(ms: i32) {
 
 /// Await the browser calling the function `schedule` hands it.
 ///
-/// Where there is no window or `schedule` fails, which a page's main thread never
-/// meets, the reason is logged and the await never finishes. The task waiting on it
-/// stops there; resolving at once instead would turn every `loop { sleep_ms(..) }` into
-/// a spin that never yields to the browser.
+/// If scheduling fails the reason is logged and the await never finishes: resolving at
+/// once would turn every `loop { sleep_ms(..) }` into a spin that never yields.
 async fn called_back(
     schedule: impl Fn(&web_sys::Window, &js_sys::Function) -> Result<i32, wasm_bindgen::JsValue>,
 ) {
@@ -172,22 +145,11 @@ async fn called_back(
 }
 
 /// Every element matching `selector`: the identity it wears in `attr`, and its
-/// `(top, height)` in client px. Empty off-wasm, and empty before the elements have
-/// mounted.
+/// `(top, height)` in client px. Empty before the elements have mounted.
 ///
-/// In DOM order, which a caller must **not** read as the order they appear in — the
-/// panel stack's children are a fixed sequence ordered by a flex `order`
-/// ([`crate::layout::PanelStack`]). Hence the attribute: the identity travels *with*
-/// the box, off the same element, so a caller matches on identity rather than on
-/// position. Matched by position an element would be measured through its
-/// neighbour's box in silence, because a box is a plausible box whichever element it
-/// came from (§11).
-///
-/// The three callers are the three drags that reorder a column by dropping a thing
-/// into it: the panel stack ([`panel_boxes`]), the layer tree ([`layer_boxes`]) and
-/// the guide list ([`guide_boxes`]). All three go through one gesture
-/// (`panels::reorder`), which measures once at grab time and derives everything
-/// after from the live pointer, so there is no cached geometry to fall out of date.
+/// In DOM order, which is **not** display order — the panel stack is ordered by flex
+/// `order` ([`crate::layout::PanelStack`]). Callers must match on the identity, not
+/// the position, or they silently measure a neighbour's box (§11).
 fn element_boxes(selector: &str, attr: &str) -> Vec<(String, f32, f32)> {
     use wasm_bindgen::JsCast;
     let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
@@ -215,13 +177,8 @@ pub fn panel_boxes() -> Vec<(String, f32, f32)> {
     element_boxes(".panel-stack > .panel", "data-panel")
 }
 
-/// The panel stack's scroll geometry: how far it is scrolled, how tall its content
-/// is, and how much of it is showing — all in CSS px (§11).
-///
-/// Read off the DOM rather than computed from the panels' own heights, and it has to
-/// be: the column's height is whatever eight panels of content come to, half of it
-/// grown by lists the artist filled, and the one place that number exists is the
-/// element the browser laid out. `None` before the stack has mounted, and off wasm.
+/// The panel stack's `(scrollTop, scrollHeight, clientHeight)` in CSS px (§11), or
+/// `None` before it has mounted.
 pub fn stack_scroll() -> Option<(f32, f32, f32)> {
     let el = web_sys::window()?
         .document()?
@@ -235,12 +192,8 @@ pub fn stack_scroll() -> Option<(f32, f32, f32)> {
     ))
 }
 
-/// Scroll the panel stack to `top` — what dragging its rail's thumb does
-/// (`layout::PanelScrollbar`).
-///
-/// Setting the element's own `scrollTop` rather than keeping a scroll position of our
-/// own: the browser clamps it, the wheel and the rail then agree by construction, and
-/// the `scroll` event it raises is what tells the rail where it ended up.
+/// Scroll the panel stack to `top`. The browser clamps it, and the `scroll` event it
+/// raises is what tells the rail (`layout::PanelScrollbar`) where it ended up.
 pub fn set_stack_scroll(top: f32) {
     if let Some(el) = web_sys::window()
         .and_then(|w| w.document())
@@ -250,33 +203,22 @@ pub fn set_stack_scroll(top: f32) {
     }
 }
 
-/// The layer panel's rows, each under its `data-layer` id — see [`element_boxes`].
+/// The layer panel's entries, each under its `data-layer` id — see [`element_boxes`].
 ///
-/// The whole entry is measured (`.layer-item`, indent included) rather than the row
-/// inside it, because that is the box a drag opens a slot the size of: the margin
-/// between two entries is the gap the drop lands in.
+/// The whole `.layer-item` is measured rather than the row inside it: the margin
+/// between two entries is the gap a drop lands in.
 pub fn layer_boxes() -> Vec<(String, f32, f32)> {
     element_boxes(".layer-item[data-layer]", "data-layer")
 }
 
 /// The guides panel's rows, each under its `data-guide` position — see
-/// [`element_boxes`]. A *position* rather than an id, because a guide has none; it
-/// holds for the length of one gesture, which is all it is asked to.
+/// [`element_boxes`]. A guide has no id, so the position holds for one gesture only.
 pub fn guide_boxes() -> Vec<(String, f32, f32)> {
     element_boxes(".guide-row[data-guide]", "data-guide")
 }
 
-/// The box of the **first** element matching `selector`, or `None` where nothing
-/// matches.
-///
-/// First rather than all, because the caller is pointing at *a* thing and a
-/// selector that matched two would mean the thing had no single place to be pointed
-/// at — see `tutor::Anchor`, which is what builds the selectors and is the
-/// only place they are written.
-///
-/// `None` for "not on screen" is the answer the caller wants and not a failure: a
-/// panel the user closed under the card is exactly this, and a card that draws
-/// nothing is better than one that points at the corner of the window.
+/// The box of the first element matching `selector` (built by `tutor::Anchor`), or
+/// `None` where nothing matches — a closed panel, which is not a failure.
 pub fn anchor_box(selector: &str) -> Option<ElementBox> {
     let doc = web_sys::window().and_then(|w| w.document())?;
     let el = doc.query_selector(selector).ok().flatten()?;
@@ -289,13 +231,10 @@ pub fn anchor_box(selector: &str) -> Option<ElementBox> {
     })
 }
 
-/// The window's inner height in CSS px — `0.0` where there is no window.
+/// The window's inner height in CSS px, `0.0` where there is no window.
 ///
-/// The one viewport figure a placement asks Rust for rather than the stylesheet.
-/// Everything else about staying on screen is a `max-width` or a `max-height`, and
-/// `calc` knows `100vh` without being told (`anchor::room_below`); what a declaration
-/// cannot do is *branch*, and choosing whether a pop-out hangs from its row or rises
-/// from it is a branch (`panels::popout`).
+/// Only for placements CSS cannot express because they branch, such as whether a
+/// pop-out hangs down or rises (`panels::popout`).
 pub fn viewport_height() -> f32 {
     web_sys::window()
         .and_then(|w| w.inner_height().ok())
@@ -305,16 +244,12 @@ pub fn viewport_height() -> f32 {
 
 /// Route the window's `kind` events ("keydown" / "keyup") to `handler`.
 ///
-/// The shortcuts hang off the **window** rather than off an element, so they keep
-/// working whatever has focus. Bound to an element they go quiet the moment a
-/// clicked button is unmounted by its own command — "Deselect", the brush editor's
-/// "Done" — because the browser then falls focus back to `document.body`, which is
-/// *outside* the app's tree, so nothing reaches the handler until something inside
-/// takes focus again.
+/// On the window, not an element: when a clicked button unmounts itself, the browser
+/// moves focus to `document.body`, outside the app's tree, and an element listener
+/// would go quiet.
 ///
-/// Registered once for the life of the page (see [`crate::input::bind_shortcuts`]),
-/// so the closure is `forget`ten rather than kept around for removal — the same
-/// bargain [`pick_file`] makes.
+/// Registered once for the life of the page, so the closure is `forget`ten. The other
+/// window listeners below follow the same rule.
 pub fn on_window_key(kind: &str, mut handler: impl FnMut(KeyEvent) + 'static) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
@@ -327,19 +262,12 @@ pub fn on_window_key(kind: &str, mut handler: impl FnMut(KeyEvent) + 'static) {
     cb.forget();
 }
 
-/// Route the window's `kind` events to `handler` in the **capture** phase, as the
-/// base [`web_sys::Event`].
+/// Route the window's `kind` events to `handler` in the **capture** phase, so no
+/// `stopPropagation` downstream can silence it.
 ///
-/// Untyped on purpose, unlike its two neighbours: `contextmenu` is a `MouseEvent`
-/// in some engines and a `PointerEvent` in the ones that have adopted the newer
-/// spec, and everything a refusal needs — `target` and `prevent_default` — is on
-/// the base interface. Casting to the wrong subclass to reach nothing extra would
-/// be a way to fail on one browser for no gain.
-///
-/// Capture for [`on_window_pointer`]'s reason: the browser decides what to do
-/// once the event has finished propagating, so a listener the tree could silence
-/// with `stopPropagation` is one that stops working the day something downstream
-/// does.
+/// Untyped on purpose: `contextmenu` is a `MouseEvent` in some engines and a
+/// `PointerEvent` in others, and `target` and `prevent_default` are on the base
+/// interface.
 pub fn on_window_event(kind: &str, mut handler: impl FnMut(WindowEvent) + 'static) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
@@ -359,20 +287,10 @@ pub fn on_window_event(kind: &str, mut handler: impl FnMut(WindowEvent) + 'stati
 /// Route the window's `kind` pointer events ("pointerdown", "pointerup", …) to
 /// `handler`, in the **capture** phase.
 ///
-/// The pointer counterpart to [`on_window_key`], and it exists for the same
-/// reason: what it binds is not any one surface's business. The pen's eraser end
-/// holds a brush slot for as long as it faces the glass (§18.1.8) whatever it is
-/// hovering over or pressed against — the canvas, a slider, a preset row —
-/// exactly as a held number key does, and a listener per surface would be a list
-/// nobody could keep complete.
-///
-/// **Capture, not bubble**, and that is load-bearing on the press: the swap has
-/// to be in force before the surface's own handler runs, or the canvas would open
-/// its stroke on the brush the eraser displaced. Capture runs window-inward, so
-/// this is ahead of every handler in the tree; bubble would be behind all of them.
-/// It also cannot be silenced — `stopPropagation` downstream is too late to
-/// prevent something that has already run, which matters most for the release,
-/// where a listener that could be skipped would leave the brush swapped.
+/// On the window because the eraser end holds a brush slot whatever surface it is
+/// over (§18.1.8). Capture is load-bearing: the swap must be in force before any
+/// handler in the tree opens a stroke, and a release no `stopPropagation` can skip
+/// never leaves the brush swapped.
 pub fn on_window_pointer(kind: &str, mut handler: impl FnMut(RawPointer) + 'static) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
@@ -389,7 +307,6 @@ pub fn on_window_pointer(kind: &str, mut handler: impl FnMut(RawPointer) + 'stat
     cb.forget();
 }
 
-/// The button fields of a raw pointer event.
 fn raw_of(e: &web_sys::PointerEvent) -> RawPointer {
     RawPointer {
         pen: e.pointer_type() == "pen",
@@ -399,22 +316,16 @@ fn raw_of(e: &web_sys::PointerEvent) -> RawPointer {
     }
 }
 
-/// The same, off a **dioxus** pointer event — the one the tree's own handlers get.
-///
-/// `None` off wasm, where there is no raw event to unwrap; every caller reads that
-/// as "not a pen", which is the right answer on a platform with no pens.
+/// The [`RawPointer`] of a dioxus pointer event. `None` where there is no raw event,
+/// which callers read as "not a pen".
 pub fn raw_pointer(e: &Event<PointerData>) -> Option<RawPointer> {
     use dioxus::web::WebEventExt;
     e.try_as_web_event().map(|raw| raw_of(&raw))
 }
 
-/// A pointer event's own timestamp in seconds — `performance.now()`'s clock,
-/// monotonic and shared by every event on the page, which is what
-/// [`InputSample::time`](stark_engine::command::InputSample::time) needs.
-///
-/// Zero when the raw event is out of reach (off wasm), matching the field's
-/// default. The fitter keys its time channel to the first sample it sees, so only
-/// differences matter and the origin is free.
+/// A pointer event's timestamp in seconds, on `performance.now()`'s monotonic clock
+/// ([`InputSample::time`](stark_engine::command::InputSample::time)). Zero when the raw
+/// event is out of reach; only differences matter to the fitter.
 pub fn event_time(e: &Event<PointerData>) -> f64 {
     use dioxus::web::WebEventExt;
     e.try_as_web_event()
@@ -422,19 +333,18 @@ pub fn event_time(e: &Event<PointerData>) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// A pointer event's page position with its fraction; `None` off wasm.
+/// A pointer event's position in page px, fraction included.
 ///
-/// web-sys binds `pageX`/`pageY` as the integers they were before CSSOM View made them
-/// doubles (the double is behind `web_sys_unstable_apis`), and dioxus reads them through
-/// that binding. Whole CSS px would cut a pen's report coarser than the tolerance a fit
-/// prices it at.
+/// Every pointer position the canvas reads is in page px, from here or from
+/// [`coalesced`], so the two agree. web-sys binds `pageX`/`pageY` as integers (the
+/// double is behind `web_sys_unstable_apis`), and whole px are coarser than a fit's
+/// tolerance.
 pub fn page_position(e: &Event<PointerData>) -> Option<(f32, f32)> {
     use dioxus::web::WebEventExt;
     e.try_as_web_event().map(|raw| page_of(&raw))
 }
 
-/// [`page_position`] off a raw event, the integer getter standing in if the property
-/// cannot be read as a number.
+/// [`page_position`] off a raw event, falling back to the integer getter.
 fn page_of(e: &web_sys::MouseEvent) -> (f32, f32) {
     use wasm_bindgen::JsValue;
 
@@ -450,20 +360,12 @@ fn page_of(e: &web_sys::MouseEvent) -> (f32, f32) {
     KEYS.with(|(x, y)| (read(x, e.page_x()), read(y, e.page_y())))
 }
 
-/// Every report the browser folded into a delivered `pointermove`, oldest first,
-/// in page px.
+/// Every report the browser folded into a delivered `pointermove`, oldest first.
 ///
-/// The browser delivers roughly one `pointermove` per animation frame and folds
-/// the reports it withheld — most of what a 120–240 Hz pen produces — into the
-/// delivered event's *coalesced* list. Reading that list is what gets the full
-/// input rate to the fitter; reading only the event caps every stroke at display
-/// rate, whatever the device resolved.
-///
-/// Page px read as [`page_position`] reads the delivered event, so an entry and the
-/// event agree, and no element's box is measured, which could force a layout per move.
-/// The delivered event's own data equals the list's last entry, so nothing is reported
-/// twice. `None` where there is no list — off wasm, or a synthetic event — and the
-/// caller falls back to the event itself.
+/// The browser delivers about one `pointermove` per frame; the coalesced list carries
+/// the pen's full rate. The delivered event equals the list's last entry, so read one
+/// or the other, never both. No element's box is measured, which could force a layout
+/// per move. `None` where there is no list (a synthetic event).
 pub fn coalesced(e: &Event<PointerData>) -> Option<Vec<Coalesced>> {
     use dioxus::web::WebEventExt;
     use wasm_bindgen::JsCast;
@@ -491,17 +393,8 @@ pub fn coalesced(e: &Event<PointerData>) -> Option<Vec<Coalesced>> {
 /// Whether `target` is a control that owns its own keystrokes — a text field, a
 /// `<select>`, a contenteditable region.
 ///
-/// Asked of the *event's target*, which for a key event is what has focus, rather
-/// than of a flag the fields set on focus and clear on blur: a field that unmounts
-/// while focused — commit-and-close on a rename — never fires its blur, and a flag
-/// left stuck on would kill every shortcut for the rest of the session. The DOM is
-/// asked at the moment of the keystroke, so it cannot fall out of step.
-///
-/// Two events ask it, which is why it is one function: the keyboard stands aside
-/// for a field so the browser's own editing bindings work there (Ctrl+Z undoes the
-/// *text*, purely because nothing calls `prevent_default` on it), and the context
-/// menu stands aside for the same field because the browser's menu is the only cut,
-/// copy and paste this app offers.
+/// Asked of the event's target rather than a focus flag: a field that unmounts while
+/// focused never fires its blur, and a stuck flag would kill every shortcut.
 fn on_text_entry(target: &web_sys::EventTarget) -> bool {
     use wasm_bindgen::JsCast;
 
@@ -511,9 +404,7 @@ fn on_text_entry(target: &web_sys::EventTarget) -> bool {
     el.is_content_editable()
         || match el.tag_name().as_str() {
             "TEXTAREA" | "SELECT" => true,
-            // Sliders, checkboxes and color wells are not text entry. They want
-            // arrows and space from the browser, but Ctrl+Z over one still means
-            // the document — there is no text there for it to mean anything else.
+            // Non-text inputs: Ctrl+Z over a slider still means the document.
             "INPUT" => !matches!(
                 el.unchecked_ref::<web_sys::HtmlInputElement>()
                     .type_()
@@ -526,19 +417,9 @@ fn on_text_entry(target: &web_sys::EventTarget) -> bool {
 
 /// Call `handler` whenever the window loses focus.
 ///
-/// The counterpart to [`on_window_key`], and it exists because keyup is not the
-/// only way a held key ends: focus leaving the window — Alt+Tab, a click into the
-/// browser's own chrome — takes the keyboard away and the release is delivered
-/// somewhere else entirely. Anything armed on a keydown therefore needs a second
-/// way to be disarmed, or it stays armed for the rest of the session
-/// (`crate::slots`).
-///
-/// `blur` on the window rather than `visibilitychange` on the document: it is
-/// focus that decides where a keyup goes, and a window can be fully visible with
-/// the keyboard somewhere else.
-///
-/// Registered once for the life of the page, so the closure is `forget`ten like
-/// the key handlers'.
+/// When focus leaves the window (Alt+Tab, the browser's chrome) the keyup is delivered
+/// elsewhere, so anything armed on a keydown must also disarm here (`crate::slots`).
+/// `blur` rather than `visibilitychange`: a visible window can lack the keyboard.
 pub fn on_window_blur(handler: impl FnMut() + 'static) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
@@ -551,25 +432,13 @@ pub fn on_window_blur(handler: impl FnMut() + 'static) {
     cb.forget();
 }
 
-/// Ask the browser to confirm before the page goes away, whenever `confirm`
-/// answers true.
+/// Ask the browser to confirm before the page goes away (reload, closed tab, followed
+/// link, back button), whenever `confirm` answers true.
 ///
-/// The one browser affordance for a document that lives in a tab: a reload, a closed
-/// tab, a followed link and the back button all reach the same `beforeunload`, and
-/// taking it is how an unsaved painting survives a mis-click.
-///
-/// **Everything about the prompt is the browser's** — its wording, its buttons, and
-/// whether it appears at all. All a page can say is *that* it objects, which is why
-/// this takes a predicate and returns nothing. It says it twice, because engines
-/// disagree about which way counts: `preventDefault` is what the current spec reads,
-/// a non-empty `returnValue` what older ones read. No major browser shows that string,
-/// so all it has to be is *not empty*; it is a sentence for any engine that still does.
-///
-/// A browser also declines to prompt at all until the page has been interacted with,
-/// which is a condition this app meets by the time it has anything to lose.
-///
-/// Registered once for the life of the page, so the closure is `forget`ten like the
-/// listeners above.
+/// The browser owns the prompt's wording and whether it shows at all; a page can only
+/// object. It objects twice: `preventDefault` for the current spec, a non-empty
+/// `returnValue` for older engines. Browsers skip the prompt on a page never
+/// interacted with.
 pub fn on_before_unload(confirm: impl Fn() -> bool + 'static) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
@@ -590,18 +459,12 @@ pub fn on_before_unload(confirm: impl Fn() -> bool + 'static) {
     cb.forget();
 }
 
-/// Run `handler` **inside** the next animation-frame callback.
+/// Run `handler` **inside** the next animation-frame callback, ahead of the browser's
+/// rendering steps, so its work lands in that frame.
 ///
-/// This is not the same as a task awaiting a promise the rAF resolves
-/// ([`next_frame`]): a woken task only resumes in the microtask
-/// drain, behind the scheduler's other work — for a dioxus task that includes a
-/// VDOM render of whatever scopes are dirty by then. The callback itself runs in
-/// the frame's animation phase, ahead of the browser's rendering steps by
-/// definition, so work that must land in the frame that woke it belongs here.
-///
-/// One-shot: the closure frees itself after the call, so a registration per
-/// frame leaks nothing (unlike the `forget`ten window listeners above, which
-/// are bound once for the life of the page).
+/// Unlike [`next_frame`], whose woken task resumes in the microtask drain behind the
+/// scheduler's other work, a dioxus VDOM render included. The closure frees itself
+/// after the call, so registering one per frame leaks nothing.
 pub fn on_animation_frame(handler: impl FnOnce() + 'static) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
@@ -609,16 +472,12 @@ pub fn on_animation_frame(handler: impl FnOnce() + 'static) {
     let Some(window) = web_sys::window() else {
         return;
     };
-    // The callback's DOMHighResTimeStamp argument is dropped: callers time
-    // nothing off it today, and the engine keeps its own clock.
     let cb = Closure::once_into_js(move |_: f64| handler());
     let _ = window.request_animation_frame(cb.unchecked_ref());
 }
 
-/// Capture the pointer for the element under `e`, so the in-progress drag keeps
-/// streaming move/up events to it while the button is held — even after the pointer
-/// leaves the element. The capture releases automatically on pointer-up, which is
-/// guaranteed to be delivered to the capturing element.
+/// Capture the pointer for `e`'s target, so moves and the release reach it even after
+/// the pointer leaves. The capture ends by itself on pointer-up.
 pub fn capture_pointer(e: &Event<PointerData>) {
     use dioxus::web::WebEventExt;
     use wasm_bindgen::JsCast;
@@ -631,17 +490,11 @@ pub fn capture_pointer(e: &Event<PointerData>) {
     }
 }
 
-/// Where a pointer event landed, as a fraction of its target element's box —
-/// `(0, 0)` the top-left corner, `(1, 1)` the bottom-right, unclamped past the
-/// edges. `None` off wasm, or for a target with no box to measure.
+/// Where a pointer event landed as a fraction of its target's box — `(0, 0)` top-left,
+/// `(1, 1)` bottom-right, unclamped. `None` for a target with no box.
 ///
-/// Read off the event's own target, which under pointer capture
-/// ([`capture_pointer`]) stays the element that took the press — so a drag
-/// keeps measuring the box it started in wherever the pointer goes. Fractions
-/// rather than px so a control's geometry is the stylesheet's alone: the Oklab
-/// picker's plane is one size in the Color panel and another in the pop-outs
-/// and the Lighting panel, and no Rust constant has to mirror any of them
-/// (`panels::color`).
+/// Under [`capture_pointer`] the target stays the element that took the press. Fractions
+/// keep a control's size the stylesheet's alone (`panels::color`).
 pub fn pointer_fraction(e: &Event<PointerData>) -> Option<(f32, f32)> {
     use dioxus::web::WebEventExt;
     use wasm_bindgen::JsCast;
@@ -659,12 +512,8 @@ pub fn pointer_fraction(e: &Event<PointerData>) -> Option<(f32, f32)> {
     ))
 }
 
-/// Select all the text in the element `e` was mounted on — a no-op unless it is a
-/// text field.
-///
-/// Dioxus's `MountedData` can focus an element but has nothing to say about the
-/// selection inside it, so this reaches for the DOM node directly, the same route
-/// [`capture_pointer`] takes.
+/// Select all the text in the element `e` was mounted on; a no-op unless it is a
+/// text field. `MountedData` has no selection API.
 pub fn select_all(e: &Event<MountedData>) {
     use dioxus::web::WebEventExt;
     use wasm_bindgen::JsCast;
@@ -676,9 +525,7 @@ pub fn select_all(e: &Event<MountedData>) {
     }
 }
 
-/// Focus the element `e` was mounted on — how the command search's field takes
-/// the keyboard the moment its palette opens (`rail::CommandSearch`). The DOM
-/// node directly, for [`select_all`]'s reason.
+/// Focus the element `e` was mounted on.
 pub fn focus(e: &Event<MountedData>) {
     use dioxus::web::WebEventExt;
     use wasm_bindgen::JsCast;
@@ -691,12 +538,8 @@ pub fn focus(e: &Event<MountedData>) {
 }
 
 /// Whether the focus a `focusout` moved is still inside the element `root` was
-/// mounted on — the question a dropdown holding a text field must ask before
-/// reading the event as dismissal. `focusout` bubbles from *any* child losing
-/// focus, including the trigger losing it to the field the open just mounted,
-/// and a dropdown that closed on that would dismiss itself in the act of
-/// opening. Focus gone to nothing at all (the window, a click on the canvas)
-/// arrives with no related target and reads as having left, which it has.
+/// mounted on. `focusout` bubbles from any child, including a trigger losing focus to
+/// the field its dropdown just mounted. Focus moved to nothing reads as having left.
 pub fn focus_stays_within(root: Option<&Event<MountedData>>, e: &Event<FocusData>) -> bool {
     use dioxus::web::WebEventExt;
     use wasm_bindgen::JsCast;
@@ -709,15 +552,10 @@ pub fn focus_stays_within(root: Option<&Event<MountedData>>, e: &Event<FocusData
         .is_some_and(|n| root.contains(Some(&n)))
 }
 
-/// The `<canvas>` element a mount event fired on, for binding a WebGPU surface to it
-/// — the navigator's miniature (`panels::navigator`).
+/// The `<canvas>` element a mount event fired on (`panels::navigator`).
 ///
-/// Off the event rather than by id through the document, unlike
-/// [`canvas_by_id`]: this element's whole significance is that it
-/// has *just* appeared and a surface has to be bound to this one rather than to
-/// whichever element an id happens to resolve to. A panel that closes and reopens
-/// mounts a new canvas, and binding the new surface to the old element would leave
-/// the miniature blank with nothing to say why.
+/// Off the event, not by id: a panel that reopens mounts a new canvas, and a surface
+/// bound to the old element would stay blank.
 pub fn canvas_of(e: &Event<MountedData>) -> Option<Canvas> {
     use dioxus::web::WebEventExt;
     use wasm_bindgen::JsCast;
@@ -726,16 +564,10 @@ pub fn canvas_of(e: &Event<MountedData>) -> Option<Canvas> {
         .map(Canvas)
 }
 
-/// The canvas the app rendered into the DOM under `id` — the main painting
-/// canvas, or the brush editor's preview canvas.
+/// The canvas the app rendered under `id`, looked up once.
 ///
-/// By id through the document, unlike [`canvas_of`]: these two are placed by the
-/// app itself and are looked up once, where a mounted element's whole significance
-/// is that it has *just* appeared.
-///
-/// Panics if it is not there, which is a bug in the markup rather than a state to
-/// handle. Off wasm there is no document, and reaching here is the same bug — see
-/// [`Canvas::surface_target`].
+/// Panics if it is not there, which is a bug in the markup; the stub panics for
+/// [`Canvas::surface_target`]'s reason.
 pub fn canvas_by_id(id: &str) -> Canvas {
     use wasm_bindgen::JsCast;
     Canvas(
@@ -750,23 +582,15 @@ pub fn canvas_by_id(id: &str) -> Canvas {
     )
 }
 
-/// Await one animation frame, so a layout pass (and any just-applied stylesheet)
-/// is reflected before the canvas is measured.
-///
-/// Not the same as [`on_animation_frame`]: this *suspends* until the frame, where
-/// that one runs work inside the callback. A task woken here resumes in the
-/// microtask drain, which is the right place for setup and the wrong one for a
-/// paint (see that function's note).
+/// Await one animation frame, so layout is reflected before the canvas is measured.
+/// Resumes in the microtask drain: fine for setup, too late for a paint (see
+/// [`on_animation_frame`]).
 pub async fn next_frame() {
     called_back(|window, wake| window.request_animation_frame(wake)).await;
 }
 
-/// How many physical pixels the display packs into a CSS pixel — what
-/// `input::input_resolution` prices a pointer's tolerance against.
-///
-/// `1.0` where it cannot be read, and where it is not finite or not positive: a
-/// resolution is a divisor, and a bad one would make the fitting tolerance
-/// meaningless rather than merely wrong.
+/// Physical pixels per CSS pixel. `1.0` where unreadable, non-finite or not positive,
+/// since it is used as a divisor.
 pub fn device_pixel_ratio() -> f32 {
     web_sys::window()
         .map(|w| w.device_pixel_ratio() as f32)
@@ -774,18 +598,11 @@ pub fn device_pixel_ratio() -> f32 {
         .unwrap_or(1.0)
 }
 
-/// Seconds on a **monotonic** clock — the clock `stark-engine` deliberately does not
-/// own (§17.5).
+/// Seconds on a **monotonic** clock, which `stark-engine` does not own (§17.5).
 ///
-/// `performance.now()` rather than `Date.now()`, because every use of this is a
-/// *duration*: `PEER_TIMEOUT`, `HEARTBEAT`, `GESTURE_TIMEOUT`, `GESTURE_RESYNC`.
-/// Nothing compares it across clients, and nothing needs an epoch. A wall clock can
-/// step — an NTP correction, a user changing the system time — and a step backwards
-/// stops the heartbeat coming due until every peer drops this client, while one
-/// forwards expires the whole roster in a single tick.
-///
-/// `performance.now()` is missing only in environments with no `performance` at
-/// all, where `Date.now()` is the best available answer.
+/// Every use is a duration (`PEER_TIMEOUT`, `HEARTBEAT`, …), and a wall clock that
+/// steps would stall the heartbeat or expire the roster. `Date.now()` only where there
+/// is no `performance`.
 pub fn now_seconds() -> f64 {
     web_sys::window()
         .and_then(|w| w.performance())
@@ -813,16 +630,15 @@ pub fn url_with_fragment(fragment: &str) -> String {
     )
 }
 
-/// Reflect (or, with `None`, clear) the page URL's fragment. `replaceState`, so
-/// joining and leaving a session do not pollute tab history.
+/// Set (or, with `None`, clear) the page URL's fragment, via `replaceState` so tab
+/// history is untouched.
 pub fn set_url_fragment(fragment: Option<&str>) {
     let Some(window) = web_sys::window() else {
         return;
     };
     let url = match fragment {
         Some(f) => format!("#{f}"),
-        // Rebuild path + query without a fragment (an empty replaceState URL
-        // would keep the current one, hash included).
+        // An empty replaceState URL would keep the current hash.
         None => {
             let location = window.location();
             format!(
@@ -839,17 +655,16 @@ pub fn set_url_fragment(fragment: Option<&str>) {
     }
 }
 
-/// Put `text` on the system clipboard. Fire-and-forget: the returned promise is
-/// dropped, and a browser that denies the permission just leaves the readonly
-/// field on screen to select by hand.
+/// Put `text` on the system clipboard, fire-and-forget: a denied permission is not
+/// reported.
 pub fn copy_to_clipboard(text: &str) {
     if let Some(window) = web_sys::window() {
         let _ = window.navigator().clipboard().write_text(text);
     }
 }
 
-/// What this browser has stored under `key`, per origin — the raw half of
-/// [`stark_ui::storage`], which is where the format and the failure policy live.
+/// `localStorage` under `key`. Format and failure policy live in
+/// [`stark_ui::storage`].
 pub fn local_get(key: &str) -> Option<String> {
     web_sys::window()?
         .local_storage()
@@ -868,8 +683,6 @@ pub fn local_set(key: &str, value: &str) -> bool {
         .is_some_and(|store| store.set_item(key, value).is_ok())
 }
 
-/// Drop whatever is stored under `key`. Only [`stark_ui::storage::drop_retired`] calls
-/// this, and it says how long either of them is worth keeping.
 pub fn local_remove(key: &str) {
     if let Some(store) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
         let _ = store.remove_item(key);
@@ -878,27 +691,18 @@ pub fn local_remove(key: &str) {
 
 // --- the blob store --------------------------------------------------------
 //
-// The raw half of [`stark_ui::storage`]'s second door. `localStorage` above is *text*,
-// and a few megabytes of it per origin shared across every record this browser keeps
-// — so bytes go to IndexedDB instead, which is quota'd against the disk, and which
-// does its reading and writing off the thread the canvas paints on (§25.6), which is
-// why everything here is `async`.
+// Bytes go to IndexedDB, not `localStorage`: it is quota'd against the disk rather
+// than a few MB of text, and does its I/O off the painting thread (§25.6).
 
 /// The database, its version, and its one object store.
 ///
-/// **One store, with the record's namespace on the key** (`stark.shapes/<hex>`) —
-/// which is what `localStorage` already does with its `stark.`-prefixed names. An
-/// object store can only be created inside an `upgradeneeded`, so a store *per
-/// record* would put a version bump behind every feature that ever wants to keep
-/// bytes, and a version bump is a migration every other open tab has to be talked
-/// through. A prefix is none of that.
+/// One store, namespaced by key prefix (`stark.shapes/<hex>`): a store per record
+/// would need a version bump, which every other open tab must be talked through.
 const BLOB_DB: (&str, u32, &str) = ("stark", 1, "blobs");
 
-/// The database, opened for this call, its object store created if this origin has
-/// never had one.
+/// The database, opened for this call, its object store created if missing.
 ///
-/// Opened per call rather than held: a live handle blocks another tab's upgrade, and
-/// the calls here are a startup read and the odd import — not something in a loop.
+/// Opened per call rather than held, because a live handle blocks another tab's upgrade.
 async fn blob_db() -> Result<Connection, String> {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::prelude::Closure;
@@ -911,8 +715,7 @@ async fn blob_db() -> Result<Connection, String> {
         .ok_or("no IndexedDB in this browser")?
         .open_with_u32(name, version)
         .map_err(|e| reason(&e))?;
-    // An object store can only be created inside the upgrade, so this closure is the
-    // whole of the schema.
+    // An object store can only be created inside the upgrade.
     let upgrade = Closure::once_into_js(move |event: web_sys::Event| {
         if let Some(opened) = fired_at::<web_sys::IdbOpenDbRequest>(&event)
             && let Ok(value) = opened.result()
@@ -930,11 +733,8 @@ async fn blob_db() -> Result<Connection, String> {
         .map_err(|_| "the open resolved to something other than a database".to_string())
 }
 
-/// A connection to the blob store, closed when dropped.
-///
-/// `close` lets the transactions already started on a connection finish, so dropping
-/// this once the requests are issued releases it as soon as they are done, on every
-/// way out of the call.
+/// A connection to the blob store, closed when dropped. `close` lets transactions
+/// already started finish, so it may be dropped as soon as the requests are issued.
 struct Connection(web_sys::IdbDatabase);
 
 impl std::ops::Deref for Connection {
@@ -954,9 +754,9 @@ impl Drop for Connection {
 /// Hang a future off the open `request`, now, for [`blob_pending`]'s reason, resolved
 /// with the database.
 ///
-/// **A blocked open rejects** rather than wait for every other tab to close the store.
-/// It stays queued all the same, so a database it delivers after that is closed on
-/// arrival. One delivered in time closes itself when another tab asks to upgrade.
+/// A blocked open rejects rather than wait for other tabs, but stays queued, so a
+/// database delivered after that is closed on arrival. One delivered in time closes
+/// itself when another tab asks to upgrade.
 fn blob_opened(request: &web_sys::IdbOpenDbRequest) -> wasm_bindgen_futures::JsFuture {
     use std::cell::Cell;
     use std::rc::Rc;
@@ -1008,23 +808,16 @@ fn blob_opened(request: &web_sys::IdbOpenDbRequest) -> wasm_bindgen_futures::JsF
     wasm_bindgen_futures::JsFuture::from(promise)
 }
 
-/// Hang a future off an IndexedDB request, **now** — the handlers are attached before
-/// this returns, and awaiting the result is a separate step.
+/// Hang a future off an IndexedDB request, **now**: the handlers are attached before
+/// this returns, not when the future is first awaited.
 ///
-/// That split is the whole reason this is not one `async fn`. An `async fn` body does
-/// not run until it is awaited, so a caller issuing several requests and awaiting
-/// them in turn would attach the second request's handler *after* its success event
-/// had already fired, and wait on it forever. Here the handlers are on before the
-/// caller can yield, so a batch may be started in one pass and collected in another —
-/// which is also what keeps a batch inside one transaction (see [`blob_get_many`]).
-///
-/// The API is event-based rather than promise-based, so the one-shot handlers are
-/// wrapped in a promise built here. A failure rejects with the request's
-/// `DOMException`, so the caller can say which failure it was.
+/// Not an `async fn`, whose body would not run until awaited: a caller awaiting several
+/// requests in turn would attach a later handler after its event had fired, and hang.
+/// A failure rejects with the request's `DOMException`.
 ///
 /// **No handler holds the request**; each reads it off its event. `once_into_js` frees
-/// a handler only by running it, and through the request the one that never runs would
-/// keep its result and its connection alive for good.
+/// a handler only by running it, so one that never runs would leak the request and its
+/// connection.
 fn blob_pending(request: web_sys::IdbRequest) -> wasm_bindgen_futures::JsFuture {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::JsValue;
@@ -1065,8 +858,8 @@ fn blob_pending(request: web_sys::IdbRequest) -> wasm_bindgen_futures::JsFuture 
 /// Hang a future off `tx` finishing, now, for [`blob_pending`]'s reason — rejected with
 /// the transaction's `DOMException` if it aborts.
 ///
-/// **Only this says a write landed.** A request succeeds when the store accepts it; a
-/// full disk aborts the transaction at commit, after every request in it succeeded.
+/// **Only this says a write landed.** A full disk aborts the transaction at commit,
+/// after every request in it succeeded.
 fn blob_committed(tx: &web_sys::IdbTransaction) -> wasm_bindgen_futures::JsFuture {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::JsValue;
@@ -1099,15 +892,12 @@ fn fired_at<T: wasm_bindgen::JsCast>(event: &web_sys::Event) -> Option<T> {
     event.target()?.dyn_into().ok()
 }
 
-/// Each of `keys` read on its own, in that order — `None` where this browser has
-/// nothing under one, and the reason where one would not read — or why the store could
-/// not be read at all.
+/// Each of `keys` read in order — `None` where nothing is stored, the reason where one
+/// would not read — or why the store could not be read at all.
 ///
-/// **One transaction, all the requests issued before any of them is awaited.** A
-/// transaction stays alive across a microtask checkpoint but not across a turn of the
-/// event loop, so issuing request *n+1* only after *n* has resolved is the shape that
-/// works right up until it does not. Starting them all first makes the whole batch
-/// one exchange with the store and takes the question off the table.
+/// **All requests are issued in one transaction before any is awaited.** A transaction
+/// survives a microtask checkpoint but not a turn of the event loop, so issuing each
+/// request after the previous resolved can find it closed.
 pub async fn blob_get_many(keys: &[String]) -> Result<Vec<BlobRead>, String> {
     use wasm_bindgen::JsValue;
 
@@ -1141,9 +931,8 @@ pub async fn blob_get_many(keys: &[String]) -> Result<Vec<BlobRead>, String> {
 }
 
 /// What a `get` resolved with, as bytes: `undefined` is nothing stored under the key.
-///
-/// Anything else that is not bytes is an error rather than an absence, since only an
-/// absence costs a library its row.
+/// Anything else that is not bytes is an error, since only an absence costs a library
+/// its row.
 fn stored_bytes(value: wasm_bindgen::JsValue) -> BlobRead {
     use wasm_bindgen::JsCast;
 
@@ -1168,8 +957,7 @@ pub async fn blob_put(key: &str, bytes: &[u8]) -> Result<(), String> {
         .transaction_with_str_and_mode(name, web_sys::IdbTransactionMode::Readwrite)
         .map_err(|e| reason(&e))?;
     let committed = blob_committed(&tx);
-    // `Uint8Array::from` copies into the JS heap, so the borrow does not have to
-    // outlive the call — the same bargain `download_bytes` makes below.
+    // `Uint8Array::from` copies into the JS heap, so the borrow ends here.
     let value = js_sys::Uint8Array::from(bytes);
     tx.object_store(name)
         .and_then(|store| store.put_with_key(&value, &JsValue::from_str(key)))
@@ -1178,8 +966,8 @@ pub async fn blob_put(key: &str, bytes: &[u8]) -> Result<(), String> {
     committed.await.map(|_| ()).map_err(|e| reason(&e))
 }
 
-/// Drop whatever is stored under `key`. Silent either way: the caller has already
-/// forgotten it, and there is nothing to do about a delete that did not take.
+/// Drop whatever is stored under `key`. Silent on failure: there is nothing to do
+/// about a delete that did not take.
 pub async fn blob_delete(key: &str) {
     use wasm_bindgen::JsValue;
 
@@ -1199,18 +987,15 @@ pub async fn blob_delete(key: &str) {
     let _ = deleted.await;
 }
 
-/// Hand `bytes` to the browser as a file download named `filename`.
+/// Hand `bytes` to the browser as a file download named `filename`, through a
+/// synthetic `<a download>` on an object URL.
 ///
-/// A Blob behind an object URL, clicked through a synthetic `<a download>` — the
-/// only way to write a file from a page without a server. The object URL is
-/// revoked immediately after the click: the download has already taken a
-/// reference to the blob by then, and leaving it alive pins the whole buffer (a
-/// full-resolution PNG) for the life of the document.
+/// The URL is revoked right after the click: the download already holds the blob, and
+/// a live URL would pin the whole buffer for the life of the document.
 pub fn download_bytes(bytes: &[u8], filename: &str, mime: &str) -> Result<(), String> {
     use wasm_bindgen::JsCast;
 
-    // `Uint8Array::from` copies into the JS heap, which the Blob then owns — the
-    // borrow here does not have to outlive the call.
+    // Copied into the JS heap, which the Blob then owns.
     let array = js_sys::Uint8Array::from(bytes);
     let parts = js_sys::Array::of1(&array.buffer());
     let options = web_sys::BlobPropertyBag::new();
@@ -1237,14 +1022,9 @@ pub fn download_bytes(bytes: &[u8], filename: &str, mime: &str) -> Result<(), St
 
 /// Ask the user for a file and hand its name and bytes to `on_file`.
 ///
-/// A hidden `<input type=file>` clicked programmatically: a page cannot open a
-/// file picker any other way, and the click must happen inside the user gesture
-/// that asked for it, so this is called straight from the menu handler rather
-/// than from a task.
-///
-/// The closure is `forget`ten rather than dropped — the input outlives this call by
-/// design (the user may sit in the picker for a minute), and dropping the `Closure`
-/// would invalidate the JS callback before it fires.
+/// Clicks a detached `<input type=file>`. The click must happen inside the user
+/// gesture that asked for it, so call this straight from the handler, not from a task.
+/// The change closure is `forget`ten, since the picker outlives this call.
 pub fn pick_file(accept: &str, on_file: impl Fn(String, Vec<u8>) + 'static) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
@@ -1262,9 +1042,7 @@ pub fn pick_file(accept: &str, on_file: impl Fn(String, Vec<u8>) + 'static) {
     input.set_type("file");
     input.set_accept(accept);
 
-    // The handler outlives this call and is re-entered per selected file, so it is
-    // shared rather than moved: `Fn` is not `Clone`, and each file's task needs its
-    // own handle.
+    // Shared: `Fn` is not `Clone`, and each file's task needs its own handle.
     let on_file = std::rc::Rc::new(on_file);
     let input_for_change = input.clone();
     let on_change = Closure::<dyn FnMut()>::new(move || {
@@ -1285,8 +1063,7 @@ pub fn pick_file(accept: &str, on_file: impl Fn(String, Vec<u8>) + 'static) {
     input.click();
 }
 
-/// The bytes of a file the page was handed — picked, launched or pasted — or the
-/// browser's reason for not reading them.
+/// A file's bytes, or the browser's reason for not reading them.
 async fn read_file(file: web_sys::File) -> Result<Vec<u8>, String> {
     use wasm_bindgen::JsCast;
 
@@ -1299,9 +1076,7 @@ async fn read_file(file: web_sys::File) -> Result<Vec<u8>, String> {
     Ok(js_sys::Uint8Array::new(buffer).to_vec())
 }
 
-/// A thrown or rejected value as a person reads it.
-///
-/// A `DOMException` (`NotReadableError`, `QuotaExceededError`, …) is an `Error`, whose
+/// A thrown or rejected value as readable text. A `DOMException` is an `Error`, whose
 /// `toString` is its name and message.
 fn reason(e: &wasm_bindgen::JsValue) -> String {
     use wasm_bindgen::JsCast;
@@ -1312,21 +1087,15 @@ fn reason(e: &wasm_bindgen::JsValue) -> String {
     }
 }
 
-/// Hand `on_file` whatever file the OS launched the app with — the other end of
-/// the manifest's `file_handlers` (§11, [`crate::files::bind_file_launch`]).
+/// Hand `on_file` whatever file the OS launched the app with — the manifest's
+/// `file_handlers` (§11, [`crate::files::bind_file_launch`]).
 ///
-/// Reflection rather than typed bindings, unlike everything else in this module:
-/// neither `launchQueue` nor the `FileSystemFileHandle` it yields is in `web-sys`
-/// (the handle is, but behind the `web_sys_unstable_apis` cfg, which is a
-/// `RUSTFLAGS` change for the whole build). A browser without the API leaves the
-/// lookup undefined and this returns having promised nothing, which is the same
-/// shape as a browser that simply never launches with a file.
+/// Through reflection: `launchQueue` is not in `web-sys`, and the file handle is only
+/// behind `web_sys_unstable_apis`, a whole-build `RUSTFLAGS` change. A browser without
+/// the API does nothing.
 ///
-/// Setting the consumer is what *delivers* a launch: the browser queues the
-/// params from before the page had any say, so this must not be called until the
-/// handler can act on them. The closure is `forget`ten for the same reason
-/// [`pick_file`]'s are — it outlives this call by design, and may fire more than
-/// once (`focus-existing`).
+/// Setting the consumer delivers launches already queued, so call this only once the
+/// handler can act. It may fire more than once (`focus-existing`).
 pub fn on_file_launch(on_file: impl Fn(String, Vec<u8>) + 'static) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::JsValue;
@@ -1350,8 +1119,7 @@ pub fn on_file_launch(on_file: impl Fn(String, Vec<u8>) + 'static) {
         return;
     };
 
-    // Shared, not moved: the consumer may be re-entered per launch, and each of
-    // those spawns a task that needs its own handle.
+    // Shared: each launch spawns a task that needs its own handle.
     let on_file = std::rc::Rc::new(on_file);
     let consumer = Closure::<dyn FnMut(JsValue)>::new(move |params: JsValue| {
         let files = js_sys::Reflect::get(&params, &JsValue::from_str("files"))
@@ -1359,9 +1127,8 @@ pub fn on_file_launch(on_file: impl Fn(String, Vec<u8>) + 'static) {
         let Ok(files) = files.dyn_into::<js_sys::Array>() else {
             return;
         };
-        // The first only. Opening a document *replaces* the canvas (§8), so a
-        // second file would be a painting nobody ever sees — which is why the
-        // manifest asks for `single-client` rather than a window per file.
+        // The first only: opening a document replaces the canvas (§8), so the
+        // manifest asks for `single-client`.
         let Some(handle) = files.iter().next() else {
             return;
         };
@@ -1377,8 +1144,7 @@ pub fn on_file_launch(on_file: impl Fn(String, Vec<u8>) + 'static) {
                 return;
             };
             let Ok(file) = wasm_bindgen_futures::JsFuture::from(promise).await else {
-                // Permission for the handle is the usual reason: a launch grants
-                // read access, but a stale handle replayed later may not have it.
+                // Usually permission: a stale handle replayed later may have lost it.
                 return tracing::error!("the launched file could not be opened");
             };
             let Ok(file) = file.dyn_into::<web_sys::File>() else {
@@ -1397,42 +1163,26 @@ pub fn on_file_launch(on_file: impl Fn(String, Vec<u8>) + 'static) {
     consumer.forget();
 }
 
-/// Normalize an image into a brush-shape PNG, using the browser as the decoder —
-/// any format the browser can display can be imported (JPEG, WebP, GIF, …).
-///
-/// **The browser's half only**: decode, and downscale to the size
-/// `stark_ui::assets::fit` asks for. What the pixels then mean — that a light
-/// border is paper with ink on it, and the inversion that follows — is the crate's,
-/// so the two frontends cannot come to read one file two ways.
-///
-/// Returns the PNG bytes and whether the inversion fired (so the UI can say so).
+/// Decode an image in any format the browser displays into a brush-shape PNG, and
+/// whether it was inverted. The browser only decodes and resamples;
+/// `stark_ui::assets::shape_png` decides what the pixels mean, so both frontends agree.
 pub async fn normalize_shape_image(bytes: Vec<u8>) -> Result<(Vec<u8>, bool), String> {
     stark_ui::assets::shape_png(decode_to_canvas(bytes, stark_ui::assets::SHAPE_CAP).await?)
 }
 
-/// Normalize an image into a **canvas-substrate PNG**, using the browser as the
-/// decoder — any format it can display can become a substrate (JPEG, WebP, TIFF, …).
-///
-/// [`normalize_shape_image`]'s sibling, and the same split: the browser decodes and
-/// resamples, `stark_ui::assets::substrate_png` decides. What it decides — grey by
-/// luminance, no inversion, alpha composited over white rather than multiplied in —
-/// is the whole of what a substrate is as against a stamp (§6.4), and is stated there.
-///
-/// The result still goes through `Engine::import_substrate`, which decodes it again
-/// and hashes what it finds: this makes a substrate *possible*, and the id still comes
-/// out of the bytes.
+/// Decode an image in any format the browser displays into a canvas-substrate PNG
+/// (§6.4), decided by `stark_ui::assets::substrate_png` as for
+/// [`normalize_shape_image`].
 pub async fn normalize_substrate_image(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     stark_ui::assets::substrate_png(decode_to_canvas(bytes, stark_ui::assets::SUBSTRATE_CAP).await?)
 }
 
 /// Decode `bytes` through the browser into straight RGBA8, its longest edge brought
-/// within `cap` — the first half of every import here.
+/// within `cap`.
 ///
-/// The browser resamples because `drawImage` is the one step in the chain that scales
-/// without first materializing the full-size buffer: a 48-megapixel photograph is
-/// 190 MB of RGBA before anything has looked at it. `getImageData` is specified as
-/// un-premultiplied sRGB, the form [`Decoded`] and
-/// [`Picture`](stark_assetid::Picture) are both defined in.
+/// `drawImage` scales without materializing the full-size buffer (a 48 MP photo is
+/// 190 MB of RGBA). `getImageData` is specified as un-premultiplied sRGB, the form
+/// [`Decoded`] and [`Picture`](stark_assetid::Picture) are defined in.
 async fn decode_to_canvas(bytes: Vec<u8>, cap: u32) -> Result<Decoded, String> {
     use wasm_bindgen::JsCast;
 
@@ -1454,9 +1204,7 @@ async fn decode_to_canvas(bytes: Vec<u8>, cap: u32) -> Result<Decoded, String> {
     if sw == 0 || sh == 0 {
         return Err("the image is empty".to_string());
     }
-    // The *size* is the shared rule's, even though the resampling is not: two
-    // frontends asking their own resampler for two different sizes would be a
-    // divergence that did not have to exist (`stark_ui::assets`).
+    // The size is the frontends' shared rule, even though the resampler is not.
     let (width, height) = stark_ui::assets::fit(sw, sh, cap);
 
     let document = window.document().ok_or("no document")?;
@@ -1486,28 +1234,19 @@ async fn decode_to_canvas(bytes: Vec<u8>, cap: u32) -> Result<Decoded, String> {
     })
 }
 
-/// Decode an image to place (§23), capped at the identity contract's
-/// [`MAX_PICTURE_DIM`](stark_assetid::MAX_PICTURE_DIM) — which `stark_assetid` applies
-/// anyway, so the cap here only spares the full-size buffer.
+/// Decode an image to place (§23), capped at
+/// [`MAX_PICTURE_DIM`](stark_assetid::MAX_PICTURE_DIM), which `stark_assetid` applies
+/// anyway; capping here spares the full-size buffer.
 pub async fn decode_image(bytes: Vec<u8>) -> Result<Decoded, String> {
     decode_to_canvas(bytes, stark_assetid::MAX_PICTURE_DIM).await
 }
 
 /// Hand `handler` the bytes of the first image on the clipboard whenever one is
-/// pasted into the page.
+/// pasted into the page, except into a text field ([`on_text_entry`]).
 ///
-/// The **`paste` event** rather than `navigator.clipboard.read()`, and the difference
-/// matters: the event is delivered inside the user's own gesture and needs no
-/// permission, where the async read prompts in Chrome and is unimplemented for images
-/// in some engines. A paste the page never sees is a feature that works for some people.
-///
-/// Nothing is handed over for a paste into a **text field** — a layer being renamed, the
-/// session name — which is [`on_text_entry`]'s question asked of the event's target, the
-/// same way the keyboard shortcuts ask it. Pasting a screenshot while typing a layer
-/// name should type nothing and place nothing.
-///
-/// Bound once for the life of the page, so the closure is `forget`ten like the window
-/// key handlers'.
+/// The `paste` event rather than `navigator.clipboard.read()`: the event needs no
+/// permission, while the async read prompts in Chrome and lacks image support in some
+/// engines.
 pub fn on_window_paste(handler: impl Fn(Vec<u8>) + 'static) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
@@ -1515,8 +1254,7 @@ pub fn on_window_paste(handler: impl Fn(Vec<u8>) + 'static) {
     let Some(window) = web_sys::window() else {
         return;
     };
-    // Shared rather than moved: the listener is re-entered per paste, and each of those
-    // spawns a task that needs its own handle — `pick_file`'s bargain.
+    // Shared: each paste spawns a task that needs its own handle.
     let handler = std::rc::Rc::new(handler);
     let cb =
         Closure::<dyn FnMut(web_sys::ClipboardEvent)>::new(move |e: web_sys::ClipboardEvent| {
@@ -1527,9 +1265,8 @@ pub fn on_window_paste(handler: impl Fn(Vec<u8>) + 'static) {
                 return;
             };
             let items = data.items();
-            // The first image, and only the first: a paste is one gesture, and a clipboard
-            // carrying an image usually carries it several times over (a PNG *and* an HTML
-            // fragment naming it), so taking every entry would place the same picture twice.
+            // The first image only: a clipboard often carries one image several times
+            // over (a PNG and an HTML fragment naming it).
             let file = (0..items.length())
                 .filter_map(|i| items.get(i))
                 .filter(|item| item.kind() == "file" && item.type_().starts_with("image/"))
@@ -1537,8 +1274,7 @@ pub fn on_window_paste(handler: impl Fn(Vec<u8>) + 'static) {
             let Some(file) = file else {
                 return;
             };
-            // Only now, once there is an image to place: an ordinary text paste has to
-            // reach whatever would have handled it.
+            // Only once there is an image, so a text paste still reaches its handler.
             e.prevent_default();
             let handler = handler.clone();
             wasm_bindgen_futures::spawn_local(async move {
