@@ -203,8 +203,7 @@ pub fn SliderTrack(
     rsx! {
         input {
             id,
-            class: "slider",
-            class: "{class}",
+            class: "slider {class}",
             style: slider_fill(min, max, value),
             r#type: "range", min: "{min}", max: "{max}", step, value: "{value}",
             title,
@@ -349,7 +348,7 @@ pub fn Segmented<V: Clone + PartialEq + 'static>(
     #[props(default)] class: &'static str,
 ) -> Element {
     rsx! {
-        div { class: "{class}", class: "segmented",
+        div { class: "segmented {class}",
             // Keyed by place: a run is a fixed set of answers and never reorders.
             for (i, Choice { value, face, tip, class: own, style }) in choices.into_iter().enumerate() {
                 Chip {
@@ -756,5 +755,68 @@ mod tests {
     fn no_two_pop_outs_share_a_key() {
         let keys: HashSet<_> = PopoutId::VARIANTS.iter().map(|id| id.key()).collect();
         assert_eq!(keys.len(), PopoutId::VARIANTS.len());
+    }
+
+    /// Every run wears `.segmented` beside its own class, since that class is the run's
+    /// whole shape (§25.9). Rendered rather than read: the spelling that lost it compiles
+    /// (`tests/no_split_class_strings.rs`).
+    #[test]
+    fn a_run_wears_segmented_beside_its_own_class() {
+        fn app() -> Element {
+            rsx! {
+                Segmented {
+                    class: "setting-choice",
+                    choices: vec![Choice::new(1u8, Face::Drawn(rsx! { "a" }), "")],
+                    selected: 1u8,
+                    onpick: |_| {},
+                }
+                Segmented {
+                    choices: vec![Choice::new(1u8, Face::Drawn(rsx! { "b" }), "")],
+                    selected: 1u8,
+                    onpick: |_| {},
+                }
+            }
+        }
+        let runs: Vec<_> = rendered_classes(app)
+            .into_iter()
+            .filter(|classes| !classes.iter().any(|c| c == "chip"))
+            .collect();
+        assert_eq!(
+            runs,
+            [vec!["segmented", "setting-choice"], vec!["segmented"]]
+        );
+    }
+
+    /// Every track wears `.slider`, which is its width, its neutral paint and its thumb;
+    /// without it the browser draws its own blue range input.
+    #[test]
+    fn a_track_wears_slider_beside_its_own_class() {
+        fn app() -> Element {
+            rsx! {
+                SliderTrack { min: 0.0, max: 1.0, value: 0.5, class: "setting-slider", oninput: |_| {} }
+                SliderTrack { min: 0.0, max: 1.0, value: 0.5, oninput: |_| {} }
+            }
+        }
+        assert_eq!(
+            rendered_classes(app),
+            [vec!["slider", "setting-slider"], vec!["slider"]]
+        );
+    }
+
+    /// The `class` each element `app` renders is given, in render order, split into names.
+    fn rendered_classes(app: fn() -> Element) -> Vec<Vec<String>> {
+        VirtualDom::new(app)
+            .rebuild_to_vec()
+            .edits
+            .into_iter()
+            .filter_map(|edit| match edit {
+                dioxus::core::Mutation::SetAttribute {
+                    name: "class",
+                    value: dioxus::core::AttributeValue::Text(text),
+                    ..
+                } => Some(text.split_whitespace().map(str::to_owned).collect()),
+                _ => None,
+            })
+            .collect()
     }
 }
