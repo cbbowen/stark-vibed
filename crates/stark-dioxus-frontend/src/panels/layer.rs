@@ -76,7 +76,8 @@ pub fn LayerPanel() -> Element {
     let drag = use_signal(|| None::<Grab>);
 
     // The tree and the selected row through one memo (`state::use_obs`): both move on a
-    // commit, never on a pan or a stroke sample.
+    // commit, never on a pan or a stroke sample. A committed stroke arrives through a
+    // layer's `content_revision`.
     let tree = use_obs(state, |o| {
         (
             o.layers.clone(),
@@ -120,12 +121,12 @@ pub fn LayerPanel() -> Element {
         hr {}
 
         div { class: "layer-header",
-            // A frame is a layer, so its add sits here beside the paint layer's (§15.7).
-            CommandButton { command: Command::AddLayer, class: "layer-add" }
             // No "+ Background": the substrate is made at most once, so it is a frame-bar chip
-            // (§15.5). A filter is the third kind of layer (§21); where it lands is what it
-            // acts on.
+            // (§15.5).
+            CommandButton { command: Command::AddLayer, class: "layer-add" }
+            // A filter is the third kind of layer (§21); where it lands is what it acts on.
             AddFilterButton {}
+            // A frame is a layer, so its add sits here beside the paint layer's (§15.7).
             CommandButton { command: Command::AddFrame, class: "layer-add" }
         }
 
@@ -170,8 +171,8 @@ pub fn LayerPanel() -> Element {
 }
 
 /// The properties of whichever layer is selected, once: a frame is a layer, so it needs
-/// no copies (§15.7). A component so its drags' pending values live as long as the
-/// selection.
+/// no copies (§15.7). A component so its drags' pending values live while any layer is
+/// selected; each carries its `LayerId`, since the component outlives a change of selection.
 #[component]
 fn SelectedLayerControls(layer: LayerInfo, blend_inert: bool, clip_inert: bool) -> Element {
     let state = use_context::<AppState>();
@@ -319,11 +320,11 @@ pub fn LayerRow(
         "layer-name"
     };
 
-    // A row is one line of controls, with two marks outside it: the fold on its top edge and
-    // Release in the indent. `Motion` writes every declaration on every render, including
-    // the "off" ones (see `super::reorder::css`).
+    // `reorder::css` writes every declaration on every render, including the "off" ones.
     let shift = super::reorder::css(motion);
 
+    // A row is one line of controls, with two marks outside it: the fold on its top edge and
+    // Release in the indent.
     rsx! {
         // The indent is padding, since Release is drawn in it, and also `--indent` for the
         // stratum band that paints that gutter (`.layer-item::before`).
@@ -347,8 +348,8 @@ pub fn LayerRow(
             }
             div {
                 class: "layer-row row",
-                // A frame is dashed (§15.7) and a filter ruled (§21.6): the brush has nowhere
-                // to go.
+                // A frame is dashed (§15.7) and a filter ruled (§21.6), so a row the brush
+                // cannot paint shows it before it is reached for.
                 class: if matte { "matte" } else if filter { "filter" },
                 // One selection, one highlight; a matte is selected like any layer (§15.7).
                 class: if active { "active" },
@@ -371,7 +372,7 @@ pub fn LayerRow(
                 }
                 // Carry: put this layer on the one below and they become a group; clipping to
                 // one layer is Carry plus Clip (§14.4). The slot is held either way so names
-                // align at each depth. Hidden until hover, with Release and the eye
+                // align at each depth. Hidden until hover, with Release and an open eye
                 // (`.layer-item:hover` in `stark.css`).
                 if let Some(carry) = carry {
                     button {
@@ -470,8 +471,8 @@ pub fn LayerRow(
                 // paint layer's own paint (`crate::layer_thumbs`), a frame's crop marks, a
                 // filter's funnel (§21.3).
                 //
-                // A background `<div>` with `pointer-events: none`: the whole row is the grip,
-                // and an element taking the press would leave a dead patch in it.
+                // A background `<div>` (`pointer-events: none` in `stark.css`): the whole row
+                // is the grip, and an element taking the press would leave a dead patch in it.
                 if let Some(style) = thumb {
                     div { class: "layer-thumb", style: "{style}" }
                 } else if matte {

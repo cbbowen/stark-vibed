@@ -41,7 +41,7 @@ pub fn room_about(x: f32) -> String {
 }
 
 /// How tall a surface **hanging from** `y` may be, as a declaration. Only for a surface
-/// that scrolls what does not fit (`.stack-popout`): narrowing makes a surface taller.
+/// that scrolls what does not fit (`.stack-popout`); the tour's card cannot.
 pub fn room_below(y: f32) -> String {
     format!("max-height: calc(100vh - {y:.1}px - {EDGE}px);")
 }
@@ -89,11 +89,9 @@ pub fn measure(
 ///
 /// Unlike [`measure`]'s one-shot wait, a pop-out's row keeps moving — the column scrolls,
 /// the window resizes, a panel above folds — and those causes share no event, so this
-/// polls every frame and writes only when the box changed. `measure` is the caller's
-/// because a row scrolled out of its column still has a box (`panels::popout`).
-///
-/// A second loop for one surface costs a duplicate measurement and nothing else, so the
-/// guard is a predicate rather than a token.
+/// polls every frame and writes only when the box changed; a duplicate loop costs one
+/// extra measurement, so the guard is a predicate. `measure` is the caller's because a
+/// row scrolled out of its column still has a box (`panels::popout`).
 pub fn follow(
     mut at: Signal<Option<ElementBox>>,
     measure: impl Fn() -> Option<ElementBox> + Copy + 'static,

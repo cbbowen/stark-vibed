@@ -22,16 +22,13 @@ use stark_ui::selection::Dial;
 /// Shape tools (§6.8): rect / ellipse / lasso, what the next gesture does with the region
 /// they enclose, and the feather applied to its edge.
 ///
-/// The tool chips **arm** a tool for one gesture: drawing a selection disarms it
+/// The tool chips **arm** a tool rather than a mode: drawing a selection disarms it
 /// ([`Session::end_shape`](stark_engine::Session::end_shape)), and no chip lit is the
 /// brush. Each chip is a registry command (`crate::commands`).
 ///
-/// The action row is five answers to *what does this shape do?* The four combine modes
-/// land coverage on the mask; `Fill` lands it on the paint (§18.0.4), still clipped by the
-/// selection, and unlike the other four stays armed after a gesture. Shift / alt override
-/// the default for one gesture ([`stark_ui::selection::modifier_mode`]) and are inert
-/// under Fill. Add on the unrestricted selection resolves to New
-/// (`Session::start_selection`, §6.8).
+/// The action row answers *what does this shape do?* Four combine modes land coverage on
+/// the mask; `Fill` lands it on the paint (§18.0.4), still clipped by the selection, and
+/// stays armed. Modifiers: [`stark_ui::selection::modifier_mode`].
 #[component]
 pub fn SelectPanel() -> Element {
     let state = use_context::<AppState>();

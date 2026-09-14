@@ -23,9 +23,9 @@ use stark_ui::commands::Command;
 /// what the button says or does is not. A site that must vary that (the Fill chip's
 /// tinted bucket) writes its own `button` and still reads the words off the command.
 ///
-/// Lit comes off [`Command::active`] (the armed shape tool, §6.8) and greyed off
-/// [`Command::enabled`]: a bar can stand before what its acts need exists (§6.8).
-/// Greying is presentation; the act's own gate is still `run`'s.
+/// Lit and greyed come off [`Command::active`] and [`Command::enabled`], not props, so a
+/// chip agrees with the menu and palette. A bar can stand before what its acts need
+/// exists (§6.8); `run` still gates the act.
 #[component]
 pub fn CommandButton(
     command: Command,
@@ -403,7 +403,8 @@ pub fn ActChip(command: Command, title: String, onclick: EventHandler<MouseEvent
 ///
 /// **Blur** and **Enter** commit — Enter directly, since a focused element that is
 /// removed does not reliably fire `blur` — and **Escape** abandons. Whichever runs first
-/// *takes* the draft, so the blur after a key-close finds nothing.
+/// *takes* the draft, so the blur after a key-close finds nothing. A click or double-click
+/// stops here, so it places the caret rather than reaching the row beneath.
 #[component]
 pub fn InlineRename(
     class: &'static str,
@@ -494,7 +495,8 @@ pub struct AssetCard<V> {
 /// and an optional hint.
 ///
 /// No `spawn` inside: every handler runs synchronously in its event, so `onimport` is
-/// inside the click gesture a file picker needs. A drop on the grid stops propagating,
+/// inside the click gesture a file picker needs; an import the caller starts is its own
+/// `spawn_forever`. A drop on the grid stops propagating,
 /// since the app root places any other dropped file as a picture (§23.4).
 #[component]
 pub fn AssetGallery<V: Clone + PartialEq + 'static>(
@@ -582,9 +584,10 @@ pub fn focus_selected(e: &Event<MountedData>) {
 /// **A click dismisses only if the backdrop also heard its `pointerdown`.** A menu row
 /// opens a dialog on `pointerdown`, and for a pen or touch the browser delivers that
 /// press's `mousedown`, `mouseup` and `click` at the release point — onto the backdrop
-/// the press just created. The box stops both events, so a drag out of the dialog
-/// released over the dim does not dismiss either; the window-wide press listener binds in
-/// the capture phase and still hears them ([`crate::platform::on_window_pointer`]).
+/// the press just created. A mouse fires no click once its press target is gone, so only a
+/// pen or touch shows this. The box stops `pointerdown` and `click`, so a drag out of the
+/// dialog released over the dim does not dismiss either; the window-wide press listener
+/// binds in the capture phase and still hears them ([`crate::platform::on_window_pointer`]).
 #[component]
 pub fn Modal(
     #[props(default = String::new())] class: String,
@@ -600,8 +603,7 @@ pub fn Modal(
             // Terminal: a stale arm would be spent on whatever click came next.
             onpointercancel: move |_| armed.set(false),
             onclick: move |_| {
-                // Bound first: a read in the `if` condition would be held through the body, which
-                // writes the same signal.
+                // Spent on every click, whether or not it dismisses.
                 let heard_the_press = armed();
                 armed.set(false);
                 if let (true, Some(on_close)) = (heard_the_press, on_close) {
@@ -629,12 +631,11 @@ pub fn Modal(
 ///
 /// # What is still owed
 ///
-/// **Light dismiss** for the pop-outs flown out of a bar. Only the rail's menu has it,
-/// through `focusout` (`rail::VisibilityMenu`). A catcher has to be root-mounted like
-/// [`Modal`]'s backdrop, since `.bottom-bars`' `transform` and every bar's
-/// `backdrop-filter` trap a `position: fixed` child, and its z-index decides which presses
-/// it eats — so check it in a browser. A stack pop-out already closes on the canvas
-/// gesture instead (`panels::popout`, `StackPopouts`), so that stroke also paints.
+/// **Light dismiss** for pop-outs flown out of a bar or a panel; only the rail's menu has it
+/// (`focusout`, `rail::VisibilityMenu`). A catcher must be root-mounted like [`Modal`]'s
+/// backdrop, since `.bottom-bars`' `transform` and each bar's `backdrop-filter` trap a
+/// `position: fixed` child; check its z-index in a browser. A stack pop-out already closes
+/// on a canvas gesture (`panels::popout`, `StackPopouts`), the press that matters there.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, strum::VariantArray)]
 pub enum PopoutId {
     /// The rail's map of what is on screen (§25.5). Not a well's: here for Escape's rung
@@ -761,8 +762,8 @@ mod tests {
     }
 
     /// Every run wears `.segmented` beside its own class (§25.9). Rendered rather than read:
-    /// on Dioxus 0.7.10, `class: "a", class: "{b}"` compiles and renders an EMPTY class, so a
-    /// class is written as one format string (`tests/no_split_class_strings.rs`).
+    /// on Dioxus 0.7.10, `class: "a", class: "{b}"` compiles and renders an EMPTY class
+    /// (`tests/no_split_class_strings.rs`).
     #[test]
     fn a_run_wears_segmented_beside_its_own_class() {
         fn app() -> Element {

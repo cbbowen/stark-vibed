@@ -27,7 +27,8 @@ use stark_ui::reorder::{Grab, Motion, Slide};
 use strum::VariantArray;
 
 /// The panel's mark, worn by its title bar and its visibility-menu entry
-/// (`stark_ui::commands::VisibilityToggle`). A free function for the orphan rule (§11.2 N8).
+/// (`stark_ui::commands::VisibilityToggle`). A free function for the orphan rule; which
+/// mark it is belongs to the crate (§11.2 N8).
 pub fn panel_glyph(id: PanelId) -> stark_ui::icons::Icon {
     id.glyph()
 }
@@ -203,7 +204,8 @@ fn stack_dimmed(state: AppState) -> bool {
 fn standing_down(state: AppState) -> bool {
     // Short-circuits, so an awake stack subscribes to neither the setting nor the tour. The
     // setting is asked here too, so a sleeping stack wakes when the artist switches to a
-    // mode that does not sleep.
+    // mode that does not sleep. Safe, because falling asleep is itself a write of
+    // `panels_asleep`.
     (state.panels_asleep)()
         && (state.chrome_hiding)().sleeps()
         && !crate::tutor::holding_panels(state)
@@ -250,8 +252,9 @@ pub fn sleep_panels(state: AppState) {
 /// Open or close `id`, and remember it. **The only writer of [`PanelLayout::hidden`]**,
 /// so durability is structural, as `prefs::set` makes it for the preferences.
 ///
-/// Guarded on the set changing, since the tour opens panels that are often already open
-/// (§24.3). Answers whether it moved, so the tour ignores a no-op (§24.2).
+/// Guarded on the set changing, since a `Signal` write wakes readers even when unchanged,
+/// and the tour opens panels that are often already open (§24.3). Answers whether it
+/// moved, so the tour ignores a no-op (§24.2).
 fn set_open(state: AppState, layout: PanelLayout, id: PanelId, open: bool) -> bool {
     let mut hidden = layout.hidden;
     // Into a local before the write: a read guard held across one panics.
@@ -274,7 +277,8 @@ fn set_open(state: AppState, layout: PanelLayout, id: PanelId, open: bool) -> bo
 /// the stylesheet rather than unmounted, so its scroll and measurements survive.
 pub fn toggle_collapse(state: AppState, layout: PanelLayout, id: PanelId) {
     let mut collapsed = layout.collapsed;
-    // Into a `bool` first: a `peek` in the condition stays borrowed through arms that write.
+    // Bound before the write: a guard in a `match` or `if let` scrutinee stays live
+    // through arms that write.
     let folded = collapsed.peek().contains(&id);
     if folded {
         collapsed.write().remove(&id);
@@ -312,7 +316,8 @@ pub fn open_panel(state: AppState, layout: PanelLayout, id: PanelId) {
 /// Show `id` if it is hidden, hide it if not: its row in the visibility menu
 /// (`stark_ui::commands::VisibilityToggle::Panel`). Only the opening half wakes the stack.
 pub fn toggle_panel(state: AppState, layout: PanelLayout, id: PanelId) {
-    // Into a `bool` first: both arms write the signal the condition would hold borrowed.
+    // Bound before the write: a guard in a `match` or `if let` scrutinee stays live
+    // through arms that write.
     let was_hidden = layout.hidden.peek().contains(&id);
     if was_hidden {
         open_panel(state, layout, id);
@@ -372,8 +377,8 @@ pub fn PanelStack() -> Element {
         // Mounted only while asleep and with the canvas out of hand: a stroke's moves go to
         // whatever is under the pointer, so a box live mid-stroke would take the release that
         // ends it. A press here wakes the panels instead of painting, which is the only way a
-        // touch that cannot hover asks for them; the wheel is taken so a notch of zoom spent here
-        // is not silently lost.
+        // touch that cannot hover asks for them. A wheel wakes them too, rather than vanishing
+        // into the box.
         if reachable {
             div {
                 class: "panel-wake",
@@ -420,10 +425,10 @@ pub fn PanelStack() -> Element {
 /// the column overflows (§11).
 ///
 /// Drawn by the app because Blink's native scrollbar takes its width from the content
-/// box, narrowing every panel on overflow, and a pen has no wheel. Shown on hover
-/// (`.panel-stack:hover`) and while dragged (`.dragging`). The stack's next sibling rather
-/// than its child, since a positioned child of a scroller scrolls with it, so its box is
-/// written inline from the measurement.
+/// box, narrowing every panel on overflow, and a pen has no wheel. Shown on
+/// `.panel-stack:hover`, which needs the rail as the stack's *next* sibling, on its own
+/// hover, and while dragged (`.dragging`). Not a child, since a positioned child of a
+/// scroller scrolls with it; its box is written inline from the measurement instead.
 #[component]
 fn PanelScrollbar() -> Element {
     let state = use_context::<AppState>();
@@ -475,7 +480,8 @@ const PANEL_INSET: f32 = 4.0;
 pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: Element) -> Element {
     let state = use_context::<AppState>();
     let layout = state.panels;
-    // A panel that is not resizable never reads `heights` or `resize`. Folded, a panel loses
+    // A panel that is not resizable never reads `heights` or `resize`, so another panel's
+    // resize does not re-render it. Folded, a panel loses
     // its height too: a 340px panel must not fold into a 340px header.
     let folded = layout.collapsed.read().contains(&id);
     let height = id
@@ -526,9 +532,9 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
                     ondragstart: move |e| e.prevent_default(),
                     {icon(crate::layout::panel_glyph(id))}
                     "{id.title()}"
-                    // The fold caret, inside the grip. One glyph rotated, since a panel's
-                    // content is below its bar, unlike the layer tree's fold
-                    // (`stark_ui::icons::FOLD_OPEN`).
+                    // The fold caret, inside the grip, rotated to point where the content
+                    // goes. The layer tree's fold (`stark_ui::icons::FOLD_OPEN`) cannot turn,
+                    // since its rows are above it in both states.
                     span { class: "panel-fold", {icon(stark_ui::icons::FOLD_OPEN)} }
                 }
                 button {
@@ -669,7 +675,7 @@ fn visible(layout: PanelLayout) -> Vec<PanelId> {
 /// is active or it never travelled.
 ///
 /// **The disarm goes first**: the transforms are stated against the pre-drag layout, so a
-/// frame with both them and the new `order` would apply the reorder twice.
+/// frame carrying the new `order` with the transforms still on would apply it twice.
 /// [`Grab::spend`] is terminal, so a press cannot commit twice. Nothing is deferred: a
 /// settle timer that never fired would strand the layout.
 pub fn drag_end(layout: PanelLayout, id: PanelId) {
@@ -694,8 +700,8 @@ pub fn drag_end(layout: PanelLayout, id: PanelId) {
     let mut order = layout.order;
     let mut ord = order.write();
     ord.retain(|p| *p != id);
-    // Insert before the visible panel now at `slide.gap` (hidden panels keep their slots),
-    // or at the end.
+    // Insert before the visible panel now at `slide.gap` (for a flat list the gap is the
+    // insertion index), or at the end; hidden panels keep their slots.
     let slots: Vec<usize> = ord
         .iter()
         .enumerate()
