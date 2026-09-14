@@ -313,9 +313,11 @@ of every gesture.
 
 **One anchor is inside a dialog, and it inverts two rules.** Every other card
 stands down while a modal is up, because a modal is over everything a card could
-point at — but the brush editor's series points *at* the modal, so
-`Anchor::inside_dialog` is what the promotion rule asks instead of testing the
-signal directly. Those cards also sit above the backdrop (`z-index: 101`, and only
+point at — but the brush editor's series points *at* the modal. So where a card
+stands is asked of the top of the dialog stack (`tutor::card::Standing`), for
+promotion and for drawing alike: a card pointing into the editor stands only while
+the editor is on top, and a dialog opened over the editor covers it even once it is
+on screen. Those cards sit above the backdrop (`z-index: 101`, and only
 they do) and take the pointer whole, where a card over the painting declines it:
 inside a dialog there is no stroke a press could have been the start of, and what is
 underneath is somebody else's control — here, a test canvas that would read a click

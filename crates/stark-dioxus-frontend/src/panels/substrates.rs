@@ -102,7 +102,7 @@ pub fn SubstrateWell() -> Element {
             // absence rather than leaving an empty box, exactly as its card does.
             div {
                 class: if thumb.is_some() { "asset-thumb" } else { "asset-thumb flat" },
-                style: crate::cards::thumb_style(thumb.as_deref()),
+                style: thumb.as_deref().map(|url| crate::cards::thumb_style(Some(url))),
             }
             // Blank for the one moment the name is unknown rather than guessed at: a
             // built-in whose map has not landed is a substrate this browser cannot yet

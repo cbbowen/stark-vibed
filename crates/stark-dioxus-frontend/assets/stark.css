@@ -1038,7 +1038,7 @@ hr {
 
 /* The Lighting panel's surface well: which canvas surface is in force, as the picture
    it is judged by and the name it is asked for by, in one row of the column
-   (`substrates::SubstrateWell`).
+   (`panels::substrates::SubstrateWell`).
 
    The gallery stood open in that panel and cost it a grid's worth of height for as
    long as it was open — for the rarest choice in the panel. This is what stayed
@@ -3711,8 +3711,8 @@ button.layer-remove:hover {
 /* The grid doubles as a drop target; the dashed border is the standing
    invitation, lit while a drag hovers. */
 /* --- the asset galleries ---
-   One grid, two libraries: the brush editor's stamps (`ShapeGallery`) and the
-   Lighting panel's canvas weaves (`SubstrateGallery`). They are the same object twice
+   One grid, two libraries: the brush editor's stamps and the Lighting panel's canvas
+   weaves, both drawn by `widgets::AssetGallery`. They are the same object twice
    over (`stark-dioxus-frontend/src/library.rs`), so they are the same picture — which
    is also why these classes are `asset-` and not `shape-`: the grid was the brush
    editor's alone once, and `.be-shapes` said so.

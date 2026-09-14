@@ -129,9 +129,11 @@ enum Standing {
 
 impl Standing {
     /// Every dialog covers a card, except the brush editor for a card pointing into it.
-    /// Only the top is asked, because a dialog opened over the editor covers its parts.
+    /// Only the top is asked, because a dialog opened over the editor covers its parts; and
+    /// a card pointing into the editor stands only while the editor is on top.
     fn of(top: Option<DialogId>, anchor: Anchor) -> Self {
         match top {
+            None if anchor.inside_dialog() => Standing::Covered,
             None => Standing::Chrome,
             Some(DialogId::BrushEditor) if anchor.inside_dialog() => Standing::OverDialog,
             Some(_) => Standing::Covered,
@@ -420,6 +422,6 @@ mod tests {
                 "{over:?} opened over the editor"
             );
         }
-        assert_ne!(Standing::of(None, inside), Standing::OverDialog);
+        assert_eq!(Standing::of(None, inside), Standing::Covered);
     }
 }

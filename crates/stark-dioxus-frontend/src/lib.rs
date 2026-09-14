@@ -198,9 +198,9 @@ fn app() -> Element {
             // window a drop target at all.
             //
             // A descendant that wants a drop for itself takes it by stopping
-            // propagation — the brush editor's shape library is the one that does
-            // (`brush_editor`), because dropping a stamp into the library and
-            // placing a photograph on the canvas are different acts.
+            // propagation — both asset libraries do (`widgets::AssetGallery`), because
+            // dropping a stamp or a weave into a library and placing a photograph on
+            // the canvas are different acts.
             ondragover: move |e| e.prevent_default(),
             ondrop: move |e| {
                 e.prevent_default();

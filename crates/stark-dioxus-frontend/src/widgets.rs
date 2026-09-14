@@ -522,13 +522,13 @@ impl Thumb {
         }
     }
 
-    /// The inline picture. `None` only for the round tip, whose disc is a `background`
-    /// an inline `background-image` would override.
+    /// The inline picture, and nothing without one: the flat ground and the round tip
+    /// are `background`s the stylesheet draws, which an inline `background-image` would
+    /// override with nothing.
     fn style(&self) -> Option<String> {
         match self {
-            Thumb::Picture(url) => Some(crate::cards::thumb_style(url.as_deref())),
-            Thumb::Flat => Some(crate::cards::thumb_style(None)),
-            Thumb::Round => None,
+            Thumb::Picture(Some(url)) => Some(crate::cards::thumb_style(Some(url))),
+            Thumb::Picture(None) | Thumb::Flat | Thumb::Round => None,
         }
     }
 }
