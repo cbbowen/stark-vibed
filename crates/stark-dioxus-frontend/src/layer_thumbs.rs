@@ -47,7 +47,7 @@
 //!
 //! **That revision decides what to re-render, never what to show.** A row draws
 //! whatever picture we last took of its layer, current or not (`url`); the
-//! comparison lives in `first_stale`, which decides what to render next. Keying
+//! comparison lives in `wanted`, which decides what to render next. Keying
 //! the display on it too is the natural reading and is wrong in one visible way: a
 //! commit invalidates the entry a whole settle and a readback before its
 //! replacement exists, so the row goes empty in between — once per stroke you
@@ -67,10 +67,9 @@ use stark_engine::{ExportScale, LayerInfo};
 use stark_model::document::LayerId;
 use stark_model::geom::IVec2;
 
-use crate::cards::readback_url;
 use crate::platform::sleep_ms;
 use crate::state::AppState;
-use crate::thumbs::generator::{Generated, Insert, Pace, holds};
+use crate::thumb_cache::{Insert, NoRenderer, Pace, Picture, ThumbCache, readback_url};
 
 /// Thumbnail pixel size: 2× the box a row shows it in, so it stays crisp on a
 /// dense display. Square, because the document it frames may be any shape and
@@ -112,7 +111,7 @@ pub struct LayerThumbState {
     /// fixed set of things a user made, while a layer is repainted all day, so
     /// keeping every revision's picture would grow without bound over a session's
     /// painting.
-    pictures: Generated<Subject>,
+    pictures: ThumbCache<Subject>,
 }
 
 impl LayerThumbState {
@@ -121,8 +120,8 @@ impl LayerThumbState {
     /// fields and the values they open on stay in one place.
     pub(crate) fn new() -> Self {
         Self {
-            pictures: Generated::new(
-                Insert::Replace(|a: &Subject, b: &Subject| a.layer == b.layer),
+            pictures: ThumbCache::new(
+                Insert::Replace(|a: &Subject, b: &Subject| shows(a, b.layer)),
                 Pace {
                     settle_ms: SETTLE_MS,
                     between_ms: BETWEEN_MS,
@@ -146,12 +145,12 @@ pub struct Subject {
     pub translation: IVec2,
 }
 
-/// The picture we hold for `layer`, whatever it is a picture of.
+/// Whether `subject` is a picture of `layer`, whatever revision it was taken at.
 ///
-/// At most one, because the cache *replaces* a layer's entry rather than appending
-/// to it — which is what lets the two questions below be asked of the same entry.
-fn held(cache: &[(Subject, String)], layer: LayerId) -> Option<&(Subject, String)> {
-    cache.iter().find(|(subject, _)| subject.layer == layer)
+/// The one question both the row ([`url`]) and the cache's replacement ask, so the
+/// entry a row draws is the entry a fresher render replaces.
+fn shows(subject: &Subject, layer: LayerId) -> bool {
+    subject.layer == layer
 }
 
 /// The thumbnail to draw in `layer`'s row: **the last picture of it we rendered,
@@ -179,7 +178,7 @@ pub fn url(state: AppState, layer: &LayerInfo) -> Option<String> {
     state
         .layer_thumbs
         .pictures
-        .with(|cache| held(cache, layer.id).map(|(_, url)| url.clone()))
+        .find(|subject| shows(subject, layer.id))
 }
 
 /// Whether `l` is worth rendering: it has tiles, it has some, and the isolate
@@ -196,8 +195,8 @@ fn worth_rendering(l: &LayerInfo) -> bool {
     l.content_revision.is_some() && l.visible && l.opacity > 0.0
 }
 
-/// The first layer whose thumbnail is missing or out of date, as the subject to
-/// render it at.
+/// Every layer worth a thumbnail, as the subject its picture would be of: the cache
+/// renders the first it does not hold.
 ///
 /// **This is where the revision is the key** — it decides what to *re-render*, as
 /// against what to *show*, which is [`url`] above. A picture that has fallen behind
@@ -206,61 +205,56 @@ fn worth_rendering(l: &LayerInfo) -> bool {
 ///
 /// Top-down, which is the order the panel draws in: the rows a user is looking at
 /// fill first.
-fn first_stale(layers: &[LayerInfo], cache: &[(Subject, String)]) -> Option<Subject> {
+fn wanted(layers: &[LayerInfo]) -> Vec<Subject> {
     layers
         .iter()
         .rev()
         .filter(|l| worth_rendering(l))
-        .find_map(|l| {
+        .filter_map(|l| {
             // The picture is a function of the tiles *and* of where the frame
             // puts them in the piece (§14.12), so both key it.
-            let subject = Subject {
+            Some(Subject {
                 layer: l.id,
                 revision: l.content_revision?,
                 translation: l.translation,
-            };
-            (!holds(cache, &subject)).then_some(subject)
+            })
         })
-}
-
-/// [`first_stale`] against the live document and the live cache.
-fn next_stale(state: AppState) -> Option<Subject> {
-    let obs = state.obs.peek();
-    let layers = &obs.as_ref()?.layers;
-    state
-        .layer_thumbs
-        .pictures
-        .with_peek(|cache| first_stale(layers, cache))
+        .collect()
 }
 
 /// Make sure every layer with a picture to show has an up-to-date thumbnail,
-/// rendering the stale ones in the background ([`Generated::refresh`]). Cheap when
+/// rendering the stale ones in the background ([`ThumbCache::refresh`]). Cheap when
 /// nothing is stale; safe to call from a render effect.
 pub fn refresh(state: AppState) {
     state.layer_thumbs.pictures.refresh(
-        move || next_stale(state),
-        async move |subject: &Subject| {
-            // Never render with a hand on the canvas. This render takes the engine's
-            // own borrow, so one landing mid-stroke spends its cost exactly where it
-            // is least affordable — and `canvas_active` covers strokes, marquees,
-            // pans and runs of wheel zoom alike.
-            //
-            // **Yield until it lifts rather than abandoning the pass**, which is the
-            // distinction that matters: stopping here would leave the remaining rows
-            // stale with nothing to restart them, since the effect that starts a pass
-            // fires on the layer list moving and a pan does not move it.
+        move || {
+            state
+                .obs
+                .peek()
+                .as_ref()
+                .map_or_else(Vec::new, |obs| wanted(&obs.layers))
+        },
+        // Never render with a hand on the canvas. This render takes the engine's
+        // own borrow, so one landing mid-stroke spends its cost exactly where it
+        // is least affordable — and `canvas_active` covers strokes, marquees,
+        // pans and runs of wheel zoom alike.
+        //
+        // **Yield until it lifts rather than abandoning the pass**: the effect that
+        // starts a pass fires on the layer list moving, and a pan does not move it.
+        // And wait *before* the layer is chosen, so one a peer hid or emptied during
+        // the stroke is not rendered blank over its last picture.
+        async move || {
             while *state.canvas_active.peek() {
                 sleep_ms(SETTLE_MS).await;
             }
-            generate(state, subject.layer).await
         },
+        async move |subject: &Subject| generate(state, subject.layer).await,
     );
 }
 
-/// Render `layer`'s thumbnail as a `data:` URL, empty when there is nothing to frame
-/// or the readback failed. `None` when there is no renderer to draw with — the one
-/// condition worth stopping the pass for.
-async fn generate(state: AppState, layer: LayerId) -> Option<String> {
+/// Render `layer`'s thumbnail as a `data:` URL, `None` when there is nothing to frame
+/// or the readback failed. [`NoRenderer`] when there is no renderer to draw with.
+async fn generate(state: AppState, layer: LayerId) -> Result<Picture, NoRenderer> {
     // The frame the navigator frames itself against, so an overview and a row's
     // picture cannot come to disagree about where the piece is. Read before the
     // engine borrow, not inside it: `piece_frame` reads `obs`, which the borrow
@@ -281,13 +275,13 @@ async fn generate(state: AppState, layer: LayerId) -> Option<String> {
             .export_plan(frame, ExportScale::Fit(Extent2::new(THUMB, THUMB)))
             .ok()?;
         r.export_layer(layer, &plan).ok()
-    })?;
-    Some(match asked {
+    })
+    .ok_or(NoRenderer)?;
+    Ok(match asked {
         Some(readback) => readback_url(readback).await,
         // A renderer, but nothing to frame: an empty canvas with no frame has no
-        // picture to be a thumbnail of. Filed as a miss so the generator moves on
-        // rather than asking again every pass.
-        None => String::new(),
+        // picture to be a thumbnail of. Filed as a miss so it is not asked for again.
+        None => None,
     })
 }
 
@@ -340,32 +334,27 @@ mod tests {
         }
     }
 
-    fn thumb(id: u64, revision: u64) -> (Subject, String) {
-        (subject(id, revision), format!("r{revision}"))
-    }
-
     /// The blank flash this split exists to rule out: a commit — a peer's, most
     /// visibly (§12) — moves the layer's revision, and the row must go on showing
     /// the picture we have until the replacement lands rather than emptying itself
     /// for a settle and a readback.
     #[test]
     fn a_commit_does_not_take_the_row_s_picture_away() {
-        let cache = [thumb(1, 7)];
-        assert_eq!(
-            held(&cache, LayerId::solo(1)).map(|(_, url)| url.as_str()),
-            Some("r7")
+        assert!(
+            shows(&subject(1, 7), LayerId::solo(1)),
+            "an older revision's picture is still the row's"
+        );
+        assert!(
+            !shows(&subject(2, 7), LayerId::solo(1)),
+            "another layer's is not"
         );
     }
 
-    /// And the other half: still shown is not still current. The same entry the row
-    /// draws is the one the generator is asked to replace.
+    /// And the other half: still shown is not still current. The layer is wanted at
+    /// its revision now, which the picture of the last one does not hold.
     #[test]
     fn but_it_is_still_the_row_to_render_next() {
-        assert_eq!(
-            first_stale(&[paint(1, 8)], &[thumb(1, 7)]),
-            Some(subject(1, 8))
-        );
-        assert_eq!(first_stale(&[paint(1, 8)], &[thumb(1, 8)]), None);
+        assert_eq!(wanted(&[paint(1, 8)]), [subject(1, 8)]);
     }
 
     /// A translate moves no tile and mints no revision (§14.12.4), but the row is
@@ -379,24 +368,26 @@ mod tests {
             ..paint(1, 8)
         };
         assert_eq!(
-            first_stale(&[moved], &[thumb(1, 8)]),
-            Some(Subject {
+            wanted(&[moved]),
+            [Subject {
                 translation: d,
                 ..subject(1, 8)
-            })
+            }]
         );
     }
 
-    /// A hidden layer is neither re-rendered nor emptied — the picture it had when
-    /// it was last visible stands, which is §14.6's statement and the one this fix
-    /// generalized. Its tiles moving underneath changes neither answer.
+    /// A hidden or fully transparent layer is not re-rendered, so the picture it had
+    /// when it last showed stands (§14.6). Its tiles moving underneath changes nothing.
     #[test]
-    fn a_hidden_layer_keeps_the_last_picture_and_asks_for_no_new_one() {
+    fn a_hidden_layer_asks_for_no_new_picture() {
         let hidden = LayerInfo {
             visible: false,
             ..paint(1, 8)
         };
-        assert_eq!(first_stale(&[hidden], &[thumb(1, 7)]), None);
-        assert!(held(&[thumb(1, 7)], LayerId::solo(1)).is_some());
+        let clear = LayerInfo {
+            opacity: 0.0,
+            ..paint(2, 8)
+        };
+        assert!(wanted(&[hidden, clear]).is_empty(), "neither is wanted");
     }
 }

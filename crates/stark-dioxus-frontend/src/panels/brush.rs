@@ -112,17 +112,10 @@ fn PresetSection() -> Element {
                         // The brush as a stroke (`crate::thumbs`), filling the whole
                         // row as its background: the preview is the star, and the
                         // name floats over it (shadowed in the stylesheet) to tell
-                        // apart what the marks cannot. `none` is written out rather
-                        // than the property omitted — an edited preset re-keys its
-                        // thumbnail, and a stale declaration on this reused node
-                        // would keep showing the old brush while the new one
-                        // renders (inline style merges per property).
-                        let bg = match crate::thumbs::url(state, &entry.brush, entry.transient) {
-                            Some(url) if !url.is_empty() => {
-                                format!("background-image: url({url});")
-                            }
-                            _ => "background-image: none;".to_string(),
-                        };
+                        // apart what the marks cannot.
+                        let bg = crate::cards::thumb_style(
+                            crate::thumbs::url(state, &entry.brush, entry.transient).as_deref(),
+                        );
                         rsx! {
                             div {
                                 key: "{entry.name}",

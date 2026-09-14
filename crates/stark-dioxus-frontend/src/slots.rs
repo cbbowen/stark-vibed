@@ -286,11 +286,7 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                 {
                     let slot = row.slot;
                     // The brush as a stroke, filling the row as its background — the
-                    // preset row's own recipe (`panels::brush`), down to writing `none`
-                    // out rather than omitting the property: these nodes are reused as
-                    // the rack changes under them, and a stranded declaration would
-                    // leave one slot showing another's brush (inline style merges per
-                    // property).
+                    // preset row's own recipe (`panels::brush`).
                     //
                     // The row it is about to hold where that has been rendered, and the
                     // one it still holds where it has not: a brush *tuned* under a hold
@@ -303,12 +299,10 @@ fn SlotRack(pinned: bool, holding: Option<Held>) -> Element {
                     // showing.
                     let thumb = |b: Option<(BrushConfig, Transient)>| {
                         b.and_then(|(b, t)| crate::thumbs::url(state, &b, t))
-                            .filter(|url| !url.is_empty())
                     };
-                    let bg = match thumb(row.brush).or_else(|| thumb(row.stored)) {
-                        Some(url) => format!("background-image: url({url});"),
-                        None => "background-image: none;".to_string(),
-                    };
+                    let bg = crate::cards::thumb_style(
+                        thumb(row.brush).or_else(|| thumb(row.stored)).as_deref(),
+                    );
                     // Says the binding a picture cannot, and only ever seen pinned — an
                     // element that takes no pointer is shown no tooltip.
                     let (label, title, lit, held) = (row.label(), row.tip(), row.lit, row.held);

@@ -396,22 +396,9 @@ pub fn LayerRow(
     // image arrives. Only the first: a later render replaces the picture in place
     // rather than emptying the box while it works (§14.6). Subscribes, which is how
     // a row learns its picture is ready.
-    //
-    // The style is built here rather than in the markup because it is one: an `if`
-    // inside an rsx attribute is a Rust expression, so `{url}` in its arms is literal
-    // text rather than an interpolation — the row would ask the browser for a picture
-    // called `{url}`. Every other thumbnail in the app is written this way for the
-    // same reason (`panels::brush`, `slots`).
-    let thumb = info.content_revision.map(|_| {
-        match crate::layer_thumbs::url(state, &info) {
-            // `none` written out rather than the property omitted: Dioxus merges
-            // inline style per property, so a declaration simply left off is stranded
-            // on a reused node and the row goes on showing the *previous* layer's
-            // picture after a reorder.
-            Some(url) if !url.is_empty() => format!("background-image: url({url});"),
-            _ => "background-image: none;".to_string(),
-        }
-    });
+    let thumb = info
+        .content_revision
+        .map(|_| crate::cards::thumb_style(crate::layer_thumbs::url(state, &info).as_deref()));
     let indent = info.depth * INDENT;
     let is_group = info.is_group;
     let collapsed = row.collapsed;

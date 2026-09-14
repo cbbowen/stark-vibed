@@ -395,11 +395,13 @@ mod tests {
     /// carrier.
     #[test]
     fn a_bmp_is_the_size_its_header_says() {
+        let prefix = format!("url({}", bytes_url(Mime::Bmp, b""));
         for (w, h) in [(1, 128), (2, 3), (96, 96)] {
             let url = bmp_data_url(w, h, &vec![128; w * h * 3]);
             let b64 = url
-                .trim_start_matches("url(data:image/bmp;base64,")
-                .trim_end_matches(')');
+                .strip_prefix(&prefix)
+                .and_then(|rest| rest.strip_suffix(')'))
+                .expect("a BMP data: URL inside url()");
             let stride = (w * 3 + 3) & !3;
             // Base64 is four characters per three bytes, padded up.
             assert_eq!(b64.len(), (54 + stride * h).div_ceil(3) * 4, "{w}x{h}");

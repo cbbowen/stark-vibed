@@ -42,13 +42,11 @@ use stark_ui::prefs::{ChromeHiding, Prefs};
 /// never unmounted — so this only makes the ownership Dioxus checks match the
 /// ownership the design always assumed.
 ///
-/// Reachable outside this module for one case, and it is the same case: a
-/// **gesture** whose answer arrives on a detached task. `input::PickMove` holds
-/// its in-flight drag itself, as every canvas gesture does (§25.3) — but the hit
-/// test that opens it is a GPU readback, so the write that records the answer
-/// happens from `ScopeId::ROOT` and the signal has to be owned where that write
-/// can reach it. The alternative was a field on [`AppState`] that no sibling
-/// chrome reads, which is the thing §25.3 asks gestures not to do.
+/// Crate-visible because most of these signals are built beside the module that owns
+/// them (each group's `new`, such as `thumbs::ThumbState::new`), and because a
+/// gesture that holds its own state (§25.3) but is written to from a detached task,
+/// such as `input::PickMove`, needs the same ownership. A hook either way: call it
+/// unconditionally, in a component body.
 pub(crate) fn root_signal<T: 'static>(init: impl FnOnce() -> T) -> Signal<T> {
     use_hook(|| Signal::new_in_scope(init(), ScopeId::ROOT))
 }

@@ -5,7 +5,7 @@
 //! that is in both places is rendered once: a slot is its preset at a size and
 //! flow (`slots::resolve`), and one still at the preset's own is the preset's
 //! picture. Itself *as the picture paints it*, painting color aside
-//! ([`keyed`]): one preset saved in two colors is one picture.
+//! ([`Key::new`]): one preset saved in two colors is one picture.
 //!
 //! Each thumbnail is a mid-gray stroke drawn across a canvas laid **entirely in
 //! paint** — a light-gray slab on the left half, a dark-gray slab on the right —
@@ -39,8 +39,6 @@
 //! `state::with_engine`: it has no observable projection and no chrome reading
 //! one back, so there is no publish to pair a mutation with.
 
-pub mod generator;
-
 use dioxus::prelude::*;
 use stark_engine::command::Tool;
 use stark_model::Srgb;
@@ -54,9 +52,9 @@ use stark_model::SubstrateId;
 use stark_model::document::{FillOp, SelectionShape};
 use stark_model::geom::Vec2;
 
-use crate::cards::readback_url;
 use crate::state::{AppState, root_signal};
-use generator::{Generated, Insert, Pace, holds};
+use crate::thumb_cache::{Insert, NoRenderer, Pace, Picture, ThumbCache, readback_url};
+use key::Key;
 use stark_ui::brush_config::{BrushConfig, Transient};
 
 /// Thumbnail pixel size: 2× the box a preset row shows it in (a full-bleed row,
@@ -82,18 +80,56 @@ const STROKE_COLOR: [f32; 3] = [0.55, 0.55, 0.55];
 const LIGHT_PAINT: [f32; 3] = [0.80, 0.80, 0.80];
 const DARK_PAINT: [f32; 3] = [0.28, 0.28, 0.28];
 
-/// What a thumbnail is filed under: a brush snapshot, its tune [`keyed`].
-type Key = (BrushConfig, Transient);
+mod key {
+    use stark_ui::brush_config::{BrushConfig, Transient};
+
+    /// What a thumbnail is filed under: a brush snapshot, both halves, since a slot's
+    /// tune is part of its picture. In a module of its own so that [`Key::new`] is the
+    /// only way to make one, and no key can be looked up or rendered un-normalized.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct Key {
+        brush: BrushConfig,
+        tune: Transient,
+    }
+
+    impl Key {
+        /// The key for `brush` at `tune`, with the tune **as the thumbnail paints
+        /// it**: the test stroke's own gray in place of the painting color.
+        ///
+        /// Every thumbnail is drawn in [`STROKE_COLOR`](super::STROKE_COLOR), so two
+        /// tunes differing only in color are one picture. A stored tune carries the
+        /// color the hand held when it was saved (`presets::wear`, §18.1.8), so keying
+        /// on the raw color would render one tool once per color it was saved in.
+        ///
+        /// The size, flow and the effect's opacity stay: they change the stroke (§6.2).
+        pub fn new(brush: BrushConfig, tune: Transient) -> Self {
+            Self {
+                brush,
+                tune: Transient {
+                    color: super::STROKE_COLOR,
+                    ..tune
+                },
+            }
+        }
+
+        pub fn brush(&self) -> &BrushConfig {
+            &self.brush
+        }
+
+        pub fn tune(&self) -> Transient {
+            self.tune
+        }
+    }
+}
 
 /// The thumbnail machinery's signals. All root-owned (`state::root_signal`):
 /// generation runs in `spawn_forever` tasks that outlive whichever panel asked.
 #[derive(Clone, Copy)]
 pub struct ThumbState {
-    /// Finished thumbnails: a `data:image/png` URL per brush snapshot — both
-    /// halves, since a slot's tune is part of its picture — found by comparing
-    /// the snapshot itself ([`lookup`]). Appended: a snapshot is the whole of what
-    /// its picture shows, so no later render supersedes one.
-    pictures: Generated<Key>,
+    /// Finished thumbnails, found by comparing the [`Key`] itself ([`lookup`]).
+    /// Appended: a snapshot is the whole of what its picture shows, so no later
+    /// render supersedes one.
+    pictures: ThumbCache<Key>,
     /// The kept engine + offscreen attachments; `None` until first use.
     pub rig: Signal<Option<Rig>>,
     /// The device and compiled pipelines to build that rig on, published once the
@@ -115,7 +151,7 @@ impl ThumbState {
     /// fields and the values they open on stay in one place.
     pub(crate) fn new() -> Self {
         Self {
-            pictures: Generated::new(Insert::Append, Pace::EAGER),
+            pictures: ThumbCache::new(Insert::Append, Pace::EAGER),
             rig: root_signal(|| None),
             shared: root_signal(|| None),
         }
@@ -130,109 +166,66 @@ pub struct Rig {
     off: Offscreen,
 }
 
-/// The cached entry for `w`, found by **comparing the brush snapshot itself**
-/// ([`keyed`] first, which is the one field the picture does not take from it).
+/// The cached entry for `key`, found by **comparing the brush snapshot itself**.
 ///
 /// There is no digest, and that is the point. A cache key has one job — say
 /// whether two brushes would render the same picture — and `BrushConfig` already
 /// answers it exactly, by a derived `PartialEq` the compiler extends whenever
-/// the brush gains a field. Every alternative is a second, hand-maintained
-/// opinion about what a brush *is*: a hand-written hash silently ignores the new
-/// field and serves a stale thumbnail for a brush that has changed, which is a
-/// wrong picture with nothing anywhere to say so.
+/// the brush gains a field. A hand-written hash silently ignores the new field and
+/// serves a stale thumbnail for a brush that has changed.
 ///
-/// It was a digest of the JSON encoding, which had the drift ruled out but cost a
-/// `serde_json::to_string` **per brush per call** — paid, before U2, on every
-/// engine write. A linear scan of `PartialEq` over a library of a few dozen `Copy`
-/// structs is cheaper than one of those serializations, so nothing was bought with
-/// it. `Renderer::builtins` is a `Vec` looked up the same way and for the same
-/// reason.
-fn lookup(state: AppState, w: &BrushConfig, t: Transient) -> Option<String> {
-    let key = (*w, keyed(t));
-    state.thumbs.pictures.with(|cache| {
-        cache
-            .iter()
-            .find(|(cached, _)| *cached == key)
-            .map(|(_, url)| url.clone())
-    })
+/// A linear scan of `PartialEq` over a library of a few dozen `Copy` structs is
+/// cheaper than the JSON digest it replaced. `Renderer::builtins` is a `Vec` looked
+/// up the same way and for the same reason.
+fn lookup(state: AppState, key: Key) -> Option<String> {
+    state.thumbs.pictures.find(|filed| *filed == key)
 }
 
-/// The tune **as the thumbnail paints it**: the test stroke's own gray in place
-/// of the painting color. The cache key is made here and the render paints the
-/// key it is handed, so the key cannot come to disagree with the picture about
-/// what a thumbnail is.
-///
-/// The picture ignores the RGB it is handed — every thumbnail is drawn in
-/// [`STROKE_COLOR`], over the same two grays — so two tunes differing only in
-/// color are one picture, and keying on the raw snapshot would file
-/// that one picture under a fresh name for every color a tune happened to be
-/// saved at: a stored tune carries the color the hand held when the snapshot
-/// was taken (`presets::wear` keeps the live one on the way back in,
-/// §18.1.8), so one tool saved twice in two colors would be rendered twice
-/// for one row's worth of picture.
-///
-/// The effect's opacity is deliberately untouched: it is the brush's own — the
-/// stroke really is laid under it (§6.2) — and so are the size and flow beside
-/// the color, for the same reason: a slot tuned off its preset is a different
-/// stroke, and gets one.
-fn keyed(t: Transient) -> Transient {
-    Transient {
-        color: STROKE_COLOR,
-        ..t
-    }
-}
-
-/// The thumbnail for `w` at `t`, if it has been generated. Subscribes, so a row
-/// showing a placeholder re-renders when its image lands.
-pub fn url(state: AppState, w: &BrushConfig, t: Transient) -> Option<String> {
-    lookup(state, w, t)
+/// The thumbnail for `brush` at `tune`, if one has been generated. Subscribes, so a
+/// row showing a placeholder re-renders when its image lands.
+pub fn url(state: AppState, brush: &BrushConfig, tune: Transient) -> Option<String> {
+    lookup(state, Key::new(*brush, tune))
 }
 
 /// Make sure every brush that has a picture to show has a thumbnail, generating
-/// the missing ones in the background ([`Generated::refresh`]). Cheap when nothing
+/// the missing ones in the background ([`ThumbCache::refresh`]). Cheap when nothing
 /// is missing; safe to call from a render effect.
 pub fn refresh(state: AppState) {
     state.thumbs.pictures.refresh(
-        move || next_missing(state),
+        move || wanted(state),
+        // The rig is this cache's own, so there is nothing to wait for.
+        async || {},
         async move |key: &Key| generate(state, *key).await,
     );
 }
 
-/// The first brush with no thumbnail yet: the library in order, then the
-/// quick-brush rack (§18.1.8), whose overlay shows the same picture per slot.
+/// Every brush with a picture to show: the library in order, then the quick-brush
+/// rack (§18.1.8), whose overlay shows the same picture per slot.
 ///
-/// The rack is scanned as well as the library rather than instead of being
-/// assumed to be a subset of it, because it is not one: a slot is its preset at
-/// a size and flow of its own (`slots::resolve`), and one tuned off the preset's
-/// is a brush no preset holds — exactly the slot whose row would otherwise be
-/// the only blank one in the column. Presets first, so the list a user is
-/// looking at fills in before the rack they have to hold a key to see — and a
-/// slot still at its preset's own size costs nothing here, since the two are one
-/// key.
-fn next_missing(state: AppState) -> Option<Key> {
+/// The rack is not a subset of the library: a slot is its preset at a size and flow
+/// of its own (`slots::resolve`), and one tuned off the preset's is a brush no preset
+/// holds. Presets first, so the list a user is looking at fills in before the rack
+/// they have to hold a key to see.
+fn wanted(state: AppState) -> Vec<Key> {
     let presets = state.presets.peek();
     let rack = state.slots.brushes.peek();
-    state.thumbs.pictures.with_peek(|cache| {
-        presets
-            .iter()
-            .map(|e| (e.brush, e.transient))
-            .chain(
-                rack.iter()
-                    .flatten()
-                    .filter_map(|slot| stark_ui::slots::resolve(&presets, slot)),
-            )
-            // Asked on the same terms the cache answers on ([`keyed`]) — and it has
-            // to be, or a brush filed under its rendered color would be reported
-            // missing forever and the run would never finish its scan.
-            .map(|(w, t)| (w, keyed(t)))
-            .find(|key| !holds(cache, key))
-    })
+    presets
+        .iter()
+        .map(|e| (e.brush, e.transient))
+        .chain(
+            rack.iter()
+                .flatten()
+                .filter_map(|slot| stark_ui::slots::resolve(&presets, slot)),
+        )
+        .map(|(brush, tune)| Key::new(brush, tune))
+        .collect()
 }
 
-/// Render the thumbnail for `key` as a `data:` URL, empty for a render that failed
-/// for its own reasons. `None` when there is no main renderer to share an engine
-/// from yet — the one condition worth stopping for.
-async fn generate(state: AppState, (w, t): Key) -> Option<String> {
+/// Render the thumbnail for `key` as a `data:` URL, `None` for a render that failed
+/// for its own reasons. [`NoRenderer`] when there is no main renderer to share an
+/// engine from yet.
+async fn generate(state: AppState, key: Key) -> Result<Picture, NoRenderer> {
+    let (w, t) = (key.brush(), key.tune());
     // Everything up to the readback happens under the rig borrow, which must end
     // before the await — the same borrow bargain as `Engine::export` itself.
     let readback = {
@@ -241,7 +234,7 @@ async fn generate(state: AppState, (w, t): Key) -> Option<String> {
         if guard.is_none() {
             // The shared half, not the renderer: nothing here needs the canvas, the
             // document or the gesture in flight.
-            let shared = state.thumbs.shared.peek().clone()?;
+            let shared = state.thumbs.shared.peek().clone().ok_or(NoRenderer)?;
             let mut engine = Engine::on_shared(shared, Extent2::new(THUMB_W, THUMB_H));
             // Pin the look the module doc promises: flat substrate, neutral light,
             // default media, white substrate (what an eraser's bite reveals).
@@ -282,8 +275,8 @@ async fn generate(state: AppState, (w, t): Key) -> Option<String> {
                 ),
             });
         }
-        // The key's tune, already [`keyed`]: the tune the cache files this under is
-        // the tune the stroke is laid at.
+        // The key's tune, normalized by [`Key::new`]: the tune the cache files this
+        // under is the tune the stroke is laid at.
         rig.engine.process(ViewCommand::SetBrush {
             brush: w.params(t),
             color: t.color,
@@ -308,14 +301,10 @@ async fn generate(state: AppState, (w, t): Key) -> Option<String> {
         }
         readback
     };
-    Some(match readback {
-        // Two ways to come back empty, and both are filed as a miss so the run
-        // moves past them: a view the device refuses (unreachable at these sizes),
-        // and a readback that failed because the GPU did (§5) — which the canvas
-        // will be reporting through `ObservableState::gpu_failure` anyway, so a
-        // thumbnail is not the place to raise it.
+    Ok(match readback {
         Ok(f) => readback_url(f).await,
-        Err(_) => String::new(),
+        // A view the device refuses, unreachable at these sizes: filed as a miss.
+        Err(_) => None,
     })
 }
 
@@ -392,24 +381,29 @@ mod tests {
         }
     }
 
-    /// The second render this key exists to rule out: a stored tune carries the
-    /// color the hand held and `presets::wear` keeps the live one over it
-    /// (§18.1.8), so one tool saved twice in two colors is one picture — the
-    /// thumbnail is painted in its own gray either way — and must not cost two.
+    /// The second render this key exists to rule out: one tool saved in two colors is
+    /// one picture, painted in its own gray either way.
     #[test]
     fn two_painting_colors_of_one_brush_are_one_thumbnail() {
-        assert_eq!(keyed(tune([0.9, 0.1, 0.1])), keyed(tune([0.1, 0.2, 0.9])));
+        let brush = BrushConfig::default();
+        assert_eq!(
+            Key::new(brush, tune([0.9, 0.1, 0.1])),
+            Key::new(brush, tune([0.1, 0.2, 0.9]))
+        );
     }
 
-    /// The size and flow are the tune's other two knobs, and they really are the
-    /// picture's — a slot tuned off its preset is a different stroke (§6.2) —
-    /// so the key normalizes the color alone.
+    /// The size and flow are the picture's, though: a slot tuned off its preset is a
+    /// different stroke (§6.2).
     #[test]
     fn the_tune_is_part_of_the_picture_though() {
+        let brush = BrushConfig::default();
         let resized = Transient {
             size: 80.0,
             ..tune([0.9, 0.1, 0.1])
         };
-        assert_ne!(keyed(tune([0.9, 0.1, 0.1])), keyed(resized));
+        assert_ne!(
+            Key::new(brush, tune([0.9, 0.1, 0.1])),
+            Key::new(brush, resized)
+        );
     }
 }

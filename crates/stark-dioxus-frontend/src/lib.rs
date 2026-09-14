@@ -63,6 +63,7 @@ mod slots;
 mod startup;
 mod state;
 mod substrates;
+mod thumb_cache;
 mod thumbs;
 mod timings;
 mod tutor;
