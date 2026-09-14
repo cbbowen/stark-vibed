@@ -24,10 +24,10 @@
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
-use crate::icons::{icon, label};
-use crate::layout::chrome_dimmed;
+use crate::icons::icon;
 use crate::platform::sleep_ms;
 use crate::state::{AppState, dispatch, use_obs_opt};
+use crate::widgets::{Bar, Choice, Face, Segmented};
 use stark_engine::command::DocCommand;
 use stark_ui::timeline::{MAX_TICKS, SPEEDS, pace};
 
@@ -186,14 +186,7 @@ pub fn TimelineBar() -> Element {
     // nothing.
     let Some((at, total)) = range() else {
         return rsx! {
-            div {
-                class: "timeline-bar chrome",
-                class: if chrome_dimmed(state) { "dimmed" },
-                span { class: "bar-label",
-                    {icon(stark_ui::icons::TIMELINE)}
-                    {label("Timeline")}
-                }
-
+            Bar { class: "timeline-bar", glyph: stark_ui::icons::TIMELINE, word: "Timeline",
                 span { class: "bar-sep" }
 
                 span { class: "timeline-note",
@@ -224,6 +217,18 @@ pub fn TimelineBar() -> Element {
     // skipped rather than the marks thinned, so the ones drawn stay evenly spaced.
     let step = total.div_ceil(MAX_TICKS).max(1);
     let denom = total.max(1) as f32;
+    let ticks = (0..total)
+        .step_by(step)
+        .map(move |i| (i, (i + 1) as f32 / denom * 100.0, i < at));
+    let speeds: Vec<_> = SPEEDS
+        .map(|(mult, word)| {
+            Choice::new(
+                mult,
+                Face::Word(word.into()),
+                format!("Play at {word} speed"),
+            )
+        })
+        .into();
 
     let play_title = if playing {
         "Pause"
@@ -251,9 +256,9 @@ pub fn TimelineBar() -> Element {
     };
 
     rsx! {
-        div {
-            class: "timeline-bar chrome",
-            class: if chrome_dimmed(state) { "dimmed" },
+        Bar { class: "timeline-bar", glyph: stark_ui::icons::TIMELINE, word: "Timeline",
+            span { class: "bar-sep" }
+
             button {
                 class: "chip timeline-play",
                 title: "{play_title}",
@@ -268,11 +273,11 @@ pub fn TimelineBar() -> Element {
                 // target — what each step *is* is said once, in the caption, for
                 // the step the playhead is on.
                 div { class: "timeline-ticks",
-                    for i in (0..total).step_by(step) {
-                        {
-                            let left = (i + 1) as f32 / denom * 100.0;
-                            let class = if i < at { "timeline-tick past" } else { "timeline-tick" };
-                            rsx! { div { key: "{i}", class, style: "left: {left}%" } }
+                    for (i, left, past) in ticks {
+                        div {
+                            key: "{i}",
+                            class: if past { "timeline-tick past" } else { "timeline-tick" },
+                            style: "left: {left}%",
                         }
                     }
                 }
@@ -305,24 +310,14 @@ pub fn TimelineBar() -> Element {
                 span { class: "timeline-caption", "{caption}" }
             }
 
-            div { class: "tool-row segmented timeline-speed",
-                for (mult, label) in SPEEDS {
-                    {
-                        let class = if speed == mult { "chip active" } else { "chip" };
-                        rsx! {
-                            button {
-                                key: "{label}",
-                                class,
-                                title: "Play at {label} speed",
-                                onclick: move |_| {
-                                    let mut s = state.timeline.speed;
-                                    s.set(mult);
-                                },
-                                "{label}"
-                            }
-                        }
-                    }
-                }
+            Segmented {
+                class: "tool-row timeline-speed",
+                choices: speeds,
+                selected: speed,
+                onpick: move |mult: f32| {
+                    let mut s = state.timeline.speed;
+                    s.set(mult);
+                },
             }
 
             {close}

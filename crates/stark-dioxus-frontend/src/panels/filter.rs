@@ -95,17 +95,22 @@ use stark_ui::filter::{
 fn aperture_run(state: AppState, id: LayerId, blur: FocalBlur) -> Element {
     // The word may go in minimal mode precisely because the mark is a picture of the
     // shape and not a symbol for it.
-    let choices = Aperture::ALL.map(|want| Choice {
-        lit: blur.aperture.same_shape(&want),
-        ..Choice::new(
+    let choices = Aperture::ALL.map(|want| {
+        Choice::new(
             want,
             Face::Marked(aperture_glyph(&want), want.label()),
             aperture_hint(&want),
         )
     });
+    // The run's answers are `ALL`'s, so the lit one is `ALL`'s member of this shape.
+    let shape = Aperture::ALL
+        .into_iter()
+        .find(|want| blur.aperture.same_shape(want))
+        .unwrap_or(blur.aperture);
     rsx! {
         Segmented {
             choices: Vec::from(choices),
+            selected: shape,
             onpick: move |want: Aperture| {
                 let aperture = if blur.aperture.same_shape(&want) {
                     blur.aperture

@@ -151,10 +151,7 @@ pub fn SelectPanel() -> Element {
             } else {
                 Face::Marked(glyph, word)
             };
-            Choice {
-                lit: action == a,
-                ..Choice::new(a, face, hint)
-            }
+            Choice::new(a, face, hint)
         })
         .collect();
 
@@ -164,12 +161,7 @@ pub fn SelectPanel() -> Element {
         // would be the thing to give — and a word is the half of each chip that is
         // unambiguous, so it is not the half to drop.
         //
-        // `segmented`: both rows are one question each — which tool, and what the shape
-        // does — so both are drawn as one control with a lit region rather than as three
-        // and five switches that happen to be adjacent. The rows differ in that at most
-        // one tool chip is lit and exactly one action chip always is, but that difference
-        // is about arming, not about combining; neither row can ever have two lit at
-        // once, which is the thing the shape is claiming.
+        // An exclusive run of commands rather than of values, so not a `Segmented`.
         div { class: "tool-row stacked segmented",
             // Each chip is its command worn whole (`crate::commands`), the way
             // the bar below wears its five: the mark, the terse word, the
@@ -197,6 +189,7 @@ pub fn SelectPanel() -> Element {
         Segmented {
             class: "tool-row stacked",
             choices: actions,
+            selected: action,
             onpick: move |a: ShapeAction| pick_action(state, a),
         }
         // The fill's own opacity (§18.0.4), and Feather's counterpart for that

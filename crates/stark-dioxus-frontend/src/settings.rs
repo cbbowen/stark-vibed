@@ -35,7 +35,7 @@ use dioxus::prelude::*;
 use crate::icons::icon;
 use crate::prefs;
 use crate::state::{AppState, use_obs};
-use crate::widgets::{Modal, slider_fill};
+use crate::widgets::{Choice, Face, Modal, Segmented, SliderTrack};
 use stark_ui::collab::Phase;
 use stark_ui::prefs::{BUDGET_STEPS, ChromeHiding, budget_step};
 use strum::VariantArray;
@@ -154,11 +154,11 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
                 // The one thing the last option has to say: getting them back is a
                 // gesture, and nothing on screen names it.
                 note: Some("With \u{201C}Hide after painting\u{201D}, reach for the right edge of the window to bring the panels back.".to_string()),
-                options: ChromeHiding::VARIANTS
+                choices: ChromeHiding::VARIANTS
                     .iter()
-                    .map(|c| (*c, c.label(), c.blurb()))
+                    .map(|&c| Choice::new(c, Face::Word(c.label().into()), c.blurb()))
                     .collect::<Vec<_>>(),
-                value: view.chrome_hiding,
+                selected: view.chrome_hiding,
                 onchange: move |choice: ChromeHiding| prefs::set(state, |p| p.chrome_hiding = choice),
             }
             SettingToggle {
@@ -224,18 +224,15 @@ fn SettingSlider(
                     span { class: "setting-value", "{steps[at].1}" }
                 }
                 div { class: "setting-desc", "{description}" }
-                input {
-                    id: "{id}",
-                    class: "slider setting-slider",
-                    style: slider_fill(0.0, max as f32, at as f32),
-                    r#type: "range",
-                    min: "0",
-                    max: "{max}",
-                    step: "1",
-                    value: "{at}",
-                    oninput: move |e| {
-                        let Ok(i) = e.value().parse::<usize>() else { return };
-                        let Some((bytes, _)) = steps.get(i) else { return };
+                SliderTrack {
+                    id: id.clone(),
+                    class: "setting-slider",
+                    min: 0.0,
+                    max: max as f32,
+                    step: 1.0,
+                    value: at as f32,
+                    oninput: move |notch: f32| {
+                        let Some((bytes, _)) = steps.get(notch.round() as usize) else { return };
                         onchange.call(*bytes);
                     },
                 }
@@ -248,26 +245,21 @@ fn SettingSlider(
 }
 
 /// One setting chosen from a handful of named states: the same row as
-/// [`SettingToggle`], with the options as a segmented run of chips under the
-/// description and the chosen one lit.
+/// [`SettingToggle`], with the options as a [`Segmented`] run under the description.
 ///
 /// Chips rather than a drop-down or a run of radio buttons, because all three answers
 /// are worth reading side by side — the choice is between *behaviors*, and each needs
 /// its own sentence. Each chip carries that sentence as its title, so the row explains
 /// the option under the pointer without spending three lines of dialog on states
 /// nobody picked.
-///
-/// Generic over the choice rather than a component per enum — the same bargain
-/// [`SettingSlider`] makes by sliding an index. The handler is given the value itself,
-/// so a chip cannot offer a name nothing reads back.
 #[component]
-fn SettingChoice<T: Copy + PartialEq + 'static>(
+fn SettingChoice<T: Clone + PartialEq + 'static>(
     label: String,
     description: String,
     note: Option<String>,
-    /// Each option, with the word its chip wears and the sentence its hover carries.
-    options: Vec<(T, &'static str, &'static str)>,
-    value: T,
+    /// Each option wears its word and carries its sentence as the tip.
+    choices: Vec<Choice<T>>,
+    selected: T,
     onchange: EventHandler<T>,
 ) -> Element {
     rsx! {
@@ -278,21 +270,7 @@ fn SettingChoice<T: Copy + PartialEq + 'static>(
             div { class: "setting-text",
                 div { class: "setting-label", "{label}" }
                 div { class: "setting-desc", "{description}" }
-                // `segmented`, because the three chips answer one question and
-                // picking one un-picks the rest: butted into a single control the
-                // shape carries that, where a run of separate chips promises three
-                // switches that could be held down together.
-                div { class: "setting-choice segmented",
-                    for (option, name, about) in options {
-                        button {
-                            key: "{name}",
-                            class: if option == value { "chip active" } else { "chip" },
-                            title: "{about}",
-                            onclick: move |_| onchange.call(option),
-                            "{name}"
-                        }
-                    }
-                }
+                Segmented { class: "setting-choice", choices, selected, onpick: onchange }
                 if let Some(note) = note {
                     div { class: "setting-note", "{note}" }
                 }

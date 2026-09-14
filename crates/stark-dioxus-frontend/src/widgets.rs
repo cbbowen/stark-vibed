@@ -1,12 +1,11 @@
 //! Small reusable controls shared by the panels, the dialogs and the brush editor.
 
-use std::sync::LazyLock;
+use std::borrow::Cow;
 
 use crate::commands;
 use dioxus::html::Key;
 use dioxus::prelude::*;
 use stark_ui::icons::Icon;
-use strum::VariantArray;
 
 use crate::icons::{icon, label as label_span};
 use crate::layout::chrome_dimmed;
@@ -74,13 +73,10 @@ pub fn CommandButton(
 /// the track's gradient is drawn from (`.slider` in stark.css).
 ///
 /// Inline because it is the one part of the slider's look only the control
-/// knows: the track shows how far along its range the value sits, a browser
-/// paints that only for a *native* range — in the platform's accent blue, which
-/// the neutral chrome gave up — and CSS alone cannot see the value. Every range
-/// input wearing `.slider` passes through here, the raw call sites as well as
-/// [`Slider`]; the stylesheet's fallback (an empty track) is what a site that
-/// forgets shows.
-pub fn slider_fill(min: f32, max: f32, value: f32) -> String {
+/// knows: a browser paints the fill only for a *native* range, in the platform's
+/// accent blue, and CSS alone cannot see the value. [`SliderTrack`] is the one
+/// caller, and `tests/no_raw_slider.rs` keeps it so.
+fn slider_fill(min: f32, max: f32, value: f32) -> String {
     let pct = if max > min {
         ((value - min) / (max - min) * 100.0).clamp(0.0, 100.0)
     } else {
@@ -126,11 +122,8 @@ pub enum SliderShape {
 /// control's name, not its value. `title` goes on the whole line where there is one,
 /// and on the track in a bar, where the mark and word are a sibling rather than a row.
 ///
-/// `onsettle` is wired to all three events that can end a drag
-/// ([`Preview::settle`] says why one is not enough). A slider whose value is document
-/// state is a [`PreviewSlider`], which cannot preview without settling.
-///
 /// `disabled` greys the track out for a value with nothing to act on, as a chip is.
+/// The rest is [`SliderTrack`]'s.
 #[component]
 pub fn Slider(
     label: String,
@@ -148,31 +141,13 @@ pub fn Slider(
     oninput: EventHandler<f32>,
     #[props(default)] onsettle: Option<EventHandler<()>>,
 ) -> Element {
-    let settle = move || {
-        if let Some(h) = &onsettle {
-            h.call(());
-        }
-    };
-    let step = step.map_or_else(|| "any".to_string(), |s| s.to_string());
     let name = mark_and_word(glyph, &label);
     let (line_title, track_title) = match shape {
         SliderShape::Bar => (None, title),
         SliderShape::Row | SliderShape::Knob => (title, None),
     };
     let track = rsx! {
-        input {
-            class: "slider",
-            style: slider_fill(min, max, value),
-            r#type: "range", min: "{min}", max: "{max}", step, value: "{value}",
-            title: track_title,
-            disabled,
-            oninput: move |e| {
-                if let Ok(v) = e.value().parse::<f32>() { oninput.call(v); }
-            },
-            onchange: move |_| settle(),
-            onpointerup: move |_| settle(),
-            onpointercancel: move |_| settle(),
-        }
+        SliderTrack { min, max, value, step, title: track_title, disabled, oninput, onsettle }
     };
     match shape {
         SliderShape::Row => rsx! {
@@ -194,6 +169,53 @@ pub fn Slider(
                 {track}
             }
         },
+    }
+}
+
+/// The range input every slider is: its fill, its step, and the drag's end.
+///
+/// `onsettle` is wired to all three events that can end a drag
+/// ([`Preview::settle`] says why one is not enough). A slider whose value is document
+/// state is a [`PreviewSlider`], which cannot preview without settling.
+///
+/// Drawn bare only by a row whose name is not a [`Slider`]'s — a settings row, whose
+/// `<label for>` points at `id` and whose sentence stands between the name and the
+/// track. `class` sits beside `slider`.
+#[component]
+pub fn SliderTrack(
+    min: f32,
+    max: f32,
+    value: f32,
+    #[props(default)] step: Option<f32>,
+    #[props(default)] id: Option<String>,
+    #[props(default)] class: &'static str,
+    #[props(default)] title: Option<String>,
+    #[props(default)] disabled: bool,
+    oninput: EventHandler<f32>,
+    #[props(default)] onsettle: Option<EventHandler<()>>,
+) -> Element {
+    let settle = move || {
+        if let Some(h) = &onsettle {
+            h.call(());
+        }
+    };
+    let step = step.map_or_else(|| "any".to_string(), |s| s.to_string());
+    rsx! {
+        input {
+            id,
+            class: "slider",
+            class: "{class}",
+            style: slider_fill(min, max, value),
+            r#type: "range", min: "{min}", max: "{max}", step, value: "{value}",
+            title,
+            disabled,
+            oninput: move |e| {
+                if let Ok(v) = e.value().parse::<f32>() { oninput.call(v); }
+            },
+            onchange: move |_| settle(),
+            onpointerup: move |_| settle(),
+            onpointercancel: move |_| settle(),
+        }
     }
 }
 
@@ -269,10 +291,10 @@ pub fn Chip(
 pub enum Face {
     /// A mark and its word, the word hideable in minimal mode.
     Marked(Icon, &'static str),
-    /// A word alone, which minimal mode leaves standing — an axis's letter.
-    Word(&'static str),
+    /// A word alone, which minimal mode leaves standing — a speed, a patch size.
+    Word(Cow<'static, str>),
     /// Drawn by the site, for the face the catalog cannot give: a bucket full of the
-    /// paint it would lay, a plane lettered in its two axes' hues.
+    /// paint it would lay.
     Drawn(Element),
 }
 
@@ -280,7 +302,7 @@ impl Face {
     fn draw(self) -> Element {
         match self {
             Face::Marked(glyph, word) => mark_and_word(Some(glyph), word),
-            Face::Word(word) => mark_and_word(None, word),
+            Face::Word(word) => mark_and_word(None, &word),
             Face::Drawn(drawn) => drawn,
         }
     }
@@ -292,23 +314,19 @@ pub struct Choice<V> {
     pub value: V,
     pub face: Face,
     pub tip: String,
-    /// Per chip rather than one `selected` for the run, because not every run lights
-    /// exactly one: the guide bar's locks may all be held.
-    pub lit: bool,
     /// [`Chip`]'s own class.
     pub class: &'static str,
     pub style: Option<String>,
 }
 
 impl<V> Choice<V> {
-    /// `value` wearing `face`, explained by `tip`: unlit, with no class or style of its
-    /// own — the rest is struct update at the site.
+    /// `value` wearing `face`, explained by `tip`, with no class or style of its own —
+    /// the rest is struct update at the site.
     pub fn new(value: V, face: Face, tip: impl Into<String>) -> Self {
         Self {
             value,
             face,
             tip: tip.into(),
-            lit: false,
             class: "",
             style: None,
         }
@@ -319,20 +337,24 @@ impl<V> Choice<V> {
 /// `.segmented`, whose closed seams say that picking one un-picks the rest. `class` is
 /// the run's classes beside that.
 ///
+/// The lit chip is the one whose value is `selected` — one answer for the run, so a run
+/// cannot light two. Switches that may be held together are separate [`Chip`]s.
+///
 /// A pick hands its value to `onpick`; what re-picking the lit chip means is the site's.
 #[component]
 pub fn Segmented<V: Clone + PartialEq + 'static>(
     choices: Vec<Choice<V>>,
+    selected: V,
     onpick: EventHandler<V>,
     #[props(default)] class: &'static str,
 ) -> Element {
     rsx! {
         div { class: "{class}", class: "segmented",
             // Keyed by place: a run is a fixed set of answers and never reorders.
-            for (i, Choice { value, face, tip, lit, class: own, style }) in choices.into_iter().enumerate() {
+            for (i, Choice { value, face, tip, class: own, style }) in choices.into_iter().enumerate() {
                 Chip {
                     key: "{i}",
-                    active: lit,
+                    active: value == selected,
                     title: tip,
                     class: own,
                     style,
@@ -346,6 +368,8 @@ pub fn Segmented<V: Clone + PartialEq + 'static>(
 
 /// A drop-down over a list of names, answering with the index of the one picked — the
 /// ladder's rung for a choice too wide for a [`Segmented`] run (§25.9).
+///
+/// Each option's value is its index, so two options with one name still answer apart.
 #[component]
 pub fn Select(
     options: Vec<&'static str>,
@@ -354,19 +378,21 @@ pub fn Select(
     #[props(default)] disabled: bool,
     onchange: EventHandler<usize>,
 ) -> Element {
-    let names = options.clone();
+    let count = options.len();
     rsx! {
         select {
             class: "select",
             title,
             disabled,
             onchange: move |e| {
-                if let Some(i) = names.iter().position(|name| *name == e.value()) {
+                if let Ok(i) = e.value().parse::<usize>()
+                    && i < count
+                {
                     onchange.call(i);
                 }
             },
             for (i, name) in options.into_iter().enumerate() {
-                option { value: "{name}", selected: selected == Some(i), "{name}" }
+                option { value: "{i}", selected: selected == Some(i), "{name}" }
             }
         }
     }
@@ -618,17 +644,16 @@ impl PopoutId {
         }
     }
 
-    /// That row as a selector, `[data-popout="<key>"]` — built from [`key`](Self::key)
-    /// once per id, so the two cannot name different rows.
-    fn selector(self) -> &'static str {
-        // In `VARIANTS` order, which is declaration order and so the discriminant's.
-        static SELECTORS: LazyLock<Vec<String>> = LazyLock::new(|| {
-            PopoutId::VARIANTS
-                .iter()
-                .map(|id| format!("[data-popout=\"{}\"]", id.key()))
-                .collect()
-        });
-        &SELECTORS[self as usize]
+    /// That row as a selector, `[data-popout="<key>"]`. Spelled out, and held to
+    /// [`key`](Self::key) by `a_pop_out_is_found_by_its_own_key`.
+    const fn selector(self) -> &'static str {
+        match self {
+            PopoutId::VisibilityMenu => r#"[data-popout="visibility-menu"]"#,
+            PopoutId::Parcel => r#"[data-popout="parcel"]"#,
+            PopoutId::GradientLibrary => r#"[data-popout="gradient-library"]"#,
+            PopoutId::SubstrateColor => r#"[data-popout="substrate-color"]"#,
+            PopoutId::SubstrateGallery => r#"[data-popout="substrate-gallery"]"#,
+        }
     }
 
     /// The row this pop-out flies out of, as a selector — and `None` for one that is
@@ -711,6 +736,7 @@ pub fn close_popout(state: AppState) -> bool {
 mod tests {
     use super::*;
     use std::collections::HashSet;
+    use strum::VariantArray;
 
     /// A stack pop-out is placed against the row wearing its key, so the selector it
     /// is found by has to be that key's — for every id, and the stack's in particular.

@@ -158,10 +158,7 @@ pub fn TransformBar() -> Element {
     let family = ui.family();
     let families: Vec<_> = <Family as strum::VariantArray>::VARIANTS
         .iter()
-        .map(|&to| Choice {
-            lit: family == to,
-            ..Choice::new(to, Face::Marked(to.glyph(), to.label()), to.tip())
-        })
+        .map(|&to| Choice::new(to, Face::Marked(to.glyph(), to.label()), to.tip()))
         .collect();
 
     rsx! {
@@ -180,6 +177,7 @@ pub fn TransformBar() -> Element {
             // never a silent approximation.
             Segmented {
                 choices: families,
+                selected: family,
                 onpick: move |to: Family| switch_family(state, ui, to),
             }
             if family == Family::Free {

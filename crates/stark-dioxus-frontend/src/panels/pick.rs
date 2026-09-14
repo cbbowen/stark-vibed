@@ -15,10 +15,9 @@
 use dioxus::prelude::*;
 
 use crate::icons::{icon, label};
-use crate::layout::chrome_dimmed;
 use crate::panels::select::current_tool;
 use crate::state::AppState;
-use crate::widgets::CommandButton;
+use crate::widgets::{Bar, Chip, Choice, CommandButton, Face, Segmented};
 use stark_ui::commands::Command;
 use stark_ui::commands::PickScope;
 use stark_ui::pick::{PATCHES, patch_word};
@@ -42,21 +41,21 @@ pub fn PickBar() -> Element {
     let mut radius = state.pick.radius;
     let mut group_only = state.pick.group_only;
     let (r, grouped) = (radius(), group_only());
-    let chip = |on: bool| if on { "chip active" } else { "chip" };
+    let patches: Vec<_> = PATCHES
+        .map(|want| {
+            Choice::new(
+                want,
+                Face::Word(patch_word(want).into()),
+                "How much canvas one sample averages",
+            )
+        })
+        .into();
 
     rsx! {
-        div {
-            class: "pick-bar chrome",
-            class: if chrome_dimmed(state) { "dimmed" },
-            // The tool Alt has just armed, drawn as well as named. This bar exists to
-            // make a modifier binding discoverable (see the module docs), and a picture
-            // of the eyedropper appearing beside the cursor is the shortest version of
-            // that argument the bar can make.
-            span { class: "bar-label",
-                {icon(stark_ui::icons::EYEDROPPER)}
-                {label("Eyedropper")}
-            }
-
+        // The tool Alt has just armed, drawn as well as named: a picture of the
+        // eyedropper beside the cursor is the shortest way to make the binding
+        // discoverable (see the module docs).
+        Bar { class: "pick-bar", glyph: stark_ui::icons::EYEDROPPER, word: "Eyedropper",
             span { class: "bar-sep" }
 
             // Each chip is its command worn whole (`crate::commands`): the
@@ -83,8 +82,8 @@ pub fn PickBar() -> Element {
             // canvas color stands behind it — the canvas is a fact about the
             // picture, not about any group of paint, so it arrives exactly when
             // the fence comes down.
-            button {
-                class: chip(grouped),
+            Chip {
+                active: grouped,
                 title: stark_ui::pick::GROUP_TIP,
                 onclick: move |_| group_only.set(!grouped),
                 {icon(stark_ui::icons::GROUP_ONLY)}
@@ -93,16 +92,10 @@ pub fn PickBar() -> Element {
 
             span { class: "bar-sep" }
 
-            div {
-                class: "segmented",
-                for want in PATCHES {
-                    button {
-                        class: chip(r == want),
-                        title: "How much canvas one sample averages",
-                        onclick: move |_| radius.set(want),
-                        {patch_word(want)}
-                    }
-                }
+            Segmented {
+                choices: patches,
+                selected: r,
+                onpick: move |want: u32| radius.set(want),
             }
         }
     }

@@ -44,7 +44,7 @@ use stark_ui::icons::Icon;
 
 use stark_engine::command::InputSample;
 use stark_model::ColorSpaceId;
-use stark_model::document::{BrushShape, ModSource, Modulation, OrientationSource};
+use stark_model::document::{BrushShape, ModSource, Modulation, NoiseKind, OrientationSource};
 use stark_model::geom::Vec2;
 
 use dioxus::html::HasFileData;
@@ -57,7 +57,7 @@ use crate::platform::{capture_pointer, pick_file, sleep_ms};
 use crate::presets;
 use crate::render::Renderer;
 use crate::state::{AppState, update_brush};
-use crate::widgets::{Modal, Slider};
+use crate::widgets::{Choice, Face, Modal, Segmented, Slider};
 use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_ui::brush_config::{BrushConfig, BrushEffectType, Transient};
 use stark_ui::brush_editor::{
@@ -79,13 +79,6 @@ const EDIT_THROTTLE_MS: i32 = 50;
 
 /// A deferred brush mutation: the latest slider edit during a throttle window.
 type BrushEdit = Box<dyn FnOnce(&mut BrushConfig, &mut Transient)>;
-
-/// The class a two-state chip wears. Shared by every chip row in the dialog, so a
-/// selected shape, a selected noise kind and a selected pen source all light the
-/// same way.
-fn chip(active: bool) -> &'static str {
-    if active { "chip active" } else { "chip" }
-}
 
 /// Shared `Copy` handle to the preview's signals.
 #[derive(Clone, Copy)]
@@ -403,57 +396,69 @@ fn row_element(
     let (brush, tune) = (shown.brush, shown.tune);
     match row {
         Row::Shapes => rsx! { ShapeGallery { key: "{nth}" } },
-        Row::Orientation => rsx! {
-            div { key: "{nth}", class: "brush-shapes",
-                for source in [OrientationSource::FollowStroke, OrientationSource::Pen] {
-                    button {
-                        key: "{source:?}",
-                        class: chip(brush.orientation == source),
-                        onclick: move |_| {
-                            set_orientation(state, source);
-                            restroke(state, preview);
-                        },
-                        match source {
-                            OrientationSource::FollowStroke => "Follow stroke",
-                            OrientationSource::Pen => "Pen angle",
-                        }
-                    }
+        Row::Orientation => {
+            let choices = [OrientationSource::FollowStroke, OrientationSource::Pen].map(|source| {
+                let (word, tip) = orientation_face(source);
+                Choice::new(source, Face::Word(word.into()), tip)
+            });
+            rsx! {
+                Segmented {
+                    key: "{nth}",
+                    class: "brush-shapes",
+                    choices: Vec::from(choices),
+                    selected: brush.orientation,
+                    onpick: move |source: OrientationSource| {
+                        set_orientation(state, source);
+                        restroke(state, preview);
+                    },
                 }
             }
-        },
+        }
         // What a stroke of the brush **does** (§6.2, §6.12). Chips rather than a dial,
         // because it is the tool's identity and not an amount — the sections below come
         // and go with it, which a slider position would not say. The user's own choice:
         // no slider moves this switch (`BrushConfig::effect`).
-        Row::Effects => rsx! {
-            div { key: "{nth}", class: "brush-shapes",
-                for kind in [
-                    BrushEffectType::Paint,
-                    BrushEffectType::Wet,
-                    BrushEffectType::Erase,
-                    BrushEffectType::Liquify,
-                ] {
-                    button {
-                        key: "{kind:?}",
-                        class: chip(brush.effect == kind),
-                        onclick: move |_| set_effect(state, preview, kind),
-                        "{effect_label(kind)}"
-                    }
+        Row::Effects => {
+            let choices = [
+                BrushEffectType::Paint,
+                BrushEffectType::Wet,
+                BrushEffectType::Erase,
+                BrushEffectType::Liquify,
+            ]
+            .map(|kind| {
+                let (word, tip) = effect_face(kind);
+                Choice::new(kind, Face::Word(word.into()), tip)
+            });
+            rsx! {
+                Segmented {
+                    key: "{nth}",
+                    class: "brush-shapes",
+                    choices: Vec::from(choices),
+                    selected: brush.effect,
+                    onpick: move |kind: BrushEffectType| set_effect(state, preview, kind),
                 }
             }
-        },
-        Row::Noise => rsx! {
-            div { key: "{nth}", class: "brush-shapes",
-                for kind in stark_ui::brush_editor::NOISE_KINDS {
-                    button {
-                        key: "{noise_label(kind)}",
-                        class: chip(brush.color_dynamics.noise == kind),
-                        onclick: move |_| edit(state, preview, move |b, _| b.color_dynamics.noise = kind),
-                        "{noise_label(kind)}"
-                    }
+        }
+        Row::Noise => {
+            let choices = stark_ui::brush_editor::NOISE_KINDS.map(|kind| {
+                Choice::new(
+                    kind,
+                    Face::Word(noise_label(kind).into()),
+                    "The field the color wanders across",
+                )
+            });
+            rsx! {
+                Segmented {
+                    key: "{nth}",
+                    class: "brush-shapes",
+                    choices: Vec::from(choices),
+                    selected: brush.color_dynamics.noise,
+                    onpick: move |kind: NoiseKind| {
+                        edit(state, preview, move |b, _| b.color_dynamics.noise = kind);
+                    },
                 }
             }
-        },
+        }
         Row::Note(note) => rsx! {
             div { key: "{nth}", class: "be-note", "{note.text()}" }
         },
@@ -474,15 +479,47 @@ fn row_element(
     }
 }
 
-/// The word an effect chip wears. The *marks* are the panels' — a chip in a docked
-/// column has no room for a word — and here the word leads, because the chip is what
-/// names the group under it.
-fn effect_label(effect: BrushEffectType) -> &'static str {
+/// The word an effect chip wears, and its tip. The *marks* are the panels' — a chip in
+/// a docked column has no room for a word — and here the word leads, because the chip
+/// is what names the group under it.
+fn effect_face(effect: BrushEffectType) -> (&'static str, &'static str) {
     match effect {
-        BrushEffectType::Paint => "Paint",
-        BrushEffectType::Wet => "Wet",
-        BrushEffectType::Erase => "Erase",
-        BrushEffectType::Liquify => "Liquify",
+        BrushEffectType::Paint => ("Paint", "Paint \u{2014} lay the colour in hand"),
+        BrushEffectType::Wet => (
+            "Wet",
+            "Wet \u{2014} move and mix the paint already on the canvas",
+        ),
+        BrushEffectType::Erase => (
+            "Erase",
+            "Erase \u{2014} take paint away where the tip passes",
+        ),
+        BrushEffectType::Liquify => (
+            "Liquify",
+            "Liquify \u{2014} push the paint about without adding any",
+        ),
+    }
+}
+
+/// The word an orientation chip wears, and its tip.
+fn orientation_face(source: OrientationSource) -> (&'static str, &'static str) {
+    match source {
+        OrientationSource::FollowStroke => (
+            "Follow stroke",
+            "The footprint turns with the travel \u{2014} a nib that follows the line",
+        ),
+        OrientationSource::Pen => (
+            "Pen angle",
+            "The footprint follows the pen's lean \u{2014} a real conical tip",
+        ),
+    }
+}
+
+/// The tip a pen-source chip carries.
+fn source_tip(source: Option<ModSource>) -> &'static str {
+    match source {
+        None => "Nothing drives this",
+        Some(ModSource::Pressure) => "How hard the pen is pressed",
+        Some(ModSource::Tilt) => "How far the pen is leaned over",
     }
 }
 
@@ -531,6 +568,13 @@ fn mod_slider(
     } else {
         "mod-chip"
     };
+    let sources: Vec<_> = std::iter::once(None)
+        .chain(stark_ui::brush_editor::SOURCES.map(Some))
+        .map(|src| {
+            let word = src.map_or("Off", source_label);
+            Choice::new(src, Face::Word(word.into()), source_tip(src))
+        })
+        .collect();
 
     rsx! {
         div { class: "mod-slider",
@@ -548,18 +592,11 @@ fn mod_slider(
         }
         if expanded {
             div { class: "be-sub mod-panel",
-                div { class: "brush-shapes",
-                    button { class: chip(m.is_none()),
-                        onclick: move |_| set_source(state, preview, row, None),
-                        "Off" }
-                    for src in [ModSource::Pressure, ModSource::Tilt] {
-                        button {
-                            key: "{source_label(src)}",
-                            class: chip(m.is_some_and(|m| m.source == src)),
-                            onclick: move |_| set_source(state, preview, row, Some(src)),
-                            "{source_label(src)}"
-                        }
-                    }
+                Segmented {
+                    class: "brush-shapes",
+                    choices: sources,
+                    selected: m.map(|m| m.source),
+                    onpick: move |src: Option<ModSource>| set_source(state, preview, row, src),
                 }
                 if let Some(m) = m {
                     // The two shape knobs, and the curve they describe drawn beside

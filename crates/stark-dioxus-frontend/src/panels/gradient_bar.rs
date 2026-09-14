@@ -345,10 +345,7 @@ pub fn GradientBar() -> Element {
                 "The drag is the reach: press at the centre, release at the rim",
             ),
         ]
-        .map(|(kind, glyph, word, tip)| Choice {
-            lit: ui.kind == kind,
-            ..Choice::new(kind, Face::Marked(glyph, word), tip)
-        }),
+        .map(|(kind, glyph, word, tip)| Choice::new(kind, Face::Marked(glyph, word), tip)),
     );
     let pick_ui = ui.clone();
 
@@ -388,6 +385,7 @@ pub fn GradientBar() -> Element {
             // `GradientUi::axis` reads the same two points either way.
             Segmented {
                 choices: kinds,
+                selected: ui.kind,
                 onpick: move |kind: GradientAxisKind| {
                     update(state, GradientUi { kind, ..pick_ui.clone() });
                 },

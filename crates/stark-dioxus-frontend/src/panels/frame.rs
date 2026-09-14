@@ -35,6 +35,7 @@ use crate::layout::chrome_dimmed;
 use crate::panels::color::OklabPicker;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
+use crate::widgets::{ActChip, Bar, Chip, PopoutId, toggle_popout, use_popout};
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::{LayerInfo, MatteInfo};
 use stark_model::document::{MatteRegion, Parcel, Place};
@@ -154,35 +155,13 @@ fn add_backing(state: AppState) {
 #[component]
 pub fn FrameBar() -> Element {
     let state = use_context::<AppState>();
-    // Whether the color pop-out is open — app state now rather than a local, so
-    // Escape can put it down (`widgets::PopoutId`, §25.7). A subscribing read, so
-    // the well's pop-out appears and goes with the flag.
-    let show_picker = crate::widgets::popout_open(state, crate::widgets::PopoutId::Parcel);
-    // And it goes when this bar does. A pop-out is drawn inside the bar that owns
-    // it, so a bar that unmounts — the frame deselected, a mode taking the bottom
-    // edge — takes the picker off the screen without clearing the flag, and the
-    // next time a frame was selected the picker would be standing open on it.
-    use_drop(move || {
-        if crate::widgets::popout_open(state, crate::widgets::PopoutId::Parcel) {
-            crate::widgets::close_popout(state);
-        }
-    });
-    // Both of these are hooks and both are here for that same reason — the bar has
-    // two early returns below, and a hook that runs only sometimes is not a hook.
+    // The hooks stand above the early return.
+    let show_picker = use_popout(state, PopoutId::Parcel);
     let frame = use_selected_frame(state);
     let has_backing = use_has_backing(state);
     let Some((info, matte)) = frame() else {
         return rsx! {};
     };
-    // While a mode is composing, its own bar stands in for this one — two bars
-    // over the same bottom edge would fight, and the frame's numbers describe a
-    // layer the composition may be about to move (`crate::modes`). The gradient
-    // bar composing *this matte's* paint (§22.4) is the case this began as —
-    // and the case that reads best recessed rather than unmounted
-    // (MODAL_DESIGN.md): the mode was entered from this very bar, and this is
-    // where its Done and Esc return to. `.recessed` is inert, so nothing here
-    // can be pressed under the composition.
-    let composing = crate::modes::composing(state).is_some();
     // The rect half of the bar exists exactly when the region has a rect: an
     // `Everything` matte (a backing, §15.5) frames nothing, so the
     // readout, the aspect and the fits stand down and the bar is its paint and
@@ -215,25 +194,16 @@ pub fn FrameBar() -> Element {
          drag the axis, then Done"
     };
 
-    rsx! {
-        div {
-            class: "frame-bar chrome",
-            class: if chrome_dimmed(state) { "dimmed" },
-            class: if composing { "recessed" },
-            // The glyph rides the bar's *label*, not one of its buttons: no single
-            // control here is "crop" — sizing to an aspect, fitting to the art and
-            // fitting to the view are three ways of doing it — so what the mark
-            // identifies is the bar, and through it the mode you are in.
-            span { class: "bar-label",
-                if rect.is_some() {
-                    {icon(stark_ui::icons::FRAME)}
-                    {label("Frame")}
-                } else {
-                    {icon(stark_ui::icons::BACKGROUND)}
-                    {label("Background")}
-                }
-            }
+    // The glyph rides the bar's *label*, not one of its buttons: no single control here
+    // is "crop" — sizing to an aspect and the two fits are three ways of doing it.
+    let (glyph, word) = if rect.is_some() {
+        (stark_ui::icons::FRAME, "Frame")
+    } else {
+        (stark_ui::icons::BACKGROUND, "Background")
+    };
 
+    rsx! {
+        Bar { class: "frame-bar", glyph, word,
             if let (Some((rmin, rmax)), Some((w, h)), Some(current_aspect)) = (rect, dims, current_aspect) {
                 span { class: "bar-sep" }
 
@@ -268,8 +238,7 @@ pub fn FrameBar() -> Element {
 
                 span { class: "bar-sep" }
 
-                button {
-                    class: "chip",
+                Chip {
                     title: "Fit the frame to everything painted so far",
                     onclick: move |_| {
                         let rect = state.obs.peek().as_ref().and_then(stark_ui::bounds::content);
@@ -277,8 +246,7 @@ pub fn FrameBar() -> Element {
                     },
                     "Fit to art"
                 }
-                button {
-                    class: "chip",
+                Chip {
                     title: "Fit the frame to the current view",
                     onclick: move |_| {
                         let rect = state.obs.peek().as_ref().map(stark_ui::bounds::view);
@@ -317,10 +285,7 @@ pub fn FrameBar() -> Element {
                     // Picking a color on a gradient matte solidifies it — that
                     // is what the control says it does, and undo takes it back.
                     title: if is_gradient { "Solid color (replaces the gradient)" } else { "Matte color" },
-                    onclick: move |_| crate::widgets::toggle_popout(
-                        state,
-                        crate::widgets::PopoutId::Parcel,
-                    ),
+                    onclick: move |_| toggle_popout(state, PopoutId::Parcel),
                 }
                 // Mounted only while open, so the picker re-seeds from the matte's
                 // current color each time — and flies *up*, since the bar it hangs
@@ -350,8 +315,8 @@ pub fn FrameBar() -> Element {
             // is composed. Lit while the paint *is* a gradient, like every
             // state-wearing chip — and never disabled, since that bar carries
             // the library (§22.3) and so is the way to a first ramp too.
-            button {
-                class: if is_gradient { "chip active" } else { "chip" },
+            Chip {
+                active: is_gradient,
                 title: gradient_title,
                 onclick: move |_| {
                     crate::panels::gradient_bar::begin_matte(state, info.id, &paint_for_begin);
@@ -370,8 +335,7 @@ pub fn FrameBar() -> Element {
             if offer_backing {
                 span { class: "bar-sep" }
 
-                button {
-                    class: "chip",
+                Chip {
                     title: "Add a background: an opaque layer under the whole painting \u{2014} \
                             flat or gradient, the underpainting's color",
                     onclick: move |_| add_backing(state),
@@ -382,19 +346,11 @@ pub fn FrameBar() -> Element {
 
             span { class: "bar-sep" }
 
-            button {
-                class: "chip",
-                // Esc performs this same act (`commands`' ladder), so the chip
-                // advertises the key the way the mode bars' Done advertises
-                // Enter — through the registry, so a rebind follows.
-                title: stark_ui::commands::advertised(
-                    "Stop composing and go back to painting \u{2014} the frame stays",
-                    Command::CancelMode,
-                    &state.bindings.read(),
-                ),
+            // Esc performs this same act (`commands`' ladder).
+            ActChip {
+                command: Command::CancelMode,
+                title: "Stop composing and go back to painting \u{2014} the frame stays",
                 onclick: move |_| done_composing(state),
-                {icon(stark_ui::icons::DONE)}
-                {label("Done")}
             }
         }
     }

@@ -8,7 +8,7 @@ use crate::icons::{icon, label};
 use crate::panels::color::OklabPicker;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, with_engine_quiet};
-use crate::widgets::{PopoutId, Slider, slider_fill};
+use crate::widgets::{PopoutId, PreviewSlider, Select, Slider, use_popout};
 use dioxus::dioxus_core::spawn_forever;
 use stark_engine::command::ViewCommand;
 use stark_engine::{EnvironmentId, MediaParams};
@@ -89,25 +89,10 @@ pub fn LightingPanel() -> Element {
     );
     // Lit while its pop-out is open — the well is a column away from what it opened,
     // and nothing else says which press put that surface there.
-    let swatch_class = if crate::widgets::popout_open(state, PopoutId::SubstrateColor) {
-        "swatch open"
-    } else {
-        "swatch"
-    };
-    // Both of this panel's pop-outs go when the panel does. They are mounted at the
-    // app root rather than in here (`panels::popout`), so nothing takes one off the
-    // screen on the way out — and the next time the panel was opened the picker
-    // would be standing beside a row nobody had pressed. The frame bar's own
-    // pop-out makes the same promise for the same reason (`panels::frame`).
-    use_drop(move || {
-        let mine = matches!(
-            *state.popout.peek(),
-            Some(PopoutId::SubstrateColor | PopoutId::SubstrateGallery)
-        );
-        if mine {
-            crate::widgets::close_popout(state);
-        }
-    });
+    let color_open = use_popout(state, PopoutId::SubstrateColor);
+    use_popout(state, PopoutId::SubstrateGallery);
+    let swatch_class = if color_open { "swatch open" } else { "swatch" };
+    let environment = ENVIRONMENTS.iter().position(|(id, _)| *id == env);
     rsx! {
         // Each track's ends, its mark and its caption come off the dial rather than
         // being spelled here: the gloss ceiling in particular was a literal on this
@@ -128,16 +113,13 @@ pub fn LightingPanel() -> Element {
         // (`panels::popout::StackPopouts`); what stays here is the well that says
         // which one is in force.
         //
-        // `marked` by hand on these four, as `widgets::Slider` sets it on the three
-        // above: each holds a well, a native `select` or a range that previews and
-        // commits, so none of them can be the component — but each wears a glyph, and
-        // that is the whole of what `marked` claims. The panel folds as one column in
-        // minimal mode rather than three rows folding and four standing on (§11).
+        // `marked` by hand on the rows that hold a well or a drop-down rather than a
+        // `Slider`, since each wears a glyph and that is all `marked` claims: the panel
+        // folds as one column in minimal mode (§11).
         //
         // The `data-popout` attribute is on the **row**, not on the well inside it,
-        // and it is what the pop-out is placed against — see `PopoutId::in_stack`
-        // for why the row is the right box to measure.
-        div { class: "slider-row marked", "data-popout": "substrate-color",
+        // and it is what the pop-out is placed against (`PopoutId::in_stack`).
+        div { class: "slider-row marked", "data-popout": PopoutId::SubstrateColor.key(),
             div { class: "slider-label", {icon(stark_ui::icons::CANVAS)} {label("Background")} }
             button {
                 class: swatch_class,
@@ -145,66 +127,34 @@ pub fn LightingPanel() -> Element {
                 onclick: move |_| crate::widgets::toggle_popout(state, PopoutId::SubstrateColor),
             }
         }
-        div { class: "slider-row marked", "data-popout": "substrate-gallery",
+        div { class: "slider-row marked", "data-popout": PopoutId::SubstrateGallery.key(),
             div { class: "slider-label", {icon(stark_ui::icons::SURFACE)} {label("Surface")} }
             crate::substrates::SubstrateWell {}
         }
-        // How large the substrate is laid (§6.4). A raw range rather than `Slider`,
-        // because this one is document state: it previews per sample and commits
-        // once, which needs the three drag-ending events `Slider` does not carry
-        // (`preview::SUBSTRATE_SCALE`, and `Preview::settle` for why there are three).
-        //
-        // The percentage is in the label because it is the one number here worth
-        // reading back — a substrate is judged by eye, but "the same as last time" is
-        // judged by the figure. It sits *beside* the hideable word rather than inside
-        // it: minimal mode takes a control's name, never its value, so what is left is
-        // the mark and the figure — which is the pair that was worth keeping anyway.
-        div { class: "slider-row marked",
-            div { class: "slider-label",
-                {icon(stark_ui::icons::SUBSTRATE_SCALE)}
-                {label("Scale")}
-                "{scale.percent()}%"
-            }
-            input {
-                class: "slider",
-                style: slider_fill(
-                    SubstrateScale::MIN as f32,
-                    SubstrateScale::MAX as f32,
-                    scale.percent() as f32,
-                ),
-                r#type: "range",
-                min: "{SubstrateScale::MIN}",
-                max: "{SubstrateScale::MAX}",
-                // The control steps on the same ladder the value does, so the track
-                // cannot offer a position `SubstrateScale::new` would move the handle
-                // off (§6.4).
-                step: "{SubstrateScale::STEP}",
-                value: "{scale.percent()}",
-                // Inert on `Smooth`, whose height is a constant: there is no substrate to
-                // size, and a live slider would claim otherwise.
-                disabled: surf == SubstrateId::Flat,
-                oninput: move |e| {
-                    if let Ok(v) = e.value().parse::<u16>() {
-                        preview::SUBSTRATE_SCALE.during(state, laying, SubstrateScale::new(v));
-                    }
-                },
-                onchange: move |_| preview::SUBSTRATE_SCALE.settle(state, laying),
-                onpointerup: move |_| preview::SUBSTRATE_SCALE.settle(state, laying),
-                onpointercancel: move |_| preview::SUBSTRATE_SCALE.settle(state, laying),
-            }
+        // How large the substrate is laid (§6.4). The percentage is the readout
+        // because "the same as last time" is judged by the figure.
+        PreviewSlider {
+            label: "Scale",
+            glyph: stark_ui::icons::SUBSTRATE_SCALE,
+            min: f32::from(SubstrateScale::MIN),
+            max: f32::from(SubstrateScale::MAX),
+            // The track steps on the value's own ladder, so it cannot offer a position
+            // `SubstrateScale::new` would move the handle off.
+            step: f32::from(SubstrateScale::STEP),
+            value: f32::from(scale.percent()),
+            readout: "{scale.percent()}%",
+            // Inert on a flat surface, whose height is a constant: there is nothing to size.
+            disabled: surf == SubstrateId::Flat,
+            preview: preview::SUBSTRATE_SCALE,
+            pending: laying,
+            map: |v: f32| Some(SubstrateScale::new(v.round() as u16)),
         }
         div { class: "slider-row marked",
             div { class: "slider-label", {icon(stark_ui::icons::LIGHT)} {label("Light")} }
-            select {
-                class: "select",
-                onchange: move |e| {
-                    if let Some((id, _)) = ENVIRONMENTS.iter().find(|(v, _)| format!("{v:?}") == e.value()) {
-                        set_environment(state, *id);
-                    }
-                },
-                for (id, name) in ENVIRONMENTS.iter().copied() {
-                    option { value: "{id:?}", selected: env == id, "{name}" }
-                }
+            Select {
+                options: ENVIRONMENTS.iter().map(|(_, name)| *name).collect::<Vec<_>>(),
+                selected: environment,
+                onchange: move |i: usize| set_environment(state, ENVIRONMENTS[i].0),
             }
         }
         // The HDR switch (§6.5): off is the picture an export makes. Only on a

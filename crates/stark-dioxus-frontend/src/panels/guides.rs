@@ -42,10 +42,7 @@ use crate::input::{Nav, canvas_xy};
 use crate::panels::reorder::{Grip, RowKey};
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs_opt};
-use crate::widgets::{
-    ActChip, Bar, Chip, Choice, CommandButton, Face, InlineRename, PreviewSlider, Segmented,
-    SliderShape,
-};
+use crate::widgets::{ActChip, Bar, Chip, CommandButton, InlineRename, PreviewSlider, SliderShape};
 use stark_engine::GuideInfo;
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::{GuideId, Lens, PerspectiveGuide};
@@ -534,45 +531,7 @@ pub fn PerspectiveGuideBar() -> Element {
     // ladder's rung, so there is no separate number to keep in step.
     let octave = stark_ui::guides::octave(g);
     let (opacity, pairs, lens) = (g.opacity, g.pairs, g.lens);
-    // Colored as the axis's own lines are (`AXIS_CSS`).
-    let locks: Vec<_> = (0..3)
-        .map(|i| Choice {
-            lit: edit.locked[i],
-            class: "axis-chip",
-            style: Some(format!("--axis: {}", AXIS_CSS[i])),
-            ..Choice::new(
-                i,
-                Face::Word(AXIS_NAMES[i]),
-                format!("Hold the {} axis fixed under the drag", AXIS_NAMES[i]),
-            )
-        })
-        .collect();
-    let planes: Vec<_> = PAIR_AXES
-        .iter()
-        .enumerate()
-        .map(|(k, &[a, b])| Choice {
-            lit: pairs[k],
-            class: "plane-chip",
-            style: Some(format!(
-                "--axis-a: {}; --axis-b: {}",
-                AXIS_CSS[a], AXIS_CSS[b]
-            )),
-            // Each letter in its own axis's hue, so the chip names the plane by the two
-            // colors ruling it.
-            ..Choice::new(
-                k,
-                Face::Drawn(rsx! {
-                    span { class: "ax-a", "{AXIS_NAMES[a]}" }
-                    span { class: "ax-b", "{AXIS_NAMES[b]}" }
-                }),
-                format!(
-                    "Show the {}{} plane \u{2014} its two fans of guide lines, its horizon \
-                     and its station point",
-                    AXIS_NAMES[a], AXIS_NAMES[b]
-                ),
-            )
-        })
-        .collect();
+    let locked = edit.locked;
 
     rsx! {
         // No Cancel chip, alone among the mode bars, because it would be a lie here: a
@@ -594,26 +553,34 @@ pub fn PerspectiveGuideBar() -> Element {
 
             // Locks: hold a world axis fixed, constraining the canvas drag to
             // turns about it — lock the vertical and every gesture keeps the
-            // verticals parallel.
+            // verticals parallel. Any may be held together, so they stand apart
+            // rather than as a run (§25.9). Colored as the axis's own lines are.
             span { class: "bar-sub",
                 {icon(stark_ui::icons::LOCK)}
                 {label("Lock")}
             }
-            Segmented {
-                choices: locks,
-                onpick: move |i: usize| {
-                    // Read live rather than from the render's `edit`, so this is the
-                    // read-modify-write it was; and written through `advance`, the one
-                    // writer that may not change *which* mode is live — a lock is a
-                    // change to what this one is composing, nothing more
-                    // (`crate::modes`).
-                    let live = crate::modes::composing_now(state);
-                    let Some(mut edit) = live.and_then(Composing::guide_edit) else {
-                        return;
-                    };
-                    edit.locked[i] = !edit.locked[i];
-                    crate::modes::advance(state, Composing::GuideEdit(edit));
-                },
+            div { class: "row",
+                for (i, name) in AXIS_NAMES.into_iter().enumerate() {
+                    Chip {
+                        key: "{name}",
+                        active: locked[i],
+                        class: "axis-chip",
+                        style: "--axis: {AXIS_CSS[i]}",
+                        title: "Hold the {name} axis fixed under the drag",
+                        onclick: move |_| {
+                            // Read live rather than from the render's `edit`, and
+                            // written through `advance`, the one writer that may not
+                            // change *which* mode is live (`crate::modes`).
+                            let live = crate::modes::composing_now(state);
+                            let Some(mut edit) = live.and_then(Composing::guide_edit) else {
+                                return;
+                            };
+                            edit.locked[i] = !edit.locked[i];
+                            crate::modes::advance(state, Composing::GuideEdit(edit));
+                        },
+                        "{name}"
+                    }
+                }
             }
             span { class: "bar-sep" }
             // The same eye the guide's own row wears, asked of one plane of the
@@ -626,9 +593,22 @@ pub fn PerspectiveGuideBar() -> Element {
                 {icon(stark_ui::icons::VISIBLE)}
                 {label("Show")}
             }
-            Segmented {
-                choices: planes,
-                onpick: move |k: usize| edit_guide(state, id, move |g| g.pairs[k] = !g.pairs[k]),
+            div { class: "row",
+                for (k, [a, b]) in PAIR_AXES.into_iter().enumerate() {
+                    // Each letter in its own axis's hue, so the chip names the plane by
+                    // the two colors ruling it.
+                    Chip {
+                        key: "{k}",
+                        active: pairs[k],
+                        class: "plane-chip",
+                        style: "--axis-a: {AXIS_CSS[a]}; --axis-b: {AXIS_CSS[b]}",
+                        title: "Show the {AXIS_NAMES[a]}{AXIS_NAMES[b]} plane \u{2014} its two \
+                                fans of guide lines, its horizon and its station point",
+                        onclick: move |_| edit_guide(state, id, move |g| g.pairs[k] = !g.pairs[k]),
+                        span { class: "ax-a", "{AXIS_NAMES[a]}" }
+                        span { class: "ax-b", "{AXIS_NAMES[b]}" }
+                    }
+                }
             }
             span { class: "bar-sep" }
             // The lens (§20.8): one toggle, because everything else about the
