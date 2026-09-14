@@ -10,19 +10,21 @@
 //! (§25.3). They are independent of one another, so they are a file each:
 //! [`Nav`] the view, [`Tune`] the brush, [`PickMove`] the layer carry, and
 //! [`Paint`] with the [`Landing`] that holds a finger's press in front of it.
-//! [`keys`] is the sixth file and is not a gesture: it is what the *window*
-//! hears, which is holds rather than acts.
+//! [`Gestures`](gestures::Gestures) carries the canvas's four as one value — which of them holds the
+//! pointer, the order a move is offered to them in, and the release that puts
+//! them all down ([`end_interaction`]). [`keys`] is not a gesture: it is what the
+//! *window* hears, which is holds rather than acts.
 //!
 //! What is left here is the **vocabulary they are written in**, and it is here
 //! because more than one of them needs it: how a DOM event becomes an
 //! `InputSample`, what a pointer type means ([`is_contact`], [`is_eraser`]), the
-//! tolerances a fit is given, the hover mark, the eyedropper's sample, and the
-//! release that ends whatever was in flight ([`end_interaction`], which is the
-//! one place all five are named together).
+//! tolerances a fit is given, the hover mark and the eyedropper's sample.
 //!
 //! The thresholds and the decisions under those gestures — the touch slop, the hold,
 //! the pinch and the tap, the carry — are `stark_ui`'s (§11.2), so the native frontend
 //! reads the same ones; what is left here is the DOM's side of each.
+
+use std::cell::Cell;
 
 use dioxus::dioxus_core::{Task, spawn_forever};
 use dioxus::html::geometry::ElementPoint;
@@ -50,12 +52,14 @@ use stark_ui::pick::Sampler;
 use stark_ui::slots::Grip;
 
 mod carry;
+mod gestures;
 mod keys;
 mod nav;
 mod paint;
 mod tune;
 
 pub use carry::PickMove;
+pub use gestures::{Holder, end_interaction, use_gestures};
 pub use keys::{bind_context_menu, bind_pen, bind_shortcuts};
 pub use nav::Nav;
 pub use paint::{Landing, Paint};
@@ -197,6 +201,17 @@ pub fn page_xy(e: &Event<PointerData>) -> Vec2 {
     Vec2::new(p.x as f32, p.y as f32)
 }
 
+/// Where `e` lands in canvas space, through `view`.
+///
+/// Page px go straight through the view because the `<canvas>` sits at the page
+/// origin, so the view's screen space *is* the page — which is also what lets an
+/// overlay's handler, whose own element is elsewhere, map through it. Move the canvas
+/// off the origin and every caller of this is wrong by the offset; the native
+/// frontend, whose canvas is not at its window's origin, subtracts it (`screen_at`).
+pub fn canvas_xy(view: ViewTransform, e: &Event<PointerData>) -> Vec2 {
+    view.screen_to_canvas(page_xy(e))
+}
+
 /// Sample the canvas color under `pos` and load the brush with it — the eyedropper
 /// (§18.0.2).
 ///
@@ -286,8 +301,11 @@ pub fn move_loupe(state: AppState, at: Vec2) {
 /// an ordinary early state, not a bug. Everything that needs canvas coordinates
 /// therefore returns `None` too, and its callers do nothing until there is an engine
 /// to do it to.
+///
+/// Off the projection rather than the renderer: every door that moves the view
+/// publishes, and a peek there neither subscribes nor borrows the engine.
 fn view_of(state: AppState) -> Option<ViewTransform> {
-    state.renderer.read().as_ref().map(|r| r.view())
+    state.obs.peek().as_ref().map(|o| o.view)
 }
 
 /// Pointer position within an element, in CSS pixels.
@@ -304,7 +322,33 @@ pub fn elem_xy(e: &Event<PointerData>) -> Vec2 {
 /// `1 / devicePixelRatio` CSS px is its floor; a pen or a finger comes off a
 /// digitizer that resolves well below the screen it sits under.
 fn input_resolution(e: &Event<PointerData>) -> f32 {
-    stark_ui::input::resolution(pointer_kind(e)) / platform::device_pixel_ratio()
+    stark_ui::input::resolution(pointer_kind(e)) / pixel_ratio()
+}
+
+thread_local! {
+    /// `devicePixelRatio`, once read. A DOM read is too dear for every hover move,
+    /// and the ratio moves only with browser zoom or a monitor change.
+    static PIXEL_RATIO: Cell<Option<f32>> = const { Cell::new(None) };
+}
+
+/// The device pixel ratio, read on first use and then held until
+/// [`refresh_pixel_ratio`].
+fn pixel_ratio() -> f32 {
+    PIXEL_RATIO.with(|held| {
+        held.get().unwrap_or_else(|| {
+            let read = platform::device_pixel_ratio();
+            held.set(Some(read));
+            read
+        })
+    })
+}
+
+/// Re-read the device pixel ratio. The canvas calls this on resize — zoom and most
+/// monitor moves change its CSS size — and on every press, which covers the move
+/// between two monitors whose scale leaves the CSS size alone before a stroke's
+/// tolerance is priced against a stale ratio.
+pub fn refresh_pixel_ratio() {
+    PIXEL_RATIO.with(|held| held.set(Some(platform::device_pixel_ratio())));
 }
 
 /// The fitting tolerance to declare for a gesture starting with `e`, in canvas px.
@@ -469,12 +513,12 @@ pub fn hover_gone(state: AppState) {
     }
 }
 
-/// Map an element-relative pointer position to a canvas-space input sample; `None`
-/// before the engine exists, since there is no view to map through yet.
+/// Map a pointer event to a canvas-space input sample; `None` before the engine
+/// exists, since there is no view to map through yet.
 pub fn sample(state: AppState, e: &Event<PointerData>) -> Option<InputSample> {
     let view = view_of(state)?;
     Some(InputSample {
-        pos: view.screen_to_canvas(elem_xy(e)),
+        pos: canvas_xy(view, e),
         pressure: e.pressure(),
         // Pen tilt (degrees from vertical, ±90 per axis) → a canvas-space lean vector. The
         // palette knife's deposit reads its component along the stroke direction
@@ -494,11 +538,13 @@ pub fn sample(state: AppState, e: &Event<PointerData>) -> Option<InputSample> {
 /// pressure, tilt and timestamp, so the samples land as the hand made them
 /// rather than as delivery batched them.
 ///
-/// The reports come back from [`platform::coalesced`] in the element's own px;
-/// mapping them through the view is this side's business, since canvas space is
-/// what a sample is in. Falls back to the event itself when there is no list
-/// (off-wasm, a synthetic event); `None` before the engine exists, like
-/// [`sample`].
+/// The reports come back from [`platform::coalesced`] in the element's own px,
+/// which for the canvas are page px ([`canvas_xy`]). Falls back to the event
+/// itself when there is no list (off-wasm, a synthetic event), so the list is
+/// never empty; `None` before the engine exists, like [`sample`].
+///
+/// A DOM rect and a list read per call, so the canvas asks this once per move and
+/// only for a move a stroke will take.
 pub fn samples(state: AppState, e: &Event<PointerData>) -> Option<Vec<InputSample>> {
     let view = view_of(state)?;
     let folded = platform::coalesced(e).map(|list| {
@@ -515,66 +561,6 @@ pub fn samples(state: AppState, e: &Event<PointerData>) -> Option<Vec<InputSampl
         Some(list) if !list.is_empty() => Some(list),
         _ => sample(state, e).map(|s| vec![s]),
     }
-}
-
-/// End every gesture the canvas can have in hand at once — the paint gesture, the
-/// navigation, the brush-tuning drag, the layer carry and the eyedropper — and hand
-/// the canvas back, so the floating chrome fades in.
-///
-/// `Copy` values and no `&mut`: each of them owns its own state now, so this
-/// is the *order* they are put down in and nothing else. It used to take the paint
-/// gesture apart into two signals it borrowed from the component, which is what
-/// made "what counts as in flight" a thing two functions had to agree about
-/// (`Paint`).
-pub fn end_interaction(state: AppState, landing: Landing, nav: Nav, tune: Tune, carry: PickMove) {
-    landing.end();
-    nav.stop();
-    tune.stop();
-    // The one gesture here whose ending is not finished by the release: the
-    // layer it picked up may still be a readback away, and the commit waits for
-    // it (`PickMove::settle`).
-    carry.stop();
-    // Not a parameter like the three above because the eyedropper's drag flag is
-    // shared state, not a gesture object — the options bar reads it (see
-    // `PickState`). Nothing to undo, either: a sample already in flight is left to
-    // land, since it is the answer to a press the user made.
-    let mut dragging = state.pick.dragging;
-    dragging.set(false);
-    // And the swatch a held pick was showing goes with the finger that asked for it
-    // (§18.1.11). Guarded like every other idle write here: this runs on every
-    // release the canvas sees, and almost none of them had a loupe up.
-    let mut loupe = state.pick.loupe;
-    if loupe.peek().is_some() {
-        loupe.set(None);
-    }
-    // The panel stack does not come straight back: it stays out of the way until the
-    // pointer reaches into its column (`AppState::panels_asleep`, §11). The chrome
-    // going *out* mid-stroke was never the distracting half — coming back the instant
-    // the pen lifts is, because it happens at exactly the moment the artist is looking
-    // at what they just drew.
-    //
-    // Gated on the fade having actually been in force. `end_interaction` runs on every
-    // release the canvas sees, including the ones that deliberately keep the chrome up
-    // — an eyedropper sample reads its answer off the Color panel, brush tuning off the
-    // Brush panel (see the two `canvas_active` comments in `lib.rs`) — and putting the
-    // stack to sleep on the way out of those would hide the panel the gesture was for.
-    // Read before the clear, since the clear is what makes it false.
-    //
-    // Whether it sleeps at all is this browser's own choice, and that question is
-    // asked inside `sleep_panels` rather than here — one door, so the setting reaches
-    // every caller (`layout::ChromeHiding`, §11).
-    let was_faded = *state.canvas_active.peek();
-    let mut canvas_active = state.canvas_active;
-    canvas_active.set(false);
-    if was_faded {
-        crate::layout::sleep_panels(state);
-    }
-    // And a drag-preset offer brought due by a press this release is the end of
-    // (§25.8). Here rather than at the press for `tutor`'s reason: the press
-    // that finds nothing bound goes on to paint, and a modal over a live stroke
-    // would take the canvas away mid-mark. Last, because it is the one thing in
-    // this function that puts something *up*.
-    crate::drags::settle_offer(state);
 }
 
 #[cfg(test)]

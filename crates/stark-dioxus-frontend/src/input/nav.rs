@@ -43,6 +43,9 @@ pub struct Nav {
     /// finger is identified by its id rather than by being *the* pointer — that is
     /// the whole difference touch makes.
     fingers: Signal<Touch>,
+    /// Whether `fingers` is navigating — the pinch `Touch` keeps from the second
+    /// finger's landing to the last one's lift, which it does not expose.
+    pinching: Signal<bool>,
     /// The tap the last release turned out to be, waiting to be spent
     /// ([`Nav::take_tap`], §18.1.11). Written on every episode that ends, so it
     /// can never be older than the last hand off the glass.
@@ -70,8 +73,14 @@ impl Nav {
             state,
             drag: use_signal(|| None),
             fingers: use_signal(Touch::default),
+            pinching: use_signal(|| false),
             tap: use_signal(|| None),
         }
+    }
+
+    /// Whether a view drag or a pinch holds this surface's pointer.
+    pub fn holds_pointer(self) -> bool {
+        self.drag.peek().is_some() || *self.pinching.peek()
     }
 
     /// Whether `e` is a press this takes as navigation — a second finger on the
@@ -134,7 +143,7 @@ impl Nav {
             return self.finger_move(e);
         }
         let mut drag = self.drag;
-        let Some(in_flight) = drag() else {
+        let Some(in_flight) = *drag.peek() else {
             return false;
         };
         let p = page_xy(e);
@@ -170,6 +179,7 @@ impl Nav {
         let Lift::Ended { tap: tapped } = lift else {
             return true;
         };
+        self.set_pinching(false);
         let mut tap = self.tap;
         tap.set(tapped);
         false
@@ -202,6 +212,7 @@ impl Nav {
         if !fingers.peek().is_idle() {
             fingers.set(Touch::default());
         }
+        self.set_pinching(false);
         // A tap nobody spent is dropped here rather than kept: this is the canvas
         // being put down, and an undo that fired on the *next* hand off the glass
         // would be an act with no gesture behind it.
@@ -234,17 +245,28 @@ impl Nav {
     fn finger_down(self, e: &Event<PointerData>) -> bool {
         // Read before the fingers are locked, so nothing holds two signals at once.
         let angle = view_of(self.state).map_or(0.0, |v| v.rotation);
-        let (at, now) = (page_xy(e), now_seconds());
+        let (at, now, primary) = (page_xy(e), now_seconds(), e.is_primary());
         let mut fingers = self.fingers;
         let pinching = fingers
             .write()
-            .finger_down(e.pointer_id(), at, e.is_primary(), angle, now);
+            .finger_down(e.pointer_id(), at, primary, angle, now);
+        // A primary press resets the set, so only then can a pinch end here; a
+        // finger re-landing under its own id answers `false` mid-pinch.
+        self.set_pinching(pinching || (!primary && *self.pinching.peek()));
         if pinching {
             e.prevent_default();
             e.stop_propagation();
             capture_pointer(e);
         }
         pinching
+    }
+
+    /// Written only on a change: `stop` runs on every release the canvas sees.
+    fn set_pinching(self, now: bool) {
+        let mut pinching = self.pinching;
+        if *pinching.peek() != now {
+            pinching.set(now);
+        }
     }
 
     /// A finger moving: drives the view once a gesture is in flight, and before then

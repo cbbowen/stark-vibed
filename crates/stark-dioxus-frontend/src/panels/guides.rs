@@ -38,7 +38,7 @@ use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::icons::{icon, label};
-use crate::input::{Nav, page_xy};
+use crate::input::{Nav, canvas_xy};
 use crate::panels::reorder::{Grip, RowKey};
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs_opt};
@@ -757,14 +757,13 @@ pub fn GuideEditOverlay() -> Element {
     // share the hit test.
     let handles = Handles::of(&guide);
 
-    let to_canvas = move |e: &Event<PointerData>| view.screen_to_canvas(page_xy(e));
     let classify = move |pc: Vec2| handles.at(pc, view.zoom);
 
     let mut follow = move |e: &Event<PointerData>| {
         if nav.advance(e) {
             return;
         }
-        let pc = to_canvas(e);
+        let pc = canvas_xy(view, e);
         let Some(d) = drag() else {
             hover.set(Some(classify(pc)));
             return;
@@ -852,7 +851,7 @@ pub fn GuideEditOverlay() -> Element {
                 }
                 e.stop_propagation();
                 crate::platform::capture_pointer(&e);
-                let pc = to_canvas(&e);
+                let pc = canvas_xy(view, &e);
                 drag.set(Some(Drag {
                     region: classify(pc),
                     from: pc,

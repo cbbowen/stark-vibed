@@ -1120,7 +1120,7 @@ pub fn replace_document<R>(
 /// navigator's miniature), draining the outbox and the presence tick, and
 /// installing asset bytes an action will later name. None of it moves a value the
 /// chrome shows, and several run at pointer or frame rate where the `observe` walk
-/// and the VDOM diff behind a publish would be pure cost (see [`dispatch_sample`]).
+/// and the VDOM diff behind a publish would be pure cost (see [`dispatch_samples`]).
 ///
 /// If a closure here calls `Renderer::process`, it is in the wrong door — that is a
 /// command, and commands publish. Callers wanting the frame but not the publish ask
@@ -1201,8 +1201,9 @@ pub fn dispatch(state: AppState, command: impl Into<InputCommand>) {
     collab::flush_outbox(state);
 }
 
-/// Apply a pointer-rate sample of an in-flight gesture: integrate and repaint,
-/// skipping the observable refresh and the outbox flush [`dispatch`] does.
+/// Apply the pointer-rate samples of an in-flight gesture, oldest first: integrate
+/// and repaint, skipping the observable refresh and the outbox flush [`dispatch`]
+/// does.
 ///
 /// A mid-gesture sample changes what the canvas shows but nothing the chrome
 /// reads: the committed document, the layer list and the undo flags all stand
@@ -1213,26 +1214,39 @@ pub fn dispatch(state: AppState, command: impl Into<InputCommand>) {
 /// is dirty). Nothing commits mid-gesture either, so there is no outbox to
 /// flush; the gesture's End goes through [`dispatch`], which refreshes the
 /// observable and broadcasts whatever the commit banked.
-pub fn dispatch_sample(state: AppState, command: impl Into<InputCommand>) {
-    // The other end-to-end row, and the partner to `frame`: its count over the
-    // window is how many pointer reports a second actually reached the engine. That
-    // is a *measurement*, not a setting — the browser coalesces pointer moves to
-    // roughly one a frame and `input::samples` un-coalesces them, so whether a
-    // 240 Hz pen is being heard at 240 Hz or at 60 is a question only this row
-    // answers. It contains `input.fit`, so the difference between the two is the
-    // engine door and the paint request around the work.
-    stark_engine::timing::span!(stark_engine::timing::INPUT_SAMPLE);
-    with_engine_quiet(state, |r| r.process(command));
-    request_paint(state);
+///
+/// A batch because one delivered `pointermove` carries every report the browser
+/// coalesced into it: the engine door is taken and the frame requested once per
+/// event, not once per report.
+pub fn dispatch_samples<C: Into<InputCommand>>(
+    state: AppState,
+    commands: impl IntoIterator<Item = C>,
+) {
+    let processed = with_engine_quiet(state, |r| {
+        let mut processed = false;
+        for command in commands {
+            // The partner row to `frame`: one span per report that reaches the
+            // engine, so its count over the window is the input rate the engine
+            // heard — whether a 240 Hz pen is heard at 240 Hz or at 60 is a
+            // question only this row answers.
+            stark_engine::timing::span!(stark_engine::timing::INPUT_SAMPLE);
+            r.process(command.into());
+            processed = true;
+        }
+        processed
+    });
+    if processed == Some(true) {
+        request_paint(state);
+    }
 }
 
 /// Apply a pointer-rate report of where the hand is: integrate and repaint,
 /// skipping the observable refresh and outbox flush [`dispatch`] does —
-/// [`dispatch_sample`]'s bargain, for its reason. The hover mark (§18.1.10) and
+/// [`dispatch_samples`]' bargain, for its reason. The hover mark (§18.1.10) and
 /// the guide rays through the cursor (§20.9) both change what the canvas shows
 /// and nothing the chrome reads.
 ///
-/// Its own door rather than [`dispatch_sample`] so the timing table's
+/// Its own door rather than [`dispatch_samples`] so the timing table's
 /// `input.sample` row keeps meaning "stroke input reaching the engine" — hover
 /// work is priced on the engine's own `input.hover` row (§7.1).
 pub fn dispatch_hover(state: AppState, command: impl Into<InputCommand>) {
@@ -1302,7 +1316,7 @@ pub fn resize(state: AppState, width: u32, height: u32) {
 ///
 /// **The loud door, deliberately, even though this runs at pointer rate** — the
 /// brush-tuning drag and the eyedropper both come through here on every move.
-/// [`dispatch_sample`] would be wrong: a tune drag's whole answer is read off the
+/// [`dispatch_samples`] would be wrong: a tune drag's whole answer is read off the
 /// Brush panel's sliders (`input::Tune`), and the eyedropper's off the Color
 /// panel's swatch, so the publish is not overhead here but the point of the
 /// gesture. What made it expensive was that *every* panel woke for it; that is

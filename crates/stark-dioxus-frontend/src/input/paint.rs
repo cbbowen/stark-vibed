@@ -20,6 +20,11 @@ use stark_ui::input::{DWELL, Dwell, HeldPress};
 /// its hold is earned: under a seventh of [`DWELL`], and far too rare to cost anything.
 const DWELL_POLL_MS: i32 = 60;
 
+/// A stroke's reports as the moves the engine takes them as.
+fn to_commands(samples: &[InputSample]) -> impl Iterator<Item = GestureCommand> + '_ {
+    samples.iter().map(|&sample| GestureCommand::To { sample })
+}
+
 /// The canvas's **paint** gesture: a stroke or a marquee, from the press that
 /// starts one to the release that commits it (§6.8, §6.9, §6.11).
 ///
@@ -148,9 +153,7 @@ impl Paint {
         // Everything the hand did while the press was being held, oldest first —
         // so the wait cost the stroke a few milliseconds at its head and none of
         // its shape. Empty for every press that was believed as it landed.
-        for s in since {
-            crate::state::dispatch_sample(state, GestureCommand::To { sample: *s });
-        }
+        crate::state::dispatch_samples(state, to_commands(since));
         // Seed the string overlay; a ropeless gesture leaves it `None` and the
         // per-move refresh stays gated off.
         refresh_tow(state);
@@ -174,10 +177,11 @@ impl Paint {
         *self.drawing.peek()
     }
 
-    /// Feed a move to the gesture in flight. `false` when there is none, which is
-    /// what leaves the caller's cursor reporting to run.
-    pub fn advance(self, e: &Event<PointerData>) -> bool {
-        if !(self.drawing)() {
+    /// Feed a move to the gesture in flight — `samples` being every report the
+    /// event carries ([`samples`]). `false` when there is none, which is what leaves
+    /// the caller's cursor reporting to run.
+    pub fn advance(self, e: &Event<PointerData>, samples: &[InputSample]) -> bool {
+        if !self.in_flight() {
             return false;
         }
         let state = self.state;
@@ -185,15 +189,13 @@ impl Paint {
         // still is a fact about the hand (§6.9). Once the stroke has snapped this
         // stops watching and the same `To` steers the shape instead.
         self.track_hold(elem_xy(e));
-        // Every report the browser folded into this event reaches the fitter
-        // (`samples`), not just the one it chose to deliver. `dispatch_sample`, not
-        // `dispatch`: a sample changes pixels, not chrome, and the full dispatch's
-        // observable refresh re-diffs the chrome per pointer move. The preview fold
-        // is rebuilt once per painted frame either way, so extra samples cost a fit
-        // push each, not a render.
-        for s in samples(state, e).unwrap_or_default() {
-            crate::state::dispatch_sample(state, GestureCommand::To { sample: s });
-        }
+        // Every report the browser folded into this event reaches the fitter, not
+        // just the one it chose to deliver. `dispatch_samples`, not `dispatch`: a
+        // sample changes pixels, not chrome, and the full dispatch's observable
+        // refresh re-diffs the chrome per pointer move. The preview fold is rebuilt
+        // once per painted frame either way, so extra samples cost a fit push each,
+        // not a render.
+        crate::state::dispatch_samples(state, to_commands(samples));
         // The string overlay tracks the tow (§6.11). Gated on its own signal so a
         // plain brush pays nothing here: only a gesture that started with a rope
         // ever reads the engine or dirties the overlay's scope per move.
@@ -238,7 +240,7 @@ impl Paint {
     fn close(self, command: GestureCommand) {
         let state = self.state;
         let mut drawing = self.drawing;
-        if drawing() {
+        if self.in_flight() {
             dispatch(state, command);
             drawing.set(false);
         }
@@ -439,31 +441,44 @@ impl Landing {
         true
     }
 
-    /// Feed a move to whatever this press has become. `true` means the move was
-    /// taken — including the moves that are still only being *collected*, which are
-    /// this gesture's even though they have changed nothing yet.
+    /// Whether a held press or a stroke holds the pointer.
+    pub fn holds_pointer(self) -> bool {
+        self.held.peek().is_some() || self.paint.in_flight()
+    }
+
+    /// Whether [`advance`](Self::advance) would take a move of `e`'s — asked first
+    /// so a move nothing will take costs no coalesced-report read.
+    pub fn claims(self, e: &Event<PointerData>) -> bool {
+        self.held_by(e) || self.paint.in_flight()
+    }
+
+    /// Whether the press being held is `e`'s pointer's.
+    fn held_by(self, e: &Event<PointerData>) -> bool {
+        self.held
+            .peek()
+            .as_ref()
+            .is_some_and(|h| h.id == e.pointer_id())
+    }
+
+    /// Feed a move to whatever this press has become, `samples` being every report
+    /// the event carries ([`samples`]). `true` means the move was taken — including
+    /// the moves that are still only being *collected*, which are this gesture's even
+    /// though they have changed nothing yet.
     ///
     /// A move from any other pointer falls through to the paint gesture, exactly as
     /// it would have without this in the way.
-    pub fn advance(self, e: &Event<PointerData>) -> bool {
-        let mine = self
-            .held
-            .peek()
-            .as_ref()
-            .is_some_and(|h| h.id == e.pointer_id());
-        if !mine {
-            return self.paint.advance(e);
+    pub fn advance(self, e: &Event<PointerData>, samples: &[InputSample]) -> bool {
+        if !self.held_by(e) {
+            return self.paint.advance(e, samples);
         }
         let at = elem_xy(e);
-        // Read before the record is locked, so nothing holds two signals at once.
-        let more = samples(self.state, e).unwrap_or_default();
         let mut held = self.held;
         let travelled = {
             let mut w = held.write();
             let Some(h) = w.as_mut() else {
                 return true;
             };
-            h.press.advance(at, &more)
+            h.press.advance(at, samples)
         };
         // The press has asked to paint. Outside the borrow, because opening the
         // stroke re-enters the engine and rewrites the frontend's observable.

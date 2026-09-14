@@ -2176,8 +2176,9 @@ Then the table names the press that opens it:
    the gesture's answer is *not* read off a panel. TuneBrush and PickColor
    keep the chrome up, because the Brush and Color panels are where their
    answers land; PickAndTranslate fades it, because its answer is the
-   painting itself moving. Then teach `end_interaction` to put the new
-   gesture down: it is the one place that knows what a release ends.
+   painting itself moving. Then add the gesture to `input::Gestures`: its
+   `end` is the one place that knows what a release ends, and its `holder` is
+   what `admits` asks before a second pointer may open anything.
 4. **Advertise through the table.** Whatever the resting screen shows for
    the binding — a cursor class, a mounted bar, a stood-down overlay — must
    ask `drags::armed` over `AppState::held_mods`, never test a modifier
@@ -2246,9 +2247,11 @@ press mine* and returns; a press no rung takes is paint:
    modifiers apply inside the gesture, not before it.
 
 The move and release handlers do not re-ask the table: **a drag is what it
-was begun as** — each gesture's `advance` answers only if it has one in
-flight, and `end_interaction` puts every family down in one place. When a new
-gesture joins, it joins all three handlers, not just the press.
+was begun as** — `Gestures::advance` asks each gesture in the ladder's order,
+each answering only if it has one in flight, and `Gestures::end` puts every
+family down in one place. While a gesture other than paint holds the pointer, a
+second pointer's press may open only the same kind (`Gestures::admits`). When a
+new gesture joins, it joins `Gestures`, not just the press.
 
 The move handler has an order of its own, and one rung of it is load-bearing:
 the check for a **composing mode opening under a captured pointer** must sit

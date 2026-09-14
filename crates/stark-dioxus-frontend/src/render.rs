@@ -439,21 +439,16 @@ impl Renderer {
             }
         };
         let caps = surface.get_capabilities(&self.adapter);
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: self.engine.target_format(),
-            // Zero says "not configured yet", and cannot collide with a real plan
-            // size (a plan's edges are floored at 1), so the first paint always
-            // configures before it asks for a texture.
-            width: 0,
-            height: 0,
-            present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: caps.alpha_modes[0],
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-            // And to its color space: the engine encodes for one transfer (§6.5).
-            color_space: self.config.color_space,
-        };
+        // Zero says "not configured yet", and cannot collide with a real plan size (a
+        // plan's edges are floored at 1), so the first paint always configures before
+        // it asks for a texture. The color space is the main surface's: the engine
+        // encodes for one transfer (§6.5).
+        let config = surface_config(
+            &caps,
+            self.engine.target_format(),
+            self.config.color_space,
+            (0, 0),
+        );
         self.overview = Some(Overview {
             canvas,
             surface,
@@ -949,18 +944,13 @@ impl Renderer {
         let surface: wgpu::Surface<'static> =
             self.instance.create_surface(canvas.surface_target())?;
         let caps = surface.get_capabilities(&self.adapter);
-        let config = wgpu::SurfaceConfiguration {
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            format: self.engine.target_format(),
-            width,
-            height,
-            present_mode: wgpu::PresentMode::Fifo,
-            alpha_mode: caps.alpha_modes[0],
-            view_formats: vec![],
-            desired_maximum_frame_latency: 2,
-            // And to its color space: the engine encodes for one transfer (§6.5).
-            color_space: self.config.color_space,
-        };
+        // And to its color space: the engine encodes for one transfer (§6.5).
+        let config = surface_config(
+            &caps,
+            self.engine.target_format(),
+            self.config.color_space,
+            (width, height),
+        );
         surface.configure(&self.engine.gpu().device, &config);
         let engine = Engine::new_sharing(&self.engine, Extent2::new(width, height));
         Ok(Renderer {
@@ -995,6 +985,27 @@ impl Renderer {
     }
 }
 
+/// How every surface here is configured — the main canvas, the Navigator's, a
+/// preview's — which differ only in format, color space and size.
+fn surface_config(
+    caps: &wgpu::SurfaceCapabilities,
+    format: wgpu::TextureFormat,
+    color_space: wgpu::SurfaceColorSpace,
+    (width, height): (u32, u32),
+) -> wgpu::SurfaceConfiguration {
+    wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format,
+        width,
+        height,
+        present_mode: wgpu::PresentMode::Fifo,
+        alpha_mode: caps.alpha_modes[0],
+        view_formats: vec![],
+        desired_maximum_frame_latency: 2,
+        color_space,
+    }
+}
+
 /// Tail of [`init`]: size the drawing buffer, pick the surface format, configure,
 /// and build the engine. (A *second* renderer never comes through here — it is built
 /// synchronously by [`Renderer::shared`], on the first engine's format and state.)
@@ -1024,17 +1035,7 @@ async fn finish_init(
     let (format, color_space) = pick_surface(&caps, &surface.display_hdr_info(&adapter));
     tracing::info!(?format, ?color_space, "canvas surface");
 
-    let config = wgpu::SurfaceConfiguration {
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        format,
-        width,
-        height,
-        present_mode: wgpu::PresentMode::Fifo,
-        alpha_mode: caps.alpha_modes[0],
-        view_formats: vec![],
-        desired_maximum_frame_latency: 2,
-        color_space,
-    };
+    let config = surface_config(&caps, format, color_space, (width, height));
     surface.configure(&gpu.device, &config);
 
     let engine = Engine::new(gpu, format, Extent2::new(width, height));

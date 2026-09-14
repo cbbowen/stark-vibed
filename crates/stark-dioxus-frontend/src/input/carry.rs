@@ -69,6 +69,12 @@ impl PickMove {
         }
     }
 
+    /// Whether a carry holds the pointer. A released carry still waiting on its
+    /// readback does not: the hand has let go, and only the answer is outstanding.
+    pub fn holds_pointer(self) -> bool {
+        (*self.drag.peek()).is_some_and(|d| !d.carry.is_released())
+    }
+
     /// Begin the carry at `e`: capture the pointer and ask what is under it.
     /// `true` means "this press picks up a layer, it does not paint".
     ///

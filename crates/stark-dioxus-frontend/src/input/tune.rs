@@ -77,6 +77,11 @@ impl Tune {
         }
     }
 
+    /// Whether a tuning drag holds the pointer.
+    pub fn holds_pointer(self) -> bool {
+        self.drag.peek().is_some()
+    }
+
     /// Begin the tuning drag at `e`: capture the pointer and raise the ring.
     /// `true` means "this press tunes the brush, it does not paint".
     ///
@@ -121,7 +126,7 @@ impl Tune {
     /// the knob is chosen, which are this gesture's even though they change nothing.
     pub fn advance(self, e: &Event<PointerData>) -> bool {
         let mut drag = self.drag;
-        let Some(mut in_flight) = drag() else {
+        let Some(mut in_flight) = *drag.peek() else {
             return false;
         };
         // The in-force effect's own ceiling (`BrushConfig::max_flow`) — read live

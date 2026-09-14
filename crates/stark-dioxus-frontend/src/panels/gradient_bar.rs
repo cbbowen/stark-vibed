@@ -28,7 +28,7 @@ use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::gradients;
-use crate::input::{Nav, page_xy};
+use crate::input::{Nav, canvas_xy};
 use crate::panels::gradients::GradientWell;
 use crate::platform::capture_pointer;
 use crate::preview;
@@ -425,7 +425,6 @@ pub fn GradientBarOverlay() -> Element {
     let Some(view) = live_view() else {
         return rsx! {};
     };
-    let to_canvas = move |e: &Event<PointerData>| view.screen_to_canvas(page_xy(e));
 
     let panning = (state.space_down)();
     let catcher_class = if panning {
@@ -462,7 +461,7 @@ pub fn GradientBarOverlay() -> Element {
                 e.stop_propagation();
                 capture_pointer(&e);
                 dragging.set(true);
-                let p = to_canvas(&e);
+                let p = canvas_xy(view, &e);
                 update(state, GradientUi { drag: Some((p, p)), ..down_ui.clone() });
             },
             onpointermove: move |e| {
@@ -470,7 +469,7 @@ pub fn GradientBarOverlay() -> Element {
                     return;
                 }
                 if let Some((from, _)) = move_ui.drag {
-                    update(state, GradientUi { drag: Some((from, to_canvas(&e))), ..move_ui.clone() });
+                    update(state, GradientUi { drag: Some((from, canvas_xy(view, &e))), ..move_ui.clone() });
                 }
             },
             onpointerup: move |e| if !nav.release(&e) { nav.stop(); dragging.set(false); },

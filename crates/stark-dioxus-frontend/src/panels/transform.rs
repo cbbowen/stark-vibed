@@ -41,7 +41,7 @@ use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::icons::{icon, label};
-use crate::input::{Nav, page_xy};
+use crate::input::{Nav, canvas_xy};
 use crate::layout::chrome_dimmed;
 use crate::preview;
 use crate::state::{AppState, use_obs};
@@ -247,7 +247,6 @@ pub fn TransformOverlay() -> Element {
         return rsx! {};
     };
 
-    let to_canvas = move |e: &Event<PointerData>| view.screen_to_canvas(page_xy(e));
     // The grab widths in canvas px — one value, and the division by the zoom is
     // inside it (`stark_ui::transform::Bands`).
     let bands = Bands::at(view.zoom);
@@ -267,7 +266,7 @@ pub fn TransformOverlay() -> Element {
         if nav.advance(e) {
             return;
         }
-        let pc = to_canvas(e);
+        let pc = canvas_xy(view, e);
         // Resting: report what a press here would do, for the cursor. Asked with a
         // `peek` and answered before the write below, because a `with_mut` dirties
         // the signal whether or not it changed anything — which on a hovering
@@ -321,7 +320,7 @@ pub fn TransformOverlay() -> Element {
                 }
                 e.stop_propagation();
                 crate::platform::capture_pointer(&e);
-                let pc = to_canvas(&e);
+                let pc = canvas_xy(view, &e);
                 drag.set(Some(Grab::take(ui, pc, bands)));
             },
             onpointermove: move |e| follow(&e),

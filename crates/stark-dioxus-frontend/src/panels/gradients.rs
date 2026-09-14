@@ -22,7 +22,7 @@ use dioxus::prelude::*;
 
 use crate::gradients;
 use crate::icons::{icon, label};
-use crate::input::{Nav, page_xy};
+use crate::input::{Nav, canvas_xy};
 use crate::platform::capture_pointer;
 use crate::state::{AppState, use_obs};
 use crate::widgets::{
@@ -259,7 +259,6 @@ pub fn GradientTraceOverlay() -> Element {
     let Some(view) = live_view() else {
         return rsx! {};
     };
-    let to_canvas = move |e: &Event<PointerData>| view.screen_to_canvas(page_xy(e));
     // Decimation of the hand, converted to the space the points are kept in.
     let min_step = TRACE_MIN_STEP_PX / view.zoom;
 
@@ -268,7 +267,7 @@ pub fn GradientTraceOverlay() -> Element {
         let Some(mut points) = trace.write().take() else {
             return;
         };
-        points.push(to_canvas(e));
+        points.push(canvas_xy(view, e));
         // The capture goes first, and the order is load-bearing: it samples the
         // **composite** at the instant it is called (§22.2), while ending the
         // mode stands the suspended gradient bar back up *with its preview*
@@ -308,7 +307,7 @@ pub fn GradientTraceOverlay() -> Element {
                 }
                 e.stop_propagation();
                 capture_pointer(&e);
-                trace.set(Some(vec![to_canvas(&e)]));
+                trace.set(Some(vec![canvas_xy(view, &e)]));
             },
             onpointermove: move |e| {
                 if nav.advance(&e) {
@@ -316,7 +315,7 @@ pub fn GradientTraceOverlay() -> Element {
                 }
                 let mut guard = trace.write();
                 let Some(points) = guard.as_mut() else { return };
-                let p = to_canvas(&e);
+                let p = canvas_xy(view, &e);
                 if points.last().is_none_or(|q| q.distance(p) >= min_step) {
                     points.push(p);
                 }
