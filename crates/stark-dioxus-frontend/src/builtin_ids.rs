@@ -11,8 +11,8 @@
 //! from its own bundle — declines the transfer instead of pulling megabytes over the
 //! network for bytes sitting next to its binary.
 
-use stark_model::SubstrateId;
 use stark_net::AssetNeed;
+use stark_ui::session::Session;
 
 /// Read one piece of content out of this app's own bundle, by content id (§12.4, §8).
 ///
@@ -81,21 +81,11 @@ fn all_or_short(
 }
 
 /// Install one piece of content into the engine, under the id that asked for it —
-/// read out of this app's own bundle or arrived off a peer, which are two ways of
-/// getting hold of one kind of content (§12.4).
-///
-/// `accept_substrate` and `accept_picture` re-derive the id and refuse bytes that do not
-/// match, so a file that changed out from under a document is caught there rather than
-/// deposited through the wrong substrate; each wrapper logs its own refusal.
-///
-/// **Exhaustive on the need, with no `_` arm.** `AssetNeed::substrate()` answers `None`
-/// for a brush *and* for a picture (§23), so a two-arm form files a picture's RGBA bytes
-/// in the brush store, where they decode as luminance × alpha and are neither (§8).
-pub fn install(r: &mut crate::render::Renderer, need: AssetNeed, bytes: &[u8]) {
-    match need {
-        AssetNeed::Brush(_) => r.import_brush(bytes),
-        AssetNeed::Substrate(id) => r.accept_substrate(SubstrateId::Image(id), bytes),
-        AssetNeed::Picture(id) => r.accept_picture(id, bytes),
+/// [`Session::install`], with a refusal logged: the callers are pumps, with nobody to
+/// tell but the console (§12.4).
+pub fn install(session: &mut Session, need: AssetNeed, bytes: &[u8]) {
+    if let Err(e) = session.install(need, bytes) {
+        tracing::warn!(?need, "content refused on install: {e}");
     }
 }
 

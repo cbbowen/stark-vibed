@@ -201,14 +201,14 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         .renderer
         .read()
         .as_ref()
-        .map(|r| r.color_space())
+        .map(|r| r.session.engine().color_space())
         .unwrap_or(ColorSpaceId::Oklab);
     // The substrate the document is on (§6.4) — what the tooth has to bite into.
     let substrate = state
         .renderer
         .read()
         .as_ref()
-        .map(|r| r.substrate())
+        .map(|r| r.session.engine().substrate())
         .unwrap_or_default();
     // The brush and the two document facts its rows depend on, in the one shape the
     // shared table takes (`stark_ui::brush_editor::Shown`).
@@ -832,7 +832,7 @@ async fn init_preview(state: AppState, mut preview: Preview) {
             }
         };
         r.process(DocCommand::SetSubstrateColor(
-            main.observe().substrate_color,
+            main.session.engine().observe().substrate_color,
         ));
         r
     };
@@ -851,7 +851,10 @@ async fn init_preview(state: AppState, mut preview: Preview) {
     // Seed the default test stroke and render it with the current brush.
     r.paint();
     let (w, h) = r.size();
-    preview.stroke.write().seed(w as f32, h as f32, r.view());
+    preview
+        .stroke
+        .write()
+        .seed(w as f32, h as f32, r.session.engine().view());
     preview.renderer.set(Some(r));
     restroke(state, preview);
 }
@@ -867,7 +870,8 @@ async fn init_preview(state: AppState, mut preview: Preview) {
 /// edges so the crossing is never near an end of it.
 fn paint_reference_stroke(r: &mut Renderer) {
     let (w, h) = r.size();
-    let samples = stark_ui::brush_editor::reference_stroke(w as f32, h as f32, r.view());
+    let samples =
+        stark_ui::brush_editor::reference_stroke(w as f32, h as f32, r.session.engine().view());
     r.process(ViewCommand::SetBrush {
         brush: stark_ui::brush_editor::reference_brush(),
         color: stark_ui::brush_editor::REFERENCE_COLOR,
@@ -912,7 +916,7 @@ fn restroke(state: AppState, mut preview: Preview) {
     // The §6.11 rope the smoothing slider means *on this canvas*: the recorded
     // test stroke is a hand, and replaying it through the tow is what lets the
     // slider show its work on the stroke beside it.
-    let rope = stark_ui::input::rope(r.view(), brush.smoothing);
+    let rope = stark_ui::input::rope(r.session.engine().view(), brush.smoothing);
     // What the replay actually did, not what it was asked for: samples that hold no
     // stroke commit nothing, and claiming otherwise would send the next undo one
     // step too far — into the reference band beneath (`TestStroke`).
@@ -985,7 +989,7 @@ fn resize_preview(state: AppState, mut preview: Preview, width: u32, height: u32
     }
     r.resize(width, height);
     let (w, h) = (r.size().0 as f32, r.size().1 as f32);
-    let view = r.view();
+    let view = r.session.engine().view();
     drop(guard);
     preview.stroke.write().relay_after_resize(w, h, view);
     restroke(state, preview);
@@ -997,7 +1001,7 @@ fn reset_stroke(state: AppState, mut preview: Preview) {
         .renderer
         .peek()
         .as_ref()
-        .map(|r| (r.size(), r.view()));
+        .map(|r| (r.size(), r.session.engine().view()));
     let Some(((w, h), view)) = laid_out else {
         return;
     };
@@ -1012,7 +1016,11 @@ fn reset_stroke(state: AppState, mut preview: Preview) {
 fn preview_sample(r: &Renderer, e: &Event<PointerData>) -> InputSample {
     let c = e.element_coordinates();
     InputSample {
-        pos: r.view().screen_to_canvas(Vec2::new(c.x as f32, c.y as f32)),
+        pos: r
+            .session
+            .engine()
+            .view()
+            .screen_to_canvas(Vec2::new(c.x as f32, c.y as f32)),
         pressure: e.pressure(),
         tilt: Vec2::new(e.tilt_x() as f32, e.tilt_y() as f32) / 90.0,
         ..Default::default()
@@ -1034,11 +1042,11 @@ fn start_preview_stroke(state: AppState, mut preview: Preview, e: &Event<Pointer
     r.process(GestureCommand::Start {
         tool: Tool::Brush,
         sample: s,
-        tolerance: crate::input::input_tolerance_in(r.view(), e),
+        tolerance: crate::input::input_tolerance_in(r.session.engine().view(), e),
         // Towed like the main canvas (§6.11): the preview is where the brush
         // is felt out, so drawing on it under smoothing has to feel like the
         // brush, not like the brush with its string cut.
-        rope: stark_ui::input::rope(r.view(), state.brush.peek().smoothing),
+        rope: stark_ui::input::rope(r.session.engine().view(), state.brush.peek().smoothing),
     });
     r.paint();
 }

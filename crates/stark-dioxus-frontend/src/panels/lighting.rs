@@ -7,7 +7,7 @@ use stark_model::Srgb;
 use crate::icons::{icon, label};
 use crate::panels::color::OklabPicker;
 use crate::preview;
-use crate::state::{AppState, dispatch, use_obs, with_engine_quiet};
+use crate::state::{AppState, dispatch, use_obs, with_engine, with_engine_quiet};
 use crate::widgets::{PopoutId, PreviewSlider, Select, Slider, use_popout};
 use dioxus::dioxus_core::spawn_forever;
 use stark_engine::command::ViewCommand;
@@ -73,11 +73,9 @@ pub fn LightingPanel() -> Element {
     let hdr = crate::state::use_pref(state, |p| p.hdr)();
     let ready = *state.renderer_ready.read();
     let (hdr_capable, display_headroom) = if ready {
-        state
-            .renderer
-            .peek()
-            .as_ref()
-            .map_or((false, None), |r| (r.hdr_capable(), r.display_headroom()))
+        state.renderer.peek().as_ref().map_or((false, None), |r| {
+            (r.session.hdr_capable(), r.display_headroom())
+        })
     } else {
         (false, None)
     };
@@ -177,23 +175,18 @@ pub fn LightingPanel() -> Element {
     }
 }
 
-/// Tell the engine what the screen is (§6.5) — `stark_ui::lighting::output` over this
+/// Tell the engine what the screen is (§6.5) — `Session::apply_output` over this
 /// browser's choice and the canvas in front of it. Run once the renderer is up
 /// (`prefs::load_engine`) and whenever either half moves.
+///
+/// Through [`with_engine`] rather than `dispatch`: the output is no deed the tour
+/// counts and commits nothing to broadcast, and the projection it moves is published.
 pub fn apply_output(state: AppState) {
     let choice = state.prefs.peek().hdr;
-    let Some((transfer, display)) = state
-        .renderer
-        .peek()
-        .as_ref()
-        .map(|r| (r.transfer(), r.display_headroom()))
-    else {
-        return;
-    };
-    dispatch(
-        state,
-        ViewCommand::SetOutput(stark_ui::lighting::output(choice, transfer, display)),
-    );
+    with_engine(state, |r| {
+        let display = r.display_headroom();
+        r.session.apply_output(choice, display);
+    });
 }
 
 /// The canvas colour's picker, as flown out beside the Lighting panel
@@ -271,7 +264,7 @@ pub fn set_environment(state: AppState, id: EnvironmentId) {
             .renderer
             .read()
             .as_ref()
-            .is_some_and(|r| !r.environment_loaded(id));
+            .is_some_and(|r| !r.session.engine().environment_loaded(id));
         if needs_bytes && let Some(asset) = environment_asset(id) {
             tracing::info!(environment = ?id, url = %asset, "fetching environment asset");
             match dioxus::asset_resolver::read_asset_bytes(asset).await {
@@ -283,9 +276,9 @@ pub fn set_environment(state: AppState, id: EnvironmentId) {
                     // as one that would not fetch is on the arm below: the canvas
                     // keeps the light it has rather than losing the tab to a
                     // decoder panic.
-                    if let Some(Err(e)) =
-                        with_engine_quiet(state, |r| r.register_environment(id, bytes))
-                    {
+                    if let Some(Err(e)) = with_engine_quiet(state, |r| {
+                        r.session.engine_mut().register_environment(id, bytes)
+                    }) {
                         tracing::warn!(environment = ?id, "environment will not decode: {e}");
                         return;
                     }

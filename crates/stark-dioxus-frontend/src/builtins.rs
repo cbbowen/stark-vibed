@@ -43,8 +43,10 @@ pub async fn import_all(r: &mut Renderer) {
         let Some(path) = row.path else {
             continue;
         };
-        if let Some(bytes) = crate::shipped::fetch_bytes(path).await {
-            r.load_builtin(row.name, &bytes);
+        if let Some(bytes) = crate::shipped::fetch_bytes(path).await
+            && let Err(e) = r.session.load_builtin_shape(row.name, &bytes)
+        {
+            tracing::warn!("built-in shape “{}” failed to import: {e}", row.name);
         }
     }
 }
@@ -55,7 +57,7 @@ pub async fn import_all(r: &mut Renderer) {
 /// has no business subscribing its caller to the renderer.
 pub fn shape(state: AppState, name: &str) -> Option<BrushShape> {
     let renderer = state.renderer.peek();
-    let id = renderer.as_ref()?.builtin(name)?;
+    let id = renderer.as_ref()?.session.builtin_shape(name)?;
     Some(BrushShape::Stamp(id))
 }
 
@@ -80,6 +82,13 @@ pub fn resolved(state: AppState) -> Vec<(&'static assets::Shipped, Option<AssetI
         // an id (`assets::ROUND`); the gallery draws it as its own first card, since
         // choosing it is a brush write rather than an import.
         .filter(|b| b.path.is_some())
-        .map(|b| (b, renderer.as_ref().and_then(|r| r.builtin(b.name))))
+        .map(|b| {
+            (
+                b,
+                renderer
+                    .as_ref()
+                    .and_then(|r| r.session.builtin_shape(b.name)),
+            )
+        })
         .collect()
 }

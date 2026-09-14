@@ -228,7 +228,8 @@ fn stroke(state: AppState) -> Vec<Deed> {
     let mut deeds = vec![Deed::Stroke];
     // The engine rather than the projection: a gesture in flight is not projected, and the
     // assist goes with the gesture once its `End` lands.
-    let assisted = crate::state::with_engine_quiet(state, |r| r.assisted()).flatten();
+    let assisted =
+        crate::state::with_engine_quiet(state, |r| r.session.engine().assisted()).flatten();
     if let Some(shape) = assisted {
         deeds.push(Deed::AssistedStroke);
         // A guide this client shows is what makes the grid's aiming reachable (§20.6) —

@@ -65,6 +65,7 @@ use crate::render::Renderer;
 use crate::state::{AppState, dispatch};
 use stark_model::ColorSpaceId;
 use stark_ui::assets::{self, Pick, Substrates};
+use stark_ui::session::{Replacement, Session};
 
 // --- resolving and switching ------------------------------------------------
 
@@ -101,26 +102,39 @@ pub async fn resolve(r: &mut Renderer, pick: Pick) -> Option<SubstrateId> {
         // it, because the library lives on `AppState` and a bare `Renderer` has none.
         return None;
     };
-    if let Some(id) = r.builtin_substrate(name) {
+    if let Some(id) = r.session.builtin_substrate(name) {
         return Some(id);
     }
     if is_procedural(name) {
         return Some(SubstrateId::Flat);
     }
     let bytes = fetch(name).await?;
-    r.load_substrate(name, &bytes)
+    load(&mut r.session, name, &bytes)
+}
+
+/// Load a shipped substrate's fetched height map into `session` under `name`, logging a
+/// refusal — `None` for one.
+fn load(session: &mut Session, name: &'static str, png: &[u8]) -> Option<SubstrateId> {
+    session
+        .load_builtin_substrate(name, png)
+        .inspect_err(|e| tracing::warn!("canvas substrate failed to import: {e}"))
+        .ok()
 }
 
 /// Open a fresh document on `pick`, in `color_space`.
 ///
-/// Fetch *then* open, because the id is what `new_document` is given and the id
+/// Fetch *then* open, because the id is what the replacement is given and the id
 /// comes out of the image. A substrate that cannot be fetched leaves the document on
 /// `Flat` — smooth, and honestly so, rather than claiming a substrate it has not got.
 pub async fn open_default(r: &mut Renderer, color_space: stark_model::ColorSpaceId) {
     let surface = resolve(r, assets::DEFAULT_SUBSTRATE)
         .await
         .unwrap_or_default();
-    if let Err(e) = r.new_document(color_space, surface) {
+    // Nobody can have touched the document it replaces: the renderer is unpublished.
+    if let Err(e) = r
+        .session
+        .replace(Replacement::New(color_space, surface), &[])
+    {
         // The engine keeps the document it was built with, so startup carries on.
         tracing::error!(
             ?color_space,
@@ -156,7 +170,7 @@ pub async fn resolve_signal(state: AppState, pick: Pick) -> SubstrateId {
         .renderer
         .peek()
         .as_ref()
-        .and_then(|r| r.builtin_substrate(name));
+        .and_then(|r| r.session.builtin_substrate(name));
     if let Some(id) = known {
         return id;
     }
@@ -167,7 +181,7 @@ pub async fn resolve_signal(state: AppState, pick: Pick) -> SubstrateId {
         return SubstrateId::Flat;
     };
     let landed =
-        crate::state::with_engine_quiet(state, |r| r.load_substrate(name, &bytes)).flatten();
+        crate::state::with_engine_quiet(state, |r| load(&mut r.session, name, &bytes)).flatten();
     if landed.is_some() {
         crate::shipped::landed(state);
     }
@@ -216,7 +230,7 @@ fn seed_session(state: AppState, id: SubstrateId) {
         .renderer
         .peek()
         .as_ref()
-        .and_then(|r| r.substrate_bytes(id));
+        .and_then(|r| r.session.engine().substrate_bytes(id));
     if let Some(bytes) = bytes {
         library::seed_session::<Substrates>(state, asset, bytes);
     }
@@ -241,7 +255,9 @@ pub fn resolved(state: AppState) -> Vec<(&'static assets::Shipped, Option<Substr
         .map(|g| {
             let id = match g.path {
                 None => Some(SubstrateId::Flat),
-                Some(_) => renderer.as_ref().and_then(|r| r.builtin_substrate(g.name)),
+                Some(_) => renderer
+                    .as_ref()
+                    .and_then(|r| r.session.builtin_substrate(g.name)),
             };
             (g, id)
         })
@@ -251,7 +267,7 @@ pub fn resolved(state: AppState) -> Vec<(&'static assets::Shipped, Option<Substr
 /// Replace the document with a fresh one in the chosen color space, on the chosen
 /// substrate, then repaint. A bundled substrate's height map is fetched on first use (the
 /// large bump maps stay out of the wasm binary — §6.6), so this runs async: `pick` is
-/// a name or an id and what `new_document` needs is the resolved `SubstrateId`.
+/// a name or an id and what the replacement needs is the resolved `SubstrateId`.
 ///
 /// It owns closing the modal, once the document is replaced; otherwise it clears
 /// `pending` and leaves the dialog up. A scope-tied `spawn` from the modal's own
@@ -264,7 +280,7 @@ pub fn new_document(state: AppState, color: ColorSpaceId, pick: Pick, mut pendin
         // refusing to open it — and the document then honestly *says* it is smooth
         // instead of claiming a substrate it hasn't got.
         let surface = resolve_signal(state, pick).await;
-        match crate::state::replace_document(state, |r| r.new_document(color, surface)) {
+        match crate::state::replace_document(state, Replacement::New(color, surface), &[]) {
             Some(Ok(())) => {
                 tracing::info!(?color, ?pick, ?surface, "new document ready");
                 crate::dialogs::close(state, crate::dialogs::DialogId::NewDocument);

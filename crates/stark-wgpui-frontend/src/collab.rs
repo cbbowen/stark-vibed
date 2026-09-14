@@ -53,12 +53,12 @@
 use std::future::Future;
 use std::sync::OnceLock;
 
-use stark_model::{AssetId, AssetNeed, DocumentFile, SubstrateId};
+use stark_model::{AssetId, AssetNeed, DocumentFile};
 use stark_net::{
     Broadcaster, CollabSession, Events, Joined, NetOptions, RemoteEvent, SessionTicket,
 };
 
-use crate::render::Renderer;
+use stark_ui::session::Session;
 
 /// The live session and where it stands, which are one fact and so one value.
 #[derive(Default)]
@@ -324,49 +324,28 @@ pub fn pump(mut events: Events) -> tokio::sync::mpsc::UnboundedReceiver<RemoteEv
     rx
 }
 
-/// Put content into the store `need` names.
+/// Each owed need paired with the bytes this build ships for it — `None` if any is
+/// content nobody here can produce, which refuses what owed it (§8, §12.4).
 ///
-/// The transport says which store, because the action that referenced the bytes is
-/// the only thing that knows and a brush mask, a canvas substrate and a picture all
-/// decode differently (§6.4, §6.6, §23).
-fn install(r: &mut Renderer, need: AssetNeed, bytes: &[u8]) -> Result<(), String> {
-    match need {
-        AssetNeed::Brush(_) => r.import_brush_id(bytes).map(|_| ()),
-        AssetNeed::Substrate(id) => r.accept_substrate(SubstrateId::Image(id), bytes),
-        AssetNeed::Picture(id) => r.accept_picture(id, bytes),
-    }
-}
-
-/// Settle what a joined session's snapshot left out, off this build's own catalog.
-///
-/// **Before the log is replayed**, which is the whole of why it is a separate step: a
-/// substrate that is not registered when its `SetSubstrate` replays deposits every
-/// later stroke against the flat stand-in, and those pixels are stored (§6.4).
-///
-/// An `Err` names content nobody here can produce, which is a session this build
-/// cannot render — refused with the painting on screen untouched, exactly as a file
-/// naming the same thing is (`Canvas::load`).
-pub fn settle_owed(r: &mut Renderer, owed: &[AssetNeed]) -> Result<(), String> {
-    for need in owed {
-        let Some(png) = crate::assets::bytes_for(need.content()) else {
-            return Err("this session uses content this build does not carry".to_string());
-        };
-        install(r, *need, png)?;
-    }
-    Ok(())
+/// A slice rather than a fetch: the shipped images are in the binary
+/// (`crate::assets`).
+pub fn shipped(owed: &[AssetNeed]) -> Option<Vec<(AssetNeed, &'static [u8])>> {
+    owed.iter()
+        .map(|&need| Some((need, crate::assets::bytes_for(need.content())?)))
+        .collect()
 }
 
 /// Make good on [`RemoteEvent::ResolveLocally`]: read the content out of this
 /// build's own catalog, install it, and hand it back so the session can release the
 /// action that was waiting on it.
 ///
-/// Into the engine **before** the session is told, for [`settle_owed`]'s reason:
-/// `add_content` releases the parked action, and that action is applied assuming its
-/// content is already installed.
+/// Into the engine **before** the session is told: `add_content` releases the parked
+/// action, and that action is applied assuming its content is already installed — for a
+/// substrate, the flat stand-in otherwise (§6.4).
 ///
 /// Doing nothing here would also be correct — the transport dials a peer after a
 /// grace period. What this saves is the transfer.
-fn supply(r: &mut Renderer, tx: &Broadcaster, need: AssetNeed) -> Option<String> {
+fn supply(session: &mut Session, tx: &Broadcaster, need: AssetNeed) -> Option<String> {
     // The promise was made off the same table this reads, so a call it cannot answer
     // means the table disagrees with itself — which is worth saying out loud, because
     // what it costs is a peer's action parked until the transport gives up on us.
@@ -375,7 +354,7 @@ fn supply(r: &mut Renderer, tx: &Broadcaster, need: AssetNeed) -> Option<String>
             "a collaborator asked for content this build promised and does not have".to_string(),
         );
     };
-    if let Err(e) = install(r, need, png) {
+    if let Err(e) = session.install(need, png) {
         return Some(format!("content this build promised would not load: {e}"));
     }
     offer(tx, need, png.to_vec());
@@ -402,7 +381,7 @@ pub struct Wake {
 ///
 /// The whole of the incoming pump that touches the document, which is what makes it
 /// worth its own function: the loop around it is a wgpui task and this is not.
-pub fn apply(r: &mut Renderer, tx: &Broadcaster, event: RemoteEvent, now: f64) -> Wake {
+pub fn apply(session: &mut Session, tx: &Broadcaster, event: RemoteEvent, now: f64) -> Wake {
     match event {
         // Repaint: an asset resolved off a *presence* head arrives while the peer's
         // live stroke is already on screen as a round-tip fallback, and the import is
@@ -410,12 +389,13 @@ pub fn apply(r: &mut Renderer, tx: &Broadcaster, event: RemoteEvent, now: f64) -
         RemoteEvent::Asset { need, bytes } => Wake {
             observe: false,
             repaint: true,
-            trouble: install(r, need, &bytes)
+            trouble: session
+                .install(need, &bytes)
                 .err()
                 .map(|e| format!("content from a collaborator would not load: {e}")),
         },
         RemoteEvent::Action(action) => {
-            r.merge_remote(action);
+            session.engine_mut().merge_remote(action);
             Wake {
                 observe: true,
                 repaint: true,
@@ -427,11 +407,11 @@ pub fn apply(r: &mut Renderer, tx: &Broadcaster, event: RemoteEvent, now: f64) -
         // frontend does not draw yet, so a remote pointer move owes nothing at all.
         RemoteEvent::Presence { actor, frame } => Wake {
             observe: false,
-            repaint: r.merge_presence(actor, frame, now),
+            repaint: session.engine_mut().merge_presence(actor, frame, now),
             trouble: None,
         },
         RemoteEvent::ResolveLocally { need } => Wake {
-            trouble: supply(r, tx, need),
+            trouble: supply(session, tx, need),
             ..Wake::default()
         },
     }

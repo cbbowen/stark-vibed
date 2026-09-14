@@ -29,6 +29,12 @@ surrounds it.
   through the signal, moved state the chrome reads back, and left the chrome
   asserting the old value until an unrelated command refreshed it — once for the
   canvas substrate, once for the lighting environment. Neither spelling compiles.
+  Replacing the document — open, join, new — is the fourth door,
+  `replace_document`, over `stark_ui::session::Session::replace`: the one engine
+  call for it in either frontend, which installs what the new document owes and
+  frames the piece (§11.2). The renderer holds that `Session` rather than a
+  forward per engine method; `stark-ui`'s `tests/one_way_to_replace.rs` fails on a
+  frontend that replaces a document around it.
   Pointer events
   become `GestureCommand::Start`/`To`/`End`, with element coordinates mapped via
   `ViewTransform::screen_to_canvas`. `Start` also carries the **input tolerance**
@@ -443,7 +449,7 @@ surrounds it.
   What an engine can set stays its own. So the editor's preview
   (`Renderer::shared`) opens on the canvas's substrate under its lighting with
   nothing fetched and nothing decoded, and the thumbnails' engine
-  (`Renderer::shared_engine`, `thumbs.rs`) deliberately pins the opposite look —
+  (`Engine::shared`, `thumbs.rs`) deliberately pins the opposite look —
   flat substrate, neutral light — so a thumbnail is the *brush's* identity card and
   its cache key is the brush snapshot alone. The snapshot *as the picture paints
   it*, which is the same thing minus the painting color: the stroke is laid in

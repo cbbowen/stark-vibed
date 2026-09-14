@@ -147,7 +147,7 @@ fn draw_overview(state: AppState, frame: Option<LayerId>) -> Option<Overview> {
     // would be a component asking to be re-rendered while rendering.
     crate::state::with_engine_quiet(state, |r| {
         let fit = ExportScale::Fit(Extent2::new(MAX_WIDTH, MAX_HEIGHT));
-        let plan = r.export_plan(frame, fit).ok()?;
+        let plan = r.session.engine().export_plan(frame, fit).ok()?;
         // Scale 1.0: this surface is presented 1:1, like the painting canvas, which
         // ignores `devicePixelRatio` too.
         r.paint_overview(&plan).then(|| Overview::of(&plan, 1.0))

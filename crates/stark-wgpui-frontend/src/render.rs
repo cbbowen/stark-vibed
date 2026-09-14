@@ -3,14 +3,18 @@
 //! The web frontend's `Renderer` builds the device, binds a `wgpu::Surface` to a
 //! `<canvas>` and configures it. None of that happens here: **wgpui owns the device**
 //! and hands out a double-buffered pair of textures instead, so what this holds is a
-//! [`WgpuSurfaceHandle`] and an [`Engine`] built on the device behind it. The engine
-//! renders straight into the back buffer and the swap is a pointer swap — the same
-//! bargain the browser canvas makes, with no readback and no encode.
+//! [`WgpuSurfaceHandle`] and a [`Session`] around an [`Engine`] built on the device
+//! behind it. The engine renders straight into the back buffer and the swap is a
+//! pointer swap — the same bargain the browser canvas makes, with no readback and no
+//! encode.
+//!
+//! What is here is what the surface adds. The engine's own methods are reached through
+//! [`Renderer::session`], never re-spelled.
 
 use stark_engine::Extent2;
 use stark_engine::command::{InputCommand, ViewCommand};
-use stark_engine::{Engine, GpuContext, ObservableState, Output, Transfer, ViewTransform};
-use stark_ui::prefs::Hdr;
+use stark_engine::{Engine, GpuContext, Output, Transfer, ViewTransform};
+use stark_ui::session::Session;
 use wgpui::{WgpuSurfaceHandle, Window};
 
 /// The format the engine renders through and the transfer the window reads it in
@@ -29,12 +33,11 @@ fn target_for(window: &Window) -> (wgpu::TextureFormat, Transfer) {
 /// One surface, one engine, and the resize that keeps them agreeing.
 pub struct Renderer {
     surface: WgpuSurfaceHandle,
-    engine: Engine,
+    /// The engine, and the shipped assets it has loaded by name.
+    pub session: Session,
     /// The viewport the engine was last told about, in device px — see
     /// [`paint`](Self::paint), which is where it is corrected.
     viewport: (u32, u32),
-    /// How the window reads the surface's texels (§6.5), fixed with the format.
-    transfer: Transfer,
     /// The navigator's miniature, once something has asked for one (`crate::navigator`).
     ///
     /// A **second surface**, not a picture: the engine renders the committed document
@@ -74,29 +77,15 @@ impl Renderer {
         // what has to stop issuing work when the device dies.
         let gpu = GpuContext::from_parts(surface.device().clone(), surface.queue().clone());
         let mut engine = Engine::new(gpu, format, Extent2::new(width, height));
-        // The transfer is the surface's from the first frame; `apply_hdr` moves only
-        // the headroom.
+        // The transfer is the surface's from the first frame; `Session::apply_output`
+        // moves only the headroom.
         engine.process(ViewCommand::SetOutput(Output::new(transfer, 1.0)));
         Some(Self {
             surface,
-            engine,
+            session: Session::new(engine, transfer),
             viewport: (width, height),
-            transfer,
             overview: None,
         })
-    }
-
-    /// Whether the window can show anything above white (§6.5).
-    pub fn hdr_capable(&self) -> bool {
-        self.transfer.is_hdr()
-    }
-
-    /// Tell the engine what the window is (§6.5) — `stark_ui::lighting::output` over
-    /// `choice`, this surface's transfer, and the display's own headroom where
-    /// `Window::display_headroom` reports one.
-    pub fn apply_hdr(&mut self, choice: Hdr, display_headroom: Option<f32>) {
-        let output = stark_ui::lighting::output(choice, self.transfer, display_headroom);
-        self.engine.process(ViewCommand::SetOutput(output));
     }
 
     /// Send a command to the engine — the **only** way to move engine state through a
@@ -104,89 +93,7 @@ impl Renderer {
     /// `Renderer::process` spells out: a named `set_*` beside it is a second spelling
     /// that skips whatever the first one also did.
     pub fn process(&mut self, command: impl Into<InputCommand>) {
-        self.engine.process(command);
-    }
-
-    /// The engine's cheap UI-facing projection, read back after each command (§5).
-    ///
-    /// Cheap by construction — the layer roster is shared rather than copied — but
-    /// not free, so the view keeps the answer rather than asking per frame.
-    pub fn observe(&self) -> ObservableState {
-        self.engine.observe()
-    }
-
-    /// Serialize the document — the action log, not the pixels (§8).
-    ///
-    /// `resolvable` names content the *opener* is expected to already have, so it is
-    /// left out of the file. This frontend passes none: see `crate::files`.
-    pub fn save_bytes_resolvable(
-        &self,
-        resolvable: &[stark_model::AssetId],
-    ) -> stark_engine::Result<Vec<u8>> {
-        self.engine.save_bytes_resolvable(resolvable)
-    }
-
-    /// What `file` names that neither it carries nor this engine holds — settle it
-    /// before [`load_document`](Self::load_document), which refuses otherwise.
-    pub fn unresolved_content(
-        &self,
-        file: &stark_model::DocumentFile,
-    ) -> Vec<stark_model::AssetNeed> {
-        self.engine.unresolved_content(file)
-    }
-
-    /// Replace the document by replaying a loaded log (§8) — its whole undo history
-    /// comes back with it, because the file *is* the history.
-    ///
-    /// Fails leaving the open document untouched, which is what makes a refused file
-    /// cost nothing.
-    pub fn load_document(&mut self, file: &stark_model::DocumentFile) -> stark_engine::Result<()> {
-        self.engine.load_document(file)
-    }
-
-    /// Import a brush shape, returning the content id that names it (§6.6).
-    ///
-    /// Content-addressed, so importing the same image twice is free and lands on the
-    /// same id — which is what lets a shipped stamp, a library entry and a stamp that
-    /// arrived in a save file all be one asset.
-    pub fn import_brush_id(&self, png: &[u8]) -> Result<stark_model::AssetId, String> {
-        self.engine.import_brush(png).map_err(|e| e.to_string())
-    }
-
-    /// The canonical bytes of an imported asset — for a card's picture, and for
-    /// seeding a session so peers can fetch it by hash.
-    pub fn asset_bytes(&self, id: stark_model::AssetId) -> Option<Vec<u8>> {
-        self.engine.asset_bytes(id)
-    }
-
-    /// Import a canvas substrate's height map (§6.4).
-    ///
-    /// `Result` rather than the web frontend's `Option`-and-a-log: this frontend has
-    /// somewhere to put a failure a person can act on (`Canvas::report`), and a
-    /// substrate that would not import is exactly the kind they should hear about.
-    pub fn import_substrate(&mut self, png: &[u8]) -> Result<stark_model::SubstrateId, String> {
-        self.engine.import_substrate(png).map_err(|e| e.to_string())
-    }
-
-    /// Take a substrate's bytes under the id that asked for them.
-    ///
-    /// Re-derives the id and refuses bytes that do not match, which is what makes a
-    /// catalog file that changed out from under a document a caught error rather than
-    /// a deposit through the wrong substrate (§6.4).
-    pub fn accept_substrate(
-        &mut self,
-        id: stark_model::SubstrateId,
-        png: &[u8],
-    ) -> Result<(), String> {
-        self.engine
-            .accept_substrate(id, png)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
-
-    /// The canonical height map of a loaded substrate.
-    pub fn substrate_bytes(&self, id: stark_model::SubstrateId) -> Option<Vec<u8>> {
-        self.engine.substrate_bytes(id)
+        self.session.engine_mut().process(command);
     }
 
     /// Render a picture and hand back a future for its readback (§15.6).
@@ -204,7 +111,7 @@ impl Renderer {
     ) -> stark_engine::Result<
         impl std::future::Future<Output = stark_engine::Result<stark_engine::RgbaImage>> + use<>,
     > {
-        self.engine.export(
+        self.session.engine_mut().export(
             &mut stark_engine::Offscreen::default(),
             frame,
             scale,
@@ -224,114 +131,7 @@ impl Renderer {
         at: stark_model::geom::Vec2,
         options: stark_engine::PickOptions,
     ) -> impl std::future::Future<Output = Option<[f32; 3]>> + use<> {
-        self.engine.pick_color(at, options)
-    }
-
-    /// Take a picture's bytes under the id that asked for them (§23) — the third
-    /// store an arriving asset can belong in, beside a shape and a substrate.
-    ///
-    /// Only a peer ever supplies one: no build ships a picture, so this has no file
-    /// path and no library behind it (`crate::collab`).
-    pub fn accept_picture(&self, expected: stark_model::AssetId, png: &[u8]) -> Result<(), String> {
-        self.engine
-            .accept_picture(expected, png)
-            .map_err(|e| e.to_string())
-    }
-
-    // --- collaboration (§12) — thin engine delegates for the session glue in
-    // `crate::collab`. The web frontend's `Renderer` carries the same run, and the
-    // two lists are short for the same reason: what a session *is* belongs to the
-    // engine, and what a link is belongs to `stark_ui::collab`. What is left over
-    // here is delegation. ---
-
-    /// Convert the current document into a shared one, authored as `identity`.
-    pub fn start_collaboration(&mut self, identity: impl Into<stark_engine::Identity>) {
-        self.engine.start_collaboration(identity);
-    }
-
-    /// Replace the document with a joined session's log — or `Err`, leaving this
-    /// client's own document alone, when the session is in a color space this build
-    /// cannot render (§6.7).
-    pub fn join_collaboration(
-        &mut self,
-        file: &stark_model::DocumentFile,
-        identity: impl Into<stark_engine::Identity>,
-    ) -> stark_engine::Result<()> {
-        self.engine.join_collaboration(file, identity)
-    }
-
-    /// Leave a shared session: keep the canvas and its history, stop broadcasting.
-    pub fn end_collaboration(&mut self) {
-        self.engine.end_collaboration();
-    }
-
-    /// Snapshot the document — the full shared log with the assets it references,
-    /// which is what a joining peer is served.
-    pub fn document_file(&self) -> stark_model::DocumentFile {
-        self.engine.document_file()
-    }
-
-    /// Every imported asset's canonical bytes, for seeding a session's blob store.
-    pub fn all_asset_bytes(&self) -> Vec<(stark_model::AssetId, Vec<u8>)> {
-        self.engine.all_asset_bytes()
-    }
-
-    /// Integrate one remote action; `true` if it was new.
-    pub fn merge_remote(&mut self, action: stark_model::document::Action) -> bool {
-        self.engine.merge_remote(action)
-    }
-
-    /// Drain locally-committed actions awaiting broadcast.
-    pub fn take_outbox(&mut self) -> Vec<stark_model::document::Action> {
-        self.engine.take_outbox()
-    }
-
-    /// Whether [`take_presence`](Self::take_presence) would do anything — a `&self`
-    /// test, so an idle frame of a shared session takes no mutable borrow.
-    pub fn presence_due(&self, now: f64) -> bool {
-        self.engine.presence_due(now)
-    }
-
-    /// Drain this client's presence latch, and expire peers gone quiet (§17.5). The
-    /// frame is `None` when there is nothing new to say; `repaint` reports that the
-    /// expiry took a departed peer's paint off the canvas.
-    pub fn take_presence(&mut self, now: f64) -> stark_engine::PresenceTick {
-        self.engine.take_presence(now)
-    }
-
-    // No `leaving_presence` here, and its absence is a fact about the frontend rather
-    // than an oversight: leaving a session is not an act this window offers yet, so
-    // there is nothing to say goodbye *at*. A session ends when the process does, and
-    // peers drop this client on the presence timeout instead of at once. The engine
-    // has the farewell whenever a Leave arrives to send it.
-
-    /// Integrate a peer's presence; `true` when the **canvas** needs repainting.
-    ///
-    /// Narrower than "anything changed": a moved cursor or a switched layer is chrome,
-    /// and this frontend draws none of it yet — so here the narrow answer is the only
-    /// one, and a remote pointer move costs nothing at all.
-    ///
-    /// `now` dates the frame for expiry — the caller's clock, because the engine's own
-    /// only advances when something drains it.
-    pub fn merge_presence(
-        &mut self,
-        actor: stark_model::document::ActorId,
-        frame: stark_model::PeerFrame,
-        now: f64,
-    ) -> bool {
-        self.engine.merge_presence(actor, frame, now)
-    }
-
-    /// The view a pointer position is mapped through.
-    pub fn view(&self) -> ViewTransform {
-        self.engine.view()
-    }
-
-    /// Whether the engine holds a hover mark (§18.1.10) — peeked before taking one
-    /// down, so the clear costs a command and a frame only when there is one to
-    /// remove (`Canvas::clear_hover_mark`).
-    pub fn hover_held(&self) -> bool {
-        self.engine.hover_held()
+        self.session.engine_mut().pick_color(at, options)
     }
 
     /// The handle the element composites. Cloned per frame, which costs two atomic
@@ -367,7 +167,8 @@ impl Renderer {
         frame: Option<stark_model::document::LayerId>,
         into: Extent2,
     ) -> Option<stark_engine::ExportPlan> {
-        self.engine
+        self.session
+            .engine()
             .export_plan(frame, stark_engine::ExportScale::Fit(into))
             .ok()
     }
@@ -412,7 +213,7 @@ impl Renderer {
         };
         let mut view = plan.view();
         view.viewport = Extent2::new(size.0, size.1);
-        self.engine.render_into(
+        self.session.engine_mut().render_into(
             &mut ov.targets,
             &target,
             view,
@@ -454,46 +255,6 @@ impl Renderer {
         self.surface.format()
     }
 
-    // --- the brush editor's test canvas (§11) ---------------------------------
-
-    /// The expensive half of this engine, on its own (`stark_engine::EngineShared`) —
-    /// the device, the compiled pipelines, the brush assets and the decoded substrates.
-    ///
-    /// What a [`Preview`] stands on, and the reason it costs a handful of refcount
-    /// bumps rather than a second device: sharing the machinery is a *correctness*
-    /// argument as much as an economy, since a test stroke has to render exactly as the
-    /// canvas would.
-    pub fn engine_shared(&self) -> stark_engine::EngineShared {
-        self.engine.shared()
-    }
-
-    /// What the document's own substrate is tinted (§6.4) — the one piece of the
-    /// canvas's look a preview has to be *told*, everything else riding in on
-    /// [`engine_shared`](Self::engine_shared).
-    pub fn substrate_color(&self) -> stark_model::Srgb {
-        self.engine.observe().substrate_color
-    }
-
-    // --- lighting (§6.3) ------------------------------------------------------
-
-    /// Whether `id`'s bytes have already been decoded and prefiltered, so a switch to
-    /// it costs nothing.
-    pub fn environment_loaded(&self, id: stark_engine::EnvironmentId) -> bool {
-        self.engine.environment_loaded(id)
-    }
-
-    /// Hand an environment's HDR bytes over, readying it *without* switching to it —
-    /// the switch is a command, and this is not (§4).
-    pub fn register_environment(
-        &mut self,
-        id: stark_engine::EnvironmentId,
-        hdr: Vec<u8>,
-    ) -> Result<(), String> {
-        self.engine
-            .register_environment(id, hdr)
-            .map_err(|e| e.to_string())
-    }
-
     /// Render the canvas into the back buffer and swap it to the front.
     ///
     /// `swap_buffers` rather than `present`: this runs inside a frame wgpui is
@@ -511,10 +272,11 @@ impl Renderer {
         // target would put every stroke somewhere other than under the pointer.
         if size != self.viewport {
             self.viewport = size;
-            self.engine
+            self.session
+                .engine_mut()
                 .process(ViewCommand::Resize(Extent2::new(size.0, size.1)));
         }
-        self.engine.render(&target);
+        self.session.engine_mut().render(&target);
         self.surface.swap_buffers();
     }
 }
@@ -529,8 +291,7 @@ impl Renderer {
 /// before it is an economy — and opening the dialog fetches and decodes nothing.
 ///
 /// The one thing that does *not* ride in on the shared half is the substrate's tint,
-/// which is document state and so is set once at construction
-/// (`Renderer::substrate_color`).
+/// which is document state and so is set once at construction.
 ///
 /// It is the navigator's second surface again with one difference: that one is a
 /// picture of the document this engine already holds, and this is a document of its
@@ -554,9 +315,10 @@ impl Preview {
     pub fn new(donor: &Renderer, window: &Window, width: u32, height: u32) -> Option<Self> {
         let (width, height) = (width.max(1), height.max(1));
         let surface = window.create_wgpu_surface(width, height, donor.format())?;
-        let mut engine = Engine::on_shared(donor.engine_shared(), Extent2::new(width, height));
+        let donor = donor.session.engine();
+        let mut engine = Engine::on_shared(donor.shared(), Extent2::new(width, height));
         engine.process(stark_engine::command::DocCommand::SetSubstrateColor(
-            donor.substrate_color(),
+            donor.observe().substrate_color,
         ));
         Some(Self {
             surface,

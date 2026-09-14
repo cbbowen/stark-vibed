@@ -272,6 +272,8 @@ async fn generate(state: AppState, layer: LayerId) -> Result<Picture, NoRenderer
     // none of them is waiting on.
     let asked = crate::state::with_engine_quiet(state, |r| {
         let plan = r
+            .session
+            .engine()
             .export_plan(frame, ExportScale::Fit(Extent2::new(THUMB, THUMB)))
             .ok()?;
         r.export_layer(layer, &plan).ok()

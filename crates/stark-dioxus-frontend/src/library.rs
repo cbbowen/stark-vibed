@@ -5,7 +5,7 @@
 //! library in, importing into it, making an entry usable in this document, removing
 //! one, its gallery card, and offering it to a live session. What a kind adds is the
 //! half only this frontend can say: where its signals are and how the browser decodes a
-//! file for it ([`Shelf`]), and which renderer call answers for it ([`Engine`]). The
+//! file for it ([`Shelf`]), and which engine call answers for it ([`Engine`]). The
 //! stores, the card and the fallback name are the crate's.
 //!
 //! Every task here is `spawn_forever` and every result lands in root-owned signals: an
@@ -17,9 +17,9 @@ use dioxus::prelude::*;
 use stark_model::{AssetId, SubstrateId};
 use stark_ui::assets::{self, Entry, Kind, Shapes, Substrates, Unread};
 use stark_ui::library::Thumbs;
+use stark_ui::session::Session;
 
 use crate::platform::{normalize_shape_image, normalize_substrate_image};
-use crate::render::Renderer;
 use crate::state::{AppState, gpu_lost, root_signal, with_engine_quiet};
 
 /// One library's signals. Root-owned: an import is started from a gallery's scope and
@@ -48,7 +48,7 @@ impl LibraryState {
     }
 }
 
-/// The engine half of one library: which renderer call answers "do you hold these
+/// The engine half of one library: which engine call answers "do you hold these
 /// bytes", and which canonicalizes them into an id.
 ///
 /// A trait over the engine rather than two more functions on the kind, so the
@@ -62,37 +62,40 @@ pub trait Engine<K: Kind> {
     fn import(&mut self, png: &[u8]) -> Result<AssetId, String>;
 }
 
-impl Engine<Shapes> for Renderer {
+impl Engine<Shapes> for Session {
     fn holds(&self, id: AssetId) -> bool {
-        Renderer::holds(self, Shapes::need(id))
+        self.engine().holds(Shapes::need(id))
     }
 
     fn held(&self, id: AssetId) -> Option<Vec<u8>> {
-        self.asset_bytes(id)
+        self.engine().asset_bytes(id)
     }
 
     fn import(&mut self, png: &[u8]) -> Result<AssetId, String> {
-        self.import_brush_id(png)
+        self.engine().import_brush(png).map_err(|e| e.to_string())
     }
 }
 
-impl Engine<Substrates> for Renderer {
+impl Engine<Substrates> for Session {
     fn holds(&self, id: AssetId) -> bool {
-        Renderer::holds(self, Substrates::need(id))
+        self.engine().holds(Substrates::need(id))
     }
 
     fn held(&self, id: AssetId) -> Option<Vec<u8>> {
-        self.substrate_bytes(SubstrateId::Image(id))
+        self.engine().substrate_bytes(SubstrateId::Image(id))
     }
 
     fn import(&mut self, png: &[u8]) -> Result<AssetId, String> {
-        // The renderer logs why it refused an import and hands back only that it did.
-        match self.import_substrate(png) {
-            Some(SubstrateId::Image(id)) => Ok(id),
+        match self.engine_mut().import_substrate(png) {
+            Ok(SubstrateId::Image(id)) => Ok(id),
             // Said rather than unwrapped: `Flat` is the one substrate with no image, so
             // this would be the engine inventing a procedural substrate out of bytes.
-            Some(SubstrateId::Flat) => Err("it canonicalized to the flat substrate".to_string()),
-            None => Err("it is not a height map this build can read".to_string()),
+            Ok(SubstrateId::Flat) => Err("it canonicalized to the flat substrate".to_string()),
+            // The engine's reason goes to the log; the gallery is told what it means.
+            Err(e) => {
+                tracing::warn!("canvas substrate failed to import: {e}");
+                Err("it is not a height map this build can read".to_string())
+            }
         }
     }
 }
@@ -156,7 +159,7 @@ impl Shelf for Substrates {
 /// (`shipped::watch`) or its library changes, and a read would redraw it per command.
 pub fn thumbnail<K: Shelf>(state: AppState, id: AssetId) -> Option<String>
 where
-    Renderer: Engine<K>,
+    Session: Engine<K>,
 {
     if let Some(url) = K::thumbs().get(id) {
         return Some(url);
@@ -165,7 +168,7 @@ where
         .renderer
         .peek()
         .as_ref()
-        .and_then(|r| <Renderer as Engine<K>>::held(r, id));
+        .and_then(|r| <Session as Engine<K>>::held(&r.session, id));
     let bytes = held.or_else(|| {
         K::library(state)
             .entries
@@ -211,7 +214,7 @@ pub fn import_file<K: Shelf>(
     bytes: Vec<u8>,
     then: fn(AppState, AssetId),
 ) where
-    Renderer: Engine<K>,
+    Session: Engine<K>,
 {
     let library = K::library(state);
     let mut notice = library.notice;
@@ -228,7 +231,7 @@ pub fn import_file<K: Shelf>(
         // The canonical bytes, not the file's: what the id names, what a save file bundles
         // and what a peer is served are one representation (§8, §19). Quiet, because
         // readying an asset changes no document state.
-        let imported = with_engine_quiet(state, |r| canonicalize::<K>(r, png))
+        let imported = with_engine_quiet(state, |r| canonicalize::<K>(&mut r.session, png))
             .unwrap_or_else(|| Err("the canvas is still starting".to_string()));
         let (id, canonical) = match imported {
             Ok(imported) => imported,
@@ -324,7 +327,7 @@ pub fn import_dropped<K: Shelf>(
     files: Vec<dioxus::html::FileData>,
     then: fn(AppState, AssetId),
 ) where
-    Renderer: Engine<K>,
+    Session: Engine<K>,
 {
     for file in files {
         spawn_forever(async move {
@@ -356,7 +359,7 @@ pub fn import_dropped<K: Shelf>(
 /// borrowed across the heal's await.
 pub fn ensure<K: Shelf>(state: AppState, id: AssetId) -> Option<AssetId>
 where
-    Renderer: Engine<K>,
+    Session: Engine<K>,
 {
     if gpu_lost(state) {
         return None;
@@ -365,13 +368,13 @@ where
         .renderer
         .peek()
         .as_ref()
-        .map(|r| <Renderer as Engine<K>>::holds(r, id))?;
+        .map(|r| <Session as Engine<K>>::holds(&r.session, id))?;
     let id = if held {
         id
     } else {
         let library = K::library(state);
         let Reached { id, healed } =
-            with_engine_quiet(state, |r| reach::<K>(r, library, id)).flatten()?;
+            with_engine_quiet(state, |r| reach::<K>(&mut r.session, library, id)).flatten()?;
         if let Some(Healed { stale, png }) = healed {
             heal::<K>(library, stale, id, png);
         }
@@ -460,7 +463,7 @@ fn heal<K: Kind>(library: LibraryState, stale: AssetId, actual: AssetId, png: Ve
 /// is one: a height map is megabytes to copy for nobody.
 fn offer<K: Kind>(state: AppState, id: AssetId)
 where
-    Renderer: Engine<K>,
+    Session: Engine<K>,
 {
     if state.collab.session.peek().is_none() {
         return;
@@ -469,7 +472,7 @@ where
         .renderer
         .peek()
         .as_ref()
-        .and_then(|r| <Renderer as Engine<K>>::held(r, id));
+        .and_then(|r| <Session as Engine<K>>::held(&r.session, id));
     if let Some(bytes) = bytes {
         seed_session::<K>(state, id, bytes);
     }

@@ -28,6 +28,7 @@ use crate::widgets::Modal;
 use stark_engine::{Background, ExportScale, Rendered};
 use stark_model::document::LayerId;
 use stark_ui::bounds::piece_frame;
+use stark_ui::session::Replacement;
 
 /// Object before the page goes away, if the document on screen holds work this
 /// browser is the only copy of. Bound once by the root (`crate::app`), for the life of the page.
@@ -106,7 +107,7 @@ pub fn save_document(state: AppState) {
         .renderer
         .read()
         .as_ref()
-        .map(|r| r.save_bytes_resolvable(&resolvable));
+        .map(|r| r.session.engine().save_bytes_resolvable(&resolvable));
     // The revision those bytes are of. Nothing between here and the write is
     // asynchronous, so it is still the one on screen when the file lands.
     let written = shown_revision(state);
@@ -181,7 +182,7 @@ pub(crate) fn open_bytes(state: AppState, bytes: Vec<u8>) {
         let renderer = state.renderer;
         let guard = renderer.read();
         let Some(r) = guard.as_ref() else { return };
-        r.unresolved_content(&file)
+        r.session.engine().unresolved_content(&file)
     };
     spawn_forever(async move {
         // Resolved out of this build's own assets, and *before* the replay. A file
@@ -190,16 +191,10 @@ pub(crate) fn open_bytes(state: AppState, bytes: Vec<u8>) {
         let Some(supplied) = crate::builtin_ids::settle(&owed).await else {
             return;
         };
-        let loaded = crate::state::replace_document(state, |r| {
-            for (need, content) in &supplied {
-                crate::builtin_ids::install(r, *need, content);
-            }
-            // The engine checks the bill again rather than trusting that it was
-            // settled, and refuses without touching the open document. Refusing
-            // here means an install above failed — bytes that hash to something
-            // other than the id they were fetched for.
-            r.load_document(&file)
-        });
+        let owed: Vec<_> = supplied.iter().map(|(n, b)| (*n, b.as_slice())).collect();
+        // Refused without touching the open document when an install fails — bytes
+        // that hash to something other than the id they were fetched for.
+        let loaded = crate::state::replace_document(state, Replacement::Open(&file), &owed);
         match loaded {
             Some(Ok(())) => tracing::info!(bytes = bytes.len(), "document loaded"),
             Some(Err(e)) => tracing::error!("could not open that painting: {e}"),
@@ -260,11 +255,11 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
 
     // What we are about to produce, reported by the engine rather than recomputed
     // here — so the number on screen cannot drift from the render.
-    let plan = state
-        .renderer
-        .read()
-        .as_ref()
-        .map(|r| r.export_plan(frame, ExportScale::Factor(scale())));
+    let plan = state.renderer.read().as_ref().map(|r| {
+        r.session
+            .engine()
+            .export_plan(frame, ExportScale::Factor(scale()))
+    });
 
     let (size_label, plan_error) = match &plan {
         Some(Ok(p)) => (

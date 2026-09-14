@@ -9,7 +9,7 @@
 //!
 //! Each thumbnail is a mid-gray stroke drawn across a canvas laid **entirely in
 //! paint** — a light-gray slab on the left half, a dark-gray slab on the right —
-//! rendered by a **shared** engine (`Renderer::shared_engine`), so it costs no
+//! rendered by a **shared** engine (`Engine::shared`), so it costs no
 //! pipeline compiles, no fetches and no decodes: one engine is built lazily on
 //! first use and kept, and each thumbnail is two fills, one replayed stroke, one
 //! small offscreen render, and a readback.
@@ -175,7 +175,7 @@ pub struct Rig {
 /// serves a stale thumbnail for a brush that has changed.
 ///
 /// A linear scan of `PartialEq` over a library of a few dozen `Copy` structs is
-/// cheaper than the JSON digest it replaced. `Renderer::builtins` is a `Vec` looked
+/// cheaper than the JSON digest it replaced. `stark_ui::session::Loaded` is a `Vec` looked
 /// up the same way and for the same reason.
 fn lookup(state: AppState, key: Key) -> Option<String> {
     state.thumbs.pictures.find(|filed| *filed == key)

@@ -32,6 +32,7 @@ use stark_net::{
     SessionTicket, actor_from_endpoint_id,
 };
 use stark_ui::collab::{Peer, Phase};
+use stark_ui::session::{Replacement, Session};
 
 use crate::icons::icon;
 use crate::state::{AppState, root_signal};
@@ -123,8 +124,9 @@ pub fn share(state: AppState) {
         // Quiet: hosting attaches an identity and starts queueing broadcasts, which
         // no part of the projection shows — the roster is its own signal (§17.4).
         let Some((doc, assets)) = crate::state::with_engine_quiet(state, |r| {
-            r.start_collaboration(Identity::new(actor, id.boot));
-            (r.document_file(), r.all_asset_bytes())
+            let engine = r.session.engine_mut();
+            engine.start_collaboration(Identity::new(actor, id.boot));
+            (engine.document_file(), engine.all_asset_bytes())
         }) else {
             set_phase(state, Phase::Solo);
             return;
@@ -200,42 +202,44 @@ pub fn join(state: AppState, link: String) {
                 document: file,
                 owed,
             }) => {
-                // Settled *before* `join_collaboration` replays the log, and out
-                // here because the renderer guard must not be held across a fetch.
-                // Best effort, unlike opening a file: a promise this build cannot keep
-                // is left to the ordinary blob fetch, which pulls it off a peer
-                // (`Joined::owed`).
-                let owed_bytes: Vec<_> = crate::builtin_ids::fetch_each(&owed)
+                // Fetched *before* the log is replayed, and out here because the
+                // renderer guard must not be held across a fetch. Best effort, unlike
+                // opening a file: a promise this build cannot keep is left to the
+                // ordinary blob fetch, which pulls it off a peer (`Joined::owed`).
+                let fetched: Vec<_> = crate::builtin_ids::fetch_each(&owed)
                     .await
                     .into_iter()
                     .filter_map(|(need, bytes)| Some((need, bytes?)))
                     .collect();
-                let joined = crate::state::replace_document(state, |r| {
-                    for (need, bytes) in &owed_bytes {
-                        crate::builtin_ids::install(r, *need, bytes);
-                    }
-                    // Fallible: a session painted in a color space this build lacks is
-                    // refused here, before anything of this client's own document has
-                    // been disturbed (§6.7).
-                    r.join_collaboration(&file, Identity::new(session.actor_id(), id.boot))?;
-                    Ok(r.all_asset_bytes())
-                });
-                let assets = match joined {
-                    Some(Ok(assets)) => assets,
+                let owed: Vec<_> = fetched.iter().map(|(n, b)| (*n, b.as_slice())).collect();
+                let identity = Identity::new(session.actor_id(), id.boot);
+                match crate::state::replace_document(
+                    state,
+                    Replacement::Join(&file, identity),
+                    &owed,
+                ) {
+                    Some(Ok(())) => {}
                     // The renderer is gone (or the GPU is): nothing to say beyond
                     // going back to solo, which is what every other guard here does.
                     None => {
                         set_phase(state, Phase::Solo);
                         return;
                     }
-                    // The session is one this build cannot render. Worth saying out
-                    // loud rather than logging: the drawing on screen is untouched,
-                    // and the reason is about *this build*, not about the link.
+                    // The session is one this build cannot render — refused before
+                    // anything of this client's own document was disturbed (§6.7).
+                    // Worth saying out loud rather than logging: the reason is about
+                    // *this build*, not about the link.
                     Some(Err(e)) => {
                         fail(state, format!("cannot join this session: {e}"));
                         return;
                     }
-                };
+                }
+                let assets = state
+                    .renderer
+                    .peek()
+                    .as_ref()
+                    .map(|r| r.session.engine().all_asset_bytes())
+                    .unwrap_or_default();
                 let tx = session.broadcaster();
                 for (id, bytes) in assets {
                     tx.add_content(AssetNeed::Brush(id), bytes);
@@ -282,8 +286,10 @@ fn supply_locally(state: AppState, need: AssetNeed) {
         //
         // Quiet: bytes arriving change how a later action *renders*, not anything
         // the chrome shows, so this asks for the frame and nothing else.
-        if crate::state::with_engine_quiet(state, |r| crate::builtin_ids::install(r, need, &bytes))
-            .is_none()
+        if crate::state::with_engine_quiet(state, |r| {
+            crate::builtin_ids::install(&mut r.session, need, &bytes);
+        })
+        .is_none()
         {
             return;
         }
@@ -320,8 +326,9 @@ pub fn leave(state: AppState) {
     // document whose past has changed shape. The frame it asks for is the one that
     // takes the peers' paint off the canvas.
     let farewell = crate::state::with_engine(state, |r| {
-        let frame = r.leaving_presence();
-        r.end_collaboration();
+        let engine = r.session.engine_mut();
+        let frame = engine.leaving_presence();
+        engine.end_collaboration();
         frame
     });
     let mut ticket = state.collab.ticket;
@@ -342,7 +349,9 @@ pub fn flush_outbox(state: AppState) {
     // Quiet, and on the interactive path: this runs after *every* dispatch, which
     // has just published — a second `observe` walk here would be paid per command
     // to report exactly what the first one did.
-    let Some(actions) = crate::state::with_engine_quiet(state, |r| r.take_outbox()) else {
+    let Some(actions) =
+        crate::state::with_engine_quiet(state, |r| r.session.engine_mut().take_outbox())
+    else {
         return;
     };
     if actions.is_empty() {
@@ -388,9 +397,9 @@ fn install(state: AppState, session: CollabSession, mut events: Events, ticket_t
             // from, and presence arrives at pointer rate — publishing on that
             // cadence would drag a full component tree behind every peer's pointer.
             let now = crate::platform::now_seconds();
-            let Some(wake) =
-                crate::state::with_engine_quiet(state, |r| apply_remote(r, event, now))
-            else {
+            let Some(wake) = crate::state::with_engine_quiet(state, |r| {
+                apply_remote(&mut r.session, event, now)
+            }) else {
                 continue;
             };
             // After the guard is down: resolving reads the session signal and starts a
@@ -430,20 +439,20 @@ struct Wake {
 }
 
 /// Feed one remote event into the engine (§12).
-fn apply_remote(r: &mut crate::render::Renderer, event: RemoteEvent, now: f64) -> Wake {
+fn apply_remote(session: &mut Session, event: RemoteEvent, now: f64) -> Wake {
     match event {
         // The transport parks the `SetSubstrate` or `PlaceImage` that wanted these bytes
         // until they land (§6.4, §23). The repaint is for a *presence* head, whose live
         // stroke is already on screen as a round-tip fallback the import upgrades.
         RemoteEvent::Asset { need, bytes } => {
-            crate::builtin_ids::install(r, need, &bytes);
+            crate::builtin_ids::install(session, need, &bytes);
             Wake {
                 repaint: true,
                 ..Wake::default()
             }
         }
         RemoteEvent::Action(action) => {
-            r.merge_remote(action);
+            session.engine_mut().merge_remote(action);
             Wake {
                 publish: true,
                 repaint: true,
@@ -456,7 +465,7 @@ fn apply_remote(r: &mut crate::render::Renderer, event: RemoteEvent, now: f64) -
         // there is something to drain, and a frame stamped a heartbeat stale trips
         // `GESTURE_TIMEOUT` mid-stroke.
         RemoteEvent::Presence { actor, frame } => Wake {
-            repaint: r.merge_presence(actor, frame, now),
+            repaint: session.engine_mut().merge_presence(actor, frame, now),
             ..Wake::default()
         },
         RemoteEvent::ResolveLocally { need } => Wake {
@@ -537,7 +546,8 @@ fn start_presence_pump(state: AppState) {
                     .renderer
                     .peek()
                     .as_ref()
-                    .map(|r| (r.presence_due(now), r.peers_revision() != sent_revision));
+                    .map(|r| r.session.engine())
+                    .map(|e| (e.presence_due(now), e.peers_revision() != sent_revision));
                 let Some((due, roster_stale)) = work else {
                     break 'tick;
                 };
@@ -550,6 +560,7 @@ fn start_presence_pump(state: AppState) {
                 // publish has its own signal (§17.4) — nothing here is in the
                 // projection.
                 let tick = crate::state::with_engine_quiet(state, |r| {
+                    let r = r.session.engine_mut();
                     let tick = due.then(|| r.take_presence(now));
                     let (frame, repaint) = match tick {
                         Some(t) => (t.frame, t.repaint),
@@ -564,7 +575,8 @@ fn start_presence_pump(state: AppState) {
                         frame,
                         repaint,
                         revision,
-                        (revision != sent_revision).then(|| r.peers()),
+                        (revision != sent_revision)
+                            .then(|| r.peers().map(Peer::from).collect::<Vec<_>>()),
                     )
                 });
                 let Some((frame, repaint, revision, roster)) = tick else {

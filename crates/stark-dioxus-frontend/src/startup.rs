@@ -32,7 +32,7 @@ pub fn load_records(state: AppState) {
 /// 1. **The bundled brush shapes, before any preset names one.** A stamp is named by
 ///    the hash of its bytes, so the ids do not exist until the import.
 /// 2. **The default substrate, before the document opens on it** — for the same
-///    reason. Through `new_document` rather than `SetSubstrate`, so no empty first
+///    reason. Through a new document rather than `SetSubstrate`, so no empty first
 ///    step lands in every fresh document's undo history. It replaces a document
 ///    nobody can have touched, because the renderer is not published until step 5.
 /// 3. **The default light.** Only a view setting; any later step would do.
@@ -69,7 +69,7 @@ pub async fn run(state: AppState) {
     // 1.
     builtins::import_all(&mut r).await;
     // 2.
-    let color_space = r.color_space();
+    let color_space = r.session.engine().color_space();
     substrates::open_default(&mut r, color_space).await;
     // 3.
     light_default(&mut r).await;
@@ -112,7 +112,11 @@ async fn light_default(r: &mut render::Renderer) {
     let Ok(bytes) = dioxus::asset_resolver::read_asset_bytes(asset).await else {
         return;
     };
-    match r.register_environment(DEFAULT_ENVIRONMENT, bytes) {
+    match r
+        .session
+        .engine_mut()
+        .register_environment(DEFAULT_ENVIRONMENT, bytes)
+    {
         Ok(()) => r.process(ViewCommand::SetEnvironment(DEFAULT_ENVIRONMENT)),
         Err(e) => tracing::warn!("the bundled environment will not decode: {e}"),
     }
