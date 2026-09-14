@@ -73,9 +73,9 @@ impl<T: 'static> Readable for ReadOnly<T> {
 /// through `use_context`.
 ///
 /// One pointer wide, because [`Signals`] is kilobytes and this is passed by value to
-/// hundreds of functions. Leaking `Signals` is free: it is built once, by the root
-/// component, which is never unmounted. [`Deref`](std::ops::Deref) but not `DerefMut`,
-/// so `state.foo.set(…)` does not compile: copy the signal into a local first.
+/// hundreds of functions. `Signals` is leaked once, on the root's first render; the root
+/// is never unmounted. [`Deref`](std::ops::Deref) but not `DerefMut`, so
+/// `state.foo.set(…)` does not compile: copy the signal into a local first.
 #[derive(Clone, Copy)]
 pub struct AppState(&'static Signals);
 
@@ -281,11 +281,12 @@ pub struct Signals {
 }
 
 impl AppState {
-    /// Build the app's state. Call once, from the root component. Each group is built,
-    /// and seeded, by the module that declares it.
+    /// Build the app's state. A hook: call it unconditionally, from the root component.
+    /// Each group is built, and seeded, by the module that declares it.
     pub fn new() -> Self {
         let prefs = root_signal(crate::prefs::stored);
-        AppState(Box::leak(Box::new(Signals {
+        // Every render re-reads the same hooks; only the first leaks a box to hold them.
+        let signals = Signals {
             renderer: ReadOnly(root_signal(|| None)),
             obs: ReadOnly(root_signal(|| None)),
             startup_failure: root_signal(|| None),
@@ -338,7 +339,8 @@ impl AppState {
             bindings: root_signal(Default::default),
             drags: root_signal(Default::default),
             drag_offer: root_signal(Default::default),
-        })))
+        };
+        use_hook(move || AppState(Box::leak(Box::new(signals))))
     }
 }
 
