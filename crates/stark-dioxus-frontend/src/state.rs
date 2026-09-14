@@ -1031,8 +1031,10 @@ fn schedule_paint(state: AppState) {
 /// stays there (§4, §7). Two shipped bugs of exactly that shape are why this is a
 /// function and `renderer` is a [`ReadOnly`].
 ///
-/// For engine entry points that are not commands — opening a document, joining a
-/// session. A command goes through [`dispatch`], which is this plus the broadcast.
+/// For engine entry points that are not commands, such as leaving a session. A command
+/// goes through [`dispatch`], which is this plus the broadcast, and replacing the
+/// document through [`replace_document`]; outside this module, a closure here that calls
+/// `Renderer::process` belongs in one of those.
 ///
 /// **`None` also once the GPU has died** ([`gpu_lost`], §5), which is the same
 /// answer callers already handle for "the renderer is not up yet" — deliberately,
@@ -1079,6 +1081,35 @@ pub fn with_engine<R>(state: AppState, f: impl FnOnce(&mut Renderer) -> R) -> Op
     };
     request_paint(state);
     Some(out)
+}
+
+/// Replace the document — open a file, join a session, start afresh — then frame the
+/// piece, paint inline and publish. The only way to replace the document.
+///
+/// A door rather than a [`dispatch`] because a replacement is not a command: it commits
+/// nothing to the log, broadcasts nothing and is no deed the tour counts (§4, §24), yet
+/// it moves everything the chrome shows.
+///
+/// `f` installs what the new document owes and replaces it. `None` is [`with_engine`]'s
+/// "no engine to move"; `Some(Err)` is the engine refusing with the open document
+/// untouched, which is left unframed.
+///
+/// The paint is inline so the first frame shown is already the framed new document
+/// rather than the old view over it.
+pub fn replace_document<R>(
+    state: AppState,
+    f: impl FnOnce(&mut Renderer) -> stark_engine::Result<R>,
+) -> Option<stark_engine::Result<R>> {
+    with_engine(state, |r| {
+        let out = f(r)?;
+        // A view is per-client and in neither a file nor a snapshot (§18.1.2), so without
+        // this a document arrives at the last one's pan and zoom — on an unbounded canvas,
+        // routinely nowhere near it. Asked of the new document's own projection.
+        let frame = stark_ui::bounds::piece_frame(&r.observe());
+        r.process(ViewCommand::ShowPiece(frame));
+        r.paint();
+        Ok(out)
+    })
 }
 
 /// Reach the engine as `&mut` **without** publishing anything or asking for a

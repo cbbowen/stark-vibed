@@ -21,13 +21,13 @@ use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 
 use crate::icons::icon;
-use crate::panels::frame::{piece_frame, use_selected_frame};
+use crate::panels::frame::use_selected_frame;
 use crate::platform::{download_bytes, pick_file};
 use crate::state::{AppState, use_obs_opt};
 use crate::widgets::Modal;
-use stark_engine::command::ViewCommand;
 use stark_engine::{Background, ExportScale, Rendered};
 use stark_model::document::LayerId;
+use stark_ui::bounds::piece_frame;
 
 /// Object before the page goes away, if the document on screen holds work this
 /// browser is the only copy of. Bound once by the root (`crate::app`), for the life of the page.
@@ -184,54 +184,26 @@ pub(crate) fn open_bytes(state: AppState, bytes: Vec<u8>) {
         r.unresolved_content(&file)
     };
     spawn_forever(async move {
-        // Resolved out of this build's own assets, and *before* the replay:
-        // the file carries the substrates it was painted on or names ones this
-        // app ships, and either way they have to be registered before a single
-        // action runs, or every stroke made on one deposits through the flat
-        // stand-in into stored pixels (§6.4, §8).
-        let supplied = crate::builtin_ids::fetch(&owed).await;
-        if supplied.len() != owed.len() {
-            // Refused rather than opened wrong. A file has no peer to fall
-            // back on, so content this build cannot produce is the end of it —
-            // which is the whole reason the shipped catalog is append-only.
-            tracing::error!(
-                ?owed,
-                "this painting uses content this version of Stark does not have"
-            );
+        // Resolved out of this build's own assets, and *before* the replay. A file
+        // has no peer to fall back on, so content this build cannot produce refuses
+        // it — which is the whole reason the shipped catalog is append-only.
+        let Some(supplied) = crate::builtin_ids::settle(&owed).await else {
             return;
-        }
-        // A load replaces the document wholesale, so this is the loud door: the
-        // publish on the way out is what re-describes the layer list, the undo
-        // flags and the rest to the chrome.
-        let loaded = crate::state::with_engine(state, |r| {
+        };
+        let loaded = crate::state::replace_document(state, |r| {
             for (need, content) in &supplied {
                 crate::builtin_ids::install(r, *need, content);
             }
             // The engine checks the bill again rather than trusting that it was
-            // settled, and refuses without touching the open document. Reaching this
-            // arm means an install above failed — bytes that hash to something other
-            // than the id they were fetched for — so the painting on screen is left
-            // exactly as it was.
-            if let Err(e) = r.load_document(&file) {
-                tracing::error!("could not open that painting: {e}");
-                return false;
-            }
-            // Frame what has just arrived. A view is per-client session state and
-            // so is not in the file (§18.1.2) — without this the painting opens at
-            // whatever pan and zoom the *last* one was left at, which on an
-            // unbounded canvas is routinely an empty stretch nowhere near it.
-            //
-            // Asked of the loaded document's own projection: the frame that says
-            // where the piece ends belongs to the document that just replaced the
-            // one on screen. And asked *before* the paint below, so the first frame
-            // drawn is already the framed one rather than a flash of the old view.
-            let frame = piece_frame(&r.observe());
-            r.process(ViewCommand::ShowPiece(frame));
-            r.paint();
-            true
+            // settled, and refuses without touching the open document. Refusing
+            // here means an install above failed — bytes that hash to something
+            // other than the id they were fetched for.
+            r.load_document(&file)
         });
-        if loaded == Some(true) {
-            tracing::info!(bytes = bytes.len(), "document loaded");
+        match loaded {
+            Some(Ok(())) => tracing::info!(bytes = bytes.len(), "document loaded"),
+            Some(Err(e)) => tracing::error!("could not open that painting: {e}"),
+            None => {}
         }
     });
 }

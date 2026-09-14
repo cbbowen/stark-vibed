@@ -14,33 +14,64 @@
 use stark_model::SubstrateId;
 use stark_net::AssetNeed;
 
-/// Read content out of this app's own bundle, by content id (§12.4, §8).
-///
-/// The one place a need becomes bytes without the network: a session settling
-/// what a host left out, a session answering `ResolveLocally` mid-stroke, and a
-/// lean save file being opened all want exactly this.
+/// Read one piece of content out of this app's own bundle, by content id (§12.4, §8).
 ///
 /// A local read — same-origin on the web, the file the binary shipped beside
-/// natively. Anything that will not resolve is simply left out of the result, and
-/// what that costs depends on who asked: a session falls back to fetching it off a
-/// peer, while a file has nobody to ask and must refuse to open (§6.4).
-pub async fn fetch(owed: &[AssetNeed]) -> Vec<(AssetNeed, Vec<u8>)> {
-    let mut out = Vec::new();
+/// natively. `None` for content this build does not ship or a read that failed, each
+/// logged where it happened. What that costs depends on who asked: a session answering
+/// `ResolveLocally` falls back to fetching it off a peer, while a log about to be
+/// replayed has to refuse ([`settle`]).
+pub async fn fetch(need: AssetNeed) -> Option<Vec<u8>> {
+    let Some(path) = stark_ui::assets::shipped_at(need.content()).and_then(|row| row.path) else {
+        // Either the host omitted something we never promised, or this build's
+        // catalog moved under a document that referenced the old one.
+        tracing::warn!(?need, "owed content is not in this build's bundle");
+        return None;
+    };
+    crate::shipped::fetch_bytes(path).await
+}
+
+/// Fetch everything a file or a joined session owes before its log is replayed — all
+/// of it, or `None` with the shortfall logged.
+///
+/// All or nothing because a replay cannot wait for what is missing: a substrate that is
+/// not registered when its `SetSubstrate` replays deposits every later stroke through the
+/// flat stand-in, and those pixels are stored (§6.4).
+pub async fn settle(owed: &[AssetNeed]) -> Option<Vec<(AssetNeed, Vec<u8>)>> {
+    let mut fetched = Vec::with_capacity(owed.len());
     for &need in owed {
-        let Some(path) = stark_ui::assets::shipped_at(need.content()).and_then(|row| row.path)
-        else {
-            // Not ours to resolve. Either the host omitted something we never
-            // promised, or this build's catalog moved under a document that
-            // referenced the old one.
-            tracing::warn!(?need, "owed content is not in this build's bundle");
-            continue;
-        };
-        // A read that fails has said why; the need is left out, for the reason above.
-        if let Some(bytes) = crate::shipped::fetch_bytes(path).await {
-            out.push((need, bytes));
+        fetched.push((need, fetch(need).await));
+    }
+    match all_or_short(fetched) {
+        Ok(supplied) => Some(supplied),
+        Err(short) => {
+            tracing::error!(
+                ?short,
+                "refused: this uses content this version of Stark does not have"
+            );
+            None
         }
     }
-    out
+}
+
+/// [`settle`]'s rule over what came back for each need: every need's bytes, or the
+/// needs that came back empty.
+fn all_or_short(
+    fetched: Vec<(AssetNeed, Option<Vec<u8>>)>,
+) -> Result<Vec<(AssetNeed, Vec<u8>)>, Vec<AssetNeed>> {
+    let mut supplied = Vec::with_capacity(fetched.len());
+    let mut short = Vec::new();
+    for (need, bytes) in fetched {
+        match bytes {
+            Some(bytes) => supplied.push((need, bytes)),
+            None => short.push(need),
+        }
+    }
+    if short.is_empty() {
+        Ok(supplied)
+    } else {
+        Err(short)
+    }
 }
 
 /// Install one piece of content into the engine, under the id that asked for it —
@@ -59,5 +90,45 @@ pub fn install(r: &mut crate::render::Renderer, need: AssetNeed, bytes: &[u8]) {
         AssetNeed::Brush(_) => r.import_brush(bytes),
         AssetNeed::Substrate(id) => r.accept_substrate(SubstrateId::Image(id), bytes),
         AssetNeed::Picture(id) => r.accept_picture(id, bytes),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use stark_model::AssetId;
+
+    fn brush(n: u8) -> AssetNeed {
+        AssetNeed::Brush(AssetId([n; 32]))
+    }
+
+    #[test]
+    fn everything_fetched_is_supplied_in_order() {
+        let fetched = vec![
+            (brush(1), Some(vec![1])),
+            (AssetNeed::Substrate(AssetId([2; 32])), Some(vec![2, 2])),
+        ];
+        assert_eq!(
+            all_or_short(fetched),
+            Ok(vec![
+                (brush(1), vec![1]),
+                (AssetNeed::Substrate(AssetId([2; 32])), vec![2, 2]),
+            ])
+        );
+    }
+
+    #[test]
+    fn one_short_need_refuses_all_and_is_named() {
+        let fetched = vec![
+            (brush(1), Some(vec![1])),
+            (brush(2), None),
+            (brush(3), Some(vec![3])),
+        ];
+        assert_eq!(all_or_short(fetched), Err(vec![brush(2)]));
+    }
+
+    #[test]
+    fn nothing_owed_settles_to_nothing() {
+        assert_eq!(all_or_short(Vec::new()), Ok(Vec::new()));
     }
 }

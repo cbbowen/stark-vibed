@@ -69,7 +69,6 @@ use dioxus::prelude::*;
 
 use crate::input::elem_xy;
 use crate::layout::chrome_dimmed;
-use crate::panels::frame::piece_frame;
 use crate::platform::{capture_pointer, now_seconds, sleep_ms};
 use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
 use stark_engine::ExportScale;
@@ -77,7 +76,7 @@ use stark_engine::Extent2;
 use stark_engine::command::ViewCommand;
 use stark_model::document::LayerId;
 use stark_model::geom::Vec2;
-use stark_ui::bounds::{Overview, Refresh};
+use stark_ui::bounds::{Overview, Refresh, piece_frame};
 
 /// The box the miniature is fitted into, in CSS px — the largest it is ever drawn,
 /// on whichever axis the piece runs out of first.

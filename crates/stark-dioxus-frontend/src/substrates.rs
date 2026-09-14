@@ -646,24 +646,25 @@ pub fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
 /// large bump maps stay out of the wasm binary — §6.6), so this runs async: `pick` is
 /// a name or an id and what `new_document` needs is the resolved `SubstrateId`.
 ///
-/// It owns closing the modal, once the work is done. `spawn_forever`, not `spawn`: a
-/// plain spawn would tie the task to the modal's scope, and the backdrop/Cancel still
-/// work during the fetch — a dismissal would cancel it mid-flight *after*
-/// `collab::leave` already ran (session gone, document never replaced). The task
-/// must outlive the modal, so it closes through the dialog stack rather than the
-/// modal's `on_close`, whose owner may be gone by then.
+/// It owns closing the modal, once the work is done. A scope-tied `spawn` from the
+/// modal's own handler, so the task is the dialog instance's: dismissing it during the
+/// fetch cancels the new document before anything has changed, and a dialog reopened
+/// meanwhile is a new instance this task cannot close.
 fn new_document(state: AppState, color: ColorSpaceId, pick: Pick) {
-    // Replacing the document abandons any shared session (and clears the
-    // ticket from the URL) — the fresh canvas is private until re-shared.
-    crate::collab::leave(state);
-    spawn_forever(async move {
+    spawn(async move {
         // A substrate that will not fetch opens the document smooth rather than
         // refusing to open it — and the document then honestly *says* it is smooth
         // instead of claiming a substrate it hasn't got.
         let surface = resolve_signal(state, pick).await;
-        crate::state::with_engine(state, |r| {
+        // After the fetch, so a dismissal during it leaves the session alone too.
+        // Replacing the document abandons any shared session (and clears the ticket
+        // from the URL) — the fresh canvas is private until re-shared.
+        crate::collab::leave(state);
+        // Framing a fresh document leaves the view alone: nothing is painted and
+        // nothing framed, so there is no piece to show yet.
+        crate::state::replace_document(state, |r| {
             r.new_document(color, surface);
-            r.paint();
+            Ok(())
         });
         tracing::info!(?color, ?pick, ?surface, "new document ready");
         crate::dialogs::close(state, crate::dialogs::DialogId::NewDocument);

@@ -269,7 +269,7 @@ async fn generate(state: AppState, layer: LayerId) -> Option<String> {
         .obs
         .peek()
         .as_ref()
-        .and_then(crate::panels::frame::piece_frame);
+        .and_then(stark_ui::bounds::piece_frame);
     // Everything up to the readback happens under the engine borrow, which must
     // end before the await — `Engine::export_view`'s own bargain.
     //

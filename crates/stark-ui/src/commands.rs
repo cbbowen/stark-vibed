@@ -79,7 +79,8 @@ use crate::storage::{self, Entry, Store};
 /// a field an older record lacks has to say what its absence meant).
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub struct Chord {
-    /// Ctrl, or Command on a Mac ([`keys::accel`](crate::keys::accel)).
+    /// The accelerator: Ctrl or Command (the Windows key off a Mac), either one on
+    /// every OS ([`keys::accel`](crate::keys::accel)).
     pub ctrl: bool,
     pub shift: bool,
     /// Alt, or Option on a Mac. Last of the three and defaulted for the store's

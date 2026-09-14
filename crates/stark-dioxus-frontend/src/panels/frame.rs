@@ -98,15 +98,6 @@ fn default_rect(state: AppState) -> (Vec2, Vec2) {
     stark_ui::bounds::content(o).unwrap_or_else(|| stark_ui::bounds::view(o))
 }
 
-/// **The frame that says where the piece ends** — `stark_ui::bounds::piece_frame`,
-/// re-exported under the name three modules in this crate already reach it by.
-///
-/// The rule went down to the shared crate when the native frontend's navigator
-/// needed the same answer (§11.2): what it reads is the engine's layer roster, and
-/// two frontends disagreeing about which rect *is* the piece would put a file and its
-/// miniature onto two different pictures.
-pub(crate) use stark_ui::bounds::piece_frame;
-
 /// Make a frame and pick it up (`Command::AddFrame`) — a frame *is* a layer, so
 /// the button that runs this stands in the Layers panel's header. The new frame
 /// is selected immediately, so its bar and handles come up without a second

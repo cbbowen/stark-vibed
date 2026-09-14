@@ -27,7 +27,6 @@
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use stark_engine::Identity;
-use stark_engine::command::ViewCommand;
 use stark_net::{
     AssetNeed, Broadcaster, CollabSession, Events, Joined, LinkKind, NetOptions, RemoteEvent,
     SessionTicket, actor_from_endpoint_id,
@@ -144,33 +143,26 @@ pub fn join(state: AppState, link: String) {
                 document: file,
                 owed,
             }) => {
-                // Fetched *before* `join_collaboration`, which replays the log: a
-                // substrate that is not registered when its `SetSubstrate` replays
-                // deposits every later stroke against the flat stand-in, and
-                // those pixels are stored (§6.4). Awaited out here because the
-                // renderer guard must not be held across a fetch.
-                let owed_bytes = crate::builtin_ids::fetch(&owed).await;
-                // Joining replaces the whole document, so the publish is the point:
-                // `with_engine` takes it on the way out, and the inline paint stays
-                // for the reason `state::resize` keeps one — the peer's canvas
-                // should not wait a frame to appear.
-                let joined = crate::state::with_engine(state, |r| {
+                // Settled *before* `join_collaboration` replays the log, and out
+                // here because the renderer guard must not be held across a fetch.
+                // Best effort, unlike opening a file: a promise this build cannot keep
+                // is left to the ordinary blob fetch, which pulls it off a peer
+                // (`Joined::owed`).
+                let mut owed_bytes = Vec::with_capacity(owed.len());
+                for &need in &owed {
+                    if let Some(bytes) = crate::builtin_ids::fetch(need).await {
+                        owed_bytes.push((need, bytes));
+                    }
+                }
+                let joined = crate::state::replace_document(state, |r| {
                     for (need, bytes) in &owed_bytes {
                         crate::builtin_ids::install(r, *need, bytes);
                     }
-                    // First, and fallible: a session painted in a color space this
-                    // build lacks is refused here, before anything of this client's
-                    // own document has been disturbed (§6.7).
+                    // Fallible: a session painted in a color space this build lacks is
+                    // refused here, before anything of this client's own document has
+                    // been disturbed (§6.7).
                     r.join_collaboration(&file, Identity::new(session.actor_id(), id.boot))?;
-                    // Frame what arrived, the same as opening a file does
-                    // (`files::open_bytes`): a view is per-client and never sent
-                    // (§18.1.2), so a joiner starts at the origin at 1:1 while the
-                    // drawing they came to see can be anywhere on an unbounded
-                    // canvas — including entirely off their screen.
-                    let frame = crate::panels::frame::piece_frame(&r.observe());
-                    r.process(ViewCommand::ShowPiece(frame));
-                    r.paint();
-                    stark_engine::Result::Ok(r.all_asset_bytes())
+                    Ok(r.all_asset_bytes())
                 });
                 let assets = match joined {
                     Some(Ok(assets)) => assets,
@@ -222,8 +214,9 @@ fn supply_locally(state: AppState, need: AssetNeed) {
         return;
     };
     spawn_forever(async move {
-        let Some((need, bytes)) = crate::builtin_ids::fetch(&[need]).await.into_iter().next()
-        else {
+        // Not `builtin_ids::settle`: nothing is replayed here, and a need this cannot
+        // meet is fetched off a peer instead.
+        let Some(bytes) = crate::builtin_ids::fetch(need).await else {
             return;
         };
         // Into the engine *before* the session is told. `add_content` releases

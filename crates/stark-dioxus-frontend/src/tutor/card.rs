@@ -8,6 +8,7 @@ use strum::VariantArray;
 use super::lessons::{Anchor, LESSONS, Side};
 use super::reader::Effects;
 use crate::anchor::{self, GAP};
+use crate::dialogs::DialogId;
 use crate::icons::icon;
 use crate::layout::{PanelLayout, chrome_dimmed, open_panel, panel_key};
 use crate::platform::{self, ElementBox};
@@ -114,6 +115,17 @@ impl Anchor {
     }
 }
 
+/// Whether the dialog on top of the stack covers a card pointing at `anchor`: every
+/// dialog does, except the brush editor for a card pointing into it. Only the top is
+/// asked, because a dialog opened over the editor covers its parts as well.
+fn covered(top: Option<DialogId>, anchor: Anchor) -> bool {
+    match top {
+        None => false,
+        Some(DialogId::BrushEditor) => !anchor.inside_dialog(),
+        Some(_) => true,
+    }
+}
+
 /// Put the lesson waiting on screen.
 fn show(state: AppState) {
     super::step(state, |tour| {
@@ -168,14 +180,8 @@ pub fn TutorCard() -> Element {
         if !(state.tutor.enabled)() {
             return;
         }
-        // Unless the card points *at* the dialog. The preset-save dialog is over even
-        // those, being the one thing the brush editor opens on top of itself.
-        let dialog = crate::dialogs::is_open(state, crate::dialogs::DialogId::BrushEditor)
-            && !lesson.anchor.inside_dialog();
-        let busy = (state.canvas_active)()
-            || dialog
-            || crate::dialogs::is_open(state, crate::dialogs::DialogId::PresetSave)
-            || crate::modes::composing(state).is_some();
+        let dialog = covered(state.dialogs.read().last().copied(), lesson.anchor);
+        let busy = (state.canvas_active)() || dialog || crate::modes::composing(state).is_some();
         if busy {
             return;
         }
@@ -350,5 +356,24 @@ pub fn TutorCard() -> Element {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::brush_editor::BrushPart;
+
+    #[test]
+    fn every_dialog_covers_a_card_but_the_editor_it_points_into() {
+        let inside = Anchor::BrushEditor(BrushPart::Preview);
+        assert!(!covered(None, Anchor::Canvas));
+        assert!(covered(Some(DialogId::Settings), Anchor::Canvas));
+        assert!(covered(Some(DialogId::BrushEditor), Anchor::Canvas));
+        assert!(!covered(Some(DialogId::BrushEditor), inside));
+        assert!(
+            covered(Some(DialogId::PresetSave), inside),
+            "a dialog opened over the editor covers its parts"
+        );
     }
 }
