@@ -438,7 +438,7 @@ pub fn pick(state: AppState, slot: Digit) {
 }
 
 /// Pin the rack up or put it away, and remember it — **the only thing that writes
-/// [`SlotState::pinned`](crate::state::SlotState::pinned)**, which is what makes
+/// [`SlotState::pinned`]**, which is what makes
 /// durability structural rather than a line the menu row has to remember (the move
 /// `navigator::set_open` and `layout::set_open` both make).
 ///
@@ -512,4 +512,58 @@ pub fn seed_defaults(state: AppState) {
     let rack = slots::seed(&state.presets.peek());
     let mut brushes = state.slots.brushes;
     brushes.set(rack);
+}
+
+/// The quick-brush rack's signals (§18.1.8), grouped because they are one
+/// feature's worth of state and because the second is meaningless without the
+/// first: a hold names a slot in the rack.
+///
+/// Root-owned, and it has to be — the rack is read from the window's own key
+/// handlers (`crate::input::bind_shortcuts`), which are bound once for the life of
+/// the page and belong to no component's scope.
+#[derive(Clone, Copy)]
+pub struct SlotState {
+    /// What each digit holds — a preset's name and a size and flow
+    /// (`slots::QuickBrush`), never a brush; `None` for a slot nobody has
+    /// filled. Loaded from `localStorage` at startup like the shape and preset
+    /// libraries, and resolved against the preset library at every use.
+    pub brushes: Signal<stark_ui::slots::Rack>,
+    /// The hold in flight — `Some` for exactly as long as a number key is down
+    /// or the pen's eraser end is on the glass. The rack's overlay is mounted on
+    /// this ([`SlotOverlay`]), and the release reads the brushes it has to
+    /// restore from it.
+    pub held: Signal<Option<stark_ui::slots::Held>>,
+    /// The last press of a number key, so the next can tell whether it is the
+    /// second of a double-tap (`slots::Taps`, §18.1.8). Read and written by
+    /// `slots::hold` alone, and rendered by nothing.
+    pub taps: Signal<stark_ui::slots::Taps>,
+    /// Whether the rack is kept open with no key held — the visibility menu's
+    /// "Quick brushes" (§18.1.8). What it buys is a rack that can be *clicked*,
+    /// which is the only way to a slot for a hand with no keyboard under it.
+    ///
+    /// Persisted with the rest of what is on screen (`crate::visibility`, §25.6),
+    /// and written only by [`set_pinned`]. It was once the one entry of that menu
+    /// that was *not* remembered, on the argument that the rack is a picture of what
+    /// the keyboard holds and pinning it asks to see that once. But pinning is not
+    /// that question: while a number is held the rack shows regardless, and what the
+    /// pin buys is a rack that *stays* and takes clicks — a standing choice about the
+    /// screen and not a glance at one.
+    pub pinned: Signal<bool>,
+}
+
+impl SlotState {
+    pub(crate) fn new() -> Self {
+        use crate::state::root_signal;
+        use stark_ui::commands::VisibilityToggle;
+        Self {
+            brushes: root_signal(stark_ui::slots::empty_rack),
+            held: root_signal(|| None),
+            taps: root_signal(stark_ui::slots::Taps::default),
+            // The rack's pin is one of the four entries of the visibility menu
+            // this browser remembers (`crate::visibility`, §25.6).
+            pinned: root_signal(|| {
+                stark_ui::visibility::stored_showing(VisibilityToggle::QuickBrushes)
+            }),
+        }
+    }
 }

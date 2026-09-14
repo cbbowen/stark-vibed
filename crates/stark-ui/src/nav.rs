@@ -390,6 +390,12 @@ impl Touch {
     pub fn is_idle(&self) -> bool {
         self.down.is_empty()
     }
+
+    /// Whether a pinch is in progress: from the second finger landing to the last one
+    /// lifting, which is when the surface holds the pointer.
+    pub fn is_pinching(&self) -> bool {
+        self.pinch.is_some()
+    }
 }
 
 /// The tap a finished episode made, as the fingers at its widest, or `None` (§18.1.11).
@@ -525,6 +531,26 @@ mod tests {
             touch.finger_move(9, Vec2::new(90.0, 90.0)),
             Moved::Surface
         ));
+    }
+
+    /// A pinch runs from the second finger landing to the last one lifting — through the
+    /// lift that leaves one finger panning — and never for a lone finger, even one whose
+    /// primary press forgot a stale pair.
+    #[test]
+    fn a_pinch_runs_from_the_second_landing_to_the_last_lift() {
+        let mut touch = Touch::default();
+        assert!(!touch.finger_down(1, Vec2::ZERO, true, 0.0, 0.0));
+        assert!(!touch.is_pinching(), "one finger is the surface's");
+        assert!(touch.finger_down(2, Vec2::new(100.0, 0.0), false, 0.0, 0.0));
+        assert!(touch.is_pinching());
+        assert_eq!(touch.finger_up(2, 0.1), Lift::Continuing);
+        assert!(touch.is_pinching(), "the last finger of a pinch still pans");
+        assert!(matches!(touch.finger_up(1, 0.2), Lift::Ended { .. }));
+        assert!(!touch.is_pinching());
+
+        let mut stale = pair(100.0);
+        assert!(!stale.finger_down(9, Vec2::ZERO, true, 0.0, 5.0));
+        assert!(!stale.is_pinching(), "a primary press starts over");
     }
 
     /// A quick, still pair is judged on the lift that empties the surface.

@@ -218,10 +218,9 @@ impl Record for Prefs {
 }
 
 impl Default for Prefs {
-    /// The app's defaults, and the authority on them: every signal these seed is
-    /// overwritten by a frontend's own `prefs::load` at startup, so a value written
-    /// anywhere else would
-    /// be the one that never applies.
+    /// The app's defaults, and the authority on them: a frontend seeds its preferences
+    /// from the stored record, and from these where nothing readable is stored — so a
+    /// default written anywhere else is one that never applies.
     fn default() -> Self {
         Self {
             // On, because the assist is most of the value of a hold and somebody

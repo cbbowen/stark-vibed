@@ -24,7 +24,7 @@
 //! `AppState`'s `collab.pump` and cancelled when the session it serves is
 //! replaced ([`install`]) or torn down ([`leave`]).
 
-use dioxus::dioxus_core::spawn_forever;
+use dioxus::dioxus_core::{Task, spawn_forever};
 use dioxus::prelude::*;
 use stark_engine::Identity;
 use stark_net::{
@@ -34,8 +34,65 @@ use stark_net::{
 use stark_ui::collab::{Peer, Phase};
 
 use crate::icons::icon;
-use crate::state::AppState;
+use crate::state::{AppState, root_signal};
 use crate::widgets::Modal;
+
+/// The shared-session signals, grouped because they share one lifecycle: they are
+/// set together when a session starts and cleared together when it ends, and
+/// nothing outside this module should be writing them piecemeal.
+#[derive(Clone, Copy)]
+pub struct CollabState {
+    /// The live session, if any. `!Send` iroh handles live in unsync storage
+    /// beside the renderer.
+    pub session: Signal<Option<CollabSession>>,
+    /// The shareable ticket string, while hosting/joined.
+    pub ticket: Signal<Option<String>>,
+    /// Where the session lifecycle stands (drives the dialog + rail badge).
+    pub phase: Signal<Phase>,
+    /// The last share/join failure, surfaced in the dialog.
+    pub error: Signal<Option<String>>,
+    /// Who else is in the session, refreshed by the presence pump
+    /// (§17.4). Its own signal rather than a field of `obs`: it changes on every remote
+    /// pointer move, and re-running the whole component tree at that rate to move a
+    /// cursor would be absurd.
+    pub peers: Signal<Vec<Peer>>,
+    /// How each directly-connected peer is reached — WebRTC, hole-punched UDP,
+    /// or an iroh relay — polled off the mesh by the presence pump on a slow
+    /// cadence (links change on the order of seconds, not frames). Peers in the
+    /// roster but absent here have no direct connection; the mesh forwards
+    /// their traffic. Read by the session dialog.
+    pub links: Signal<Vec<stark_net::PeerLink>>,
+    /// The incoming-event pump for `session`. Its lifetime is tied to the
+    /// session's: [`install`] replaces it, [`leave`] cancels it.
+    pub pump: Signal<Option<Task>>,
+    /// The outgoing presence pump — a fixed-cadence loop that drains the engine's
+    /// presence latch onto the mesh (§17.5). Separate from `pump`
+    /// because it is a *pull* on a timer rather than a reaction to arriving events,
+    /// but shares the same lifecycle.
+    pub presence: Signal<Option<Task>>,
+}
+
+impl CollabState {
+    pub(crate) fn new() -> Self {
+        Self {
+            session: root_signal(|| None),
+            ticket: root_signal(|| None),
+            phase: root_signal(Phase::default),
+            error: root_signal(|| None),
+            peers: root_signal(Vec::new),
+            links: root_signal(Vec::new),
+            pump: root_signal(|| None),
+            presence: root_signal(|| None),
+        }
+    }
+
+    /// Whether a live session exists — i.e. whether anyone is on the other end
+    /// of presence-only commands. `peek`: asked from event handlers at pointer
+    /// rate, and nothing there should subscribe.
+    pub fn active(&self) -> bool {
+        self.session.peek().is_some()
+    }
+}
 
 /// How often this client publishes its presence, in ms. Fast enough that another
 /// painter's stroke grows smoothly, slow enough that a 240 Hz pen does not put 240

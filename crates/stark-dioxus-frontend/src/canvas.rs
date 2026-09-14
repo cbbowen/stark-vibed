@@ -273,7 +273,11 @@ pub fn Canvas() -> Element {
                     // Every report the browser coalesced into this event, read
                     // only for a move a stroke takes — a hover needs one.
                     let Some(reports) = samples(state, &e) else { return };
-                    gestures.advance_paint(&e, &reports);
+                    // Another pointer's move under a live stroke — a refused palm —
+                    // lays nothing, and is not where the hand drawing is.
+                    if !gestures.advance_paint(&e, &reports) {
+                        return;
+                    }
                     let Some(last) = reports.last() else { return };
                     last.pos
                 } else {

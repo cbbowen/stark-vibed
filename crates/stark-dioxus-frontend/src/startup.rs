@@ -22,10 +22,6 @@ pub fn load_records(state: AppState) {
     slots::load(state);
     commands::load(state);
     drags::load(state);
-    // The preferences themselves were read when the state was built; the tour holds
-    // its own switch.
-    let tips = state.prefs.peek().tips;
-    tutor::set_enabled(state, tips);
 }
 
 /// Build the engine and bring the app up on it. Nothing runs past a canvas that
@@ -36,22 +32,25 @@ pub fn load_records(state: AppState) {
 /// 1. **The bundled brush shapes, before any preset names one.** A stamp is named by
 ///    the hash of its bytes, so the ids do not exist until the import.
 /// 2. **The default substrate, before the document opens on it** — for the same
-///    reason. It replaces a document nobody can have touched, because the renderer
-///    is not published until step 5.
+///    reason. Through `new_document` rather than `SetSubstrate`, so no empty first
+///    step lands in every fresh document's undo history. It replaces a document
+///    nobody can have touched, because the renderer is not published until step 5.
 /// 3. **The default light.** Only a view setting; any later step would do.
 /// 4. **Re-read the canvas size after the last fetch**, with no `await` before the
 ///    publish: every resize reported during the fetches was dropped.
 /// 5. **Publish the renderer.** Everything below needs the engine.
-/// 6. **The shape and substrate libraries, before the first preset is worn** — a
+/// 6. **The engine-owned preferences, with no `await` since step 5.** Until they land
+///    the projection holds the engine's defaults, and a preference changed in that
+///    gap would save those over the stored ones (`prefs::set` reads the projection).
+///    Also before a session is joined, which reads the peer-outline switch.
+/// 7. **The shape and substrate libraries, before the first preset is worn** — a
 ///    library not yet arrived puts a custom-stamped preset on the round tip, and
 ///    leaves a file's substrate unnamed.
-/// 7. **The app's own presets, after the imports of step 1, then the rack from
+/// 8. **The app's own presets, after the imports of step 1, then the rack from
 ///    them**: a built-in names a bundled stamp by id, and a slot takes the preset
 ///    that declares its digit.
-/// 8. **The first preset and the opening color**, pushed to an engine that opened on
+/// 9. **The first preset and the opening color**, pushed to an engine that opened on
 ///    black.
-/// 9. **The engine-owned preferences, before a session is joined** — the session
-///    reads the peer-outline switch.
 /// 10. **Join a session named in the URL; bind the file launch and paste**, which
 ///     both need an engine to load into.
 /// 11. **The tour, last**: every step above dispatches on the user's behalf, and a
@@ -79,19 +78,19 @@ pub async fn run(state: AppState) {
     r.paint();
     // 5.
     state::publish_renderer(state, r);
-
     // 6.
+    crate::prefs::load_engine(state);
+
+    // 7.
     library::load::<stark_ui::assets::Shapes>(state).await;
     library::load::<stark_ui::assets::Substrates>(state).await;
-    // 7. Every start, not only a first one, so an improved default reaches a browser
+    // 8. Every start, not only a first one, so an improved default reaches a browser
     // that has been running Stark for months.
     presets::install_builtins(state);
     slots::seed_defaults(state);
-    // 8. Both are `SetBrush`, which is session state: no undo step.
+    // 9. Both are `SetBrush`, which is session state: no undo step.
     presets::apply_first(state);
     update_brush(state, |_, t| t.color = stark_ui::color::INITIAL_COLOR);
-    // 9.
-    crate::prefs::load_engine(state);
     // 10.
     if let Some(ticket) = collab::url_ticket() {
         tracing::info!("joining shared session from URL fragment");

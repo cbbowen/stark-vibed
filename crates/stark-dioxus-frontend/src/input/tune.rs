@@ -200,3 +200,79 @@ impl Tune {
         }
     }
 }
+
+/// What a brush-tuning drag is showing (§18.1.9): the ring while it is about Size,
+/// the bar once it is about Flow.
+///
+/// **One value rather than two `Option`s**, which is what makes "the gesture shows one
+/// thing" a shape the state cannot break instead of a rule every write has to keep.
+/// The drag commits to a single knob and its readout has to say *which*; with a signal
+/// apiece, both being up at once would be expressible, and taking the ring down when
+/// the drag turns out to be about flow would be a step the flow branch remembers. Here
+/// it is not a step at all — it is what assigning the other variant already means.
+///
+/// It also answers the canvas's own question by being `Some`
+/// ([`Signals::tune_readout`](crate::state::Signals::tune_readout)): a tuning drag
+/// hides the crosshair, and it does that from the press, before either knob has been
+/// chosen.
+#[derive(Copy, Clone, PartialEq)]
+pub enum TuneReadout {
+    /// Sideways: the ring. Also what the *press* raises, before the drag has said which
+    /// knob it is about — the brush at the size it already is, which is the size every
+    /// ratio the gesture goes on to ask for is a ratio of.
+    Size(BrushRing),
+    /// Up and down: the bar.
+    Flow(FlowBar),
+}
+
+/// What a brush-tuning drag's size indicator draws (§18.1.9): the size being asked
+/// for, and the size the drag started from, about the point it pressed on.
+///
+/// **Screen px, not canvas px** — deliberately a drawing instruction rather than a
+/// statement about the brush. The gesture holds the one zoom it measures against
+/// ([`TuneDrag::zoom`]), so converting there means the ring and the radius it
+/// reports cannot be scaled by two different numbers; and it leaves the overlay pure
+/// layout, with no view to read and nothing to re-render it when the engine writes.
+///
+/// A circle in canvas space is still a circle on screen at any angle or handedness, so
+/// a radius through the zoom is the whole of the transform: this needs no matrix, which
+/// is the one thing that makes a `<div>` a fair way to draw it.
+#[derive(Copy, Clone, PartialEq)]
+pub struct BrushRing {
+    /// The press position in page px — where the ring is centred, and the one point a
+    /// gesture agrees on however far it has wandered since.
+    pub at: Vec2,
+    /// The radius the brush had when the drag began, screen px. The reference: without
+    /// it the ring says how big the brush is about to be and nothing about whether that
+    /// is bigger or smaller than what the last stroke was made with.
+    pub was: f32,
+    /// The radius being asked for now, screen px.
+    pub now: f32,
+}
+
+/// What a brush-tuning drag's flow indicator draws (§18.1.9): how full the brush is,
+/// beside the point the drag pressed on.
+///
+/// **A share of the range, not the value** — the bar stands for the whole of
+/// `0..MAX_FLOW` and the fill says where in it the brush sits, so the overlay needs
+/// neither the maximum nor the panel's units to draw one. A drawing instruction on
+/// [`BrushRing`]'s argument, arrived at from the other end: the ring converts here
+/// because the gesture holds the one zoom that could scale it, and this carries no
+/// length at all because flow has none on screen — how long a bar is, is the
+/// stylesheet's to say.
+///
+/// No reference mark behind it, where the ring carries the size it started from. The
+/// ring needs one because "it will be this big" is not an answer without "bigger than
+/// what"; a bar that is a share of the whole range has already said how much, and a
+/// second mark on it would be a picture of where the gesture began rather than of what
+/// the brush is now carrying.
+#[derive(Copy, Clone, PartialEq)]
+pub struct FlowBar {
+    /// The press position in page px — where the bar is centred. [`BrushRing::at`] and
+    /// for its reason, and centred on it for one more: the ring is, and a readout that
+    /// moved sideways at the moment the drag worked out which knob it was about would
+    /// look like a fault rather than an answer.
+    pub at: Vec2,
+    /// How full, 0..=1 — the flow as a share of the range the sliders allow.
+    pub fill: f32,
+}

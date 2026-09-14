@@ -20,6 +20,11 @@ use stark_ui::input::{DWELL, Dwell, HeldPress};
 /// its hold is earned: under a seventh of [`DWELL`], and far too rare to cost anything.
 const DWELL_POLL_MS: i32 = 60;
 
+/// Whether a move of `pointer` feeds the stroke `drawing` holds the pointer of.
+fn drawn_by(drawing: Option<i32>, pointer: i32) -> bool {
+    drawing == Some(pointer)
+}
+
 /// A stroke's reports as the moves the engine takes them as.
 fn to_commands(samples: &[InputSample]) -> impl Iterator<Item = GestureCommand> + '_ {
     samples.iter().map(|&sample| GestureCommand::To { sample })
@@ -47,9 +52,9 @@ fn to_commands(samples: &[InputSample]) -> impl Iterator<Item = GestureCommand> 
 #[derive(Clone, Copy)]
 pub struct Paint {
     state: AppState,
-    /// Whether a gesture is in flight — the thing the three entry points below
-    /// keep in step with the engine.
-    drawing: Signal<bool>,
+    /// The pointer drawing the gesture in flight, or `None` — the thing the three
+    /// entry points below keep in step with the engine.
+    drawing: Signal<Option<i32>>,
     /// The panel's shape action, stashed while a gesture's modifier keys override
     /// it (§6.8) and put back when the gesture ends, however it ends.
     restore: Signal<Option<ShapeAction>>,
@@ -68,7 +73,7 @@ impl Paint {
     pub fn use_paint(state: AppState) -> Self {
         Self {
             state,
-            drawing: use_signal(|| false),
+            drawing: use_signal(|| None),
             restore: use_signal(|| None),
             dwell: crate::state::root_signal(|| None),
             watcher: crate::state::root_signal(|| None),
@@ -98,8 +103,7 @@ impl Paint {
         // and a `Some` is what has to be put back on release (below).
         let action = current_action(state);
         if tool.is_selection()
-            && let Some(next) =
-                stark_ui::selection::override_for(action, crate::drags::mods_of(e.modifiers()))
+            && let Some(next) = stark_ui::selection::override_for(action, mods_of(e.modifiers()))
         {
             let mut restore = self.restore;
             restore.set(Some(action));
@@ -112,7 +116,7 @@ impl Paint {
         } else {
             input_rope(state)
         };
-        self.open(tool, &[sample], tolerance, rope, elem_xy(e))
+        self.open(e.pointer_id(), tool, &[sample], tolerance, rope, elem_xy(e))
     }
 
     /// Open the gesture on samples **already taken**: the press first, then every
@@ -123,10 +127,11 @@ impl Paint {
     /// pours what it held in here once the press turns out to be paint (§18.1.11).
     /// A pen's press comes through with a list of one, which is what it always was.
     ///
-    /// `at` is where the pointer is *now*, in element (CSS) px — the frame the hold
-    /// is measured in.
+    /// `pointer` is the one drawing it. `at` is where the pointer is *now*, in element
+    /// (CSS) px — the frame the hold is measured in.
     fn open(
         self,
+        pointer: i32,
         tool: Tool,
         samples: &[InputSample],
         tolerance: f32,
@@ -149,7 +154,7 @@ impl Paint {
             },
         );
         let mut drawing = self.drawing;
-        drawing.set(true);
+        drawing.set(Some(pointer));
         // Everything the hand did while the press was being held, oldest first —
         // so the wait cost the stroke a few milliseconds at its head and none of
         // its shape. Empty for every press that was believed as it landed.
@@ -174,14 +179,15 @@ impl Paint {
     /// that is already being drawn on that it is a **palm** and not a gesture
     /// ([`Landing::begin`]).
     pub fn in_flight(self) -> bool {
-        *self.drawing.peek()
+        self.drawing.peek().is_some()
     }
 
     /// Feed a move to the gesture in flight — `samples` being every report the
-    /// event carries ([`samples`]). `false` when there is none, which is what leaves
-    /// the caller's cursor reporting to run.
+    /// event carries ([`samples`]). `false` when the move is not the stroke's: none
+    /// is in flight, or another pointer drew it — a palm [`Landing::begin`] refused
+    /// still reports its moves.
     pub fn advance(self, e: &Event<PointerData>, samples: &[InputSample]) -> bool {
-        if !self.in_flight() {
+        if !drawn_by(*self.drawing.peek(), e.pointer_id()) {
             return false;
         }
         let state = self.state;
@@ -242,7 +248,7 @@ impl Paint {
         let mut drawing = self.drawing;
         if self.in_flight() {
             dispatch(state, command);
-            drawing.set(false);
+            drawing.set(None);
         }
         let mut restore = self.restore;
         if let Some(base) = restore.take() {
@@ -493,6 +499,7 @@ impl Landing {
     fn open(self) {
         let Some(h) = self.take() else { return };
         self.paint.open(
+            h.id,
             h.press.tool(),
             h.press.samples(),
             h.tolerance,
@@ -607,5 +614,19 @@ impl Landing {
         // down: `hover_stroke` is gated on exactly this flag.
         clear_hover_mark(state);
         pick_color(state, last.pos);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_pointer_that_began_a_stroke_feeds_it() {
+        const PEN: i32 = 2;
+        const PALM: i32 = 7;
+        assert!(drawn_by(Some(PEN), PEN));
+        assert!(!drawn_by(Some(PEN), PALM), "a refused palm's move");
+        assert!(!drawn_by(None, PEN), "no stroke in flight");
     }
 }

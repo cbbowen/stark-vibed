@@ -14,7 +14,7 @@
 //! unrelated command refreshes it (§4, §7). Both the canvas substrate and the lighting
 //! environment are reachable that way, and neither spelling compiles.
 
-use dioxus::dioxus_core::{Runtime, Subscribers, Task};
+use dioxus::dioxus_core::{Runtime, Subscribers};
 use dioxus::prelude::*;
 
 use crate::collab;
@@ -23,7 +23,6 @@ use stark_engine::ObservableState;
 use stark_engine::command::InputCommand;
 use stark_engine::command::{Tool, ViewCommand};
 use stark_model::geom::Vec2;
-use stark_ui::commands::PickScope;
 use stark_ui::commands::VisibilityToggle;
 use stark_ui::prefs::{ChromeHiding, Prefs};
 
@@ -49,11 +48,6 @@ use stark_ui::prefs::{ChromeHiding, Prefs};
 /// unconditionally, in a component body.
 pub(crate) fn root_signal<T: 'static>(init: impl FnOnce() -> T) -> Signal<T> {
     use_hook(|| Signal::new_in_scope(init(), ScopeId::ROOT))
-}
-
-/// [`root_signal`] for a memo: owned by the root scope, for the same reason.
-fn root_memo<T: PartialEq + 'static>(f: impl FnMut() -> T + 'static) -> Memo<T> {
-    use_hook(|| Runtime::current().in_scope(ScopeId::ROOT, || Memo::new(f)))
 }
 
 /// A signal handed out with its `write` half kept back: `read` and `peek` work
@@ -240,13 +234,15 @@ pub struct Signals {
     /// `show_peer_selections`, `history_budget`, `fast_commit` — are what was stored
     /// or last asked for; what the engine holds is the projection's.
     pub prefs: Signal<Prefs>,
-    /// `prefs.chrome_hiding`, as a memo: every chrome container asks it through
-    /// [`chrome_dimmed`](crate::layout::chrome_dimmed) while a gesture is in flight,
-    /// and none of them should wake for another preference.
+    /// `prefs.chrome_hiding`, as a root memo ([`use_pref`]'s note): every chrome
+    /// container asks it through [`chrome_dimmed`](crate::layout::chrome_dimmed).
     ///
     /// Read it, never peek it: a memo's `peek` does not recompute a stale value.
     /// A handler that must not subscribe reads `prefs.peek()` instead.
     pub chrome_hiding: Memo<ChromeHiding>,
+    /// `prefs.hdr.on`, as a root memo: every menu row for `ToggleHdr` asks it inside
+    /// its own memo (`commands::Lit`). Read it, never peek it.
+    pub hdr_on: Memo<bool>,
     /// Bumped whenever the brush color is set from **outside** the color picker —
     /// today only by the eyedropper.
     ///
@@ -257,20 +253,20 @@ pub struct Signals {
     /// back onto the gamut boundary under the user's cursor.
     pub color_epoch: Signal<u64>,
     /// The eyedropper (§18.0.2).
-    pub pick: PickState,
+    pub pick: crate::panels::pick::PickState,
     /// What a brush-tuning drag is showing over the canvas (§18.1.9) — the size ring
     /// or the flow bar — or `None` when no tuning drag is in flight.
     ///
-    /// Shared state rather than the gesture's own, for [`PickState::dragging`]'s
+    /// Shared state rather than the gesture's own, for [`PickState::dragging`](crate::panels::pick::PickState::dragging)'s
     /// reason: the drag is the canvas's, but the readout is a sibling overlay of it — a
     /// `<div>` cannot be drawn from inside a `<canvas>`'s handler without somewhere for
     /// both to read.
     ///
     /// The canvas reads it back for one thing of its own: while this is up the
-    /// crosshair goes ([`TuneReadout`]), and *that* a drag is in flight is the whole of
+    /// crosshair goes ([`TuneReadout`](crate::input::TuneReadout)), and *that* a drag is in flight is the whole of
     /// what it asks — through a memo, so the surface a stroke is made on does not
     /// re-render per move to find the answer unchanged.
-    pub tune_readout: Signal<Option<TuneReadout>>,
+    pub tune_readout: Signal<Option<crate::input::TuneReadout>>,
     /// Where the pointer hovers over the canvas, in the canvas element's own px —
     /// `None` while it is elsewhere, or while the gesture in hand is not paint (a
     /// pinch, a pan, a tuning drag). The brush cursor rides it (`BrushCursor`,
@@ -307,7 +303,7 @@ pub struct Signals {
     /// canvas element's own px — `None` when there is nothing to show. Its own
     /// signal for the reason [`tune_readout`](Self::tune_readout) is: only the
     /// little overlay re-renders at pointer rate, never the chrome.
-    pub tow: Signal<Option<TowUi>>,
+    pub tow: Signal<Option<crate::overlays::TowUi>>,
     /// Which of the three shape tools the Select panel's action row reaches for
     /// (§6.8) — the last one armed, rect until one has been.
     ///
@@ -358,10 +354,10 @@ pub struct Signals {
     /// component ever subscribes to it.
     pub paint_queued: Signal<bool>,
     /// Everything to do with a shared drawing (§12).
-    pub collab: CollabState,
+    pub collab: collab::CollabState,
     /// Timeline mode: scrubbing and playing back the history
     /// (§18.2.4; `crate::panels::timeline`).
-    pub timeline: TimelineState,
+    pub timeline: crate::panels::timeline::TimelineState,
     /// The brush stamps this browser has imported (§6.6; `crate::library`).
     pub shapes: crate::library::LibraryState,
     /// The canvas substrates this browser has imported (§6.4; `crate::library`).
@@ -396,7 +392,7 @@ pub struct Signals {
     /// loaded from `localStorage` at startup like the libraries above.
     pub gradients: crate::gradients::GradientsState,
     /// The ten brushes under the hand (§18.1.8; `crate::slots`).
-    pub slots: SlotState,
+    pub slots: crate::slots::SlotState,
     /// Whether the Navigator's miniature is showing in the bottom-left corner
     /// (§11; `crate::navigator`) — the visibility menu's "Navigator".
     ///
@@ -454,138 +450,6 @@ pub struct Signals {
     pub drag_offer: Signal<stark_ui::drags::Offer>,
 }
 
-/// The quick-brush rack's signals (§18.1.8), grouped because they are one
-/// feature's worth of state and because the second is meaningless without the
-/// first: a hold names a slot in the rack.
-///
-/// Root-owned like everything here, and it has to be — the rack is read from the
-/// window's own key handlers (`crate::input::bind_shortcuts`), which are bound
-/// once for the life of the page and belong to no component's scope.
-#[derive(Clone, Copy)]
-pub struct SlotState {
-    /// What each digit holds — a preset's name and a size and flow
-    /// (`slots::QuickBrush`), never a brush; `None` for a slot nobody has
-    /// filled. Loaded from `localStorage` at startup like the shape and preset
-    /// libraries, and resolved against the preset library at every use.
-    pub brushes: Signal<stark_ui::slots::Rack>,
-    /// The hold in flight — `Some` for exactly as long as a number key is down
-    /// or the pen's eraser end is on the glass. The rack's overlay is mounted on
-    /// this (`slots::SlotOverlay`), and the release reads the brushes it has to
-    /// restore from it.
-    pub held: Signal<Option<stark_ui::slots::Held>>,
-    /// The last press of a number key, so the next can tell whether it is the
-    /// second of a double-tap (`slots::Taps`, §18.1.8). Read and written by
-    /// `slots::hold` alone, and rendered by nothing.
-    pub taps: Signal<stark_ui::slots::Taps>,
-    /// Whether the rack is kept open with no key held — the visibility menu's
-    /// "Quick brushes" (§18.1.8). What it buys is a rack that can be *clicked*,
-    /// which is the only way to a slot for a hand with no keyboard under it.
-    ///
-    /// Persisted with the rest of what is on screen (`crate::visibility`, §25.6),
-    /// and written only by [`slots::set_pinned`](crate::slots::set_pinned). It was
-    /// once the one entry of that menu that was *not* remembered, on the argument
-    /// that the rack is a picture of what the keyboard holds and pinning it asks to
-    /// see that once. But pinning is not that question: while a number is held the
-    /// rack shows regardless, and what the pin buys is a rack that *stays* and takes
-    /// clicks — the only route to a slot for a hand with no keyboard under it, which
-    /// is a standing choice about the screen and not a glance at one.
-    pub pinned: Signal<bool>,
-}
-
-/// What a brush-tuning drag is showing (§18.1.9): the ring while it is about Size,
-/// the bar once it is about Flow.
-///
-/// **One value rather than two `Option`s**, which is what makes "the gesture shows one
-/// thing" a shape the state cannot break instead of a rule every write has to keep.
-/// The drag commits to a single knob and its readout has to say *which*; with a signal
-/// apiece, both being up at once would be expressible, and taking the ring down when
-/// the drag turns out to be about flow would be a step the flow branch remembers. Here
-/// it is not a step at all — it is what assigning the other variant already means.
-///
-/// It also answers the canvas's own question by being `Some` (`state::tune_readout`):
-/// a tuning drag hides the crosshair, and it does that from the press, before either
-/// knob has been chosen.
-#[derive(Copy, Clone, PartialEq)]
-pub enum TuneReadout {
-    /// Sideways: the ring. Also what the *press* raises, before the drag has said which
-    /// knob it is about — the brush at the size it already is, which is the size every
-    /// ratio the gesture goes on to ask for is a ratio of.
-    Size(BrushRing),
-    /// Up and down: the bar.
-    Flow(FlowBar),
-}
-
-/// What a brush-tuning drag's size indicator draws (§18.1.9): the size being asked
-/// for, and the size the drag started from, about the point it pressed on.
-///
-/// **Screen px, not canvas px** — deliberately a drawing instruction rather than a
-/// statement about the brush. The gesture holds the one zoom it measures against
-/// (`input::TuneDrag::zoom`), so converting there means the ring and the radius it
-/// reports cannot be scaled by two different numbers; and it leaves the overlay pure
-/// layout, with no view to read and nothing to re-render it when the engine writes.
-///
-/// A circle in canvas space is still a circle on screen at any angle or handedness, so
-/// a radius through the zoom is the whole of the transform: this needs no matrix, which
-/// is the one thing that makes a `<div>` a fair way to draw it.
-#[derive(Copy, Clone, PartialEq)]
-pub struct BrushRing {
-    /// The press position in page px — where the ring is centred, and the one point a
-    /// gesture agrees on however far it has wandered since.
-    pub at: Vec2,
-    /// The radius the brush had when the drag began, screen px. The reference: without
-    /// it the ring says how big the brush is about to be and nothing about whether that
-    /// is bigger or smaller than what the last stroke was made with.
-    pub was: f32,
-    /// The radius being asked for now, screen px.
-    pub now: f32,
-}
-
-/// What a brush-tuning drag's flow indicator draws (§18.1.9): how full the brush is,
-/// beside the point the drag pressed on.
-///
-/// **A share of the range, not the value** — the bar stands for the whole of
-/// `0..MAX_FLOW` and the fill says where in it the brush sits, so the overlay needs
-/// neither the maximum nor the panel's units to draw one. A drawing instruction on
-/// [`BrushRing`]'s argument, arrived at from the other end: the ring converts here
-/// because the gesture holds the one zoom that could scale it, and this carries no
-/// length at all because flow has none on screen — how long a bar is, is the
-/// stylesheet's to say.
-///
-/// No reference mark behind it, where the ring carries the size it started from. The
-/// ring needs one because "it will be this big" is not an answer without "bigger than
-/// what"; a bar that is a share of the whole range has already said how much, and a
-/// second mark on it would be a picture of where the gesture began rather than of what
-/// the brush is now carrying.
-#[derive(Copy, Clone, PartialEq)]
-pub struct FlowBar {
-    /// The press position in page px — where the bar is centred. [`BrushRing::at`] and
-    /// for its reason, and centred on it for one more: the ring is, and a readout that
-    /// moved sideways at the moment the drag worked out which knob it was about would
-    /// look like a fault rather than an answer.
-    pub at: Vec2,
-    /// How full, 0..=1 — the flow as a share of the range the sliders allow.
-    pub fill: f32,
-}
-
-/// The tow string as the overlay draws it (§6.11): the towed tip, the pointer,
-/// and the rope, all in the canvas element's own px.
-///
-/// **Screen px, not canvas px**, on [`BrushRing`]'s own argument: a drawing
-/// instruction rather than a statement about the stroke. The conversion happens
-/// where the engine is read, against the one view the gesture holds — a stroke
-/// cannot outlive its view, since a pinch cancels it — and the overlay stays
-/// pure layout.
-#[derive(Copy, Clone, PartialEq)]
-pub struct TowUi {
-    /// Where the mark is being laid — the towed tip.
-    pub tip: Vec2,
-    /// Where the hand is — the pointer the string runs to.
-    pub target: Vec2,
-    /// The string's length. `|target − tip|` short of it is slack, and the
-    /// overlay shows the difference as sag.
-    pub rope: f32,
-}
-
 impl AppState {
     /// Build the app's state. Call once, from the root component.
     ///
@@ -611,9 +475,10 @@ impl AppState {
             canvas_active: root_signal(|| false),
             panels_asleep: root_signal(|| false),
             prefs,
-            chrome_hiding: root_memo(move || prefs.read().chrome_hiding),
+            chrome_hiding: root_pref(prefs, |p| p.chrome_hiding),
+            hdr_on: root_pref(prefs, |p| p.hdr.on),
             color_epoch: root_signal(|| 0),
-            pick: PickState::new(),
+            pick: crate::panels::pick::PickState::new(),
             tune_readout: root_signal(|| None),
             brush_cursor: root_signal(|| None),
             // Seeded with the Color panel's opening color rather than the model
@@ -631,8 +496,8 @@ impl AppState {
             mode: root_signal(|| None),
             gradient_resume: root_signal(|| None),
             paint_queued: root_signal(|| false),
-            collab: CollabState::new(),
-            timeline: TimelineState::new(),
+            collab: collab::CollabState::new(),
+            timeline: crate::panels::timeline::TimelineState::new(),
             shapes: crate::library::LibraryState::new(),
             substrates: crate::library::LibraryState::new(),
             presets: root_signal(Vec::new),
@@ -640,7 +505,7 @@ impl AppState {
             thumbs: crate::thumbs::ThumbState::new(),
             layer_thumbs: crate::layer_thumbs::LayerThumbState::new(),
             gradients: crate::gradients::GradientsState::new(),
-            slots: SlotState::new(),
+            slots: crate::slots::SlotState::new(),
             // Seeded from what this browser last had on screen, like the other
             // three entries of that menu (`crate::visibility`, §25.6) — here
             // rather than in a load hook, so the first render is already the
@@ -656,64 +521,6 @@ impl AppState {
             drags: root_signal(Default::default),
             drag_offer: root_signal(Default::default),
         })))
-    }
-}
-
-impl PickState {
-    fn new() -> Self {
-        Self {
-            scope: root_signal(PickScope::default),
-            group_only: root_signal(|| true),
-            radius: root_signal(|| 0),
-            busy: root_signal(|| false),
-            dragging: root_signal(|| false),
-            loupe: root_signal(|| None),
-        }
-    }
-}
-
-impl CollabState {
-    fn new() -> Self {
-        Self {
-            session: root_signal(|| None),
-            ticket: root_signal(|| None),
-            phase: root_signal(stark_ui::collab::Phase::default),
-            error: root_signal(|| None),
-            peers: root_signal(Vec::new),
-            links: root_signal(Vec::new),
-            pump: root_signal(|| None),
-            presence: root_signal(|| None),
-        }
-    }
-}
-
-impl TimelineState {
-    fn new() -> Self {
-        Self {
-            // Seeded from what this browser last had on screen, like the other
-            // three entries of that menu (`crate::visibility`, §25.6) — here
-            // rather than in a load hook, so the first render is already the
-            // screen the artist left.
-            open: root_signal(|| stark_ui::visibility::stored_showing(VisibilityToggle::Timeline)),
-            playing: root_signal(|| false),
-            speed: root_signal(|| 1.0),
-            task: root_signal(|| None),
-        }
-    }
-}
-
-impl SlotState {
-    fn new() -> Self {
-        Self {
-            brushes: root_signal(stark_ui::slots::empty_rack),
-            held: root_signal(|| None),
-            taps: root_signal(stark_ui::slots::Taps::default),
-            // The rack's pin is one of the four entries of the visibility menu
-            // this browser remembers (`crate::visibility`, §25.6).
-            pinned: root_signal(|| {
-                stark_ui::visibility::stored_showing(VisibilityToggle::QuickBrushes)
-            }),
-        }
     }
 }
 
@@ -778,120 +585,28 @@ where
     use_memo(move || slice(state.obs.read().as_ref()))
 }
 
-/// Timeline mode's signals (§18.2.4), grouped because they are one
-/// mode's worth of view state: the mode itself, whether it is playing, and how fast.
+/// Subscribe to **one slice** of this browser's preferences, for [`use_obs`]'s
+/// reason: a write of [`Signals::prefs`] wakes every reader of the whole record.
 ///
-/// None of this is the *playhead* — that lives in the engine's timeline, where undo
-/// and redo already move it, and is read back through
-/// [`Engine::scrub_range`](stark_engine::Engine::scrub_range). A copy here is exactly
-/// the copy that would go stale the moment a stroke, an undo or a load moved the
-/// history underneath it.
-#[derive(Clone, Copy)]
-pub struct TimelineState {
-    /// Whether the mode is on — which is to say whether the bar is mounted.
-    pub open: Signal<bool>,
-    /// Whether playback is running. The source of truth for the transport button;
-    /// the loop below reads it every tick and stops when it goes false, so anything
-    /// that wants playback to end only has to clear this.
-    pub playing: Signal<bool>,
-    /// Playback rate, as a multiple of
-    /// [`BASE_RATE`](stark_ui::timeline::BASE_RATE).
-    pub speed: Signal<f32>,
-    /// The playback loop, so a second Play cannot start a second one and closing
-    /// the mode can cancel it. Root-owned like everything here: the loop outlives
-    /// the bar that started it (the bar unmounts when the mode closes), which is
-    /// the case `spawn_forever` exists for.
-    pub task: Signal<Option<Task>>,
+/// A hook: call unconditionally. A reader with no hook to call — a plain function
+/// asked from many renders, or another memo's closure — reads a slice kept on
+/// [`Signals`] instead ([`Signals::chrome_hiding`], [`Signals::hdr_on`]).
+pub fn use_pref<T>(state: AppState, slice: impl Fn(&Prefs) -> T + 'static) -> Memo<T>
+where
+    T: PartialEq + 'static,
+{
+    use_memo(move || slice(&state.prefs.read()))
 }
 
-/// The eyedropper's signals (§18.0.2), grouped because they are one
-/// feature's worth of view state: the two options a sample is taken with, the latch
-/// that keeps a picking drag from asking for samples faster than the GPU answers
-/// them, and the flag that says the drag is under way. (Whether the eyedropper is
-/// *armed* is no longer a flag of its own: it is the drag table's answer to the
-/// modifiers currently held — `stark_ui::drags::armed` over
-/// [`Signals::held_mods`](crate::state::Signals::held_mods).)
-///
-/// The options live here rather than in the engine because nothing in the engine
-/// reads them between calls — [`Engine::pick_color`](stark_engine::Engine::pick_color)
-/// is a request and they are its arguments, so a copy projected back through
-/// `observe()` would be state with no owner.
-#[derive(Clone, Copy)]
-pub struct PickState {
-    /// How far a sample sees: the selected layer, it and what is beneath it, or
-    /// every layer.
-    pub scope: Signal<PickScope>,
-    /// Whether the sample is confined to the selected layer's **group** — its
-    /// siblings and the layer carrying them (§14.2). On by default: sampling near
-    /// paint usually means sampling the passage being worked, not whatever other
-    /// group happens to show through at that point. Off, the whole document
-    /// answers, over the canvas color — the canvas is behind the picker exactly
-    /// when this is off, since a group is paint and the document is a picture.
-    pub group_only: Signal<bool>,
-    /// Half-width of the averaged square, in canvas px (0 = point sample).
-    pub radius: Signal<u32>,
-    /// Whether a sample is in flight — see [`crate::input::pick_color`].
-    pub busy: Signal<bool>,
-    /// Whether a picking drag is actually sampling. Shared rather than local to
-    /// the canvas, unlike `drawing`/`panning`, because the options bar is mounted
-    /// on *armed but not yet dragging* and so has to be able to tell the two
-    /// apart.
-    pub dragging: Signal<bool>,
-    /// Where a **held touch** pick is showing its answer, element (CSS) px: the
-    /// finger's own position, with the swatch drawn clear of it (§18.1.11).
-    ///
-    /// `None` for every other way of sampling, and that is the field's content
-    /// rather than an oversight. A mouse or a pen puts a cursor on the point it is
-    /// asking about and leaves the Color panel in plain view; a finger covers the
-    /// point and, on the tablet this gesture exists for, most of the panel with the
-    /// hand behind it. The loupe is the answer for the one gesture that cannot
-    /// otherwise see one.
-    pub loupe: Signal<Option<Vec2>>,
-}
-
-/// The shared-session signals, grouped because they share one lifecycle: they are
-/// set together when a session starts and cleared together when it ends, and
-/// nothing outside [`crate::collab`] should be writing them piecemeal.
-#[derive(Clone, Copy)]
-pub struct CollabState {
-    /// The live session, if any. `!Send` iroh handles live in unsync storage
-    /// beside the renderer.
-    pub session: Signal<Option<stark_net::CollabSession>>,
-    /// The shareable ticket string, while hosting/joined.
-    pub ticket: Signal<Option<String>>,
-    /// Where the session lifecycle stands (drives the dialog + rail badge).
-    pub phase: Signal<stark_ui::collab::Phase>,
-    /// The last share/join failure, surfaced in the dialog.
-    pub error: Signal<Option<String>>,
-    /// Who else is in the session, refreshed by the presence pump
-    /// (§17.4). Its own signal rather than a field of `obs`: it changes on every remote
-    /// pointer move, and re-running the whole component tree at that rate to move a
-    /// cursor would be absurd.
-    pub peers: Signal<Vec<stark_ui::collab::Peer>>,
-    /// How each directly-connected peer is reached — WebRTC, hole-punched UDP,
-    /// or an iroh relay — polled off the mesh by the presence pump on a slow
-    /// cadence (links change on the order of seconds, not frames). Peers in the
-    /// roster but absent here have no direct connection; the mesh forwards
-    /// their traffic. Read by the session dialog.
-    pub links: Signal<Vec<stark_net::PeerLink>>,
-    /// The incoming-event pump for `session`. Its lifetime is tied to the
-    /// session's: `collab::install` replaces it, [`crate::collab::leave`]
-    /// cancels it.
-    pub pump: Signal<Option<Task>>,
-    /// The outgoing presence pump — a fixed-cadence loop that drains the engine's
-    /// presence latch onto the mesh (§17.5). Separate from `pump`
-    /// because it is a *pull* on a timer rather than a reaction to arriving events,
-    /// but shares the same lifecycle.
-    pub presence: Signal<Option<Task>>,
-}
-
-impl CollabState {
-    /// Whether a live session exists — i.e. whether anyone is on the other end
-    /// of presence-only commands. `peek`: asked from event handlers at pointer
-    /// rate, and nothing there should subscribe.
-    pub fn active(&self) -> bool {
-        self.session.peek().is_some()
-    }
+/// [`use_pref`] for a slice kept on [`Signals`]: owned by the root scope, for
+/// [`root_signal`]'s reason.
+fn root_pref<T>(prefs: Signal<Prefs>, slice: impl Fn(&Prefs) -> T + 'static) -> Memo<T>
+where
+    T: PartialEq + 'static,
+{
+    use_hook(|| {
+        Runtime::current().in_scope(ScopeId::ROOT, || Memo::new(move || slice(&prefs.read())))
+    })
 }
 
 /// Repaint the canvas surface on the **next animation frame**, coalescing however

@@ -70,7 +70,7 @@ pub fn LightingPanel() -> Element {
     // can do. `renderer_ready` is the subscription and `peek` the read: the renderer
     // signal is written on every dispatch, and this panel must not wake per pointer
     // sample.
-    let hdr = use_memo(move || state.prefs.read().hdr)();
+    let hdr = crate::state::use_pref(state, |p| p.hdr)();
     let ready = *state.renderer_ready.read();
     let (hdr_capable, display_headroom) = if ready {
         state

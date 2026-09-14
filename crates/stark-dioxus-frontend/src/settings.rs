@@ -54,17 +54,14 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
     let engine_owned = use_obs(state, |o| {
         (o.show_peer_selections, o.history_budget, o.fast_commit)
     });
-    let show_peers = engine_owned().is_some_and(|(show, ..)| show);
-    // The engine's default rather than a second opinion about it, as the budget
-    // below is — and unreachable in practice for its reason: the dialog cannot be
-    // open before the renderer is up.
-    let fast_commit = engine_owned().map_or(stark_engine::DEFAULT_FAST_COMMIT, |(.., f)| f);
     let view = (state.prefs)();
-    // Read off the engine's projection, like the peer-outline row above: the engine
-    // owns this and a copy here would be one that can disagree. Before the renderer
-    // is up the dialog cannot be open, so the fallback is unreachable in practice
-    // and is the engine's own default rather than a second opinion about it.
-    let budget = engine_owned().map_or(stark_engine::DEFAULT_HISTORY_BUDGET, |(_, b, _)| b);
+    // Before the renderer is up there is no engine to ask, and what it will be told
+    // is what was stored (`prefs::load_engine`).
+    let (show_peers, budget, fast_commit) = engine_owned().unwrap_or((
+        view.show_peer_selections,
+        view.history_budget,
+        view.fast_commit,
+    ));
     // Keyed on the *session*, not on whether anyone is currently here, so the note
     // under the peer-outline row does not flicker as collaborators come and go.
     let shared = (state.collab.phase)() == Phase::Shared;

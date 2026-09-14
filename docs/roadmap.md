@@ -860,7 +860,7 @@ existed, and neither the engine nor the panels learn anything.
   once reads better on paper and is worse in the hand: flow's useful band is
   narrow enough that the incidental drift of a long sideways drag would empty or
   bury the brush, and there would be no way to ask for size *alone*.
-- **Either knob draws itself, and only one of them can** (`state::TuneReadout`,
+- **Either knob draws itself, and only one of them can** (`input::TuneReadout`,
   `TuneReadoutOverlay`). The readout is **one value, not two flags** — the drag
   commits to a single knob, so "the ring is up and the bar is up at once" is made
   a thing the state cannot say rather than a rule the flow branch has to keep by

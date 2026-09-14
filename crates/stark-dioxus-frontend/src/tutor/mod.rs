@@ -54,10 +54,6 @@ pub struct TutorState {
     /// Whether dismissing the lesson on screen brings another, copied likewise. Read by the
     /// card's button.
     brings_another: Signal<bool>,
-    /// Whether tips are wanted (⚙ → Guidance). A preference rather than tour state
-    /// (§24.4), so the tour is handed it rather than holding it; turned off through
-    /// [`set_enabled`], which also takes down the card on screen.
-    pub enabled: Signal<bool>,
     /// Bumped to make the card measure its anchor again — a window resize.
     epoch: Signal<u64>,
 }
@@ -72,8 +68,6 @@ impl TutorState {
             due: root_signal(|| None),
             showing: root_signal(|| None),
             brings_another: root_signal(|| false),
-            // `startup::load_records` sets this from the stored preferences.
-            enabled: root_signal(|| stark_ui::prefs::Prefs::default().tips),
             epoch: root_signal(|| 0),
         }
     }
@@ -144,17 +138,14 @@ pub fn observe(state: AppState, command: &InputCommand) {
     }
 }
 
-/// Turn the tour on or off — ⚙ → Guidance, and the card's own "Stop tips" (§24.4).
+/// Tips were switched off (§24.4): take down the card already up, which was promoted
+/// under the old answer ([`Tour::switch_off`]).
 ///
-/// Both controls come here so the rule lives once: turning tips off also takes down the
-/// card already up ([`Tour::switch_off`]), which was promoted under the old answer.
-/// Persisting is the caller's, and both callers do it.
-pub fn set_enabled(state: AppState, on: bool) {
-    let mut enabled = state.tutor.enabled;
-    enabled.set(on);
-    if !on {
-        step(state, Tour::switch_off);
-    }
+/// Called by `prefs::set` alone, which both controls — ⚙ → Guidance and the card's
+/// "Stop tips" — write through. Switching on needs no step: the card's promotion effect
+/// reads the preference.
+pub fn switch_off(state: AppState) {
+    step(state, Tour::switch_off);
 }
 
 /// The deeds `command` reports — usually none, and for a stroke that snapped along a guide
@@ -255,9 +246,10 @@ fn stroke(state: AppState) -> Vec<Deed> {
 /// judged by.
 fn tally(state: AppState, deeds: &[Deed]) {
     let now = platform::now_seconds();
-    let chrome = state.prefs.peek().chrome_hiding;
-    let tips = *state.tutor.enabled.peek();
-    step(state, |tour| tour.tally(now, deeds, chrome, tips));
+    let prefs = *state.prefs.peek();
+    step(state, |tour| {
+        tour.tally(now, deeds, prefs.chrome_hiding, prefs.tips)
+    });
 }
 
 /// Run one step of the tour, carry out the [`Effects`] it asks for, and [`publish`] its

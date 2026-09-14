@@ -91,7 +91,7 @@ pub fn stroke_of<'a>(m: Modifiers, key: &Key, code: &'a str) -> Keystroke<'a> {
         _ => None,
     };
     Keystroke {
-        mods: crate::drags::mods_of(m),
+        mods: crate::input::mods_of(m),
         typed,
         code,
         role,
@@ -134,7 +134,7 @@ impl Lit for AppState {
     }
 
     fn hdr_on(&self) -> bool {
-        self.prefs.read().hdr.on
+        (self.hdr_on)()
     }
 
     fn pick_scope(&self) -> PickScope {

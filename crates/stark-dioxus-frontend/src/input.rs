@@ -34,13 +34,14 @@ use dioxus::prelude::*;
 use stark_engine::command::Tool;
 
 use crate::commands;
+use crate::overlays::TowUi;
 use crate::panels::select::current_action;
 use crate::platform::{
     self, RawPointer, capture_pointer, now_seconds, on_window_blur, on_window_event, on_window_key,
     on_window_pointer, sleep_ms,
 };
 use crate::slots;
-use crate::state::{AppState, BrushRing, FlowBar, TowUi, TuneReadout, dispatch, update_brush};
+use crate::state::{AppState, dispatch, update_brush};
 use stark_engine::ViewTransform;
 use stark_engine::command::InputSample;
 use stark_engine::command::{GestureCommand, PeerCommand, ViewCommand};
@@ -63,7 +64,7 @@ pub use gestures::{Holder, end_interaction, use_gestures};
 pub use keys::{bind_context_menu, bind_pen, bind_shortcuts};
 pub use nav::Nav;
 pub use paint::{Landing, Paint};
-pub use tune::Tune;
+pub use tune::{BrushRing, FlowBar, Tune, TuneReadout};
 
 /// Which kind of pointer `e` came from, in the shared rules' vocabulary.
 pub(crate) fn pointer_kind(e: &Event<PointerData>) -> PointerKind {
@@ -99,6 +100,17 @@ pub fn is_contact(e: &Event<PointerData>) -> bool {
 /// Command `META`.
 pub(crate) fn accel(m: Modifiers) -> bool {
     stark_ui::keys::accel(m.contains(Modifiers::CONTROL), m.contains(Modifiers::META))
+}
+
+/// The three modifiers as a DOM event reports them — the one translation from
+/// [`Modifiers`], shared by pointer presses and keystrokes (`commands`) so a drag and
+/// a chord cannot read the same modifiers differently.
+pub(crate) fn mods_of(m: Modifiers) -> stark_ui::keys::Mods {
+    stark_ui::keys::Mods {
+        ctrl: accel(m),
+        shift: m.contains(Modifiers::SHIFT),
+        alt: m.contains(Modifiers::ALT),
+    }
 }
 
 /// Whether `e` is the pen's **eraser end** — the tail of the stylus, reported as

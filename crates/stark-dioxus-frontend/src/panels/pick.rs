@@ -100,3 +100,62 @@ pub fn PickBar() -> Element {
         }
     }
 }
+
+/// The eyedropper's signals (§18.0.2), grouped because they are one
+/// feature's worth of view state: the two options a sample is taken with, the latch
+/// that keeps a picking drag from asking for samples faster than the GPU answers
+/// them, and the flag that says the drag is under way. (Whether the eyedropper is
+/// *armed* is no longer a flag of its own: it is the drag table's answer to the
+/// modifiers currently held — `stark_ui::drags::armed` over
+/// [`Signals::held_mods`](crate::state::Signals::held_mods).)
+///
+/// The options live here rather than in the engine because nothing in the engine
+/// reads them between calls — [`Engine::pick_color`](stark_engine::Engine::pick_color)
+/// is a request and they are its arguments, so a copy projected back through
+/// `observe()` would be state with no owner.
+#[derive(Clone, Copy)]
+pub struct PickState {
+    /// How far a sample sees: the selected layer, it and what is beneath it, or
+    /// every layer.
+    pub scope: Signal<stark_ui::commands::PickScope>,
+    /// Whether the sample is confined to the selected layer's **group** — its
+    /// siblings and the layer carrying them (§14.2). On by default: sampling near
+    /// paint usually means sampling the passage being worked, not whatever other
+    /// group happens to show through at that point. Off, the whole document
+    /// answers, over the canvas color — the canvas is behind the picker exactly
+    /// when this is off, since a group is paint and the document is a picture.
+    pub group_only: Signal<bool>,
+    /// Half-width of the averaged square, in canvas px (0 = point sample).
+    pub radius: Signal<u32>,
+    /// Whether a sample is in flight — see [`crate::input::pick_color`].
+    pub busy: Signal<bool>,
+    /// Whether a picking drag is actually sampling. Shared rather than local to
+    /// the canvas, unlike `drawing`/`panning`, because the options bar is mounted
+    /// on *armed but not yet dragging* and so has to be able to tell the two
+    /// apart.
+    pub dragging: Signal<bool>,
+    /// Where a **held touch** pick is showing its answer, element (CSS) px: the
+    /// finger's own position, with the swatch drawn clear of it (§18.1.11).
+    ///
+    /// `None` for every other way of sampling, and that is the field's content
+    /// rather than an oversight. A mouse or a pen puts a cursor on the point it is
+    /// asking about and leaves the Color panel in plain view; a finger covers the
+    /// point and, on the tablet this gesture exists for, most of the panel with the
+    /// hand behind it. The loupe is the answer for the one gesture that cannot
+    /// otherwise see one.
+    pub loupe: Signal<Option<stark_model::geom::Vec2>>,
+}
+
+impl PickState {
+    pub(crate) fn new() -> Self {
+        use crate::state::root_signal;
+        Self {
+            scope: root_signal(stark_ui::commands::PickScope::default),
+            group_only: root_signal(|| true),
+            radius: root_signal(|| 0),
+            busy: root_signal(|| false),
+            dragging: root_signal(|| false),
+            loupe: root_signal(|| None),
+        }
+    }
+}

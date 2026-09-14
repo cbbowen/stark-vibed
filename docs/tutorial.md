@@ -521,10 +521,11 @@ Turning it off also **takes down the card that is already up** — it was promot
 under the old answer, and a preference that leaves the very thing it governs
 standing on screen is one nobody would believe. The card is not marked as given on
 the way out, for the same reason the rest of the ledger survives the switch: nobody
-was taught a lesson they switched off mid-sentence. Both controls go through one
-function (`tutor::set_enabled`) rather than writing the signal themselves — the
+was taught a lesson they switched off mid-sentence. Both controls write through
+`prefs::set`, which calls `tutor::switch_off` when the switch goes off — the
 dialog's row and the card's own "Stop tips" are two controls for one switch, and a
-rule kept in one of them is a rule the other disagrees with.
+rule kept in one of them is a rule the other disagrees with. The tour keeps no copy
+of the switch: a tally and the card's promotion both read the preference.
 
 ### 24.5 The lessons
 

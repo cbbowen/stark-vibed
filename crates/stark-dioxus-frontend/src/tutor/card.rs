@@ -12,7 +12,7 @@ use crate::dialogs::DialogId;
 use crate::icons::icon;
 use crate::layout::{PanelLayout, chrome_dimmed, open_panel, panel_key};
 use crate::platform::{self, ElementBox};
-use crate::state::AppState;
+use crate::state::{AppState, use_pref};
 
 /// How far down its anchor a [`Side::Inside`] card sits, as a fraction of the anchor's
 /// height: far enough to point into the picture rather than at its top edge, and not so far
@@ -171,13 +171,14 @@ pub fn TutorCard() -> Element {
     // is a claim that the card would be *wrong* now: mid-gesture, a panel opened is put
     // back to sleep by the release; a composing mode owns the whole window
     // (`crate::modes`); and a dialog covers everything a card could point at.
+    let tips = use_pref(state, |p| p.tips);
     use_effect(move || {
         let Some(i) = (state.tutor.due)() else { return };
         let Some(lesson) = LESSONS.get(i) else { return };
         // The switch as the way out as well as the way in: `due` can be set by the dismiss
         // chain or left from before tips went off, and a subscribing read offers it as soon
         // as they are back on.
-        if !(state.tutor.enabled)() {
+        if !tips() {
             return;
         }
         let dialog = covered(state.dialogs.read().last().copied(), lesson.anchor);
@@ -343,7 +344,7 @@ pub fn TutorCard() -> Element {
                     title: "Stop showing tips. Settings has the switch to turn them back on.",
                     onclick: move |_| {
                         // Through the same door as the dialog's switch, which takes
-                        // this card down without marking it given (`tutor::set_enabled`).
+                        // this card down without marking it given (`tutor::switch_off`).
                         crate::prefs::set(state, |p| p.tips = false);
                     },
                     "Stop tips"

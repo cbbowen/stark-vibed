@@ -324,3 +324,44 @@ pub fn TimelineBar() -> Element {
         }
     }
 }
+
+/// Timeline mode's signals (§18.2.4), grouped because they are one
+/// mode's worth of view state: the mode itself, whether it is playing, and how fast.
+///
+/// None of this is the *playhead* — that lives in the engine's timeline, where undo
+/// and redo already move it, and is read back through
+/// [`Engine::scrub_range`](stark_engine::Engine::scrub_range). A copy here is exactly
+/// the copy that would go stale the moment a stroke, an undo or a load moved the
+/// history underneath it.
+#[derive(Clone, Copy)]
+pub struct TimelineState {
+    /// Whether the mode is on — which is to say whether the bar is mounted.
+    pub open: Signal<bool>,
+    /// Whether playback is running. The source of truth for the transport button;
+    /// the loop reads it every tick and stops when it goes false, so anything that
+    /// wants playback to end only has to clear this.
+    pub playing: Signal<bool>,
+    /// Playback rate, as a multiple of
+    /// [`BASE_RATE`](stark_ui::timeline::BASE_RATE).
+    pub speed: Signal<f32>,
+    /// The playback loop, so a second Play cannot start a second one and closing
+    /// the mode can cancel it. Root-owned: the loop outlives the bar that started it
+    /// (the bar unmounts when the mode closes), which is the case `spawn_forever`
+    /// exists for.
+    pub task: Signal<Option<dioxus::dioxus_core::Task>>,
+}
+
+impl TimelineState {
+    pub(crate) fn new() -> Self {
+        use crate::state::root_signal;
+        use stark_ui::commands::VisibilityToggle;
+        Self {
+            // Seeded from what this browser last had on screen (`crate::visibility`,
+            // §25.6), so the first render is already the screen the artist left.
+            open: root_signal(|| stark_ui::visibility::stored_showing(VisibilityToggle::Timeline)),
+            playing: root_signal(|| false),
+            speed: root_signal(|| 1.0),
+            task: root_signal(|| None),
+        }
+    }
+}

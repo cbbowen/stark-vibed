@@ -5043,7 +5043,7 @@ button.layer-remove:hover {
    and down past both its ends, which is what keeps it from reading as a track the
    pointer is somewhere *on*.
 
-   **Both of its lengths live here**, not in the gesture (`state::FlowBar`) — flow has
+   **Both of its lengths live here**, not in the gesture (`input::FlowBar`) — flow has
    no length on the canvas to be drawn at, so unlike the ring there is no number to
    convert, only a choice to make. That is also why the centring is a transform where
    the ring's is arithmetic: half of a box the other side does not know cannot be

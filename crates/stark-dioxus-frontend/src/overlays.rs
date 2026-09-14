@@ -13,14 +13,16 @@
 //! is the same question asked five times: *what wakes this at pointer rate?* The
 //! answers are worth reading together. Two of them are pure layout, converting
 //! to screen px on the way in so they read no view at all
-//! (`state::TuneReadout`, `state::TowUi`); one reads the view through a memo
+//! ([`TuneReadout`], [`TowUi`]); one reads the view through a memo
 //! ([`PeerCursors`]); one splits its position from its size so only the position
 //! moves per report ([`BrushCursor`]).
 
 use dioxus::prelude::*;
 
 use crate::collab::css_color;
-use crate::state::{AppState, BrushRing, FlowBar, TuneReadout, use_obs};
+use crate::input::{BrushRing, FlowBar, TuneReadout};
+use crate::state::{AppState, use_obs};
+use stark_model::geom::Vec2;
 use stark_ui::drags::DragAction;
 
 /// Collaborators' pointers, drawn in each peer's own color (§17.4).
@@ -152,7 +154,7 @@ pub fn BrushCursor() -> Element {
 ///
 /// DOM rather than a compositor pass, for [`PeerCursors`]'s reason — it is chrome, and
 /// the one thing it must never do is reach an export. It is also pure layout: the
-/// gesture converts to screen px on its way in (`state::TuneReadout`), so this reads no
+/// gesture converts to screen px on its way in ([`TuneReadout`]), so this reads no
 /// view and re-renders on nothing but the readout itself.
 ///
 /// **One component for both knobs**, because the state is one value: the drag commits
@@ -215,7 +217,7 @@ fn size_ring(ring: BrushRing) -> Element {
 /// holds still while the pointer runs past both its ends — which is what keeps it from
 /// reading as a track the pointer is somewhere *on*.
 ///
-/// **How large the bar is, is the stylesheet's** (`state::FlowBar`), which is why the
+/// **How large the bar is, is the stylesheet's** ([`FlowBar`]), which is why the
 /// centring is a transform where the ring's is arithmetic: half of a box this side
 /// does not have cannot be subtracted from the point it was handed.
 fn flow_bar(bar: FlowBar) -> Element {
@@ -284,6 +286,25 @@ pub fn PickLoupe() -> Element {
 /// that it still reads as belonging to it.
 const LOUPE_LIFT: f32 = 44.0;
 
+/// The tow string as the overlay draws it (§6.11): the towed tip, the pointer,
+/// and the rope, all in the canvas element's own px.
+///
+/// **Screen px, not canvas px**, on [`BrushRing`]'s own argument: a drawing
+/// instruction rather than a statement about the stroke. The conversion happens
+/// where the engine is read, against the one view the gesture holds — a stroke
+/// cannot outlive its view, since a pinch cancels it — and the overlay stays
+/// pure layout.
+#[derive(Copy, Clone, PartialEq)]
+pub struct TowUi {
+    /// Where the mark is being laid — the towed tip.
+    pub tip: Vec2,
+    /// Where the hand is — the pointer the string runs to.
+    pub target: Vec2,
+    /// The string's length. `|target − tip|` short of it is slack, and the
+    /// overlay shows the difference as sag.
+    pub rope: f32,
+}
+
 /// The tow string while a smoothing brush draws (§6.11): a hairline from the
 /// towed tip — where paint is landing — to the pointer, with a dot under the
 /// hand. It **sags while slack and straightens as it tows**, so the state of
@@ -293,7 +314,7 @@ const LOUPE_LIFT: f32 = 44.0;
 /// DOM (an SVG overlay) rather than a compositor pass, for [`PeerCursors`]'s
 /// reason: it is chrome, and it must never reach an export. Pure layout, too —
 /// the gesture converts to screen px on its way in (`input::refresh_tow`,
-/// `state::TowUi`), so this reads no view and re-renders on nothing but the
+/// [`TowUi`]), so this reads no view and re-renders on nothing but the
 /// string itself.
 #[component]
 pub fn TowStringOverlay() -> Element {
@@ -307,7 +328,7 @@ pub fn TowStringOverlay() -> Element {
     // slack string drapes rather than plunges. Screen-down whatever the canvas
     // rotation, because the string hangs from the hand, not from the painting.
     let sag = (slack * 0.4).min(t.rope * 0.2);
-    let mid = (t.tip + t.target) * 0.5 + stark_model::geom::Vec2::new(0.0, sag);
+    let mid = (t.tip + t.target) * 0.5 + Vec2::new(0.0, sag);
     let d = format!(
         "M {:.1} {:.1} Q {:.1} {:.1} {:.1} {:.1}",
         t.tip.x, t.tip.y, mid.x, mid.y, t.target.x, t.target.y

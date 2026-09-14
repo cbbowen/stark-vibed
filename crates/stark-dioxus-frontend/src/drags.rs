@@ -6,34 +6,18 @@
 //! a DOM event presses, what this app knows about the hand that the table does not,
 //! the doors that write signals, and the settings UI that draws the rows.
 
-use dioxus::html::Modifiers;
 use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::icons::icon;
-use crate::input::{accel, is_contact};
+use crate::input::{is_contact, mods_of};
 use crate::state::AppState;
 use crate::widgets::Modal;
 use stark_ui::drags::{
     DragAction, DragBindings, DragButton, DragCapture, DragChord, DragPreset, capture, chord_label,
     persist_drags, stored_drags,
 };
-use stark_ui::keys::Mods;
 use strum::VariantArray;
-
-/// The three modifiers as a DOM event reports them — the one translation from
-/// [`Modifiers`], shared by the press path and the key tracker so the two cannot read
-/// the same keystroke differently.
-///
-/// The frontend's half of `stark_ui::keys::Mods`: which DOM modifiers are the
-/// accelerator's keys is this side's to say (`input::accel`).
-pub fn mods_of(m: Modifiers) -> Mods {
-    Mods {
-        ctrl: accel(m),
-        shift: m.contains(Modifiers::SHIFT),
-        alt: m.contains(Modifiers::ALT),
-    }
-}
 
 fn button_of(e: &Event<PointerData>) -> Option<DragButton> {
     if is_contact(e) {

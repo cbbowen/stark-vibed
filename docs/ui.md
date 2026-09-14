@@ -533,14 +533,17 @@ surrounds it.
     per-session choice where storage is unavailable. One serde struct holds the
     lot: `#[serde(default)]` per field is what lets a preference added later read
     as its default out of values stored before it existed, instead of a parse
-    failure resetting everything the user had set. The dialog's rows do not opt
-    in — the toggle component persists after calling its handler, so a new row is
-    durable by construction and only its *value* has to be named. Loading
-    happens in two passes for the one preference that is engine session state
-    rather than a frontend signal (peer selection outlines, §17.3): the frontend
-    half applies in the root's body so the first render is already in the right
-    mode, and the engine half waits for the renderer, exactly as
-    `presets::load`/`apply_first` split.
+    failure resetting everything the user had set. Every row writes through
+    `prefs::set`, the one writer: a change that moves nothing writes nothing, and
+    one that moves a field carries it out and saves. It names every field, so a
+    new preference does not compile until it says what moving it does. The signal
+    is seeded from the stored record in `AppState::new`, so the first render is
+    already in the mode the user left. Three preferences are the **engine's** —
+    the peer selection outlines (§17.3), the undo budget and fast commit — and
+    those are commands, so `prefs::load_engine` pushes the stored values the
+    moment the renderer is published, with no `await` between: until then the
+    projection holds the engine's defaults, and `prefs::set` reads the engine's
+    half off the projection.
 - **Timing Stats is a dialog, not a panel** (`timings.rs`, §7.1). The same
   argument as settings run from the other end: a live frame-rate readout beside the
   canvas is a thing to watch *instead of* painting, and the histograms behind it

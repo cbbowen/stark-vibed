@@ -102,22 +102,27 @@ fn apply(state: AppState, change: impl FnOnce(&mut Prefs)) -> bool {
         fast_commit,
         hdr,
     } = now;
-    if show_peer_selections != was.show_peer_selections {
-        dispatch(
-            state,
-            ViewCommand::SetShowPeerSelections(show_peer_selections),
-        );
-    }
-    if history_budget != was.history_budget {
-        dispatch(state, ViewCommand::SetHistoryBudget(history_budget));
-    }
-    if fast_commit != was.fast_commit {
-        dispatch(state, ViewCommand::SetFastCommit(fast_commit));
+    // With no engine yet the signal is the whole answer, and `load_engine` pushes it.
+    // Not a no-op dispatch: a door takes the renderer for writing, which wakes its readers.
+    let engine_up = state.obs.peek().is_some();
+    if engine_up {
+        if show_peer_selections != was.show_peer_selections {
+            dispatch(
+                state,
+                ViewCommand::SetShowPeerSelections(show_peer_selections),
+            );
+        }
+        if history_budget != was.history_budget {
+            dispatch(state, ViewCommand::SetHistoryBudget(history_budget));
+        }
+        if fast_commit != was.fast_commit {
+            dispatch(state, ViewCommand::SetFastCommit(fast_commit));
+        }
     }
     write_if_moved(state.prefs, now);
     // After the write: each of these reads the signal.
-    if tips != was.tips {
-        crate::tutor::set_enabled(state, tips);
+    if was.tips && !tips {
+        crate::tutor::switch_off(state);
     }
     if hdr != was.hdr {
         crate::panels::lighting::apply_output(state);
@@ -146,8 +151,46 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use dioxus::dioxus_core::{ReactiveContext, ScopeId, VirtualDom};
+    use stark_ui::storage::{Backend, BlobRead, Store, Stored};
 
     use super::*;
+
+    /// How many times the preferences record was written. Process-wide, which nextest
+    /// makes this test's own.
+    static SAVES: AtomicUsize = AtomicUsize::new(0);
+
+    /// A store that holds nothing and counts writes of the preferences record.
+    struct Counting;
+
+    impl Backend for Counting {
+        fn get(&self, _: &str) -> Option<String> {
+            None
+        }
+
+        fn set(&self, key: &str, _: &str) -> bool {
+            if key == Store::Prefs.named().0 {
+                SAVES.fetch_add(1, Ordering::Relaxed);
+            }
+            true
+        }
+
+        fn remove(&self, _: &str) {}
+
+        fn blob_get_many<'a>(
+            &'a self,
+            keys: &'a [String],
+        ) -> Stored<'a, Result<Vec<BlobRead>, String>> {
+            Box::pin(std::future::ready(Ok(vec![Ok(None); keys.len()])))
+        }
+
+        fn blob_put<'a>(&'a self, _: &'a str, _: &'a [u8]) -> Stored<'a, Result<(), String>> {
+            Box::pin(std::future::ready(Ok(())))
+        }
+
+        fn blob_delete<'a>(&'a self, _: &'a str) -> Stored<'a, ()> {
+            Box::pin(std::future::ready(()))
+        }
+    }
 
     fn root() -> Element {
         let state = AppState::new();
@@ -155,37 +198,65 @@ mod tests {
         rsx! {}
     }
 
-    /// **A change that moves nothing wakes nothing**, and one that moves a field
-    /// wakes the signal's readers once.
-    #[test]
-    fn set_writes_the_signal_only_when_a_preference_moves() {
+    /// A count of the writes that wake whoever `read` subscribes to.
+    fn wakes(read: impl FnOnce()) -> Arc<AtomicUsize> {
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let reader = ReactiveContext::new_with_callback(
+            {
+                let wakes = wakes.clone();
+                move || {
+                    wakes.fetch_add(1, Ordering::Relaxed);
+                }
+            },
+            ScopeId::APP,
+            std::panic::Location::caller(),
+        );
+        reader.run_in(read);
+        wakes
+    }
+
+    /// Run `f` against a freshly built app state, over the counting store.
+    fn with_state(f: impl FnOnce(AppState)) {
+        stark_ui::storage::install(Counting);
         let mut dom = VirtualDom::new(root);
         dom.rebuild_in_place();
-        dom.in_scope(ScopeId::APP, || {
-            let state = consume_context::<AppState>();
-            let writes = Arc::new(AtomicUsize::new(0));
-            let reader = ReactiveContext::new_with_callback(
-                {
-                    let writes = writes.clone();
-                    move || {
-                        writes.fetch_add(1, Ordering::Relaxed);
-                    }
-                },
-                ScopeId::APP,
-                std::panic::Location::caller(),
-            );
-            reader.run_in(|| {
+        dom.in_scope(ScopeId::APP, || f(consume_context::<AppState>()));
+    }
+
+    #[test]
+    fn an_unchanged_preference_writes_neither_the_signal_nor_the_store() {
+        with_state(|state| {
+            let signal = wakes(|| {
                 let _ = state.prefs.read();
             });
-
-            let was = state.prefs.peek().minimal;
-            set(state, |p| p.minimal = was);
+            let saves = SAVES.load(Ordering::Relaxed);
+            let was = *state.prefs.peek();
+            set(state, |p| p.fast_commit = was.fast_commit);
             set(state, |_| {});
-            assert_eq!(writes.load(Ordering::Relaxed), 0, "nothing moved");
+            assert_eq!(signal.load(Ordering::Relaxed), 0);
+            assert_eq!(SAVES.load(Ordering::Relaxed), saves);
+        });
+    }
 
-            set(state, |p| p.minimal = !was);
-            assert_eq!(writes.load(Ordering::Relaxed), 1, "one field moved");
-            assert_eq!(state.prefs.peek().minimal, !was);
+    /// Before the renderer, the signal is the whole answer: it is what `load_engine`
+    /// pushes later, so it has to move and be kept, and there is no engine to tell.
+    #[test]
+    fn an_engine_preference_moved_with_no_renderer_is_kept_and_dispatches_nothing() {
+        with_state(|state| {
+            let signal = wakes(|| {
+                let _ = state.prefs.read();
+            });
+            // Every door takes the renderer for writing, with or without an engine in it.
+            let doors = wakes(|| {
+                let _ = state.renderer.read();
+            });
+            let saves = SAVES.load(Ordering::Relaxed);
+            let was = state.prefs.peek().fast_commit;
+            set(state, |p| p.fast_commit = !was);
+            assert_eq!(signal.load(Ordering::Relaxed), 1, "the signal moved");
+            assert_eq!(state.prefs.peek().fast_commit, !was);
+            assert_eq!(SAVES.load(Ordering::Relaxed), saves + 1, "and was saved");
+            assert_eq!(doors.load(Ordering::Relaxed), 0, "nothing was dispatched");
         });
     }
 }

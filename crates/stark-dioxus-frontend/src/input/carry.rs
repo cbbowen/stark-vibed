@@ -20,6 +20,8 @@ use stark_ui::carry::{self, Carry, Hit, Settle};
 #[derive(Copy, Clone)]
 struct InFlight {
     carry: Carry,
+    /// The pointer that pressed, the only one whose moves carry.
+    pointer: i32,
     /// The frame the canvas is currently previewing, so a move that rounds to the same
     /// whole canvas pixel costs no dispatch — which at pointer rate is most of them.
     shown: Option<(LayerId, IVec2)>,
@@ -72,7 +74,7 @@ impl PickMove {
     /// Whether a carry holds the pointer. A released carry still waiting on its
     /// readback does not: the hand has let go, and only the answer is outstanding.
     pub fn holds_pointer(self) -> bool {
-        (*self.drag.peek()).is_some_and(|d| !d.carry.is_released())
+        in_hand(*self.drag.peek()).is_some()
     }
 
     /// Begin the carry at `e`: capture the pointer and ask what is under it.
@@ -103,6 +105,7 @@ impl PickMove {
         let deadzone = carry::deadzone(pointer_kind(e));
         let flight = InFlight {
             carry: Carry::press(press, s.pos, page_xy(e), deadzone, pinned),
+            pointer: e.pointer_id(),
             shown: None,
         };
         let mut drag = self.drag;
@@ -169,15 +172,13 @@ impl PickMove {
     /// gesture's and the caller's own logic should not see it — including the
     /// moves before the hit test has answered, which are this gesture's even
     /// though they can show nothing yet.
+    ///
+    /// Only the pressing pointer's moves are, and none once released: a stroke begun
+    /// while the answer is outstanding would otherwise lose its first moves.
     pub fn advance(self, e: &Event<PointerData>) -> bool {
-        let Some(mut flight) = *self.drag.peek() else {
+        let Some(mut flight) = moved_by(*self.drag.peek(), e.pointer_id()) else {
             return false;
         };
-        // A captured pointer can deliver a move after its own release; the
-        // gesture is over and only its answer is outstanding.
-        if flight.carry.is_released() {
-            return true;
-        }
         let Some(s) = sample(self.state, e) else {
             return true;
         };
@@ -285,6 +286,17 @@ impl PickMove {
     }
 }
 
+/// The carry still in the hand: `drag`, unless it is released and only its answer is
+/// outstanding.
+fn in_hand(drag: Option<InFlight>) -> Option<InFlight> {
+    drag.filter(|d| !d.carry.is_released())
+}
+
+/// The carry a move of `pointer` advances: the one in the hand, if that pointer pressed it.
+fn moved_by(drag: Option<InFlight>, pointer: i32) -> Option<InFlight> {
+    in_hand(drag).filter(|d| d.pointer == pointer)
+}
+
 /// [`carry::layer_translation`] against the projection as it stands; zero before
 /// there is one.
 fn layer_translation(state: AppState, id: LayerId) -> IVec2 {
@@ -293,4 +305,49 @@ fn layer_translation(state: AppState, id: LayerId) -> IVec2 {
         .peek()
         .as_ref()
         .map_or(IVec2::ZERO, |o| carry::layer_translation(o, id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MOUSE: i32 = 1;
+    const PEN: i32 = 2;
+
+    fn pressed(press: u64) -> InFlight {
+        InFlight {
+            carry: Carry::press(press, Vec2::ZERO, Vec2::ZERO, 4.0, None),
+            pointer: MOUSE,
+            shown: None,
+        }
+    }
+
+    #[test]
+    fn a_released_carry_awaiting_its_answer_claims_no_move() {
+        let press = 1;
+        let mut flight = pressed(press);
+        assert!(in_hand(None).is_none());
+        assert!(
+            moved_by(Some(flight), MOUSE).is_some(),
+            "pressed, not yet answered"
+        );
+        flight.carry.released();
+        assert!(
+            flight.carry.awaits(press),
+            "the hit test is still outstanding"
+        );
+        assert!(in_hand(Some(flight)).is_none());
+        assert!(
+            moved_by(Some(flight), PEN).is_none(),
+            "a stroke begun meanwhile"
+        );
+        assert!(moved_by(Some(flight), MOUSE).is_none());
+    }
+
+    #[test]
+    fn only_the_pressing_pointer_carries() {
+        let flight = pressed(1);
+        assert!(moved_by(Some(flight), MOUSE).is_some());
+        assert!(moved_by(Some(flight), PEN).is_none());
+    }
 }

@@ -86,7 +86,7 @@ use panels::{
 };
 use rail::CommandRail;
 use slots::SlotOverlay;
-use state::AppState;
+use state::{AppState, use_pref};
 
 /// The UI's global stylesheet — panel chrome (shared CSS custom properties) plus
 /// every component class referenced below. Linked once by `app` so the rsx!
@@ -149,25 +149,19 @@ fn app() -> Element {
     // renderer alongside the two libraries: whichever lands last kicks it off, and a
     // slot tuned under a hold re-runs it on the release that stores it.
     //
-    // A memo of what the scan reads, because `thumbs::refresh` peeks: the effect runs
-    // when a brush it would draw changes, and not when a write leaves them as they
-    // were. The renderer through `renderer_ready`, which moves once, rather than the
-    // renderer signal, which every command writes (U2).
-    let wanted = use_memo(move || {
-        (
-            state.presets.read().clone(),
-            state.slots.brushes.read().clone(),
-            (state.renderer_ready)(),
-        )
-    });
+    // Subscribing reads, because `thumbs::refresh` peeks. The renderer through
+    // `renderer_ready`, which moves once, rather than the renderer signal, which every
+    // command writes (U2).
     use_effect(move || {
-        wanted.read();
+        let _ = state.presets.read();
+        let _ = state.slots.brushes.read();
+        let _ = (state.renderer_ready)();
         thumbs::refresh(state);
     });
 
     use_hook(|| spawn(startup::run(state)));
     // Readers that re-render at cost read a slice: the whole tree hangs off this one.
-    let minimal = use_memo(move || state.prefs.read().minimal);
+    let minimal = use_pref(state, |p| p.minimal);
 
     rsx! {
         document::Stylesheet { href: STARK_CSS }
