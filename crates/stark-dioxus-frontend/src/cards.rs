@@ -1,23 +1,14 @@
-//! A gallery card's picture, as this frontend puts one on screen (§6.4, §6.6), the
-//! `data:` URL every picture the chrome makes from bytes travels in, and a swatch's
-//! color.
+//! A gallery card's picture as this frontend shows one (§6.4, §6.6), the `data:` URL
+//! every picture made from bytes travels in, and a swatch's color.
 //!
-//! What the picture *is* — the canonical field an id names, reduced to a card's size,
-//! and whether it is coverage or height — is `stark_ui::assets::card`. All that is
-//! left here is the encoding and the declaration that carries it, and both are DOM
-//! idioms: a `background-image` takes a URL, so the texels become a PNG and the PNG
-//! becomes base64. The native frontend hands the same numbers to a texture instead,
-//! which is exactly why the numbers and not the encoding are what moved down.
+//! What the picture *is* belongs to `stark_ui::assets::card`; only the DOM encoding (PNG,
+//! base64, a `background-image`) is here.
 
 use stark_ui::assets::{Card, Ink};
 
-/// A card's `background-image` declaration — written out as `none` when there is no
-/// picture yet (a built-in still fetching, bytes that would not decode) rather than
-/// omitted.
-///
-/// An inline style merges per property, so a declaration left off a reused node is
-/// stranded at its last value instead of cleared — which would leave one card wearing
-/// another's picture.
+/// A card's `background-image` declaration, written as `none` when there is no picture
+/// yet rather than omitted: an inline style merges per property, so a declaration left off
+/// a reused node would keep another card's picture.
 pub fn thumb_style(url: Option<&str>) -> String {
     match url {
         Some(url) => format!("background-image: url({url});"),
@@ -68,16 +59,9 @@ pub fn data_url(card: Card) -> Option<String> {
 
 /// `card` as PNG bytes, or `None` if the encode failed.
 ///
-/// Two channel layouts for the two readings, and neither is a style choice:
-///
-/// - **Coverage** is white ink with the field in the alpha channel, so the panel shows
-///   through where a stamp lays nothing. Grayscale + alpha rather than RGBA because
-///   the ink is a constant — the only channel carrying anything is alpha, which is
-///   what makes a compressed mask a couple of kilobytes rather than a couple of
-///   hundred.
-/// - **Height** is opaque grey. A substrate has no gaps: its low ground is as much a
-///   part of it as its high ground, and drawing the lows transparent would show a
-///   canvas full of holes.
+/// - **Coverage** is white ink with the field in alpha, so the panel shows through where a
+///   stamp lays nothing; grayscale + alpha, since the ink is constant.
+/// - **Height** is opaque grey: a substrate's lows are ground, not holes.
 pub fn encode_png(card: Card) -> Option<Vec<u8>> {
     let mut out = Vec::new();
     {

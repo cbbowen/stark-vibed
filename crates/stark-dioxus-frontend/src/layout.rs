@@ -1,46 +1,17 @@
 //! Floating-panel layout: identity, order, visibility, the title-bar drag, and the
-//! fade that gets all the floating chrome out of the way mid-gesture
-//! (§11).
+//! fade that gets the floating chrome out of the way mid-gesture (§11).
 //!
-//! The title-bar drag **is** the row drag the layer tree and the guide list use
-//! (`panels::reorder`), and this file is the third caller rather than a third copy
-//! of it. It predated the extraction and kept its own `DragState` for a while:
-//! the same measured-at-the-press boxes, the same slot opening under the hand, the
-//! same leading-edge rule stated in the same words — and, being the copy with no
-//! tests, the one where the two could quietly stop agreeing. A stack of panels is
-//! a flat list, which is the *simplest* case of what that module already does for a
-//! tree: the travelling block is one row, and `Slide::gap` is the insertion index
-//! with no depth to resolve.
-//!
-//! The drag math deliberately never reads the layout it is mutating: panel
-//! positions are measured once at drag start and everything after is derived from
-//! the live pointer, so a sliding neighbour cannot feed back into the decision that
-//! moved it. That property now lives in [`Grab`] and is tested there.
+//! The title-bar drag is the row drag the layer tree and the guide list use
+//! (`panels::reorder`), over a flat list. Panel boxes are measured once at the press and
+//! everything after derives from the pointer, so a sliding neighbour cannot feed back
+//! into the move ([`Grab`]).
 //!
 //! # Which panels are open follows the browser
 //!
-//! **Every panel starts closed**, and what is open is this browser's, kept between
-//! visits the way the shape and preset libraries are (`stark_ui::storage`). The
-//! opening screen is therefore the painting and nothing else, and the panels that
-//! come back are the ones the artist actually reached for — a stack assembled by
-//! use rather than a default arrangement everybody has to disassemble.
-//!
-//! The two halves of that are one decision. A set of panels chosen for you is only
-//! tolerable because it resets every visit; once the choice sticks, the honest
-//! starting point is none. And the tour is what keeps "none" from meaning "hidden"
-//! — the Color panel arrives on the second stroke and the wake gesture is explained
-//! on the third (§24.5).
-//!
-//! Durability is structural rather than remembered: [`set_open`] is the only thing
-//! that writes [`PanelLayout::hidden`], and it persists after every change, so a
-//! new way to close a panel is durable without its author thinking about storage.
-//! The same move `prefs::set` makes for the preferences.
-//!
-//! **Where** it persists to is not this module's, though the stack was once the only
-//! thing in it: which panels are open is one entry in the browser's picture of what is
-//! on screen, beside the navigator, the quick-brush rack and Timeline mode
-//! (`crate::visibility`, §25.6). So the record, its type and both of its readers live
-//! there, and what is here is the calls.
+//! Every panel starts closed, and what is open is kept per browser (`crate::visibility`,
+//! §25.6); the tour keeps "none" from meaning "hidden" (§24.5). [`set_open`] is the only
+//! writer of [`PanelLayout::hidden`] and persists on every change, so a new way to close
+//! a panel is durable without thinking about storage.
 
 use std::collections::{HashMap, HashSet};
 
@@ -55,13 +26,8 @@ use stark_ui::panels::PanelId;
 use stark_ui::reorder::{Grab, Motion, Slide};
 use strum::VariantArray;
 
-/// The panel's mark, worn by its title bar and by the entry that reopens it in the
-/// visibility menu (`stark_ui::commands::VisibilityToggle`) — `PanelId::glyph`
-/// inlined, which is this frontend's whole share of it.
-///
-/// A free function rather than a method for the orphan rule's sake, and a wrapper at
-/// all only because an icon here is inline SVG: *which* mark is the crate's now, and
-/// turning it into markup is what is left (§11.2 N8).
+/// The panel's mark, worn by its title bar and its visibility-menu entry
+/// (`stark_ui::commands::VisibilityToggle`). A free function for the orphan rule (§11.2 N8).
 pub fn panel_glyph(id: PanelId) -> stark_ui::icons::Icon {
     id.glyph()
 }
@@ -69,60 +35,42 @@ pub fn panel_glyph(id: PanelId) -> stark_ui::icons::Icon {
 /// The shortest a resizable panel may be dragged.
 const MIN_PANEL_HEIGHT: f32 = 140.0;
 
-/// Shared `Copy` layout state for the floating panels: their display order, which are
-/// hidden, and the two in-flight gestures. Closed panels stay in `order` (so reopening
-/// restores their slot); the stack renders `order` minus `hidden`. A field of
-/// [`AppState`] (`state.panels`) rather than a context of its own, because the panel
-/// toggles are registry commands now (`stark_ui::commands::Command::TogglePanel`) and a command
-/// reaches everything it acts on through that one handle.
+/// Shared `Copy` layout state for the floating panels. Closed panels keep their slot in
+/// `order`; the stack renders `order` minus `hidden`. A field of [`AppState`], so registry
+/// commands reach it.
 ///
-/// No panel geometry is kept here — a drag reads it off the DOM at the moment it starts
-/// ([`platform::panel_boxes`]), so there is no cached measurement to fall out of date.
+/// No panel geometry is kept: a drag reads it off the DOM when it starts
+/// ([`platform::panel_boxes`]).
 #[derive(Clone, Copy)]
 pub struct PanelLayout {
     pub order: Signal<Vec<PanelId>>,
     pub hidden: Signal<HashSet<PanelId>>,
-    /// Which panels are **folded to their title bar** — open, in their slot, showing
-    /// their header and nothing else ([`toggle_collapse`]).
-    ///
-    /// Separate from [`hidden`](Self::hidden) because they answer different questions:
-    /// a closed panel is one the artist is not using, and a collapsed one is a panel
-    /// they are using and do not need to *see* right now — a Brush panel folded away
-    /// while its quick brushes are on the keyboard is still the panel a slot writes
-    /// into. Stored in the same table for the same reason (see [`set_open`]).
+    /// Which panels are **folded to their title bar** ([`toggle_collapse`]). Distinct from
+    /// [`hidden`](Self::hidden): a folded panel is still in use, like a Brush panel whose
+    /// quick slots write into it.
     pub collapsed: Signal<HashSet<PanelId>>,
     /// The in-flight title-bar drag — the shared row grab (`panels::reorder`).
     pub drag: Signal<Option<Grab>>,
-    /// The current height of each resizable panel ([`PanelId::default_height`]),
-    /// seeded with those defaults by [`PanelLayout::default_heights`]. A panel that
-    /// is not resizable never appears here and never gets a height at all.
+    /// The current height of each resizable panel ([`PanelId::default_height`]), seeded by
+    /// [`PanelLayout::default_heights`]. A panel that is not resizable never appears.
     pub heights: Signal<HashMap<PanelId, f32>>,
     /// The in-flight bottom-edge resize, if any.
     pub resize: Signal<Option<ResizeState>>,
-    /// Where the stack is scrolled to, as the rail draws it ([`Scroll`]).
-    ///
-    /// A cached measurement, unlike everything else here — the *element* owns this
-    /// number and the browser moves it without asking (a wheel, a keystroke, a
-    /// focus). So it is re-read rather than kept: on the stack's own `scroll` event,
-    /// on the pointer arriving in the column, and after any render that could have
-    /// changed the column's height ([`PanelStack`]).
+    /// Where the stack is scrolled to ([`Scroll`]). The one cached measurement here: the
+    /// browser moves it unasked, so it is re-read on `scroll`, on pointer entry, and after
+    /// any render that could change the column's height ([`PanelStack`]).
     pub scroll: Signal<Scroll>,
     /// The in-flight drag of the rail's thumb, if any.
     pub thumb: Signal<Option<ThumbGrab>>,
 }
 
 impl PanelLayout {
-    /// Its signals, root-owned like every other group of them
-    /// (`state::root_signal`); built here rather than in `AppState::new` so that
-    /// what a stack opens as — the default order, the stored visibility, the
-    /// default heights — is stated beside the fields that hold it.
+    /// Its signals, root-owned (`state::root_signal`), in the state a stack opens with.
     pub(crate) fn new() -> Self {
         Self {
             order: root_signal(|| PanelId::VARIANTS.to_vec()),
-            // Every panel starts closed and what this browser last had open comes
-            // back — read here, before the first render, so the stack the artist
-            // left is the first one drawn rather than one that assembles itself a
-            // frame later (`crate::visibility`, §25.6).
+            // Read before the first render, so the stack the artist left is the first one drawn
+            // (`crate::visibility`, §25.6).
             hidden: root_signal(stark_ui::visibility::stored_hidden),
             collapsed: root_signal(stark_ui::visibility::stored_collapsed),
             drag: root_signal(|| None),
@@ -134,12 +82,8 @@ impl PanelLayout {
     }
 }
 
-/// The panel stack's scroll geometry, in CSS px: how far it is scrolled, how tall its
-/// content is, and how much of it is showing.
-///
-/// Enough to draw the rail and no more. It is a *measurement* and everything derived
-/// from it is derived here, so the component that draws the thumb and the drag that
-/// moves it cannot come to disagree about where the thumb is.
+/// The panel stack's scroll geometry, in CSS px. Everything derived from it is derived
+/// here, so the thumb's drawing and its drag cannot disagree.
 #[derive(Clone, Copy, PartialEq, Default, Debug)]
 pub struct Scroll {
     /// `scrollTop`.
@@ -150,19 +94,13 @@ pub struct Scroll {
     pub view: f32,
 }
 
-/// The shortest the rail's thumb may be drawn. A very long column would otherwise
-/// give a thumb of a few pixels, which says how much is off screen at the cost of
-/// being unable to be grabbed — and being grabbable is the whole reason this rail
-/// exists (a tablet has no wheel).
+/// The shortest the rail's thumb may be drawn, in px, so it stays grabbable: a tablet has
+/// no wheel.
 const MIN_THUMB: f32 = 28.0;
 
 impl Scroll {
-    /// Whether there is anything to scroll. The rail is not in the DOM otherwise: it
-    /// would be a control that cannot do anything, standing over the painting.
-    ///
-    /// A pixel of slack, because both numbers are the browser's rounding of a layout
-    /// that includes fractional panel heights, and a rail that flickered on and off
-    /// as a slider moved would be worse than no rail.
+    /// Whether there is anything to scroll; the rail is not in the DOM otherwise. A pixel of
+    /// slack, so the browser's rounding of fractional heights cannot flicker the rail.
     pub fn overflows(self) -> bool {
         self.content > self.view + 1.0
     }
@@ -171,20 +109,15 @@ impl Scroll {
     /// as the view is of the content, at the place the scroll has reached.
     pub fn thumb(self) -> (f32, f32) {
         let height = (self.view / self.content * self.view).clamp(MIN_THUMB, self.view);
-        // What the thumb has left to travel, against what the content has. Both are
-        // zero-safe: `overflows` is what the caller checked, and the clamp above
-        // cannot exceed the rail.
+        // Zero-safe: the caller checked `overflows`, and the clamp above cannot exceed the rail.
         let travel = (self.view - height).max(0.0);
         let scrollable = (self.content - self.view).max(1.0);
         let top = (self.top / scrollable * travel).clamp(0.0, travel);
         (top, height)
     }
 
-    /// Where a thumb dragged `dy` px from `start` would leave the stack.
-    ///
-    /// The inverse of [`thumb`](Self::thumb)'s placement, which is what makes the drag
-    /// track the hand exactly: the thumb ends up under the pointer rather than
-    /// somewhere proportional to it.
+    /// Where a thumb dragged `dy` px from `start` would leave the stack: the inverse of
+    /// [`thumb`](Self::thumb), so the thumb stays under the pointer.
     pub fn scrolled_by(self, start: f32, dy: f32) -> f32 {
         let (_, height) = self.thumb();
         let travel = (self.view - height).max(1.0);
@@ -193,9 +126,8 @@ impl Scroll {
     }
 }
 
-/// An in-flight drag of the rail's thumb. Like every other drag here, the answer is
-/// derived from where the pointer *started* rather than from the thumb's live
-/// position, so the thing being moved cannot feed back into the move.
+/// An in-flight drag of the rail's thumb, derived from where the pointer started so the
+/// thumb being moved cannot feed back into the move.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ThumbGrab {
     /// Pointer Y at grab (client px).
@@ -205,10 +137,8 @@ pub struct ThumbGrab {
 }
 
 impl PanelLayout {
-    /// The starting heights: every resizable panel at its default. Seeded up front
-    /// rather than measured on first drag, so a resize is pure arithmetic on a number
-    /// the layout already knows (and the grip responds on the first pixel of the
-    /// drag, with no async measurement to wait for).
+    /// Every resizable panel at its default height. Seeded rather than measured, so a resize
+    /// answers on its first pixel.
     pub fn default_heights() -> HashMap<PanelId, f32> {
         PanelId::VARIANTS
             .iter()
@@ -217,9 +147,8 @@ impl PanelLayout {
     }
 }
 
-/// An in-flight resize of a panel's bottom edge. Like [`ThumbGrab`], the height is
-/// derived from where the pointer started rather than from the panel's live box, so
-/// the element being resized can never feed back into the size being computed.
+/// An in-flight resize of a panel's bottom edge, derived from where the pointer started,
+/// as [`ThumbGrab`] is.
 #[derive(Clone, Copy, PartialEq)]
 pub struct ResizeState {
     id: PanelId,
@@ -229,17 +158,11 @@ pub struct ResizeState {
     start_h: f32,
 }
 
-/// Where an in-flight drag would land, resolved against the panels as they stand
-/// now: which rows travel and how far the hand has taken them.
+/// Where an in-flight drag would land: the slide, and how far the hand has taken it.
 ///
-/// `None` when the drag cannot be resolved — a panel without a box, which is what
-/// a stack that changed under the pointer looks like. The stack then draws itself
-/// at rest and the release commits nothing, rather than acting on geometry that
-/// describes an arrangement that is gone (`Grab::resolve`).
-///
-/// The travelling block is a single panel, which is the whole difference between
-/// this and the layer tree: a panel carries nothing, so there is no subtree to
-/// reach back over and no depth for the pointer's *x* to choose among.
+/// `None` when a panel has no box, which is what a stack that changed under the pointer
+/// looks like; the stack then draws at rest and the release commits nothing
+/// (`Grab::resolve`). The travelling block is always one panel, so there is no depth.
 fn landing(visible: &[PanelId], drag: &Grab) -> Option<(Slide, f32)> {
     let keys: Vec<String> = visible.iter().copied().map(panel_key).collect();
     let (from, boxes) = drag.resolve(&keys)?;
@@ -247,158 +170,91 @@ fn landing(visible: &[PanelId], drag: &Grab) -> Option<(Slide, f32)> {
     Some((Slide::resolve(&boxes, (from, from), dy)?, dy))
 }
 
-/// The identity a panel wears in the DOM, and the one a drag resolves against.
-///
-/// One function because it is asked in four places — the `data-panel` attribute
-/// [`Panel`] writes, the key a press grabs by (`reorder::RowKey::Panel`), the list
-/// [`landing`] matches, and the selector the guided tour's card points at
-/// (`tutor::Anchor`) — and a box matched to the wrong panel is measured in silence:
-/// any box is a plausible box, whichever element it came from (§11). Stated once, the four cannot disagree; stated four times, `{id:?}`
-/// was the agreement.
+/// The identity a panel wears in the DOM and a drag resolves against: the `data-panel`
+/// attribute, `reorder::RowKey::Panel`, [`landing`] and the tour's anchor
+/// (`tutor::Anchor`). One function, because a box matched to the wrong panel fails
+/// silently (§11).
 pub fn panel_key(id: PanelId) -> String {
     format!("{id:?}")
 }
 
-/// Whether a floating-chrome container (the panel stack, the command rail, the
-/// selection bar) is faded out of the way right now — a canvas gesture is in flight
-/// *and* this browser has asked for that ([`ChromeHiding`](stark_ui::prefs::ChromeHiding)),
-/// since "Always show" is
-/// the answer no to both.
+/// Whether floating chrome (the panel stack, the command rail, the bars) is faded right
+/// now: a canvas gesture is in flight and this browser fades
+/// ([`ChromeHiding`](stark_ui::prefs::ChromeHiding)).
 ///
-/// Every one of them sits over the canvas and none of them is what the user is looking
-/// at mid-stroke, so they all fade together — the screen goes back to being the
-/// painting, and comes back the moment the gesture ends. The fade is CSS
-/// ([`crate::state::Signals::canvas_active`] only toggles the class), so the chrome
-/// stays laid out where it was and nothing reflows on the way in or out.
-///
-/// A container wears `chrome` unconditionally and `dimmed` under this, as a second
-/// `class:` attribute — rsx merges same-named attributes with a space, so the two
-/// names stay literals in the markup that shows them.
-///
-/// The gesture is read first, so chrome standing idle subscribes to nothing else: the
-/// setting cannot change what an idle container looks like, and every container in the
-/// app calls this.
+/// The fade is CSS, so nothing reflows. A container wears `chrome` and, under this,
+/// `dimmed`. The gesture is read first, so idle chrome subscribes to nothing else.
 pub fn chrome_dimmed(state: AppState) -> bool {
     (state.canvas_active)() && (state.chrome_hiding)().fades()
 }
 
-/// [`chrome_dimmed`] for the panel stack, which fades for a second reason: it stays
-/// out of the way after the gesture ends, until the pointer reaches into its column
-/// ([`Signals::panels_asleep`](crate::state::Signals::panels_asleep)(crate::state::Signals::panels_asleep)).
-///
-/// One `dimmed` for both, deliberately — mid-gesture and asleep are the same fact
-/// about the stack (it is not what the screen is for right now), and giving the second
-/// one a class of its own would be two ways to be invisible for the stylesheet to keep
-/// in step.
+/// [`chrome_dimmed`], or the stack standing down after a gesture until the pointer
+/// reaches its column ([`standing_down`]). One `dimmed` class for both.
 fn stack_dimmed(state: AppState) -> bool {
     chrome_dimmed(state) || standing_down(state)
 }
 
-/// Whether the stack is out of the way **and nothing is holding it up** — the
-/// question both the fade and the wake slice actually want, rather than
-/// [`Signals::panels_asleep`](crate::state::Signals::panels_asleep)(crate::state::Signals::panels_asleep) raw.
+/// Whether the stack is asleep **and nothing is holding it up**
+/// ([`Signals::panels_asleep`](crate::state::Signals::panels_asleep)).
 ///
-/// The tour holds it up for as long as a card is pointing into it (§24.3). Without
-/// that, the first stroke after a lesson appeared would put the panels back to sleep
-/// underneath it and leave an arrow aimed at nothing — the card fades for the gesture
-/// like all the chrome and comes back, and the panel it is about would not.
-///
-/// Asked in **two** places and so stated once: the class that fades the stack, and
-/// the slice that exists to wake it. A slice mounted over a stack that is plainly on
-/// screen would be an invisible box taking presses to perform a wake that has already
-/// happened, which is precisely the thing `PanelStack`'s own comment argues must not
-/// exist.
+/// The tour holds it up while a card points into it (§24.3), or a stroke would sleep the
+/// panel out from under the card's arrow. Shared by the fade and the wake slice, which
+/// must not be mounted over a stack that is on screen.
 fn standing_down(state: AppState) -> bool {
-    // Short-circuits, so a stack that is awake never reads the setting or the tour at
-    // all and the component does not subscribe to either — and it does not need to,
-    // because coming back from asleep is itself a write of the signal on the left.
-    //
-    // The setting is asked here as well as at [`sleep_panels`], and not as a belt: a
-    // stack already asleep when the artist switches to a mode that does not sleep has
-    // to come back, and this is the read that says so.
+    // Short-circuits, so an awake stack subscribes to neither the setting nor the tour. The
+    // setting is asked here too, so a sleeping stack wakes when the artist switches to a
+    // mode that does not sleep.
     (state.panels_asleep)()
         && (state.chrome_hiding)().sleeps()
         && !crate::tutor::holding_panels(state)
 }
 
-/// Wake the stack: whatever it was still standing down from, the panels are wanted.
-///
-/// Called from the slice the pointer reaches into ([`PanelStack`]), from
-/// [`open_panel`], and by the tour when it puts away a card that was pointing into
-/// the stack — so acknowledging a lesson leaves the panel it was about on screen
-/// rather than snapping it out from under the hand (§24.3). Idempotent, and free when
-/// it is already awake — a signal set to the value it holds wakes no reader.
+/// Wake the stack: from the wake slice ([`PanelStack`]), [`open_panel`], and the tour
+/// putting away a card that pointed into it (§24.3). Idempotent.
 pub fn wake_panels(state: AppState) {
     let mut asleep = state.panels_asleep;
-    // Read out into a `bool` first, so the borrow the peek takes is over before the
-    // write — a signal read left inline in the condition is a panic in a handler that
-    // then writes it. And guarded rather than set flat: `set` marks its readers dirty
-    // whatever it is handed, and this runs on every pointer move across the slice.
+    // Into a `bool` before the write: a signal read held across a write of itself panics.
+    // Guarded, since `set` dirties readers whatever it is handed and this runs per move.
     let sleeping = *asleep.peek();
     if sleeping {
         asleep.set(false);
     }
 }
 
-/// The wake slice's own three handlers: the artist reaching into the column, which is
-/// a **deed** as well as a wake (§24.2).
-///
-/// Separate from [`wake_panels`] rather than reported inside it, and the difference is
-/// the whole of what the deed means: [`open_panel`] wakes the stack, and so does the
-/// tour letting go of a card it was holding it up for — neither of which is anybody
-/// reaching for anything, and the second is the very lesson this deed answers taking
-/// itself down. The deed is the *gesture*, so it is reported where the gesture lands.
-///
-/// Reported before the wake, so the tour reads the panels as still asleep — which is
-/// what its card is standing in front of. It is at most one deed per sleep, since the
-/// first event here takes the slice out of the DOM.
+/// The wake slice's handler: reaching into the column is a **deed** as well as a wake
+/// (§24.2). Not reported inside [`wake_panels`], whose other callers are not gestures.
+/// Reported before the wake, so the tour reads the panels as still asleep.
 fn reach_for_panels(state: AppState) {
     crate::tutor::did(state, crate::tutor::Deed::WokePanels);
     wake_panels(state);
 }
 
 /// Stand the panels down, as the end of a canvas gesture does
-/// ([`Signals::panels_asleep`](crate::state::Signals::panels_asleep)(crate::state::Signals::panels_asleep)).
-///
-/// [`wake_panels`]'s counterpart, and public where that one is not, because it has
-/// an outside caller and waking has none: the tour's lesson about the wake gesture
-/// points at a slice of the window that is only in the DOM while the panels are
-/// standing down, so it makes sure they are (§24.3). Idempotent, and free when they
-/// already are.
+/// ([`Signals::panels_asleep`](crate::state::Signals::panels_asleep)). Public for the
+/// tour, whose wake lesson points at a slice that exists only while they sleep (§24.3).
+/// Idempotent.
 pub fn sleep_panels(state: AppState) {
-    // **The one door**, which is why the setting is asked here rather than at the two
-    // callers: the release that ends a stroke (`input::end_interaction`) and the tour
-    // revealing the slice its lesson points at. A browser that has asked the panels to
-    // stay put has asked both of them.
+    // The one door, so the setting is asked here rather than by its callers
+    // (`input::end_interaction` and the tour).
     if !state.prefs.peek().chrome_hiding.sleeps() {
         return;
     }
     let mut asleep = state.panels_asleep;
-    // Read out into a `bool` before the write, as `wake_panels` does and for the
-    // same two reasons: a signal read left live across a write of itself panics, and
-    // a `set` marks its readers dirty whatever it is handed.
+    // Into a `bool` before the write, as in `wake_panels`.
     let awake = !*asleep.peek();
     if awake {
         asleep.set(true);
     }
 }
 
-/// Open or close `id`, and remember it. **The only thing that writes
-/// [`PanelLayout::hidden`]**, which is what makes durability structural rather than
-/// a line every call site has to remember — the move
-/// `prefs::set` makes for the preferences.
+/// Open or close `id`, and remember it. **The only writer of [`PanelLayout::hidden`]**,
+/// so durability is structural, as `prefs::set` makes it for the preferences.
 ///
-/// The write is guarded on the set actually changing, since this runs from
-/// [`open_panel`], which the tour calls for a panel that is very often already open
-/// (§24.3) — and a `Signal` write dirties every subscriber whether or not the value
-/// moved.
-///
-/// Answers whether it **moved**, which is what keeps the tour from reading a panel
-/// opened onto a panel that was already open as anything at all (§24.2).
+/// Guarded on the set changing, since the tour opens panels that are often already open
+/// (§24.3). Answers whether it moved, so the tour ignores a no-op (§24.2).
 fn set_open(state: AppState, layout: PanelLayout, id: PanelId, open: bool) -> bool {
     let mut hidden = layout.hidden;
-    // Into a local before the write: a read guard held across one is the shape that
-    // has borrow-panicked in this crate before.
+    // Into a local before the write: a read guard held across one panics.
     let was_open = !hidden.peek().contains(&id);
     if was_open == open {
         return false;
@@ -412,20 +268,13 @@ fn set_open(state: AppState, layout: PanelLayout, id: PanelId, open: bool) -> bo
     true
 }
 
-/// Fold `id` to its title bar, or unfold it — what clicking a title does
-/// ([`Panel`]), and remembered like everything else about the stack.
+/// Fold `id` to its title bar, or unfold it: what clicking a title does ([`Panel`]).
 ///
-/// A fold is deliberately *not* a close. The panel keeps its slot, its height and
-/// its place in the drag order, and everything inside it goes on existing — the layer
-/// list keeps its scroll, the preset library its place in the roster — because the
-/// point of folding is to spend less of the column on a panel you are still working
-/// with. Which is also why the content is hidden by the stylesheet rather than left
-/// out of the render: an unmounted panel would rebuild itself, and everything it had
-/// scrolled to or measured, on every unfold.
+/// Not a close: the panel keeps its slot, height and drag order. The content is hidden by
+/// the stylesheet rather than unmounted, so its scroll and measurements survive.
 pub fn toggle_collapse(state: AppState, layout: PanelLayout, id: PanelId) {
     let mut collapsed = layout.collapsed;
-    // Answered into a `bool` first: a `peek` in the condition stays borrowed through
-    // the body, and both arms write the very signal being read.
+    // Into a `bool` first: a `peek` in the condition stays borrowed through arms that write.
     let folded = collapsed.peek().contains(&id);
     if folded {
         collapsed.write().remove(&id);
@@ -439,26 +288,19 @@ pub fn toggle_collapse(state: AppState, layout: PanelLayout, id: PanelId) {
 /// its row in the visibility menu.
 pub fn close_panel(state: AppState, layout: PanelLayout, id: PanelId) {
     if set_open(state, layout, id, false) {
-        // Only where a panel actually went away. The tour answers the question this
-        // raises — *where did it go?* — and answering it about a panel that was
-        // already closed would be answering nobody (§24.5).
+        // Only when a panel actually closed: the tour explains where it went (§24.5).
         crate::tutor::did(state, crate::tutor::Deed::ClosedPanel);
     }
 }
 
-/// Show `id`, and wake the stack. **The only way a panel is opened**, which is what
-/// makes the second half structural: a panel un-hidden into a sleeping stack would be
-/// a menu entry that ticks itself and changes nothing on screen, and every call site
-/// that opens one would have to remember the same line.
+/// Show `id`, unfolded, and wake the stack. **The only way a panel is opened**, so no call
+/// site can un-hide a panel into a sleeping stack.
 pub fn open_panel(state: AppState, layout: PanelLayout, id: PanelId) {
     set_open(state, layout, id, true);
-    // And unfolded, for the reason the wake below happens: opening is a request to
-    // *see* a panel, and one that came back as a bare title bar would be a menu entry
-    // that ticks itself and shows nothing — which is exactly what folding one and
-    // closing it would otherwise leave for next time. The tour depends on it too: a
-    // card pointing into a folded panel is pointing at a closed lid (§24.3).
+    // Unfolded, since opening is a request to see the panel; a tour card pointing into a
+    // folded one would point at a closed lid (§24.3).
     let mut collapsed = layout.collapsed;
-    // Read out before the write, as everything else here does.
+    // Read out before the write.
     let folded = collapsed.peek().contains(&id);
     if folded {
         collapsed.write().remove(&id);
@@ -467,16 +309,10 @@ pub fn open_panel(state: AppState, layout: PanelLayout, id: PanelId) {
     wake_panels(state);
 }
 
-/// Show `id` if it is hidden, hide it if it is not — what the panel's row in the
-/// visibility menu runs (`stark_ui::commands::VisibilityToggle::Panel`).
-///
-/// The wake goes through [`open_panel`], so it happens on the half of the toggle that
-/// opens and not on the half that closes.
+/// Show `id` if it is hidden, hide it if not: its row in the visibility menu
+/// (`stark_ui::commands::VisibilityToggle::Panel`). Only the opening half wakes the stack.
 pub fn toggle_panel(state: AppState, layout: PanelLayout, id: PanelId) {
-    // Answered into a `bool` before the branch rather than peeked in the condition
-    // itself: a signal read in an `if` stays borrowed for the whole of its body, and
-    // both arms below write that same signal — which would be a panic in a handler
-    // that had already ticked the menu entry.
+    // Into a `bool` first: both arms write the signal the condition would hold borrowed.
     let was_hidden = layout.hidden.peek().contains(&id);
     if was_hidden {
         open_panel(state, layout, id);
@@ -485,42 +321,23 @@ pub fn toggle_panel(state: AppState, layout: PanelLayout, id: PanelId) {
     }
 }
 
-/// The floating tool panels, top-right. Renders the open panels in a **fixed** sequence —
-/// `PanelId::VARIANTS`, always — and states the user's order as a flex `order` on each one.
+/// The floating tool panels, top-right, rendered in the fixed `PanelId::VARIANTS`
+/// sequence with the user's order as each panel's flex `order`.
 ///
-/// So the stack's order is not in the DOM: slot *k* renders panel *k* for the life of the
-/// app, and a reorder changes an integer rather than moving anything. What that buys is
-/// that a panel keeps its own element and its own subtree — the layer list's scroll and
-/// the preset library's survive being dragged up the stack, where reordering the children
-/// would rebuild whichever panels changed slots.
+/// A reorder changes an integer, so a dragged panel keeps its element and subtree (the
+/// layer list's scroll). It costs `:first-child` / `:last-child`, so `Panel` marks the
+/// ends with `.stack-first` / `.stack-last`.
 ///
-/// It costs the stack `:first-child` / `:last-child`, since the first child is now
-/// whichever panel leads `PanelId::VARIANTS` rather than the top of the column; `Panel` names
-/// the ends with `.stack-first` / `.stack-last` instead.
-///
-/// A stack no taller than its panels, and a stack taller than the window scrolls: both
-/// are the stylesheet's job alone (`.panel-stack`). The canvas's zoom hangs off the
-/// `<canvas>` element, which is this stack's *sibling*, so a wheel spent over the stack
-/// is unable to reach it; adding a handler to suppress a zoom that cannot happen would
-/// be a second, quieter claim about the DOM shape for the first one to fall out of step
-/// with.
-///
-/// The one box here beyond the panels is `.panel-wake`, and it exists only while they
-/// are asleep — see the comment on it below, which is where the reasoning about what a
-/// box over the painting may and may not take belongs.
+/// Height and overflow are the stylesheet's (`.panel-stack`). The canvas's zoom hangs off
+/// the `<canvas>`, a sibling, so a wheel over the stack cannot zoom and needs no handler.
 #[component]
 pub fn PanelStack() -> Element {
     let state = use_context::<AppState>();
     let layout = state.panels;
-    // Re-measure whenever the column's *shape* could have changed. Effects run after
-    // the DOM is patched, which is the only moment the new height exists to be read —
-    // and reading these three signals is what makes it a rule rather than a line every
-    // panel-opening, panel-folding, panel-resizing call site has to remember. What it
-    // cannot see is a panel that grew its own content (a layer added, a preset saved),
-    // which is what the pointer arriving in the column re-measures for.
+    // Re-measure after any render that could change the column's shape; effects run after
+    // the patch. Content growing inside a panel is caught on pointer entry instead.
     //
-    // Before the early return below, because hooks run in the same order every render
-    // or Dioxus loses track of which is which.
+    // Above the early return: hooks must run in the same order every render.
     use_effect(move || {
         let _ = (layout.hidden)().len();
         let _ = (layout.collapsed)().len();
@@ -529,65 +346,34 @@ pub fn PanelStack() -> Element {
         measure_scroll(layout);
     });
     let hidden = (layout.hidden)();
-    // The open panels top to bottom — the order the *user* sees, which each panel then
-    // carries as its own `order` slot. Everything below iterates the constant instead.
-    //
-    // Read reactively here rather than through `visible()`, which peeks: this is a
-    // render and the stack must follow both signals.
+    // The open panels in the user's order. Reactive, unlike `visible()`, which peeks.
     let open: Vec<PanelId> = (layout.order)()
         .into_iter()
         .filter(|id| !hidden.contains(id))
         .collect();
-    // Every panel closed is no stack at all, not an empty one. An empty stack is still a
-    // box over the canvas — its padding alone is a strip across the top-right corner —
-    // and chrome the user cannot see must not be able to take a press aimed at the
-    // painting. The same reasoning the stylesheet applies to the stack's height.
+    // No open panel is no stack: an empty stack's padding would still take presses aimed at
+    // the painting.
     if open.is_empty() {
         return rsx! {};
     }
     let count = open.len();
-    // The drag preview is resolved to a `Motion` here, alongside each panel's slot, so
-    // a panel is handed how to draw itself rather than reading the gesture itself. Only
-    // the panels whose motion actually changed then re-render as the pointer moves.
+    // Resolved here, so only panels whose motion changed re-render as the pointer moves.
     let drag = (layout.drag)();
     let land = drag
         .as_ref()
         .filter(|d| d.live())
         .and_then(|d| landing(&open, d));
-    // Whether the slice below is standing by. Asleep says the panels are waiting to be
-    // asked for; `!canvas_active` is what keeps the box out of a gesture's way, and it
-    // is the whole safety argument for having one at all (below).
+    // Whether the wake slice is mounted (see below).
     let reachable = standing_down(state) && !(state.canvas_active)();
     rsx! {
-        // **The slice the pointer reaches into to bring the panels back** (§11).
+        // The slice the pointer reaches into to bring the panels back (§11): full column height,
+        // since the stack itself is only as tall as its panels.
         //
-        // It cannot be the stack itself: the stack is exactly as tall as the panels in
-        // it and must stay that way for its scroller to work, so hovering *it* would
-        // answer near the top of the window and not at the foot — "reach for the panel
-        // you cannot see" is not a thing a hand can aim at. The column is what the user
-        // means by where the tools are, and a column is full height.
-        //
-        // Which makes this the invisible box over the painting that `.panel-stack`'s own
-        // comment forbids, so it is worth being exact about the two things that make it
-        // admissible.
-        //
-        // **It is not here unless the panels are asleep and the canvas is out of hand.**
-        // A gesture in flight is the case that matters: a stroke's moves are delivered
-        // to whatever is under the pointer (nothing captures — the canvas is
-        // full-window, and faded chrome takes no events, which is what lets a stroke
-        // stray under a panel and keep painting), so a box that was live mid-stroke
-        // would take the moves that crossed into this column *and the release that ends
-        // the stroke* — leaving a gesture in flight with nothing left to end it. Awake,
-        // it is not in the DOM at all and can take nothing.
-        //
-        // **What it does take, it answers.** The first press in this column while the
-        // panels are asleep brings them back instead of painting — one press, and only
-        // for a device that arrives without hovering first. A pointer that hovers has
-        // already woken them by moving in, so it never reaches this case; a finger,
-        // which does not hover, taps once to ask for the panels, and that is the only
-        // way a touch-only hand *can* ask — a sleeping stack takes no taps either. The
-        // wheel is here for the same reason and not for the stack's: a notch of zoom
-        // spent in this column would otherwise fall into the box and be silently lost.
+        // Mounted only while asleep and with the canvas out of hand: a stroke's moves go to
+        // whatever is under the pointer, so a box live mid-stroke would take the release that
+        // ends it. A press here wakes the panels instead of painting, which is the only way a
+        // touch that cannot hover asks for them; the wheel is taken so a notch of zoom spent here
+        // is not silently lost.
         if reachable {
             div {
                 class: "panel-wake",
@@ -599,11 +385,8 @@ pub fn PanelStack() -> Element {
         div {
             class: "panel-stack chrome",
             class: if stack_dimmed(state) { "dimmed" },
-            // Where the rail's numbers come from. The scroll event is the browser
-            // telling us it moved the column — a wheel, a keystroke, the thumb below
-            // — and the pointer arriving is the one moment a rail that is about to be
-            // *shown* has to be right, which covers every way a panel's own content
-            // grew while nobody was looking.
+            // The rail's numbers: on the column's own scroll, and on pointer entry for content that
+            // grew unseen.
             onscroll: move |_| measure_scroll(layout),
             onpointerenter: move |_| measure_scroll(layout),
             for id in PanelId::VARIANTS.iter().copied() {
@@ -612,8 +395,7 @@ pub fn PanelStack() -> Element {
                         id,
                         slot,
                         count,
-                        // The block is one panel and it only ever travels vertically,
-                        // so the shift handed to `Slide` has no x.
+                        // One panel, travelling only vertically: no x.
                         motion: land.map_or_else(
                             Motion::default,
                             |(s, dy)| s.motion(slot, (0.0, dy)),
@@ -634,59 +416,37 @@ pub fn PanelStack() -> Element {
     }
 }
 
-/// The panel stack's own scrollbar: a thumb in the strip of padding down the column's
-/// right edge, in the DOM only while the column has more in it than fits (§11).
+/// The panel stack's own scrollbar, in the column's right padding, present only while
+/// the column overflows (§11).
 ///
-/// **Why the app draws one rather than styling the browser's.** A native scrollbar in
-/// Blink takes its width out of the *content* box, so the moment the column overflowed
-/// every panel in it would narrow by ten pixels — and widen again when a panel closed.
-/// This sits over the padding the panels already clear, so nothing moves when it
-/// appears. The wheel was the only way to reach the rest of the column before it, which
-/// is fine for a mouse and no use at all to the hand this application is for: a pen on
-/// a tablet has no wheel, and "scroll" for that hand means *drag the bar*.
-///
-/// Shown while the pointer is in the column and hidden the moment it leaves — the
-/// stylesheet's job, off `.panel-stack:hover` (the rail is its next sibling, which is
-/// what that selector needs) and off the rail's own hover, since a pointer on the rail
-/// is not on the stack. A drag keeps it up whatever the pointer is over, which is what
-/// `.dragging` is for: a thumb that vanished mid-drag would leave the hand steering
-/// something it cannot see.
-///
-/// It sits **beside** the stack rather than inside it because an absolutely-positioned
-/// child of a scroll container scrolls with the content — the rail would slide off the
-/// top the moment it was used. Which is also why its own top and height are written
-/// inline from the measurement: as a sibling it has no way to inherit the column's
-/// box.
+/// Drawn by the app because Blink's native scrollbar takes its width from the content
+/// box, narrowing every panel on overflow, and a pen has no wheel. Shown on hover
+/// (`.panel-stack:hover`) and while dragged (`.dragging`). The stack's next sibling rather
+/// than its child, since a positioned child of a scroller scrolls with it, so its box is
+/// written inline from the measurement.
 #[component]
 fn PanelScrollbar() -> Element {
     let state = use_context::<AppState>();
     let layout = state.panels;
     let scroll = (layout.scroll)();
     let dragging = (layout.thumb)().is_some();
-    // Nothing to scroll is no rail: a control that cannot do anything, standing over
-    // the painting, is the thing `.panel-stack`'s own comment forbids.
+    // Nothing to scroll is no rail.
     if !scroll.overflows() {
         return rsx! {};
     }
     let (top, height) = scroll.thumb();
     rsx! {
         div {
-            // Fades with the rest of the floating chrome, and for its reason:
-            // mid-gesture the screen goes back to being the painting. `chrome` also
-            // stops it taking the pointer while faded, so a stroke that strays into the
-            // column cannot be caught by a bar the artist cannot see.
+            // `chrome` also stops a faded rail catching a stroke that strays into the column.
             class: "panel-scroll chrome",
             class: if chrome_dimmed(state) { "dimmed" },
-            // A drag keeps the rail up whatever the pointer is over: a thumb that
-            // vanished mid-drag would leave the hand steering something it cannot see.
+            // A thumb that vanished mid-drag would leave the hand steering nothing.
             class: if dragging { "dragging" },
             style: "top: {PANEL_INSET}px; height: {scroll.view}px;",
             div {
                 class: "panel-scroll-thumb",
                 style: "top: {top}px; height: {height}px;",
-                // The same capture every other drag in the app takes: the release is
-                // delivered to the capturing element whatever the pointer is over by
-                // then, and this is a drag whose target moves under the hand.
+                // Captured, so the release arrives here whatever the pointer is over by then.
                 onpointerdown: move |e| {
                     platform::capture_pointer(&e);
                     start_thumb(layout, &e);
@@ -699,45 +459,24 @@ fn PanelScrollbar() -> Element {
     }
 }
 
-/// The stack's inset from the window's corner, which the rail is placed by — the
-/// stylesheet's `--panel-inset`, in the one place the host has to know it.
-///
-/// Stated here because the rail's `top` is inline (see [`PanelScrollbar`]) and there
-/// is no way to write "the same 4px the column uses" in an inline style. Anything
-/// else about where it sits is the stylesheet's.
+/// The stack's inset from the window's corner, in px: the stylesheet's `--panel-inset`,
+/// needed here because the rail's `top` is inline ([`PanelScrollbar`]).
 const PANEL_INSET: f32 = 4.0;
 
-/// Unified panel chrome: a header (title = drag handle + close button) over the panel's
-/// controls. The ✕ closes the panel (the "Panels" menu reopens it). During a drag the
-/// dragged panel follows the pointer and the others slide to open its landing slot; the
-/// slide transition is applied inline *only while dragging*, so on release every panel
-/// snaps straight to the freshly-reordered layout with no transition glitch.
+/// Unified panel chrome: a header (the title is the drag handle and the fold; ✕ closes)
+/// over the panel's controls.
 ///
-/// A panel with a [`PanelId::default_height`] also gets an explicit height and a grip on
-/// its bottom edge. The height is set here rather than in the stylesheet because it is
-/// live state; what the stylesheet owns is what the panel does with it — see
-/// `.panel.resizable`, which turns the panel into a column so its list can take the slack.
-///
-/// `slot` is where this panel sits in the stack, `count` how many are open. The first is a
-/// flex `order`, which is the whole of how the stack is ordered ([`PanelStack`]); the two
-/// together name the ends of the column, which minimal mode rounds. Those have to be
-/// classes rather than `:first-child` / `:last-child` — the DOM child order is the fixed
-/// one now, so the first child is whichever panel happens to lead `PanelId::VARIANTS`.
-///
-/// `motion` is the drag preview — where this panel is drawn relative to where it
-/// belongs, and whether it is the one in flight (`panels::reorder`). The panel is
-/// handed it rather than reading the gesture, so the motions and the slots are
-/// decided together in [`PanelStack`] and only the panels that actually move
-/// re-render as the pointer travels. At rest it is `Motion::default`, which is the
-/// resting state written out rather than the absence of one — see below.
+/// A panel with a [`PanelId::default_height`] gets an inline height, since it is live
+/// state, and a bottom-edge grip (`.panel.resizable`). `slot` is its flex `order`
+/// ([`PanelStack`]); `slot` and `count` name the column's ends as classes. `motion` is
+/// the drag preview, resolved in [`PanelStack`] so only moving panels re-render; at rest
+/// it is `Motion::default`, written out (see below).
 #[component]
 pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: Element) -> Element {
     let state = use_context::<AppState>();
     let layout = state.panels;
-    // `map` on the default, so a panel that is not resizable never reads either signal
-    // and so never re-renders for someone else's resize.
-    // Folded to its title bar, which takes its height away with its content: a panel
-    // the grip left 340px tall must not fold into a 340px header.
+    // A panel that is not resizable never reads `heights` or `resize`. Folded, a panel loses
+    // its height too: a 340px panel must not fold into a 340px header.
     let folded = layout.collapsed.read().contains(&id);
     let height = id
         .default_height()
@@ -745,19 +484,9 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
         .map(|d| layout.heights.read().get(&id).copied().unwrap_or(d));
     let resizing = height.is_some() && layout.resize.read().is_some_and(|r| r.id == id);
 
-    // **Every declaration, every render, including the ones that are "off".**
-    //
-    // Inline styles are applied property by property, not by replacing the attribute, so a
-    // declaration left out of this string is not removed from the element — it keeps
-    // whatever value the last render that *did* mention it gave it. Omitting `transform`
-    // when no drag is in flight therefore does not clear the drag's transform: it strands
-    // it, over a stack that has since reordered, which is the whole of this bug
-    // (`2026-08-03`). Writing the resting values explicitly is what clears them.
-    //
-    // The rule is easy to break by adding a conditional declaration here, and the breakage
-    // is invisible until some *other* state change makes the stale value wrong. The
-    // `transform`/`transition` pair is `panels::reorder::css`'s, which holds the same rule for
-    // the layer tree and the guide list — and has the test that pins it.
+    // **Every declaration, every render, including the "off" ones**: inline styles apply per
+    // property, so an omitted `transform` is stranded rather than cleared. The
+    // `transform`/`transition` pair is `panels::reorder::css`'s, which has the test.
     let h = match height {
         Some(h) => format!("{h}px"),
         None => "auto".to_string(),
@@ -776,21 +505,15 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
             class: if slot == 0 { "stack-first" },
             class: if slot + 1 == count { "stack-last" },
             style,
-            // Which panel this element is, for `platform::panel_boxes` to read back. The
-            // drag measures the DOM and writes `order`, so it needs the two to agree; this
-            // is what lets it check rather than assume — and it is `panel_key`, not a
-            // fourth spelling of the same format.
+            // For `platform::panel_boxes`: a drag checks DOM boxes against panels by `panel_key`.
             "data-panel": "{panel_key(id)}",
             div { class: "panel-header",
-                // The mark is inside the drag handle rather than beside it: the whole
-                // title *is* the grip, and a glyph sitting outside it would be the one
-                // part of the header that looks draggable and is not.
+                // The mark is inside the grip: the whole title is draggable.
                 div {
                     class: "panel-title",
                     title: if folded { "Click to unfold, or drag to reorder" } else { "Click to fold, or drag to reorder" },
-                    // The roster rows' press and follow (`panels::reorder`): the grip
-                    // captures the pointer, so the release arrives here however far the
-                    // stack has moved under it.
+                    // The roster rows' press and follow (`panels::reorder`); the grip captures
+                    // the pointer.
                     onpointerdown: move |e| reorder::press(layout.drag, RowKey::Panel(id), &e),
                     onpointermove: move |e| reorder::follow(layout.drag, &e),
                     // A press that travelled lands; one that did not folds the panel.
@@ -798,22 +521,14 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
                     // A *cancel* is neither: the browser took the gesture away, and a
                     // gesture nobody finished must not be read as a click.
                     onpointercancel: move |_| drag_end(layout, id),
-                    // The browser's own drag, refused. Nothing in the stack is
-                    // selectable any more (`.panel-stack` in the stylesheet), which is
-                    // what actually fixed a grip that dragged a ghost of the panel's
-                    // words instead of the panel — this is the belt: a native drag
-                    // starting *from the grip* would take the reorder's press with it,
-                    // whatever the selection is.
+                    // Refuse the browser's own drag, which would take the reorder's press. The
+                    // stack is also unselectable (`.panel-stack`).
                     ondragstart: move |e| e.prevent_default(),
                     {icon(crate::layout::panel_glyph(id))}
                     "{id.title()}"
-                    // Which way this panel is folded, at the far end of the grip —
-                    // inside it, so the mark is part of what you click rather than a
-                    // second control beside it. One glyph rotated rather than a pair:
-                    // unlike the layer tree's fold (`stark_ui::icons::FOLD_OPEN`), which points at
-                    // rows drawn *above* it in both states and so cannot turn, a panel's
-                    // content is below its bar and the caret means the direction it will
-                    // go.
+                    // The fold caret, inside the grip. One glyph rotated, since a panel's
+                    // content is below its bar, unlike the layer tree's fold
+                    // (`stark_ui::icons::FOLD_OPEN`).
                     span { class: "panel-fold", {icon(stark_ui::icons::FOLD_OPEN)} }
                 }
                 button {
@@ -823,22 +538,12 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
                     {icon(stark_ui::icons::CLOSE)}
                 }
             }
-            // The panel's content as **one** thing, so folding it away is one rule
-            // about an ancestor rather than a rule about each of the children.
-            //
-            // That distinction is the whole reason the wrapper exists. Minimal mode
-            // re-lays some of those children by name (`.app-root.minimal .panel
-            // .slider-row.marked`), and a `display: none` on the same elements loses
-            // to it on specificity — a folded Brush panel went on showing its sliders.
-            // A hidden *ancestor* cannot be undone by any rule about a descendant, so
-            // this cannot be beaten by the next such addition either. The wrapper is
-            // `display: contents`, so it is a selector and not a box: its children go
-            // on being flex items of the panel exactly as they were.
+            // The content as one ancestor to hide when folded: minimal mode re-lays some
+            // children by name (`.app-root.minimal .panel .slider-row.marked`), which beats a
+            // `display: none` on them on specificity. `display: contents`, so it is not a box.
             div { class: "panel-body", {children} }
             if height.is_some() {
-                // Sits in the panel's own bottom padding, so it costs no layout: the
-                // grip is a place to press, and the bar it draws only appears once the
-                // pointer is over the panel that owns it.
+                // In the panel's bottom padding, so the grip costs no layout.
                 div {
                     class: "panel-resize",
                     title: "Drag to resize",
@@ -849,19 +554,12 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
     }
 }
 
-/// The title bar's release: a press that travelled lands the reorder, and one that
-/// did not folds the panel to its bar ([`toggle_collapse`]).
+/// The title bar's release: a press that travelled lands the reorder, one that did not
+/// folds the panel ([`toggle_collapse`]) — told apart by distance, as a quick slot's tap
+/// and hold are by time (§18.1.8). The threshold is the drag's own
+/// ([`GRAB_SLOP`](crate::panels::reorder)), so no press does neither.
 ///
-/// The two share a press because a title is one grip, and which gesture it was is a
-/// question only the pointer can answer — the same "a tap and a hold are one keystroke
-/// told apart by how long it lasted" argument the quick slots make (§18.1.8), here
-/// told apart by how *far* it went. [`GRAB_SLOP`](crate::panels::reorder) is that
-/// distance, and it is the drag's own: a fold that happened at a different threshold
-/// than the one a drag begins at would leave presses in between that did neither.
-///
-/// Asked **before** [`drag_end`], which spends the grab and so answers the question
-/// away. A release with no grab in flight folds nothing: it belongs to a press this
-/// element never heard, which is a gesture that started somewhere else.
+/// Asked before [`drag_end`], which spends the grab. A release with no grab folds nothing.
 pub fn release_title(state: AppState, layout: PanelLayout, id: PanelId) {
     let (pressed, dragged) = {
         let grab = layout.drag.peek();
@@ -874,19 +572,15 @@ pub fn release_title(state: AppState, layout: PanelLayout, id: PanelId) {
     }
 }
 
-/// Re-read the stack's scroll geometry into [`PanelLayout::scroll`].
-///
-/// Guarded on the value actually moving, which is what lets this be called freely —
-/// from the scroll event, from the pointer arriving, and from the effect that watches
-/// the column's shape. A `Signal` write marks every reader dirty whether or not the
-/// value changed, and the reader here is the stack.
+/// Re-read the stack's scroll geometry into [`PanelLayout::scroll`], writing only when it
+/// moved, so it can be called freely.
 pub fn measure_scroll(layout: PanelLayout) {
     let Some((top, content, view)) = platform::stack_scroll() else {
         return;
     };
     let now = Scroll { top, content, view };
     let mut scroll = layout.scroll;
-    // Read out before the write, as everything else in this module does.
+    // Read out before the write.
     let was = *scroll.peek();
     if was != now {
         scroll.set(now);
@@ -903,11 +597,8 @@ pub fn start_thumb(layout: PanelLayout, e: &Event<PointerData>) {
     }));
 }
 
-/// Track an in-flight thumb drag (no-op when idle).
-///
-/// Scrolls the element and then re-measures, rather than writing a position of our
-/// own: the browser clamps `scrollTop` at both ends, so the rail and the wheel cannot
-/// come to disagree about where the column is.
+/// Track an in-flight thumb drag (no-op when idle). Scrolls the element and re-measures,
+/// so the browser's clamping keeps the rail and the wheel in agreement.
 pub fn thumb_move(layout: PanelLayout, e: &Event<PointerData>) {
     let Some(grab) = *layout.thumb.peek() else {
         return;
@@ -928,9 +619,7 @@ pub fn thumb_end(layout: PanelLayout) {
     thumb.set(None);
 }
 
-/// Begin resizing panel `id` from its bottom edge. Unlike a reorder drag there is
-/// nothing to measure — the layout already holds the height — so the grip answers on
-/// the first pixel of movement.
+/// Begin resizing panel `id` from its bottom edge.
 pub fn start_resize(layout: PanelLayout, id: PanelId, e: &Event<PointerData>) {
     let Some(default) = id.default_height() else {
         return;
@@ -955,8 +644,7 @@ pub fn resize_move(layout: PanelLayout, e: &Event<PointerData>) {
     heights.write().insert(r.id, h);
 }
 
-/// End a panel resize. The height is already committed (every move wrote it), so this
-/// only disarms — there is nothing to settle and nothing to undo.
+/// End a panel resize. Every move already wrote the height, so this only disarms.
 pub fn resize_end(layout: PanelLayout) {
     if layout.resize.peek().is_none() {
         return;
@@ -965,8 +653,7 @@ pub fn resize_end(layout: PanelLayout) {
     resize.set(None);
 }
 
-/// The open panels, top to bottom — the order the user sees, which is what every
-/// box, slot and landing here is counted in.
+/// The open panels, top to bottom: what every box, slot and landing is counted in.
 fn visible(layout: PanelLayout) -> Vec<PanelId> {
     let hidden = layout.hidden.peek().clone();
     layout
@@ -978,25 +665,16 @@ fn visible(layout: PanelLayout) -> Vec<PanelId> {
         .collect()
 }
 
-/// End a panel drag: disarm, then write the panel's landing slot into `order`. No-op if
-/// no drag is active or if it never travelled far enough to be one.
+/// End a panel drag: disarm, then write the landing slot into `order`. No-op if no drag
+/// is active or it never travelled.
 ///
-/// **The disarm goes first.** A panel's offset is a transform stated against the layout as
-/// it stood when the drag began, so a frame carrying the new `order` while the transforms
-/// are still on would be the reorder applied twice — every affected panel a slot from where
-/// it belongs. Cleared first, the worst an in-between frame can show is the stack exactly as
-/// it was before the gesture: a glitch the next render corrects rather than a wrong layout.
-/// [`Grab::spend`] is that disarm, and it is terminal — nothing brings a spent grab
-/// back, so this cannot commit the same press twice.
-///
-/// Nothing is deferred here on purpose. Easing the dragged panel into its slot would
-/// put a timer in charge of committing the order, and a settle whose timer never fires
-/// strands the layout — at the one moment in the gesture where the user is looking at
-/// the *slot*, not at the panel.
+/// **The disarm goes first**: the transforms are stated against the pre-drag layout, so a
+/// frame with both them and the new `order` would apply the reorder twice.
+/// [`Grab::spend`] is terminal, so a press cannot commit twice. Nothing is deferred: a
+/// settle timer that never fired would strand the layout.
 pub fn drag_end(layout: PanelLayout, id: PanelId) {
     let open = visible(layout);
-    // Resolved before the disarm, because the landing is stated against the stack as
-    // it stood at the press and `spend` is what stops it being drawn.
+    // Resolved before `spend`, which ends the grab.
     let land = layout
         .drag
         .peek()
@@ -1016,9 +694,8 @@ pub fn drag_end(layout: PanelLayout, id: PanelId) {
     let mut order = layout.order;
     let mut ord = order.write();
     ord.retain(|p| *p != id);
-    // Insert before the visible panel currently at index `slide.gap` (hidden panels
-    // keep their slots), or at the end. For a flat list the count of rows that end up
-    // above the block *is* the insertion index.
+    // Insert before the visible panel now at `slide.gap` (hidden panels keep their slots),
+    // or at the end.
     let slots: Vec<usize> = ord
         .iter()
         .enumerate()
@@ -1033,9 +710,8 @@ pub fn drag_end(layout: PanelLayout, id: PanelId) {
 mod tests {
     use super::*;
 
-    /// A panel's height and the gap between two of them. The numbers do not matter —
-    /// every answer is a comparison against a panel's centre — only that they are
-    /// consistent, which is what makes a drag of `STEP` "one slot down".
+    /// A panel's height and the gap between two; only their consistency matters, which makes
+    /// a drag of `STEP` one slot.
     const H: f32 = 120.0;
     const GAP: f32 = 10.0;
     const STEP: f32 = H + GAP;
@@ -1060,9 +736,8 @@ mod tests {
         landing(open, &grab).expect("resolves").0
     }
 
-    /// The identity a panel wears in the DOM, the key a grab is armed with, and the
-    /// list a landing matches are one string — which is the only thing standing
-    /// between a drag and measuring a panel through its neighbour's box.
+    /// The DOM identity, the grab key and the landing's list are one string, or a drag
+    /// measures a panel through its neighbour's box.
     #[test]
     fn a_grab_resolves_against_the_key_the_panel_wears() {
         let (open, boxes) = stack();
@@ -1082,9 +757,8 @@ mod tests {
         }
     }
 
-    /// A drag that goes nowhere is not a move, so the release writes no order. Both
-    /// halves matter: a press under the slop is not a drag at all, and a drag that
-    /// wandered out and came back is a drag that landed where it started.
+    /// A drag that goes nowhere writes no order: neither a press under the slop nor a drag
+    /// back to where it started.
     #[test]
     fn a_drag_that_goes_nowhere_commits_nothing() {
         let (open, boxes) = stack();
@@ -1097,9 +771,7 @@ mod tests {
         );
     }
 
-    /// A panel whose box was never measured abandons the gesture rather than
-    /// guessing — what a stack that changed under the pointer looks like (a panel
-    /// closed by the visibility menu mid-drag).
+    /// A panel with no measured box abandons the gesture: a stack that changed mid-drag.
     #[test]
     fn an_unmeasured_panel_abandons_the_gesture() {
         let (mut open, boxes) = stack();
@@ -1109,12 +781,9 @@ mod tests {
         assert!(landing(&open, &grab).is_none(), "Layers has no box");
     }
 
-    /// The name a panel is stored under is the name it wears in the DOM.
-    ///
-    /// Both come off the variant — serde's for the store, `Debug`'s for the attribute
-    /// and the drag — so this cannot fail today; it is here because the day somebody
-    /// gives `PanelId` a `rename_all` or hand-writes `panel_key`, the symptom is a
-    /// stack that silently forgets itself between visits rather than an error.
+    /// The name a panel is stored under is the name it wears in the DOM. Holds by
+    /// construction today; a `rename_all` or a hand-written `panel_key` would make the stack
+    /// silently forget itself between visits.
     #[test]
     fn a_panel_is_one_name_in_the_dom_and_in_the_store() {
         for &id in PanelId::VARIANTS {
@@ -1156,8 +825,7 @@ mod tests {
         );
     }
 
-    /// A very long column still gets a thumb that can be grabbed — the whole reason
-    /// the rail exists is a hand with no wheel.
+    /// A very long column still gets a grabbable thumb.
     #[test]
     #[expect(
         clippy::float_cmp_const,
