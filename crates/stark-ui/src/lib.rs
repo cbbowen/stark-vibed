@@ -92,8 +92,8 @@
 //!   previews, and what its release lays down.
 //! - [`tune`] — and what one does to the **brush** (§18.1.9): the size sideways, the
 //!   flow up and down, and the axis lock that keeps a gesture to one knob.
-//! - [`session`] — the engine as both frontends hold it (§4, §11.2): the catalog's
-//!   names for what it has loaded, and the one door that replaces the document.
+//! - [`desk`] — the engine as both frontends hold it (§4, §11.2): the catalog's names
+//!   for what it has loaded, and the one door that replaces the document.
 //! - [`selection`] — what a shape gesture is about to do (§6.8, §18.0.4): which tool
 //!   draws the region, and what the region it encloses lands on.
 //! - [`slots`] — the ten brushes under the hand (§18.1.8): what a digit holds, what a
@@ -127,6 +127,7 @@ pub mod carry;
 pub mod collab;
 pub mod color;
 pub mod commands;
+pub mod desk;
 pub mod drags;
 pub mod files;
 pub mod filter;
@@ -150,7 +151,6 @@ pub mod presets;
 pub mod reorder;
 pub mod route;
 pub mod selection;
-pub mod session;
 pub mod slots;
 pub mod storage;
 pub mod timeline;

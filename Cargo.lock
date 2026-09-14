@@ -9926,6 +9926,7 @@ name = "stark-ui"
 version = "0.0.0"
 dependencies = [
  "png 0.18.1",
+ "pollster 1.0.1",
  "serde",
  "serde_json",
  "stark-assetid",
@@ -9933,6 +9934,7 @@ dependencies = [
  "stark-model",
  "strum",
  "tracing",
+ "wgpu",
 ]
 
 [[package]]

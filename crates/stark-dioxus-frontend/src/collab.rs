@@ -32,7 +32,7 @@ use stark_net::{
     SessionTicket, actor_from_endpoint_id,
 };
 use stark_ui::collab::{Peer, Phase};
-use stark_ui::session::{Replacement, Session};
+use stark_ui::desk::{Desk, Replacement};
 
 use crate::icons::icon;
 use crate::state::{AppState, root_signal};
@@ -124,7 +124,7 @@ pub fn share(state: AppState) {
         // Quiet: hosting attaches an identity and starts queueing broadcasts, which
         // no part of the projection shows — the roster is its own signal (§17.4).
         let Some((doc, assets)) = crate::state::with_engine_quiet(state, |r| {
-            let engine = r.session.engine_mut();
+            let engine = r.desk.engine_mut();
             engine.start_collaboration(Identity::new(actor, id.boot));
             (engine.document_file(), engine.all_asset_bytes())
         }) else {
@@ -238,7 +238,7 @@ pub fn join(state: AppState, link: String) {
                     .renderer
                     .peek()
                     .as_ref()
-                    .map(|r| r.session.engine().all_asset_bytes())
+                    .map(|r| r.desk.engine().all_asset_bytes())
                     .unwrap_or_default();
                 let tx = session.broadcaster();
                 for (id, bytes) in assets {
@@ -287,7 +287,7 @@ fn supply_locally(state: AppState, need: AssetNeed) {
         // Quiet: bytes arriving change how a later action *renders*, not anything
         // the chrome shows, so this asks for the frame and nothing else.
         if crate::state::with_engine_quiet(state, |r| {
-            crate::builtin_ids::install(&mut r.session, need, &bytes);
+            crate::builtin_ids::install(&mut r.desk, need, &bytes);
         })
         .is_none()
         {
@@ -326,7 +326,7 @@ pub fn leave(state: AppState) {
     // document whose past has changed shape. The frame it asks for is the one that
     // takes the peers' paint off the canvas.
     let farewell = crate::state::with_engine(state, |r| {
-        let engine = r.session.engine_mut();
+        let engine = r.desk.engine_mut();
         let frame = engine.leaving_presence();
         engine.end_collaboration();
         frame
@@ -350,7 +350,7 @@ pub fn flush_outbox(state: AppState) {
     // has just published — a second `observe` walk here would be paid per command
     // to report exactly what the first one did.
     let Some(actions) =
-        crate::state::with_engine_quiet(state, |r| r.session.engine_mut().take_outbox())
+        crate::state::with_engine_quiet(state, |r| r.desk.engine_mut().take_outbox())
     else {
         return;
     };
@@ -397,9 +397,9 @@ fn install(state: AppState, session: CollabSession, mut events: Events, ticket_t
             // from, and presence arrives at pointer rate — publishing on that
             // cadence would drag a full component tree behind every peer's pointer.
             let now = crate::platform::now_seconds();
-            let Some(wake) = crate::state::with_engine_quiet(state, |r| {
-                apply_remote(&mut r.session, event, now)
-            }) else {
+            let Some(wake) =
+                crate::state::with_engine_quiet(state, |r| apply_remote(&mut r.desk, event, now))
+            else {
                 continue;
             };
             // After the guard is down: resolving reads the session signal and starts a
@@ -439,20 +439,20 @@ struct Wake {
 }
 
 /// Feed one remote event into the engine (§12).
-fn apply_remote(session: &mut Session, event: RemoteEvent, now: f64) -> Wake {
+fn apply_remote(desk: &mut Desk, event: RemoteEvent, now: f64) -> Wake {
     match event {
         // The transport parks the `SetSubstrate` or `PlaceImage` that wanted these bytes
         // until they land (§6.4, §23). The repaint is for a *presence* head, whose live
         // stroke is already on screen as a round-tip fallback the import upgrades.
         RemoteEvent::Asset { need, bytes } => {
-            crate::builtin_ids::install(session, need, &bytes);
+            crate::builtin_ids::install(desk, need, &bytes);
             Wake {
                 repaint: true,
                 ..Wake::default()
             }
         }
         RemoteEvent::Action(action) => {
-            session.engine_mut().merge_remote(action);
+            desk.engine_mut().merge_remote(action);
             Wake {
                 publish: true,
                 repaint: true,
@@ -465,7 +465,7 @@ fn apply_remote(session: &mut Session, event: RemoteEvent, now: f64) -> Wake {
         // there is something to drain, and a frame stamped a heartbeat stale trips
         // `GESTURE_TIMEOUT` mid-stroke.
         RemoteEvent::Presence { actor, frame } => Wake {
-            repaint: session.engine_mut().merge_presence(actor, frame, now),
+            repaint: desk.engine_mut().merge_presence(actor, frame, now),
             ..Wake::default()
         },
         RemoteEvent::ResolveLocally { need } => Wake {
@@ -546,7 +546,7 @@ fn start_presence_pump(state: AppState) {
                     .renderer
                     .peek()
                     .as_ref()
-                    .map(|r| r.session.engine())
+                    .map(|r| r.desk.engine())
                     .map(|e| (e.presence_due(now), e.peers_revision() != sent_revision));
                 let Some((due, roster_stale)) = work else {
                     break 'tick;
@@ -560,7 +560,7 @@ fn start_presence_pump(state: AppState) {
                 // publish has its own signal (§17.4) — nothing here is in the
                 // projection.
                 let tick = crate::state::with_engine_quiet(state, |r| {
-                    let r = r.session.engine_mut();
+                    let r = r.desk.engine_mut();
                     let tick = due.then(|| r.take_presence(now));
                     let (frame, repaint) = match tick {
                         Some(t) => (t.frame, t.repaint),

@@ -79,9 +79,9 @@ pub enum DocError {
     /// Content arrived under an id its own bytes do not hash to — the one way a
     /// content-addressed store could still hold the wrong thing (§19).
     ///
-    /// Only `accept_*` can raise it, being handed id and bytes separately off a save
-    /// file's bundle or a peer's transfer (§8, §12.4); `import_*` derives the id from
-    /// the bytes. Installing a mismatch is never free: a wrong substrate bakes the
+    /// Raised only where id and bytes are handed over separately, off a save file's
+    /// bundle or a peer's transfer (§8, §12.4) — the engine's `accept_*` and the install
+    /// that answers such a need; `import_*` derives the id from the bytes. Installing a mismatch is never free: a wrong substrate bakes the
     /// wrong tooth into tiles no later arrival un-bakes (§6.4).
     #[error("{expected:?} arrived as {actual:?}; refusing to install it")]
     Misnamed {

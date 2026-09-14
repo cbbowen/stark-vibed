@@ -392,7 +392,7 @@ pub fn input_rope(state: AppState) -> f32 {
 pub fn refresh_tow(state: AppState) {
     let mut tow = state.tow;
     let ui = state.renderer.peek().as_ref().and_then(|r| {
-        let engine = r.session.engine();
+        let engine = r.desk.engine();
         let t = engine.tow_string()?;
         let view = engine.view();
         Some(TowUi {
@@ -506,7 +506,7 @@ pub fn clear_hover_mark(state: AppState) {
         .renderer
         .peek()
         .as_ref()
-        .is_some_and(|r| r.session.engine().hover_held());
+        .is_some_and(|r| r.desk.engine().hover_held());
     if held {
         crate::state::dispatch_hover(state, ViewCommand::PreviewHover(None));
     }

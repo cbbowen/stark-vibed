@@ -1,14 +1,14 @@
 //! WebGPU surface rendering (§6.4, §11).
 //!
 //! The engine renders directly into the canvas's `wgpu::Surface` texture — no
-//! readback, no encode. A [`Renderer`] bundles the surface and the engine's
-//! [`Session`]; the app stores it in a signal, requests a paint after each command
+//! readback, no encode. A [`Renderer`] bundles the surface and the [`Desk`] holding
+//! the engine; the app stores it in a signal, requests a paint after each command
 //! (coalesced to one [`Renderer::paint`] per animation frame —
 //! [`request_paint`](crate::state::request_paint)), and calls
 //! [`Renderer::resize`] when the canvas (window) changes size.
 //!
 //! What is here is what the surface adds. The engine's own methods are reached
-//! through [`Renderer::session`], never re-spelled.
+//! through [`Renderer::desk`], never re-spelled.
 
 use stark_engine::command::Tool;
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use stark_engine::Extent2;
 use stark_engine::command::ViewCommand;
 use stark_engine::command::{InputCommand, InputSample};
 use stark_engine::{Engine, GpuContext};
-use stark_ui::session::Session;
+use stark_ui::desk::Desk;
 
 pub const CANVAS_ID: &str = "stark-canvas";
 
@@ -58,7 +58,7 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     /// The engine and the shipped assets it has loaded by name — `&mut` only inside
     /// the `state` doors, like the rest of the renderer.
-    pub session: Session,
+    pub desk: Desk,
     /// The Navigator panel's canvas and everything that draws into it — `None` until
     /// the panel mounts one ([`Renderer::attach_overview`]).
     overview: Option<Overview>,
@@ -110,8 +110,8 @@ struct Overview {
 }
 
 impl Renderer {
-    /// Send a command to the engine — the **only** way to move engine state through
-    /// a `Renderer`, deliberately.
+    /// Send a command to the engine. Its other `&mut` methods are reached through
+    /// [`Renderer::desk`], and replacing the document is [`Desk::replace`]'s alone.
     ///
     /// **No named `set_*` wrappers sit beside it.** A one-line
     /// `engine.process(…)` per setting is a second spelling of a command, and the
@@ -128,13 +128,13 @@ impl Renderer {
     /// that own a `Renderer` outright and have no chrome to keep in step: app
     /// startup, and the brush editor's private preview engine.
     pub fn process(&mut self, command: impl Into<InputCommand>) {
-        self.session.engine_mut().process(command);
+        self.desk.engine_mut().process(command);
     }
 
     /// Replay a full stroke as one commit — a single render, no per-sample
     /// live-preview refresh (see `Engine::replay_stroke`).
     pub fn replay_stroke(&mut self, tool: Tool, samples: &[InputSample]) {
-        self.session.engine_mut().replay_stroke(tool, samples);
+        self.desk.engine_mut().replay_stroke(tool, samples);
     }
 
     /// Replay a full stroke with a caller-chosen jitter seed, so repeated
@@ -153,7 +153,7 @@ impl Renderer {
         seed: u64,
         rope: f32,
     ) -> bool {
-        self.session
+        self.desk
             .engine_mut()
             .replay_stroke_seeded(tool, samples, seed, rope)
             .is_some()
@@ -191,7 +191,7 @@ impl Renderer {
     ) -> stark_engine::Result<
         impl std::future::Future<Output = stark_engine::Result<stark_engine::RgbaImage>> + use<>,
     > {
-        self.session.engine_mut().export(
+        self.desk.engine_mut().export(
             &mut stark_engine::Offscreen::default(),
             frame,
             scale,
@@ -219,7 +219,7 @@ impl Renderer {
     ) -> stark_engine::Result<
         impl std::future::Future<Output = stark_engine::Result<stark_engine::RgbaImage>> + use<>,
     > {
-        self.session.engine_mut().export_view(
+        self.desk.engine_mut().export_view(
             &mut self.layer_thumbs,
             plan.view(),
             Some(layer),
@@ -257,7 +257,7 @@ impl Renderer {
         // encodes for one transfer (§6.5).
         let config = surface_config(
             &caps,
-            self.session.engine().target_format(),
+            self.desk.engine().target_format(),
             self.config.color_space,
             (0, 0),
         );
@@ -290,7 +290,7 @@ impl Renderer {
             ov.config.width = size.width;
             ov.config.height = size.height;
             ov.surface
-                .configure(&self.session.engine().gpu().device, &ov.config);
+                .configure(&self.desk.engine().gpu().device, &ov.config);
         }
         let frame = match ov.surface.get_current_texture() {
             Success(frame) | Suboptimal(frame) => frame,
@@ -301,14 +301,14 @@ impl Renderer {
         let target = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.session.engine_mut().render_into(
+        self.desk.engine_mut().render_into(
             &mut ov.targets,
             &target,
             plan.view(),
             stark_engine::Background::Substrate,
             stark_engine::Rendered::Committed,
         );
-        self.session.engine().gpu().queue.present(frame);
+        self.desk.engine().gpu().queue.present(frame);
         true
     }
 
@@ -323,7 +323,7 @@ impl Renderer {
         at: stark_model::geom::Vec2,
         options: stark_engine::PickOptions,
     ) -> impl std::future::Future<Output = Option<[f32; 3]>> + use<> {
-        self.session.engine_mut().pick_color(at, options)
+        self.desk.engine_mut().pick_color(at, options)
     }
 
     /// Sample a gradient along a traced path — the gradient capture (§22.2).
@@ -333,7 +333,7 @@ impl Renderer {
         path: &[stark_model::geom::Vec2],
         options: stark_engine::PickOptions,
     ) -> impl std::future::Future<Output = Option<stark_model::Gradient>> + use<> {
-        self.session.engine_mut().pick_gradient(path, options)
+        self.desk.engine_mut().pick_gradient(path, options)
     }
 
     /// Which layer's paint the canvas shows at `at` — the layer carry's hit test
@@ -344,7 +344,7 @@ impl Renderer {
         &mut self,
         at: stark_model::geom::Vec2,
     ) -> impl std::future::Future<Output = Option<stark_model::document::LayerId>> + use<> {
-        self.session.engine_mut().pick_layer(at)
+        self.desk.engine_mut().pick_layer(at)
     }
 
     /// Match the surface + engine viewport to a new canvas size (CSS pixels).
@@ -357,8 +357,8 @@ impl Renderer {
         self.config.width = width;
         self.config.height = height;
         self.surface
-            .configure(&self.session.engine().gpu().device, &self.config);
-        self.session
+            .configure(&self.desk.engine().gpu().device, &self.config);
+        self.desk
             .engine_mut()
             .process(ViewCommand::Resize(Extent2::new(width, height)));
     }
@@ -395,7 +395,7 @@ impl Renderer {
     /// (`state::schedule_paint`). Everything else asks the projection, which is
     /// what the chrome mounts its report on — see [`crate::failure`].
     pub fn gpu_healthy(&self) -> bool {
-        self.session.engine().gpu().health().is_ok()
+        self.desk.engine().gpu().health().is_ok()
     }
 
     /// Whether the GPU still owes the work of [`MAX_FRAMES_IN_FLIGHT`] painted
@@ -427,14 +427,14 @@ impl Renderer {
         let view = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-        self.session.engine_mut().render(&view);
+        self.desk.engine_mut().render(&view);
         // Count this frame against the in-flight budget until the GPU finishes
         // it. Registered after the render's submit, so the callback fires once
         // everything this paint queued has executed. The WebGPU spec resolves
         // the underlying promise even on device loss, so the count cannot wedge.
         let in_flight = Arc::clone(&self.frames_in_flight);
         in_flight.fetch_add(1, Ordering::Relaxed);
-        self.session
+        self.desk
             .engine()
             .gpu()
             .queue
@@ -445,7 +445,7 @@ impl Renderer {
         // anyway, and cheaply, because "present is free here" is a claim about wgpu's
         // WebGPU backend that a version bump could quietly stop being true.
         stark_engine::timing::span!("frame.present");
-        self.session.engine().gpu().queue.present(frame);
+        self.desk.engine().gpu().queue.present(frame);
     }
 }
 
@@ -624,19 +624,19 @@ impl Renderer {
         // And to its color space: the engine encodes for one transfer (§6.5).
         let config = surface_config(
             &caps,
-            self.session.engine().target_format(),
+            self.desk.engine().target_format(),
             self.config.color_space,
             (width, height),
         );
-        surface.configure(&self.session.engine().gpu().device, &config);
-        let session = self.session.sharing(Extent2::new(width, height));
+        surface.configure(&self.desk.engine().gpu().device, &config);
+        let desk = self.desk.sharing(Extent2::new(width, height));
         Ok(Renderer {
             canvas,
             instance: self.instance.clone(),
             adapter: self.adapter.clone(),
             surface,
             config,
-            session,
+            desk,
             overview: None,
             layer_thumbs: stark_engine::Offscreen::default(),
             frames_in_flight: Arc::new(AtomicU32::new(0)),
@@ -698,14 +698,14 @@ async fn finish_init(
     surface.configure(&gpu.device, &config);
 
     let engine = Engine::new(gpu, format, Extent2::new(width, height));
-    let session = Session::new(engine, transfer_of(color_space));
+    let desk = Desk::new(engine, transfer_of(color_space));
     Renderer {
         canvas,
         instance,
         adapter,
         surface,
         config,
-        session,
+        desk,
         overview: None,
         layer_thumbs: stark_engine::Offscreen::default(),
         frames_in_flight: Arc::new(AtomicU32::new(0)),

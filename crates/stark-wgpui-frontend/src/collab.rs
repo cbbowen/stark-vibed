@@ -48,7 +48,8 @@
 //! must fetch it before it may replay. This build has it: the shipped images are in
 //! the binary (`crate::assets`), so settling the bill is a slice — and the promise
 //! that lets a *peer* leave it out in the first place is the same catalog, passed as
-//! [`NetOptions::resolvable`](stark_net::NetOptions::resolvable).
+//! [`NetOptions::resolvable`](stark_net::NetOptions::resolvable). A promise it cannot
+//! keep is left to the peer fetch, as `Joined::owed` says, and reported.
 
 use std::future::Future;
 use std::sync::OnceLock;
@@ -58,7 +59,7 @@ use stark_net::{
     Broadcaster, CollabSession, Events, Joined, NetOptions, RemoteEvent, SessionTicket,
 };
 
-use stark_ui::session::Session;
+use stark_ui::desk::Desk;
 
 /// The live session and where it stands, which are one fact and so one value.
 #[derive(Default)]
@@ -324,15 +325,46 @@ pub fn pump(mut events: Events) -> tokio::sync::mpsc::UnboundedReceiver<RemoteEv
     rx
 }
 
-/// Each owed need paired with the bytes this build ships for it — `None` if any is
-/// content nobody here can produce, which refuses what owed it (§8, §12.4).
+/// The owed needs this build ships, each with its bytes, and the ones it does not
+/// (§8, §12.4).
 ///
-/// A slice rather than a fetch: the shipped images are in the binary
-/// (`crate::assets`).
-pub fn shipped(owed: &[AssetNeed]) -> Option<Vec<(AssetNeed, &'static [u8])>> {
-    owed.iter()
-        .map(|&need| Some((need, crate::assets::bytes_for(need.content())?)))
-        .collect()
+/// Which of the second matters is the caller's: a file has no peer to ask and refuses,
+/// while a join leaves them to the peer fetch (`stark_net::Joined::owed`). A slice
+/// rather than a fetch: the shipped images are in the binary (`crate::assets`).
+pub fn shipped(owed: &[AssetNeed]) -> (Vec<(AssetNeed, &'static [u8])>, Vec<AssetNeed>) {
+    let mut carried = Vec::with_capacity(owed.len());
+    let mut missing = Vec::new();
+    for &need in owed {
+        match crate::assets::bytes_for(need.content()) {
+            Some(bytes) => carried.push((need, bytes)),
+            None => missing.push(need),
+        }
+    }
+    (carried, missing)
+}
+
+/// What a person calls owed content: its catalog name, where this build has one.
+pub fn named(need: AssetNeed) -> String {
+    stark_ui::assets::shipped_at(need.content())
+        .map_or_else(|| format!("{need:?}"), |row| format!("“{}”", row.name))
+}
+
+/// Leave a session: say goodbye, so peers drop this client at once rather than on the
+/// presence timeout, then let the transport go.
+///
+/// Detached and best effort, as [`publish`] is: nothing waits on a farewell.
+pub fn leave(session: CollabSession, farewell: Option<stark_model::PeerFrame>) {
+    let Some(rt) = net() else {
+        return;
+    };
+    rt.spawn(async move {
+        if let Some(frame) = farewell {
+            // Dropped rather than reported: a farewell that did not go costs peers the
+            // presence timeout, which is all leaving without one ever cost.
+            let _ = session.broadcaster().publish(frame).await;
+        }
+        session.shutdown().await;
+    });
 }
 
 /// Make good on [`RemoteEvent::ResolveLocally`]: read the content out of this
@@ -345,7 +377,7 @@ pub fn shipped(owed: &[AssetNeed]) -> Option<Vec<(AssetNeed, &'static [u8])>> {
 ///
 /// Doing nothing here would also be correct — the transport dials a peer after a
 /// grace period. What this saves is the transfer.
-fn supply(session: &mut Session, tx: &Broadcaster, need: AssetNeed) -> Option<String> {
+fn supply(desk: &mut Desk, tx: &Broadcaster, need: AssetNeed) -> Option<String> {
     // The promise was made off the same table this reads, so a call it cannot answer
     // means the table disagrees with itself — which is worth saying out loud, because
     // what it costs is a peer's action parked until the transport gives up on us.
@@ -354,7 +386,7 @@ fn supply(session: &mut Session, tx: &Broadcaster, need: AssetNeed) -> Option<St
             "a collaborator asked for content this build promised and does not have".to_string(),
         );
     };
-    if let Err(e) = session.install(need, png) {
+    if let Err(e) = desk.install(need, png) {
         return Some(format!("content this build promised would not load: {e}"));
     }
     offer(tx, need, png.to_vec());
@@ -381,7 +413,7 @@ pub struct Wake {
 ///
 /// The whole of the incoming pump that touches the document, which is what makes it
 /// worth its own function: the loop around it is a wgpui task and this is not.
-pub fn apply(session: &mut Session, tx: &Broadcaster, event: RemoteEvent, now: f64) -> Wake {
+pub fn apply(desk: &mut Desk, tx: &Broadcaster, event: RemoteEvent, now: f64) -> Wake {
     match event {
         // Repaint: an asset resolved off a *presence* head arrives while the peer's
         // live stroke is already on screen as a round-tip fallback, and the import is
@@ -389,13 +421,13 @@ pub fn apply(session: &mut Session, tx: &Broadcaster, event: RemoteEvent, now: f
         RemoteEvent::Asset { need, bytes } => Wake {
             observe: false,
             repaint: true,
-            trouble: session
+            trouble: desk
                 .install(need, &bytes)
                 .err()
                 .map(|e| format!("content from a collaborator would not load: {e}")),
         },
         RemoteEvent::Action(action) => {
-            session.engine_mut().merge_remote(action);
+            desk.engine_mut().merge_remote(action);
             Wake {
                 observe: true,
                 repaint: true,
@@ -407,11 +439,11 @@ pub fn apply(session: &mut Session, tx: &Broadcaster, event: RemoteEvent, now: f
         // frontend does not draw yet, so a remote pointer move owes nothing at all.
         RemoteEvent::Presence { actor, frame } => Wake {
             observe: false,
-            repaint: session.engine_mut().merge_presence(actor, frame, now),
+            repaint: desk.engine_mut().merge_presence(actor, frame, now),
             trouble: None,
         },
         RemoteEvent::ResolveLocally { need } => Wake {
-            trouble: supply(session, tx, need),
+            trouble: supply(desk, tx, need),
             ..Wake::default()
         },
     }

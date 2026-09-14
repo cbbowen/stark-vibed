@@ -25,8 +25,8 @@ use stark_engine::command::{GestureCommand, InputSample, Tool, ViewCommand};
 use stark_model::AssetNeed;
 use stark_model::geom::Vec2;
 use stark_ui::commands::VisibilityToggle;
+use stark_ui::desk::{Replaced, Replacement};
 use stark_ui::prefs::{ChromeHiding, Prefs};
-use stark_ui::session::Replacement;
 
 /// Create one of [`AppState`]'s signals, owned by the **root** scope rather than by
 /// the component that declares it.
@@ -777,7 +777,7 @@ pub fn with_engine<R>(state: AppState, f: impl FnOnce(&mut Renderer) -> R) -> Op
         // Inside the guard, as `dispatch` has always done it: `obs.set` marks
         // subscribers dirty but renders nothing synchronously, so no reader can
         // observe the renderer mid-borrow.
-        publish(state, r.session.engine().observe());
+        publish(state, r.desk.engine().observe());
         out
     };
     request_paint(state);
@@ -803,7 +803,7 @@ fn publish(state: AppState, snapshot: ObservableState) {
 }
 
 /// Replace the document — open a file, join a session, start afresh — then paint inline
-/// and publish. The frontend's half of [`Session::replace`], which installs what the new
+/// and publish. The frontend's half of [`Desk::replace`], which installs what the new
 /// document owes and frames the piece.
 ///
 /// A door rather than a [`dispatch`] because a replacement is not a command: it commits
@@ -811,7 +811,8 @@ fn publish(state: AppState, snapshot: ObservableState) {
 /// it moves everything the chrome shows.
 ///
 /// `None` is [`with_engine`]'s "no engine to move"; `Some(Err)` is a refusal with the
-/// open document untouched.
+/// open document untouched. What a join skipped is logged here, once: the peer fetch
+/// supplies it, and a pump is nobody to tell.
 ///
 /// **Leaves any live session first**, even when the engine then refuses. A replacement
 /// drops the engine to solo authoring but not the pump, the phase or the ticket in the
@@ -822,7 +823,7 @@ fn publish(state: AppState, snapshot: ObservableState) {
 /// The paint is inline so the first frame shown is already the framed new document
 /// rather than the old view over it.
 ///
-/// [`Session::replace`]: stark_ui::session::Session::replace
+/// [`Desk::replace`]: stark_ui::desk::Desk::replace
 #[must_use = "a refusal leaves the old document on screen, which the caller has to say"]
 pub fn replace_document(
     state: AppState,
@@ -831,15 +832,18 @@ pub fn replace_document(
 ) -> Option<stark_engine::Result<()>> {
     collab::leave(state);
     let replaced = with_engine_quiet(state, |r| {
-        let seen = r.session.replace(replacement, owed);
-        if seen.is_ok() {
+        let replaced = r.desk.replace(replacement, owed);
+        if replaced.is_ok() {
             r.paint();
         }
-        seen
+        replaced
     })?;
     let out = match replaced {
         // The replacement's own projection, rather than a second one built here.
-        Ok(seen) => {
+        Ok(Replaced { seen, skipped }) => {
+            if !skipped.is_empty() {
+                tracing::warn!(?skipped, "owed content did not install; a peer supplies it");
+            }
             publish(state, seen);
             Ok(())
         }
@@ -887,15 +891,16 @@ pub fn with_engine_quiet<R>(state: AppState, f: impl FnOnce(&mut Renderer) -> R)
 
 /// Publish the engine's current projection without having mutated anything.
 ///
-/// One caller, and it earns it: the collaboration pump takes the snapshot for the
-/// events that commit and skips it for the ones that arrive at presence rate
-/// (§17.5), so *which* event happened decides, not the fact of holding the engine.
+/// For a caller that holds the engine quietly and learns only afterwards whether the
+/// chrome is stale: the collaboration pump, which publishes for the events that commit
+/// and not for those at presence rate (§17.5), and the frame loop and
+/// [`replace_document`], where only a device failure moved anything (§5).
 pub fn publish_observation(state: AppState) {
     let Some(snapshot) = state
         .renderer
         .peek()
         .as_ref()
-        .map(|r| r.session.engine().observe())
+        .map(|r| r.desk.engine().observe())
     else {
         return;
     };
@@ -910,13 +915,13 @@ pub fn publish_observation(state: AppState) {
 pub fn publish_renderer(state: AppState, r: Renderer) {
     let mut renderer = state.renderer;
     let mut obs = state.obs;
-    obs.0.set(Some(r.session.engine().observe()));
+    obs.0.set(Some(r.desk.engine().observe()));
     // The thumbnail generator's half of the engine, published here rather than
     // fetched from the renderer signal on demand: it needs the device and the
     // pipelines, not the canvas, and holding those directly is what keeps it from
     // borrowing a live renderer to make a picture of a brush (`crate::thumbs`).
     let mut shared = state.thumbs.shared;
-    shared.set(Some(r.session.engine().shared()));
+    shared.set(Some(r.desk.engine().shared()));
     renderer.0.set(Some(r));
     // Last, and the announcement everything else waits on: the readiness flag is
     // set only once the renderer is in the signal and the chrome can already

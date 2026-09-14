@@ -34,6 +34,7 @@
 //! shared.
 
 use stark_ui::assets::{self, Decoded};
+use stark_ui::desk::Desk;
 
 /// Every image this build ships, by the catalog path that names it.
 ///
@@ -84,17 +85,15 @@ pub fn shipped_shape_files() -> impl Iterator<Item = (&'static assets::Shipped, 
         .filter_map(|row| Some((row, bundled(row.path?)?)))
 }
 
-/// The two stamps the shipped preset table needs, by content id.
+/// The two stamps the shipped preset table needs, as `desk` loaded them.
 ///
-/// **Known without importing anything**, because the ids were hashed at build time —
-/// which is the whole of what this frontend gains by carrying the bytes. The web
-/// app's equivalent cannot answer until its fetches land, and says so: its two stamp
-/// presets stand on the round tip until then.
-pub fn builtin_shapes() -> stark_ui::presets::BuiltinShapes {
+/// Read off the desk's index rather than the build-time id table, as the gallery's
+/// cards are: a preset naming a stamp the engine never took would lay nothing a press
+/// could wear. One that did not load stands on the round tip, as the web app's do
+/// until their fetches land.
+pub fn builtin_shapes(desk: Option<&Desk>) -> stark_ui::presets::BuiltinShapes {
     let stamp = |name: &str| {
-        assets::shipped(name)
-            .and_then(|row| row.path)
-            .and_then(assets::shipped_id)
+        desk.and_then(|d| d.builtin_shape(name))
             .map(stark_model::document::BrushShape::Stamp)
             .unwrap_or_default()
     };

@@ -28,7 +28,7 @@ use crate::widgets::Modal;
 use stark_engine::{Background, ExportScale, Rendered};
 use stark_model::document::LayerId;
 use stark_ui::bounds::piece_frame;
-use stark_ui::session::Replacement;
+use stark_ui::desk::Replacement;
 
 /// Object before the page goes away, if the document on screen holds work this
 /// browser is the only copy of. Bound once by the root (`crate::app`), for the life of the page.
@@ -107,7 +107,7 @@ pub fn save_document(state: AppState) {
         .renderer
         .read()
         .as_ref()
-        .map(|r| r.session.engine().save_bytes_resolvable(&resolvable));
+        .map(|r| r.desk.engine().save_bytes_resolvable(&resolvable));
     // The revision those bytes are of. Nothing between here and the write is
     // asynchronous, so it is still the one on screen when the file lands.
     let written = shown_revision(state);
@@ -182,7 +182,7 @@ pub(crate) fn open_bytes(state: AppState, bytes: Vec<u8>) {
         let renderer = state.renderer;
         let guard = renderer.read();
         let Some(r) = guard.as_ref() else { return };
-        r.session.engine().unresolved_content(&file)
+        r.desk.engine().unresolved_content(&file)
     };
     spawn_forever(async move {
         // Resolved out of this build's own assets, and *before* the replay. A file
@@ -256,7 +256,7 @@ pub fn ExportModal(on_close: EventHandler<()>) -> Element {
     // What we are about to produce, reported by the engine rather than recomputed
     // here — so the number on screen cannot drift from the render.
     let plan = state.renderer.read().as_ref().map(|r| {
-        r.session
+        r.desk
             .engine()
             .export_plan(frame, ExportScale::Factor(scale()))
     });

@@ -65,7 +65,7 @@ use crate::render::{Preview, Renderer};
 use crate::select;
 use crate::slots::Rack;
 use crate::transform;
-use stark_ui::session::{Replacement, Session};
+use stark_ui::desk::{Desk, Replaced, Replacement};
 
 /// Something the window has to say about the last act — a failure, or the one kind
 /// of success that leaves nothing on screen. Queued by [`Canvas::report`] and
@@ -283,7 +283,7 @@ pub struct Canvas {
     /// that changed nothing would rebuild it for a panel that would draw the same.
     obs: Option<ObservableState>,
     /// This client's HDR choice (§6.5), from the record the web app keeps it in;
-    /// the engine is told this met with the window (`Session::apply_output`).
+    /// the engine is told this met with the window (`Desk::apply_output`).
     hdr: Hdr,
     /// The file this window holds, once one has been saved or opened. `None` for a
     /// document that has never been written — which is what the title says.
@@ -355,28 +355,25 @@ impl Canvas {
         // whether its HDR row has anything to switch (§6.5).
         let hdr = stark_ui::storage::load::<Prefs>().map_or_else(Hdr::default, |p| p.hdr);
         if let Some(r) = renderer.as_mut() {
-            r.session.apply_output(hdr, window.display_headroom());
+            r.desk.apply_output(hdr, window.display_headroom());
         }
         // The shipped stamps go in before the first brush is chosen, because the
         // brush the app opens on may *be* one of them — a preset that resolved after
         // the first frame would paint one stroke round (`crate::brush`).
         //
-        // Their ids are known without this (`stark_ui::assets::shipped_id`, hashed
-        // at build time); what the import buys is the engine holding the bytes, so a
-        // stroke can actually be stamped with one.
-        let mut failure = None;
+        // The presets, the gallery's cards and a press all read the desk's index rather
+        // than the build-time id table, so a stamp that failed here is offered nowhere
+        // as though it worked.
+        let mut failed = Vec::new();
         if let Some(r) = renderer.as_mut() {
             for (row, png) in crate::assets::shipped_shape_files() {
-                if let Err(e) = r.session.load_builtin_shape(row.name, png)
-                    && failure.is_none()
-                {
-                    failure = Some(format!(
-                        "the shipped shape “{}” did not load: {e}",
-                        row.name
-                    ));
+                if let Err(e) = r.desk.load_builtin_shape(row.name, png) {
+                    failed.push(format!("“{}”: {e}", row.name));
                 }
             }
         }
+        let failure = (!failed.is_empty())
+            .then(|| format!("shipped shapes did not load — {}", failed.join("; ")));
         // Both libraries, read to completion before the window is built. The backend
         // is synchronous file I/O (`crate::store`), so this parks on nothing — and
         // doing it here rather than in a task is what makes the roster below a fact
@@ -393,7 +390,9 @@ impl Canvas {
         // start on one color rather than the picker showing something the first stroke
         // would not lay (`stark_ui::color::INITIAL_COLOR`).
         let wheel = color::Wheel::default();
-        let mut brush = Brush::new(crate::assets::builtin_shapes());
+        let mut brush = Brush::new(crate::assets::builtin_shapes(
+            renderer.as_ref().map(|r| &r.desk),
+        ));
         brush.tune.color = wheel.rgb(color::WHEEL_GAMUT);
         if let Some(r) = renderer.as_mut() {
             r.process(brush.set());
@@ -417,7 +416,7 @@ impl Canvas {
         // Read off the shipped library rather than restated: a preset declares the
         // digit it ships on, so the rack and the panel's list are one table (§18.1.8).
         let rack = Rack::stored(&brush.library);
-        let obs = renderer.as_ref().map(|r| r.session.engine().observe());
+        let obs = renderer.as_ref().map(|r| r.desk.engine().observe());
         let controls = Controls::new(window, cx);
         // A hold has to end when the keyboard goes, and a window that has lost focus
         // sends no keyup — so the release is hung off focus leaving this view. A field
@@ -849,7 +848,7 @@ impl Canvas {
         let Some(r) = self.renderer.as_mut() else {
             return;
         };
-        let view = r.session.engine().view();
+        let view = r.desk.engine().view();
         r.process(GestureCommand::Start {
             tool,
             sample: sample_at(view, at, origin, scale, now, pen),
@@ -977,7 +976,7 @@ impl Canvas {
                 let Some(r) = self.renderer.as_mut() else {
                     return;
                 };
-                let view = r.session.engine().view();
+                let view = r.desk.engine().view();
                 r.process(GestureCommand::To {
                     sample: sample_at(view, at, origin, scale, now, pen),
                 });
@@ -1131,7 +1130,7 @@ impl Canvas {
         let Some(r) = self.renderer.as_ref() else {
             return;
         };
-        let view = r.session.engine().view();
+        let view = r.desk.engine().view();
         let sample = sample_at(view, at, origin, scale, now, pen);
         match hand.report(sample, input::tolerance(view, resolution(pen))) {
             Some(report) => self.send_hover(Some(report), cx),
@@ -1215,7 +1214,7 @@ impl Canvas {
         let Some(r) = self.renderer.as_mut() else {
             return;
         };
-        let view = r.session.engine().view();
+        let view = r.desk.engine().view();
         let readback = r.pick_color(canvas_at(view, at, origin, scale), options);
         self.sampling = true;
         // Detached, which is the bargain `Renderer::pick_color` is shaped for: the
@@ -1257,7 +1256,7 @@ impl Canvas {
         if self
             .renderer
             .as_ref()
-            .is_some_and(|r| r.session.engine().hover_held())
+            .is_some_and(|r| r.desk.engine().hover_held())
         {
             self.send_hover(None, cx);
         }
@@ -1346,7 +1345,7 @@ impl Canvas {
     /// The one place its three kinds of state are told apart (§4): the media
     /// parameters are a *view* setting, the substrate's scale is the **document's**,
     /// and the headroom is this client's own preference and reaches the engine only
-    /// through the window's own capability (`Session::apply_output`).
+    /// through the window's own capability (`Desk::apply_output`).
     pub(crate) fn turn_light(&mut self, dial: light::Dial, v: f32, cx: &mut Context<'_, Self>) {
         match dial {
             light::Dial::Impasto | light::Dial::Texture | light::Dial::Gloss => {
@@ -1395,8 +1394,8 @@ impl Canvas {
         // ever mounted where it cannot (`lighting::dials`).
         let hdr = self.hdr;
         if let Some(r) = self.renderer.as_mut() {
-            r.session.apply_output(hdr, None);
-            self.obs = Some(r.session.engine().observe());
+            r.desk.apply_output(hdr, None);
+            self.obs = Some(r.desk.engine().observe());
         }
         self.repaint(cx);
     }
@@ -1416,14 +1415,11 @@ impl Canvas {
         let needed = self
             .renderer
             .as_ref()
-            .is_some_and(|r| !r.session.engine().environment_loaded(id));
+            .is_some_and(|r| !r.desk.engine().environment_loaded(id));
         if needed
             && let Some(bytes) = lighting::environment_hdr(id)
             && let Some(r) = self.renderer.as_mut()
-            && let Err(e) = r
-                .session
-                .engine_mut()
-                .register_environment(id, bytes.to_vec())
+            && let Err(e) = r.desk.engine_mut().register_environment(id, bytes.to_vec())
         {
             // The canvas keeps the light it has rather than switching to one that
             // will not decode — and says so, which is what this window has that the
@@ -1615,7 +1611,7 @@ impl Canvas {
     ) {
         if let Some(r) = self.renderer.as_mut() {
             r.process(command);
-            self.obs = Some(r.session.engine().observe());
+            self.obs = Some(r.desk.engine().observe());
         }
         // Every document change goes through here, so this is where a shared session
         // hears about one — one seam for the projection and the wire alike (§12.4).
@@ -1782,7 +1778,7 @@ impl Canvas {
                 return false;
             }
         };
-        let Some(r) = self.renderer.as_mut() else {
+        let Some(r) = self.renderer.as_ref() else {
             return false;
         };
         // What the file names but does not carry. A lean file leaves out content it
@@ -1793,21 +1789,64 @@ impl Canvas {
         // Anything this build cannot produce refuses the file: it has no peer to ask,
         // and a refusal leaves the painting on screen untouched — which is what makes a
         // refused file cost nothing (§6.4).
-        let Some(owed) = collab::shipped(&r.session.engine().unresolved_content(&file)) else {
+        let (owed, missing) = collab::shipped(&r.desk.engine().unresolved_content(&file));
+        if !missing.is_empty() {
             self.report("that painting uses content this build does not carry".to_string());
             return false;
-        };
-        match r.session.replace(Replacement::Open(&file), &owed) {
-            Ok(seen) => self.obs = Some(seen),
-            Err(e) => {
-                self.report(format!("could not open that painting: {e}"));
-                return false;
-            }
         }
-        // A load replaces the document wholesale, so everything the panel remembered
-        // is stale — the folded groups above all, whose ids are gone.
-        self.collapsed.clear();
-        true
+        match self.replace(Replacement::Open(&file), &owed) {
+            // An open skips nothing: a failed install refuses it instead.
+            Some(Ok(_)) => true,
+            Some(Err(e)) => {
+                self.report(format!("could not open that painting: {e}"));
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Replace the document through the desk, and take in what that answers — the one
+    /// place this window replaces one. `None` with no renderer; otherwise what
+    /// [`Desk::replace`] said, less the projection, which is taken here.
+    ///
+    /// **Leaves any live session first**, even when the replacement is then refused, as
+    /// the web app's door does: a replaced engine authors solo, but the pump would go on
+    /// merging peers' actions into the new document (§12.4). A join leaves nothing, since
+    /// its session is installed only after this returns.
+    fn replace(
+        &mut self,
+        replacement: Replacement<'_>,
+        owed: &[(AssetNeed, &[u8])],
+    ) -> Option<stark_engine::Result<Vec<(AssetNeed, stark_engine::EngineError)>>> {
+        self.leave_session();
+        let replaced = self.renderer.as_mut()?.desk.replace(replacement, owed);
+        Some(replaced.map(|Replaced { seen, skipped }| {
+            self.obs = Some(seen);
+            // A new document wholesale, so what the panel remembered is stale — the
+            // folded groups above all, whose ids are gone.
+            self.collapsed.clear();
+            skipped
+        }))
+    }
+
+    /// End the live session, if there is one: say goodbye, hand the history back to solo
+    /// authoring (§18.2.4), and let the transport go.
+    fn leave_session(&mut self) {
+        let Some(session) = self.collab.session.take() else {
+            return;
+        };
+        // A dropped wgpui task is a cancelled one, so no tail of the session reaches
+        // whatever comes next.
+        self.collab.pump = None;
+        self.collab.phase = stark_ui::collab::Phase::Solo;
+        let farewell = self.renderer.as_mut().map(|r| {
+            let engine = r.desk.engine_mut();
+            let frame = engine.leaving_presence();
+            engine.end_collaboration();
+            self.obs = Some(engine.observe());
+            frame
+        });
+        collab::leave(session, farewell);
     }
 
     /// Say what went wrong, where a person will see it: a notification, raised on
@@ -1962,7 +2001,7 @@ impl Canvas {
         // author twice (`crate::identity`).
         let id = crate::identity::get();
         let actor = stark_net::actor_from_endpoint_id(id.secret.public());
-        let engine = r.session.engine_mut();
+        let engine = r.desk.engine_mut();
         engine.start_collaboration(stark_engine::Identity::new(actor, id.boot));
         let (doc, assets) = (engine.document_file(), engine.all_asset_bytes());
         self.obs = Some(engine.observe());
@@ -2069,24 +2108,31 @@ impl Canvas {
                 file,
                 owed,
             } => {
-                if !self.take_session_document(&file, &owed) {
+                let Some(skipped) = self.take_session_document(&file, &owed) else {
                     // Refused, with the painting on screen untouched and the reason
                     // already reported. Dropping the session is what ends it.
                     self.collab.phase = stark_ui::collab::Phase::Solo;
                     self.retitle(window);
                     return self.repaint(cx);
-                }
+                };
                 // Everything this client had imported before it arrived, so a peer can
                 // fetch whatever the joiner is about to paint with.
                 let tx = session.broadcaster();
                 if let Some(r) = self.renderer.as_ref() {
-                    collab::seed(&tx, r.session.engine().all_asset_bytes());
+                    collab::seed(&tx, r.desk.engine().all_asset_bytes());
                 }
                 self.install_session(*session, events, window, cx);
                 // No link is minted here, and none is needed: every member is a valid
                 // entry point (§12.4), so the invitation a joiner passes on is the one
                 // Share makes when it is asked.
-                self.say("joined — Share hands the link on".to_string());
+                if skipped.is_empty() {
+                    self.say("joined — Share hands the link on".to_string());
+                } else {
+                    self.report(format!(
+                        "joined, but a collaborator has to send what did not load here — {}",
+                        skipped.join("; ")
+                    ));
+                }
             }
             collab::Done::Link(link) => self.hand_over(link, window, cx),
             collab::Done::Failed(why) => {
@@ -2096,7 +2142,7 @@ impl Canvas {
                 if self.collab.session.is_none()
                     && let Some(r) = self.renderer.as_mut()
                 {
-                    let engine = r.session.engine_mut();
+                    let engine = r.desk.engine_mut();
                     engine.end_collaboration();
                     self.obs = Some(engine.observe());
                 }
@@ -2109,40 +2155,41 @@ impl Canvas {
     }
 
     /// Replace the document with a joined session's log, settling what the snapshot
-    /// left out off this build's own catalog; `false` if it was refused.
+    /// left out off this build's own catalog. `None` if it was refused; otherwise, in
+    /// words, each owed need left to the peer fetch.
     ///
-    /// An owed asset this build does not carry is a session it cannot render —
-    /// refused with the painting on screen untouched, exactly as a file naming the
-    /// same thing is (`Canvas::load`).
+    /// Owed content this build does not carry, or that will not install, is a promise
+    /// it cannot keep, and `stark_net::Joined::owed` says what that costs: nothing but a
+    /// transfer, since the log still names it.
     fn take_session_document(
         &mut self,
         file: &stark_model::DocumentFile,
         owed: &[AssetNeed],
-    ) -> bool {
+    ) -> Option<Vec<String>> {
         let id = crate::identity::get();
-        let Some(r) = self.renderer.as_mut() else {
-            return false;
-        };
-        let Some(owed) = collab::shipped(owed) else {
-            self.report("this session uses content this build does not carry".to_string());
-            return false;
-        };
+        let (carried, missing) = collab::shipped(owed);
         let actor = stark_net::actor_from_endpoint_id(id.secret.public());
         let identity = stark_engine::Identity::new(actor, id.boot);
         // Fallible, and refused before anything of this client's own document has been
         // disturbed. A session painted in a color space this build lacks is a fact
         // about *this build*, not about the link (§6.7).
-        match r.session.replace(Replacement::Join(file, identity), &owed) {
-            Ok(seen) => self.obs = Some(seen),
+        match self.replace(Replacement::Join(file, identity), &carried)? {
+            Ok(skipped) => Some(
+                missing
+                    .into_iter()
+                    .map(|need| format!("{} is not in this build", collab::named(need)))
+                    .chain(
+                        skipped
+                            .into_iter()
+                            .map(|(need, e)| format!("{}: {e}", collab::named(need))),
+                    )
+                    .collect(),
+            ),
             Err(e) => {
                 self.report(format!("cannot join this session: {e}"));
-                return false;
+                None
             }
         }
-        // The document is somebody else's wholesale, so everything the panel
-        // remembered is stale — the folded groups above all, whose ids are gone.
-        self.collapsed.clear();
-        true
     }
 
     /// Hold the session and start the incoming pump.
@@ -2285,11 +2332,11 @@ impl Canvas {
         let Some(r) = self.renderer.as_mut() else {
             return;
         };
-        let wake = collab::apply(&mut r.session, &tx, event, now);
+        let wake = collab::apply(&mut r.desk, &tx, event, now);
         // Re-read the projection only where the *document* moved: `observe` walks the
         // layer roster, and presence arrives at pointer rate from every peer at once.
         if wake.observe {
-            self.obs = Some(r.session.engine().observe());
+            self.obs = Some(r.desk.engine().observe());
         }
         // Requested, not painted inline: peer gesture frames arrive at ~30 Hz per
         // stroking peer, and the dirty latch is what folds all of it into one paint.
@@ -2316,7 +2363,7 @@ impl Canvas {
         let Some(r) = self.renderer.as_mut() else {
             return;
         };
-        let trouble = collab::send(&tx, r.session.engine_mut().take_outbox());
+        let trouble = collab::send(&tx, r.desk.engine_mut().take_outbox());
         // Said where a person will see it rather than logged, which is this crate's
         // rule (`report`) and is right here for a reason of its own: work that stopped
         // reaching the session looks exactly like work that reached it, on both
@@ -2342,8 +2389,8 @@ impl Canvas {
             return;
         };
         let bytes = self.renderer.as_ref().and_then(|r| match need {
-            AssetNeed::Substrate(id) => r.session.engine().substrate_bytes(SubstrateId::Image(id)),
-            _ => r.session.engine().asset_bytes(need.content()),
+            AssetNeed::Substrate(id) => r.desk.engine().substrate_bytes(SubstrateId::Image(id)),
+            _ => r.desk.engine().asset_bytes(need.content()),
         });
         if let Some(bytes) = bytes {
             collab::offer(&tx, need, bytes);
@@ -2365,14 +2412,14 @@ impl Canvas {
         if !self
             .renderer
             .as_ref()
-            .is_some_and(|r| r.session.engine().presence_due(now))
+            .is_some_and(|r| r.desk.engine().presence_due(now))
         {
             return;
         }
         let Some(r) = self.renderer.as_mut() else {
             return;
         };
-        let tick = r.session.engine_mut().take_presence(now);
+        let tick = r.desk.engine_mut().take_presence(now);
         // The expiry may have taken a departed peer's live stroke off the canvas.
         // Nothing else would notice: the pump repaints for frames that *arrive*, and
         // this is precisely the case where they stopped.
@@ -2662,7 +2709,7 @@ impl Canvas {
     /// there is no identity to stand in for it, because a view carries the viewport
     /// and a made-up one would put every mapped point somewhere wrong.
     fn view(&self) -> Option<ViewTransform> {
-        self.renderer.as_ref().map(|r| r.session.engine().view())
+        self.renderer.as_ref().map(|r| r.desk.engine().view())
     }
 
     /// What a press on one of the two galleries does.
@@ -2696,7 +2743,7 @@ impl Canvas {
                 if let Some(id) = self
                     .renderer
                     .as_ref()
-                    .and_then(|r| r.session.builtin_shape(row.name))
+                    .and_then(|r| r.desk.builtin_shape(row.name))
                 {
                     self.wear_shape(BrushShape::Stamp(id), cx);
                 }
@@ -2763,10 +2810,10 @@ impl Canvas {
     /// where a person will see it.
     fn import_substrate(
         &mut self,
-        import: impl FnOnce(&mut Session) -> stark_engine::Result<SubstrateId>,
+        import: impl FnOnce(&mut Desk) -> stark_engine::Result<SubstrateId>,
         cx: &mut Context<'_, Self>,
     ) -> Option<SubstrateId> {
-        match import(&mut self.renderer.as_mut()?.session) {
+        match import(&mut self.renderer.as_mut()?.desk) {
             Ok(id) => {
                 if let SubstrateId::Image(content) = id {
                     self.offer(<assets::Substrates as assets::Kind>::need(content));
@@ -2790,7 +2837,7 @@ impl Canvas {
         if self
             .renderer
             .as_ref()?
-            .session
+            .desk
             .engine()
             .asset_bytes(id)
             .is_some()
@@ -2801,7 +2848,7 @@ impl Canvas {
         let actual = match self
             .renderer
             .as_ref()?
-            .session
+            .desk
             .engine()
             .import_brush(&entry.png)
         {
@@ -2903,7 +2950,7 @@ impl Canvas {
                 let Some(r) = self.renderer.as_ref() else {
                     return;
                 };
-                let engine = r.session.engine();
+                let engine = r.desk.engine();
                 let id = match engine.import_brush(&png) {
                     Ok(id) => id,
                     Err(e) => return self.refuse(&file_name, e.to_string(), cx),
@@ -2942,7 +2989,7 @@ impl Canvas {
                 let canonical = self
                     .renderer
                     .as_ref()
-                    .and_then(|r| r.session.engine().substrate_bytes(id))
+                    .and_then(|r| r.desk.engine().substrate_bytes(id))
                     .unwrap_or(png);
                 let kept = self.keep::<assets::Substrates>(&file_name, content, canonical);
                 self.wear_substrate(id, cx);
@@ -3029,19 +3076,6 @@ impl Canvas {
     fn refuse(&mut self, file_name: &str, why: String, cx: &mut Context<'_, Self>) {
         self.report(format!("could not import “{file_name}”: {why}"));
         self.repaint(cx);
-    }
-
-    /// The shipped rows of one catalog, each paired with the id it resolves to.
-    ///
-    /// Every one of them resolves, always — the ids were hashed at build time and the
-    /// bytes are in the binary — which is why this answers `Some` where the web app's
-    /// equivalent has to allow for a fetch still in flight.
-    fn shipped(
-        rows: &'static [assets::Shipped],
-    ) -> Vec<(&'static assets::Shipped, Option<AssetId>)> {
-        rows.iter()
-            .map(|row| (row, row.path.and_then(assets::shipped_id)))
-            .collect()
     }
 
     /// Run whatever the shipped chord table says this keystroke asks for.
@@ -3482,8 +3516,8 @@ impl Canvas {
         self.hdr.on = !self.hdr.on;
         let display = window.display_headroom();
         if let Some(r) = self.renderer.as_mut() {
-            r.session.apply_output(self.hdr, display);
-            self.obs = Some(r.session.engine().observe());
+            r.desk.apply_output(self.hdr, display);
+            self.obs = Some(r.desk.engine().observe());
         }
         let mut prefs = stark_ui::storage::load::<Prefs>().unwrap_or_default();
         prefs.hdr = self.hdr;
@@ -3793,8 +3827,19 @@ impl Render for Canvas {
         // opens is the one that learns how large the element actually laid its surface
         // out (`refresh_editor`).
         self.refresh_editor();
-        let shape_rows = Self::shipped(assets::SHIPPED_SHAPES);
-        let substrate_rows = Self::shipped(assets::SHIPPED_SUBSTRATES);
+        // Each card is paired with the id its press would wear. A shape's press reads the
+        // desk's index (`gallery_act`), so its card does, and a stamp refused at startup
+        // shows without a picture. A substrate is loaded *by* its press, which reports a
+        // refusal, so its card shows the build-time id until then.
+        let desk = self.renderer.as_ref().map(|r| &r.desk);
+        let shape_rows: Vec<_> = assets::SHIPPED_SHAPES
+            .iter()
+            .map(|row| (row, desk.and_then(|d| d.builtin_shape(row.name))))
+            .collect();
+        let substrate_rows: Vec<_> = assets::SHIPPED_SUBSTRATES
+            .iter()
+            .map(|row| (row, row.path.and_then(assets::shipped_id)))
+            .collect();
         let held_shape = match self.brush.config.shape {
             BrushShape::Stamp(id) => Some(id),
             BrushShape::Round { .. } => None,
@@ -3809,7 +3854,7 @@ impl Render for Canvas {
         let engine_bytes = |id| {
             self.renderer
                 .as_ref()
-                .and_then(|r| r.session.engine().asset_bytes(id))
+                .and_then(|r| r.desk.engine().asset_bytes(id))
                 .or_else(|| crate::assets::bytes_for(id).map(<[u8]>::to_vec))
         };
         // The stamp gallery is the **editor's**, so it is built only while one is open:
@@ -3834,7 +3879,7 @@ impl Render for Canvas {
         let substrate_bytes = |id| {
             self.renderer
                 .as_ref()
-                .and_then(|r| r.session.engine().substrate_bytes(SubstrateId::Image(id)))
+                .and_then(|r| r.desk.engine().substrate_bytes(SubstrateId::Image(id)))
                 .or_else(|| crate::assets::bytes_for(id).map(<[u8]>::to_vec))
         };
         // Headed by what it *is* rather than by what it holds: the shelf around it is
@@ -3856,10 +3901,7 @@ impl Render for Canvas {
         // borrows the renderer: the Lighting shelf shows the HDR switch only where
         // there is more than white to show, and stands a headroom track in only where
         // the platform will not state its own.
-        let hdr_capable = self
-            .renderer
-            .as_ref()
-            .is_some_and(|r| r.session.hdr_capable());
+        let hdr_capable = self.renderer.as_ref().is_some_and(|r| r.desk.hdr_capable());
         let display_headroom = window.display_headroom();
         // Built before the panels so its regions are recorded first — which does not
         // matter for the hit test (the lists are separate) but keeps the bar's own

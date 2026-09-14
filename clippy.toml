@@ -11,6 +11,10 @@
 # reason = "...")]` that says so at the site — which is better than the silence
 # there was before, because an `#[expect]` that stops being needed reports
 # itself.
+#
+# Every crate built on `stark-ui` has a clippy.toml of its own, which replaces this
+# one: a row added here goes into each of those too, and `stark-ui`'s
+# `tests/one_way_to_replace.rs` fails until it has.
 
 disallowed-types = [
   # `Instant::now()` panics on wasm32-unknown-unknown. This is the sharp one: the

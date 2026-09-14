@@ -3,18 +3,18 @@
 //! The web frontend's `Renderer` builds the device, binds a `wgpu::Surface` to a
 //! `<canvas>` and configures it. None of that happens here: **wgpui owns the device**
 //! and hands out a double-buffered pair of textures instead, so what this holds is a
-//! [`WgpuSurfaceHandle`] and a [`Session`] around an [`Engine`] built on the device
+//! [`WgpuSurfaceHandle`] and a [`Desk`] around an [`Engine`] built on the device
 //! behind it. The engine renders straight into the back buffer and the swap is a
 //! pointer swap — the same bargain the browser canvas makes, with no readback and no
 //! encode.
 //!
 //! What is here is what the surface adds. The engine's own methods are reached through
-//! [`Renderer::session`], never re-spelled.
+//! [`Renderer::desk`], never re-spelled.
 
 use stark_engine::Extent2;
 use stark_engine::command::{InputCommand, ViewCommand};
 use stark_engine::{Engine, GpuContext, Output, Transfer, ViewTransform};
-use stark_ui::session::Session;
+use stark_ui::desk::Desk;
 use wgpui::{WgpuSurfaceHandle, Window};
 
 /// The format the engine renders through and the transfer the window reads it in
@@ -34,7 +34,7 @@ fn target_for(window: &Window) -> (wgpu::TextureFormat, Transfer) {
 pub struct Renderer {
     surface: WgpuSurfaceHandle,
     /// The engine, and the shipped assets it has loaded by name.
-    pub session: Session,
+    pub desk: Desk,
     /// The viewport the engine was last told about, in device px — see
     /// [`paint`](Self::paint), which is where it is corrected.
     viewport: (u32, u32),
@@ -77,23 +77,23 @@ impl Renderer {
         // what has to stop issuing work when the device dies.
         let gpu = GpuContext::from_parts(surface.device().clone(), surface.queue().clone());
         let mut engine = Engine::new(gpu, format, Extent2::new(width, height));
-        // The transfer is the surface's from the first frame; `Session::apply_output`
+        // The transfer is the surface's from the first frame; `Desk::apply_output`
         // moves only the headroom.
         engine.process(ViewCommand::SetOutput(Output::new(transfer, 1.0)));
         Some(Self {
             surface,
-            session: Session::new(engine, transfer),
+            desk: Desk::new(engine, transfer),
             viewport: (width, height),
             overview: None,
         })
     }
 
-    /// Send a command to the engine — the **only** way to move engine state through a
-    /// `Renderer` (§4), deliberately, and for the reason the web frontend's
-    /// `Renderer::process` spells out: a named `set_*` beside it is a second spelling
-    /// that skips whatever the first one also did.
+    /// Send a command to the engine (§4). Its other `&mut` methods are reached through
+    /// [`Renderer::desk`], and replacing the document is [`Desk::replace`]'s alone. No
+    /// named `set_*` sits beside it, for the reason the web frontend's
+    /// `Renderer::process` spells out.
     pub fn process(&mut self, command: impl Into<InputCommand>) {
-        self.session.engine_mut().process(command);
+        self.desk.engine_mut().process(command);
     }
 
     /// Render a picture and hand back a future for its readback (§15.6).
@@ -111,7 +111,7 @@ impl Renderer {
     ) -> stark_engine::Result<
         impl std::future::Future<Output = stark_engine::Result<stark_engine::RgbaImage>> + use<>,
     > {
-        self.session.engine_mut().export(
+        self.desk.engine_mut().export(
             &mut stark_engine::Offscreen::default(),
             frame,
             scale,
@@ -131,7 +131,7 @@ impl Renderer {
         at: stark_model::geom::Vec2,
         options: stark_engine::PickOptions,
     ) -> impl std::future::Future<Output = Option<[f32; 3]>> + use<> {
-        self.session.engine_mut().pick_color(at, options)
+        self.desk.engine_mut().pick_color(at, options)
     }
 
     /// The handle the element composites. Cloned per frame, which costs two atomic
@@ -167,7 +167,7 @@ impl Renderer {
         frame: Option<stark_model::document::LayerId>,
         into: Extent2,
     ) -> Option<stark_engine::ExportPlan> {
-        self.session
+        self.desk
             .engine()
             .export_plan(frame, stark_engine::ExportScale::Fit(into))
             .ok()
@@ -213,7 +213,7 @@ impl Renderer {
         };
         let mut view = plan.view();
         view.viewport = Extent2::new(size.0, size.1);
-        self.session.engine_mut().render_into(
+        self.desk.engine_mut().render_into(
             &mut ov.targets,
             &target,
             view,
@@ -272,11 +272,11 @@ impl Renderer {
         // target would put every stroke somewhere other than under the pointer.
         if size != self.viewport {
             self.viewport = size;
-            self.session
+            self.desk
                 .engine_mut()
                 .process(ViewCommand::Resize(Extent2::new(size.0, size.1)));
         }
-        self.session.engine_mut().render(&target);
+        self.desk.engine_mut().render(&target);
         self.surface.swap_buffers();
     }
 }
@@ -315,7 +315,7 @@ impl Preview {
     pub fn new(donor: &Renderer, window: &Window, width: u32, height: u32) -> Option<Self> {
         let (width, height) = (width.max(1), height.max(1));
         let surface = window.create_wgpu_surface(width, height, donor.format())?;
-        let donor = donor.session.engine();
+        let donor = donor.desk.engine();
         let mut engine = Engine::on_shared(donor.shared(), Extent2::new(width, height));
         engine.process(stark_engine::command::DocCommand::SetSubstrateColor(
             donor.observe().substrate_color,

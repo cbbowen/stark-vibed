@@ -16,8 +16,8 @@ use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use stark_model::{AssetId, SubstrateId};
 use stark_ui::assets::{self, Entry, Kind, Shapes, Substrates, Unread};
+use stark_ui::desk::Desk;
 use stark_ui::library::Thumbs;
-use stark_ui::session::Session;
 
 use crate::platform::{normalize_shape_image, normalize_substrate_image};
 use crate::state::{AppState, gpu_lost, root_signal, with_engine_quiet};
@@ -62,7 +62,7 @@ pub trait Engine<K: Kind> {
     fn import(&mut self, png: &[u8]) -> Result<AssetId, String>;
 }
 
-impl Engine<Shapes> for Session {
+impl Engine<Shapes> for Desk {
     fn holds(&self, id: AssetId) -> bool {
         self.engine().holds(Shapes::need(id))
     }
@@ -76,7 +76,7 @@ impl Engine<Shapes> for Session {
     }
 }
 
-impl Engine<Substrates> for Session {
+impl Engine<Substrates> for Desk {
     fn holds(&self, id: AssetId) -> bool {
         self.engine().holds(Substrates::need(id))
     }
@@ -159,7 +159,7 @@ impl Shelf for Substrates {
 /// (`shipped::watch`) or its library changes, and a read would redraw it per command.
 pub fn thumbnail<K: Shelf>(state: AppState, id: AssetId) -> Option<String>
 where
-    Session: Engine<K>,
+    Desk: Engine<K>,
 {
     if let Some(url) = K::thumbs().get(id) {
         return Some(url);
@@ -168,7 +168,7 @@ where
         .renderer
         .peek()
         .as_ref()
-        .and_then(|r| <Session as Engine<K>>::held(&r.session, id));
+        .and_then(|r| <Desk as Engine<K>>::held(&r.desk, id));
     let bytes = held.or_else(|| {
         K::library(state)
             .entries
@@ -214,7 +214,7 @@ pub fn import_file<K: Shelf>(
     bytes: Vec<u8>,
     then: fn(AppState, AssetId),
 ) where
-    Session: Engine<K>,
+    Desk: Engine<K>,
 {
     let library = K::library(state);
     let mut notice = library.notice;
@@ -231,7 +231,7 @@ pub fn import_file<K: Shelf>(
         // The canonical bytes, not the file's: what the id names, what a save file bundles
         // and what a peer is served are one representation (§8, §19). Quiet, because
         // readying an asset changes no document state.
-        let imported = with_engine_quiet(state, |r| canonicalize::<K>(&mut r.session, png))
+        let imported = with_engine_quiet(state, |r| canonicalize::<K>(&mut r.desk, png))
             .unwrap_or_else(|| Err("the canvas is still starting".to_string()));
         let (id, canonical) = match imported {
             Ok(imported) => imported,
@@ -327,7 +327,7 @@ pub fn import_dropped<K: Shelf>(
     files: Vec<dioxus::html::FileData>,
     then: fn(AppState, AssetId),
 ) where
-    Session: Engine<K>,
+    Desk: Engine<K>,
 {
     for file in files {
         spawn_forever(async move {
@@ -359,7 +359,7 @@ pub fn import_dropped<K: Shelf>(
 /// borrowed across the heal's await.
 pub fn ensure<K: Shelf>(state: AppState, id: AssetId) -> Option<AssetId>
 where
-    Session: Engine<K>,
+    Desk: Engine<K>,
 {
     if gpu_lost(state) {
         return None;
@@ -368,13 +368,13 @@ where
         .renderer
         .peek()
         .as_ref()
-        .map(|r| <Session as Engine<K>>::holds(&r.session, id))?;
+        .map(|r| <Desk as Engine<K>>::holds(&r.desk, id))?;
     let id = if held {
         id
     } else {
         let library = K::library(state);
         let Reached { id, healed } =
-            with_engine_quiet(state, |r| reach::<K>(&mut r.session, library, id)).flatten()?;
+            with_engine_quiet(state, |r| reach::<K>(&mut r.desk, library, id)).flatten()?;
         if let Some(Healed { stale, png }) = healed {
             heal::<K>(library, stale, id, png);
         }
@@ -463,7 +463,7 @@ fn heal<K: Kind>(library: LibraryState, stale: AssetId, actual: AssetId, png: Ve
 /// is one: a height map is megabytes to copy for nobody.
 fn offer<K: Kind>(state: AppState, id: AssetId)
 where
-    Session: Engine<K>,
+    Desk: Engine<K>,
 {
     if state.collab.session.peek().is_none() {
         return;
@@ -472,7 +472,7 @@ where
         .renderer
         .peek()
         .as_ref()
-        .and_then(|r| <Session as Engine<K>>::held(&r.session, id));
+        .and_then(|r| <Desk as Engine<K>>::held(&r.desk, id));
     if let Some(bytes) = bytes {
         seed_session::<K>(state, id, bytes);
     }

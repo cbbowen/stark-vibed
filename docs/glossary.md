@@ -122,6 +122,19 @@ these should appear in code again.
 | **roster** | A list the document or session owns in order — the presence roster (§17), the drawing-guide roster (§20.5). Always qualified. | [`stark-engine/src/peer.rs`](../crates/stark-engine/src/peer.rs) |
 | **ledger** | Browser-local, per-viewer state that is *not* in the document — what the tour has already said. | [`stark-dioxus-frontend/src/tutor/lessons.rs`](../crates/stark-dioxus-frontend/src/tutor/lessons.rs) |
 
+## The frontend
+
+| Term | What it is | Defined in |
+|---|---|---|
+| **desk** | The engine as a frontend holds it (§11.2): one `Engine`, the transfer its surface reads, and the catalog names of the shipped assets it has loaded (`Loaded`) — plus the one door that replaces its document, `Desk::replace`. A frontend's `Renderer` holds one as `desk`. | [`stark-ui/src/desk.rs`](../crates/stark-ui/src/desk.rs) |
+
+### Not to be confused with
+
+| Term | What it is instead | Defined in |
+|---|---|---|
+| **`Session`** (engine) | One client's view, tool, brush and in-flight gesture, *inside* an `Engine` and never in history (§3). A desk holds the engine that holds it. | [`stark-engine/src/session.rs`](../crates/stark-engine/src/session.rs) |
+| **`CollabSession`** | A live shared session: the transport's loops and their teardown (§12.4). Held beside a desk, never in it — `stark-ui` does not depend on the network. | [`stark-net/src/session/mod.rs`](../crates/stark-net/src/session/mod.rs) |
+
 ## Naming rules this file implies
 
 - **A word means one thing across the workspace**, not one thing per module. Where

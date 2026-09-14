@@ -30,11 +30,13 @@ surrounds it.
   asserting the old value until an unrelated command refreshed it — once for the
   canvas substrate, once for the lighting environment. Neither spelling compiles.
   Replacing the document — open, join, new — is the fourth door,
-  `replace_document`, over `stark_ui::session::Session::replace`: the one engine
+  `replace_document`, over `stark_ui::desk::Desk::replace`: the one engine
   call for it in either frontend, which installs what the new document owes and
-  frames the piece (§11.2). The renderer holds that `Session` rather than a
-  forward per engine method; `stark-ui`'s `tests/one_way_to_replace.rs` fails on a
-  frontend that replaces a document around it.
+  frames the piece (§11.2). The renderer holds that `Desk` rather than a
+  forward per engine method. Each crate built on `stark-ui` refuses the engine's
+  replacement methods by path in its own `clippy.toml`, and `stark-ui`'s
+  `tests/one_way_to_replace.rs` reads the source for the native frontend, which CI
+  does not lint.
   Pointer events
   become `GestureCommand::Start`/`To`/`End`, with element coordinates mapped via
   `ViewTransform::screen_to_canvas`. `Start` also carries the **input tolerance**
@@ -1737,11 +1739,13 @@ the exit criterion is an act, not a diff.
   peer's frames arrive on a task, a resize is a frame the surface element asks for,
   and a command repaints.
 
-  **Still open: leaving.** There is no act for it, so a session ends when the
-  process does and peers drop this client on the presence timeout rather than at
-  once — `Engine::leaving_presence` has the farewell and nothing calls it. It wants
-  a `Command` of its own, which both frontends would then answer; the web app's
-  Stop sharing is a button inside a dialog this one has not got.
+  **Still open: leaving.** There is no act for it. Opening a file leaves first, as
+  the web app's `replace_document` does — farewell, `end_collaboration`, transport
+  shut down (`Canvas::leave_session`) — or the pump would go on merging peers'
+  actions into the file. Otherwise a session ends when the process does, and peers
+  drop this client on the presence timeout. It wants a `Command` of its own, which
+  both frontends would then answer; the web app's Stop sharing is a button inside a
+  dialog this one has not got.
 
 N0–N3 are the ones with leverage: after them every later stage is markup over
 rules that already exist and are already tested. N8 is the only stage that is

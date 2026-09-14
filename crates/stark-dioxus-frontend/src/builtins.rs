@@ -44,7 +44,7 @@ pub async fn import_all(r: &mut Renderer) {
             continue;
         };
         if let Some(bytes) = crate::shipped::fetch_bytes(path).await
-            && let Err(e) = r.session.load_builtin_shape(row.name, &bytes)
+            && let Err(e) = r.desk.load_builtin_shape(row.name, &bytes)
         {
             tracing::warn!("built-in shape “{}” failed to import: {e}", row.name);
         }
@@ -57,7 +57,7 @@ pub async fn import_all(r: &mut Renderer) {
 /// has no business subscribing its caller to the renderer.
 pub fn shape(state: AppState, name: &str) -> Option<BrushShape> {
     let renderer = state.renderer.peek();
-    let id = renderer.as_ref()?.session.builtin_shape(name)?;
+    let id = renderer.as_ref()?.desk.builtin_shape(name)?;
     Some(BrushShape::Stamp(id))
 }
 
@@ -85,9 +85,7 @@ pub fn resolved(state: AppState) -> Vec<(&'static assets::Shipped, Option<AssetI
         .map(|b| {
             (
                 b,
-                renderer
-                    .as_ref()
-                    .and_then(|r| r.session.builtin_shape(b.name)),
+                renderer.as_ref().and_then(|r| r.desk.builtin_shape(b.name)),
             )
         })
         .collect()

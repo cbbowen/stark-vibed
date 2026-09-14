@@ -68,7 +68,7 @@ pub enum Done {
 /// linen substrate is a few kilobytes on both rather than fourteen megabytes on one.
 pub fn save_bytes(renderer: &Renderer) -> Result<Vec<u8>, String> {
     renderer
-        .session
+        .desk
         .engine()
         .save_bytes_resolvable(&stark_ui::assets::resolvable())
         .map_err(|e| format!("could not serialize the document: {e}"))

@@ -43,7 +43,7 @@ use stark_ui::timeline::{MAX_TICKS, SPEEDS, pace};
 /// moves the playhead is a committed change, and that is what the bar watches.
 pub fn scrub_range(state: AppState) -> Option<(usize, usize)> {
     match state.renderer.peek().as_ref() {
-        Some(r) => r.session.engine().scrub_range(),
+        Some(r) => r.desk.engine().scrub_range(),
         None => Some((0, 0)),
     }
 }
@@ -166,7 +166,7 @@ pub fn TimelineBar() -> Element {
     let labels = use_memo(move || {
         let _ = revision();
         match state.renderer.peek().as_ref() {
-            Some(r) => r.session.engine().scrub_labels(),
+            Some(r) => r.desk.engine().scrub_labels(),
             None => Vec::new(),
         }
     });

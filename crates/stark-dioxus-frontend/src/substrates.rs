@@ -65,7 +65,7 @@ use crate::render::Renderer;
 use crate::state::{AppState, dispatch};
 use stark_model::ColorSpaceId;
 use stark_ui::assets::{self, Pick, Substrates};
-use stark_ui::session::{Replacement, Session};
+use stark_ui::desk::{Desk, Replacement};
 
 // --- resolving and switching ------------------------------------------------
 
@@ -102,21 +102,20 @@ pub async fn resolve(r: &mut Renderer, pick: Pick) -> Option<SubstrateId> {
         // it, because the library lives on `AppState` and a bare `Renderer` has none.
         return None;
     };
-    if let Some(id) = r.session.builtin_substrate(name) {
+    if let Some(id) = r.desk.builtin_substrate(name) {
         return Some(id);
     }
     if is_procedural(name) {
         return Some(SubstrateId::Flat);
     }
     let bytes = fetch(name).await?;
-    load(&mut r.session, name, &bytes)
+    load(&mut r.desk, name, &bytes)
 }
 
-/// Load a shipped substrate's fetched height map into `session` under `name`, logging a
+/// Load a shipped substrate's fetched height map into `desk` under `name`, logging a
 /// refusal — `None` for one.
-fn load(session: &mut Session, name: &'static str, png: &[u8]) -> Option<SubstrateId> {
-    session
-        .load_builtin_substrate(name, png)
+fn load(desk: &mut Desk, name: &'static str, png: &[u8]) -> Option<SubstrateId> {
+    desk.load_builtin_substrate(name, png)
         .inspect_err(|e| tracing::warn!("canvas substrate failed to import: {e}"))
         .ok()
 }
@@ -131,10 +130,7 @@ pub async fn open_default(r: &mut Renderer, color_space: stark_model::ColorSpace
         .await
         .unwrap_or_default();
     // Nobody can have touched the document it replaces: the renderer is unpublished.
-    if let Err(e) = r
-        .session
-        .replace(Replacement::New(color_space, surface), &[])
-    {
+    if let Err(e) = r.desk.replace(Replacement::New(color_space, surface), &[]) {
         // The engine keeps the document it was built with, so startup carries on.
         tracing::error!(
             ?color_space,
@@ -170,7 +166,7 @@ pub async fn resolve_signal(state: AppState, pick: Pick) -> SubstrateId {
         .renderer
         .peek()
         .as_ref()
-        .and_then(|r| r.session.builtin_substrate(name));
+        .and_then(|r| r.desk.builtin_substrate(name));
     if let Some(id) = known {
         return id;
     }
@@ -181,7 +177,7 @@ pub async fn resolve_signal(state: AppState, pick: Pick) -> SubstrateId {
         return SubstrateId::Flat;
     };
     let landed =
-        crate::state::with_engine_quiet(state, |r| load(&mut r.session, name, &bytes)).flatten();
+        crate::state::with_engine_quiet(state, |r| load(&mut r.desk, name, &bytes)).flatten();
     if landed.is_some() {
         crate::shipped::landed(state);
     }
@@ -230,7 +226,7 @@ fn seed_session(state: AppState, id: SubstrateId) {
         .renderer
         .peek()
         .as_ref()
-        .and_then(|r| r.session.engine().substrate_bytes(id));
+        .and_then(|r| r.desk.engine().substrate_bytes(id));
     if let Some(bytes) = bytes {
         library::seed_session::<Substrates>(state, asset, bytes);
     }
@@ -257,7 +253,7 @@ pub fn resolved(state: AppState) -> Vec<(&'static assets::Shipped, Option<Substr
                 None => Some(SubstrateId::Flat),
                 Some(_) => renderer
                     .as_ref()
-                    .and_then(|r| r.session.builtin_substrate(g.name)),
+                    .and_then(|r| r.desk.builtin_substrate(g.name)),
             };
             (g, id)
         })

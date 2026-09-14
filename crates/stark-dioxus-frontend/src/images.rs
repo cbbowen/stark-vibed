@@ -152,7 +152,7 @@ fn place_bytes(state: AppState, name: Option<String>, bytes: Vec<u8>, at: At) {
             Err(e) => return tracing::error!("could not encode that image: {e}"),
         };
         let Some(Ok(id)) =
-            crate::state::with_engine_quiet(state, |r| r.session.engine().import_picture(&png))
+            crate::state::with_engine_quiet(state, |r| r.desk.engine().import_picture(&png))
         else {
             return tracing::error!(width, height, "the canvas could not take that image");
         };
@@ -169,7 +169,7 @@ fn place_bytes(state: AppState, name: Option<String>, bytes: Vec<u8>, at: At) {
         // what makes the placement resample nothing (§23). The engine could not round
         // it for us without the rounding becoming invisible at the call site.
         let Some(at) = crate::state::with_engine_quiet(state, |r| {
-            let view = r.session.engine().view();
+            let view = r.desk.engine().view();
             let middle = match at {
                 At::Viewport => view.center,
                 At::Pointer(p) => view.screen_to_canvas(p),

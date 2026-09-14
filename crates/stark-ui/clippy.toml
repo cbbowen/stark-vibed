@@ -1,0 +1,23 @@
+# A crate built on `stark-ui`. Clippy reads the nearest clippy.toml and no other, so
+# this file replaces the root one rather than adding to it: the root file's rows are
+# repeated here verbatim (its comments say why each exists), and `stark-ui`'s
+# `tests/one_way_to_replace.rs` fails when a copy drifts from them.
+
+disallowed-types = [
+  { path = "std::time::Instant", reason = "panics in a browser; use quanta::Clock (§7.1, stark_engine::timing)" },
+  { path = "std::time::SystemTime", reason = "panics in a browser; there is no wall clock in the tab" },
+]
+
+disallowed-methods = [
+  { path = "std::thread::sleep", reason = "blocks the browser's main thread; await a timer instead" },
+  # The engine calls that replace the document, which `stark_ui::desk::Desk::replace`
+  # makes after installing what the new document owes and before framing it (§18.1.2).
+  # Not in the root file: the engine's and the transport's own suites replay through
+  # them.
+  { path = "stark_engine::Engine::load_document", reason = "replace the document through stark_ui::desk::Desk::replace" },
+  { path = "stark_engine::Engine::load_bytes", reason = "replace the document through stark_ui::desk::Desk::replace" },
+  { path = "stark_engine::Engine::join_collaboration", reason = "replace the document through stark_ui::desk::Desk::replace" },
+  { path = "stark_engine::Engine::new_document", reason = "replace the document through stark_ui::desk::Desk::replace" },
+  # Native-only, so on the web target there is no such method to resolve.
+  { path = "stark_engine::Engine::replay_timelapse", reason = "replace the document through stark_ui::desk::Desk::replace", allow-invalid = true },
+]

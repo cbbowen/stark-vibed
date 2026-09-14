@@ -69,7 +69,7 @@ pub async fn run(state: AppState) {
     // 1.
     builtins::import_all(&mut r).await;
     // 2.
-    let color_space = r.session.engine().color_space();
+    let color_space = r.desk.engine().color_space();
     substrates::open_default(&mut r, color_space).await;
     // 3.
     light_default(&mut r).await;
@@ -113,7 +113,7 @@ async fn light_default(r: &mut render::Renderer) {
         return;
     };
     match r
-        .session
+        .desk
         .engine_mut()
         .register_environment(DEFAULT_ENVIRONMENT, bytes)
     {

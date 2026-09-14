@@ -12,7 +12,7 @@
 //! network for bytes sitting next to its binary.
 
 use stark_net::AssetNeed;
-use stark_ui::session::Session;
+use stark_ui::desk::Desk;
 
 /// Read one piece of content out of this app's own bundle, by content id (§12.4, §8).
 ///
@@ -81,10 +81,10 @@ fn all_or_short(
 }
 
 /// Install one piece of content into the engine, under the id that asked for it —
-/// [`Session::install`], with a refusal logged: the callers are pumps, with nobody to
+/// [`Desk::install`], with a refusal logged: the callers are pumps, with nobody to
 /// tell but the console (§12.4).
-pub fn install(session: &mut Session, need: AssetNeed, bytes: &[u8]) {
-    if let Err(e) = session.install(need, bytes) {
+pub fn install(desk: &mut Desk, need: AssetNeed, bytes: &[u8]) {
+    if let Err(e) = desk.install(need, bytes) {
         tracing::warn!(?need, "content refused on install: {e}");
     }
 }

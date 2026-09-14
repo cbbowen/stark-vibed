@@ -66,6 +66,13 @@ test-group = 'gpu'
 filter = 'package(stark-engine) and test(/^gpu::/)'
 test-group = 'gpu'
 
+# stark-ui's integration tests, for `tests/desk.rs`, which drives the desk on a
+# device. The source-reading gate beside it is swept in: over-inclusion is the safe
+# side.
+[[profile.default.overrides]]
+filter = 'package(stark-ui) and kind(test)'
+test-group = 'gpu'
+
 # `commute_pairs` is quadratic in the vocabulary by construction: it asks every pair
 # of actions that claims to commute to produce the same document in either order
 # (§12.6), which is six documents per commuting pair and 184 such pairs.

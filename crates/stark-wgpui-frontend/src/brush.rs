@@ -9,9 +9,9 @@
 //!
 //! What is here that is not shared is where the shipped table's two **stamps** come
 //! from. Each is a content id, and an id is the hash of an image — but this build
-//! carries the images and had them hashed at build time (`crate::assets`), so the
-//! ids are known before anything is imported and the presets open resolved. The web
-//! frontend has to wait for its fetches and seeds them afterwards.
+//! carries the images (`crate::assets`) and loads them before the brush is built, so
+//! the presets open on the ids the desk holds. The web frontend has to wait for its
+//! fetches and seeds them afterwards.
 
 use stark_engine::command::ViewCommand;
 use stark_ui::brush_config::{BrushConfig, Transient};
@@ -38,8 +38,7 @@ impl Brush {
     /// with Hard Round.
     ///
     /// `shapes` is what the two stamp presets stand on. `BuiltinShapes::default()` is
-    /// the round tip twice over, which is what a build with no images would get; this
-    /// one has them (see the module note).
+    /// the round tip twice over, which is what a stamp that did not load stands on.
     pub fn new(shapes: BuiltinShapes) -> Self {
         let library = shipped(shapes);
         let first = library.first().cloned();

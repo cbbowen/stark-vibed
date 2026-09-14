@@ -36,6 +36,12 @@ tracing = { workspace = true }
 # a mirror their tests can account for a variant at a time (§25.2).
 strum = { workspace = true }
 
+# `tests/desk.rs`, which drives the desk on a headless device: blocking on the
+# adapter, and naming the format the engine renders to.
+[dev-dependencies]
+pollster = { workspace = true }
+wgpu = { workspace = true }
+
 # The shared lint set (root Cargo.toml).
 [lints]
 workspace = true

@@ -175,7 +175,7 @@ pub struct Rig {
 /// serves a stale thumbnail for a brush that has changed.
 ///
 /// A linear scan of `PartialEq` over a library of a few dozen `Copy` structs is
-/// cheaper than the JSON digest it replaced. `stark_ui::session::Loaded` is a `Vec` looked
+/// cheaper than the JSON digest it replaced. `stark_ui::desk::Loaded` is a `Vec` looked
 /// up the same way and for the same reason.
 fn lookup(state: AppState, key: Key) -> Option<String> {
     state.thumbs.pictures.find(|filed| *filed == key)
