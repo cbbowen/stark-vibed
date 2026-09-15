@@ -1117,10 +1117,7 @@ fn bleed_weight(@builtin(global_invocation_id) gid: vec3<u32>) {
 // tail reached by two front halves. The three bundles are what a tail needs and a front
 // half produces.
 
-// The three snapshot texels a paint-laying kernel reads, and writes back through.
-//
-// Read as a bundle because the store `mix`es against all three: a texel outside the
-// selection keeps exactly what it had, which is these.
+// The three snapshot texels a paint-laying kernel reads, as one bundle.
 struct Under {
     c: vec4<f32>,
     a: vec4<f32>,
@@ -1307,8 +1304,8 @@ fn lay_parcel(
     // the fraction `exchange` scaled the tool's side of the transfer by, so the
     // two sides still balance.
     let keep = 1.0 - sel * (1.0 - ex.keep);
-    var h = canvas.h * keep;
-    var m = canvas.op * h;
+    let h = canvas.h * keep;
+    let m = canvas.op * h;
 
     // How far along the stroke this texel sits, and what the brush has left to lay
     // there. The same value whichever segment is drawing it — segment `i` starts at
@@ -1483,22 +1480,37 @@ fn lay_parcel(
         parcel = latent_div(latent_wsum(tool.col, tool_op * dep_h, own, add_m), par_m);
     }
 
-    let col = latent_blend(canvas.col, m, parcel, par_m);
-    h += par_h;
-    m += par_m;
-    let op = m / max(h, PAINT_EPS);
-
-    // The selection has already had its say — as the fraction on the moved paint
-    // and as the factor in the mint's ceiling — so the store is the result whole.
-    // On the f16 lattice before it goes down (`lib::store`). The guard above skips
-    // the stores that change nothing at all; this is what keeps the ones that *do*
-    // land from each shaving a ULP off the region as a segment sweep passes over it.
-    textureStore(region_color_w, rt, f16_nearest4(vec4<f32>(col.lat * op, op)));
     // The raw totals advance in the store's own lanes by the whole attempt,
     // whatever the coverage: they are what the source tried, and the ceiling
     // above — not the lanes — is where the coverage decides what shows (§6.8).
     // The moment rides in `.w` beside them.
-    textureStore(region_aux_w, rt, f16_nearest4(vec4<f32>(h, f_h, f_m, moment)));
+    stack_and_store(rt, canvas.col, h, m, parcel, par_h, par_m, vec3<f32>(f_h, f_m, moment));
+}
+
+// The store both paint-laying kernels end in (`lay_parcel`, `settle`): the parcel
+// stacked onto what the lift left, and the texel stored whole. The selection has
+// already had its say — as the fraction on the moved paint and, in `lay_parcel`, as
+// the factor in the mint's ceiling — so there is nothing left to `mix` (§6.8).
+//
+// On the f16 lattice before it goes down (`lib::store`). The callers' rewrite guards
+// skip the stores that change nothing at all; this is what keeps the ones that *do*
+// land from each shaving a ULP off the region as a segment sweep passes over it.
+fn stack_and_store(
+    rt: vec2<i32>,
+    under: Latent,
+    h0: f32,
+    m0: f32,
+    parcel: Latent,
+    par_h: f32,
+    par_m: f32,
+    lanes: vec3<f32>,
+) {
+    let col = latent_blend(under, m0, parcel, par_m);
+    let h = h0 + par_h;
+    let m = m0 + par_m;
+    let op = m / max(h, PAINT_EPS);
+    textureStore(region_color_w, rt, f16_nearest4(vec4<f32>(col.lat * op, op)));
+    textureStore(region_aux_w, rt, f16_nearest4(vec4<f32>(h, lanes)));
     // Premultiplied by the same `op` — the residual is stored exactly as the color
     // beside it is, alpha included.
     @if(resid) textureStore(region_resid_w, rt, f16_nearest4(vec4<f32>(col.res * op, op)));
@@ -2216,34 +2228,22 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    // The snapshot, as the deposit reads it — one bundle, one gate (`under_at`).
-    let u = under_at(t);
-    let uc = u.c;
-    let ua = u.a;
-
     // The same parcel stacking as the deposit, with the delivery integral as the
     // parcel: no `add` source, because a settle is a break of contact and not a
-    // stretch of travel, and the source is a rate per unit of travel. Color comes
-    // back out of the optical-mass weight it was integrated under, so the parcel
-    // carries the mixture of the cells that would have served this point, each in
-    // proportion to what it would have delivered (§6.1).
-    var h = ua.x * ex.keep;
-    var m = uc.a * h;
-    let canvas_col = latent_unpremult(under_color_of(u), uc.a, PAINT_EPS);
-    var parcel = canvas_col;
+    // stretch of travel. Color comes back out of the optical-mass weight it was
+    // integrated under (§6.1).
+    let u = under_at(t);
+    let canvas = canvas_at(u);
+    var parcel = canvas.col;
     if par_m > PAINT_EPS {
         parcel = latent_div(par_lm, par_m);
     }
-    let col = latent_blend(canvas_col, m, parcel, par_m);
-    h += par_h;
-    m += par_m;
-    let op = m / max(h, PAINT_EPS);
-
-    textureStore(region_color_w, rt, f16_nearest4(mix(uc, vec4<f32>(col.lat * op, op), sel)));
+    // Carried paint moves in the mask's fraction, as in `lay_parcel` (§6.8): the
+    // canvas gives up `sel` of the lift and takes `sel` of the delivery.
+    let h = canvas.h * (1.0 - sel * (1.0 - ex.keep));
     // The mint-budget lanes and the moment pass through whole: a settle delivers
-    // carried paint, which the ceiling deliberately does not touch (§6.2, `lay_parcel`).
-    textureStore(region_aux_w, rt, f16_nearest4(vec4<f32>(mix(ua.x, h, sel), ua.yzw)));
-    @if(resid) textureStore(
-        region_resid_w, rt, f16_nearest4(mix(u.r, vec4<f32>(col.res * op, op), sel)),
+    // carried paint, which the ceiling deliberately does not touch (§6.2).
+    stack_and_store(
+        rt, canvas.col, h, canvas.op * h, parcel, par_h * sel, par_m * sel, u.a.yzw,
     );
 }

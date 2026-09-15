@@ -21,7 +21,9 @@ use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::Srgb;
 use stark_model::document::BrushDynamics;
-use stark_model::document::{BrushEffect, BrushParams, FillOp, SelectionMode, SelectionOp};
+use stark_model::document::{
+    BrushEffect, BrushParams, BrushShape, FillOp, SelectionMode, SelectionOp,
+};
 use stark_model::document::{SelectionShape, ShapeAction};
 use stark_model::geom::Vec2;
 
@@ -1126,6 +1128,97 @@ fn a_stroke_under_a_feathered_mask_commits_what_it_previewed() {
          pixels by more than {SEAM_LEVELS} levels, worst {worst} — the rim is being \
          capped per piece",
         frac * 100.0
+    );
+}
+
+/// **The pen-up settle gates by the mask as a fraction of the paint it moves**
+/// (§6.2, §6.8), as each segment's deposit does. A charged tip that lifts nothing
+/// lays per-unit-opaque paint, so wherever it lands the bed's transparency
+/// `h·(1 − op)` is untouched — at any coverage, if coverage scales what moves. A
+/// settle that instead blends its result toward the texel by coverage mixes alpha
+/// and height separately, and under the rim that transparency moves.
+#[test]
+fn the_pen_up_settle_gates_by_the_mask_as_a_fraction_of_the_moved_paint() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let layer = engine.observe().active_layer;
+    // A thin bed the drain has faded to a per-unit opacity of ~0.4 under the pen-up.
+    let mut bed = BrushParams {
+        drain: 0.18,
+        ..brush(RED, 60.0)
+    };
+    bed.paint_mut().expect("a paint brush").flow = 0.1;
+    stroke_with(
+        &mut engine,
+        bed,
+        &[Vec2::new(-200.0, 0.0), Vec2::new(100.0, 0.0)],
+    );
+    // The feather ramp straddles the last footprint.
+    engine.process(DocCommand::Select(SelectionOp::new(
+        SelectionMode::Replace,
+        rect(Vec2::new(-200.0, -100.0), Vec2::new(0.0, 100.0)),
+        24.0,
+    )));
+    // Along the fully selected trail and across the rim.
+    let probes: Vec<Vec2> = [-8.0, 0.0, 8.0]
+        .into_iter()
+        .flat_map(|y| (-70..=30).map(move |x| Vec2::new(x as f32, y)))
+        .collect();
+    let read = |engine: &stark_engine::Engine, p: Vec2| {
+        paint_at(engine, layer, p).expect("the bed covers every probe")
+    };
+    let before: Vec<(f32, f32)> = probes.iter().map(|&p| read(&engine, p)).collect();
+
+    let carrying = BrushParams {
+        effect: BrushEffect::wet_with(
+            RED,
+            BrushDynamics {
+                add: 0.0,
+                lift: 0.0,
+                deposit: 0.3,
+                charge: 4.0,
+                ..Default::default()
+            },
+        ),
+        drain: 0.0,
+        shape: BrushShape::Round { hardness: 0.95 },
+        ..brush(RED, 30.0)
+    };
+    stroke_with(
+        &mut engine,
+        carrying,
+        &[Vec2::new(-90.0, 0.0), Vec2::new(0.0, 0.0)],
+    );
+
+    let transparency = |(h, op): (f32, f32)| h * (1.0 - op);
+    // How much the pen-up laid ahead of its own point, where only the settle and the
+    // leading half reached and the rim is partial.
+    let mut rim_laid = 0.0f32;
+    let mut worst = (0.0f32, probes[0], before[0], before[0]);
+    for (&p, &b) in probes.iter().zip(&before) {
+        let a = read(&engine, p);
+        if p.x >= 0.0 {
+            rim_laid = rim_laid.max(a.0 / b.0 - 1.0);
+        }
+        let drift = (transparency(a) - transparency(b)).abs() / transparency(b);
+        if drift > worst.0 {
+            worst = (drift, p, b, a);
+        }
+    }
+    assert!(
+        rim_laid > 0.5,
+        "the pen-up raised no probe under the rim by half its height ({rim_laid:.3}), \
+         so this test measured nothing"
+    );
+    // Measured: 7.9% under the rim with the result lerped by coverage; 0.6% with
+    // the fraction, which is f16 rounding along the fully selected trail.
+    let (drift, p, b, a) = worst;
+    assert!(
+        drift < 0.02,
+        "at {p:?} the bed's transparency moved by {:.2}% — (h, op) {b:?} -> {a:?}: the \
+         settle blends its result by coverage rather than gating the paint it moves",
+        drift * 100.0
     );
 }
 

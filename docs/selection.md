@@ -215,10 +215,10 @@ Two consequences, one per kind of paint:
   hold advance by the whole attempt whatever the coverage; the ceiling, not the
   lanes, is where the coverage decides what shows.
 - **Moved paint takes the mask as a fraction.** The lift, the tool's deposit of
-  carried paint, the bleed and the transform's cut conserve height, and a
-  fraction is the one gate that does: the canvas gives up `sel` of what a full
-  lift would take, the very fraction `exchange` scaled the tool's side by, so
-  the two halves of a transfer still balance.
+  carried paint, the pen-up settle, the bleed and the transform's cut conserve
+  height, and a fraction is the one gate that does: the canvas gives up `sel` of
+  what a full lift would take, the very fraction `exchange` scaled the tool's side
+  by, so the two halves of a transfer still balance.
 
 Three things had to answer for a mask being partial at all — they predate the
 whole-mask number, and it inherits them:
