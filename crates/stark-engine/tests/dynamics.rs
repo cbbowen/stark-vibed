@@ -1022,6 +1022,83 @@ fn a_stretched_tips_lift_share_does_not_depend_on_its_drain() {
     );
 }
 
+/// Once the tool's load is steady, a lifting brush's finished mid-stroke columns hold what
+/// a non-lifting one's do: the tool only moves the source. A stretched tip (§6.6) must
+/// trade at the canvas's own exposure to keep that, whichever way it faces. The bound is
+/// per unit of stretch because the tool/canvas quadrature residual grows with the exchange,
+/// which a stretch along the travel multiplies by about `s`.
+#[test]
+fn a_stretched_tips_steady_columns_hold_what_it_minted() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let mut ratio = |stretch: f32, orientation: OrientationSource, tilt: Vec2| {
+        let [lifted, still] = [0.95, 0.0].map(|lift| {
+            engine.process(ViewCommand::set_brush(BrushParams {
+                stretch,
+                orientation,
+                drain: 0.0,
+                effect: BrushEffect::wet_with(
+                    RED,
+                    BrushDynamics {
+                        add: 1.0,
+                        lift,
+                        deposit: 0.95,
+                        ..BrushDynamics::default()
+                    },
+                ),
+                ..brush(RED, 10.0)
+            }));
+            let sample = |x: f32| InputSample {
+                pos: Vec2::new(x, 0.0),
+                tilt,
+                ..InputSample::default()
+            };
+            // 100 radii, and the widest tip is 16 radii long: the window below starts 32
+            // radii into the stroke and is finished 32 before the pen lifts.
+            engine.process(GestureCommand::Start {
+                tool: Tool::Brush,
+                sample: sample(-500.0),
+                tolerance: DEFAULT_TOLERANCE,
+                rope: 0.0,
+            });
+            engine.process(GestureCommand::To {
+                sample: sample(500.0),
+            });
+            engine.process(GestureCommand::End);
+            let window: f64 = column_height(&engine, LayerId::ROOT, -100..100)
+                .iter()
+                .sum();
+            engine.process(DocCommand::Undo);
+            window
+        });
+        lifted / still
+    };
+    let along = (OrientationSource::FollowStroke, InputSample::default().tilt);
+    // A pen azimuth 60° off the travel, where the map also shears and widens the lookup.
+    let oblique = (
+        OrientationSource::Pen,
+        Vec2::from_angle(60f32.to_radians()) * 0.5,
+    );
+    for (stretch, (orientation, tilt)) in [
+        (0.0, along),
+        (0.75, along),
+        (BrushParams::MAX_STRETCH, along),
+        (BrushParams::MAX_STRETCH, oblique),
+    ] {
+        let s = BrushParams::elongation(stretch);
+        let r = ratio(stretch, orientation, tilt);
+        eprintln!("{s}x tip, {orientation:?}: steady column share {r:.4}");
+        // Per unit of stretch, measured along the travel: 0.0035 at 1x, 0.0053 at 4x,
+        // 0.0060 at 8x; a tool trading at the stretch-scaled exposure, 0.025 and 0.062.
+        assert!(
+            (r - 1.0).abs() / f64::from(s) < 0.008,
+            "a {s}x tip's lifting stroke holds {r:.4} of a non-lifting one's height \
+             mid-stroke — the tool and the canvas disagree about how much changed hands",
+        );
+    }
+}
+
 /// The same visible stretch of stroke, painted with five different tails, must come
 /// out the same however the flattener happened to cut it.
 ///

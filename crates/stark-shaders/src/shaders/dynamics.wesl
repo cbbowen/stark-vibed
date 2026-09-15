@@ -830,15 +830,12 @@ fn exchange(
     // column width. While a pen-oriented volume was padded these were two different
     // units and both factors here carried the conversion.
     //
-    // **Scaled by the tip's stretch** (§6.6), which is the third thing in the same
-    // sentence: a mask texel on a tip drawn out along its facing axis stands over more
-    // canvas, so the track it crosses is that many fewer of its *own* widths. The
-    // factor is `travel` and not `1/travel` for the reason the canvas side's is the
-    // reciprocal — the two are opposite sides of one substitution, and it is what makes
-    // the books balance: a stretch multiplies the canvas's total exposure by `s` and
-    // the area each reservoir texel answers for by the same `s`.
-    let e = depth_at(local)
-        * st.travel_radii * st.stretch.x * st.tooth_bearing;
+    // **Not scaled by the tip's stretch** (§6.6). Reservoir heights are thicknesses of
+    // the canvas beneath, so the two sides pair point to point: once `stretch_gain`
+    // undoes the lookup frame's travel scale, the canvas texel under this one sees
+    // `travel_radii · κ` of it over the segment, and the tool books the same
+    // (`a_stretched_tips_steady_columns_hold_what_it_minted`).
+    let e = depth_at(local) * st.travel_radii * st.tooth_bearing;
     let ex = exchange_at(e);
     let rdim = vec2<f32>(textureDimensions(region_color));
     // Where this reservoir texel rides, in the tip's own reference frame — the two

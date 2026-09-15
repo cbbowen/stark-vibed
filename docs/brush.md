@@ -1757,14 +1757,15 @@ extent drawn outside the geometry drawn for it, cut off along a straight line:
   Charged against the *brush's* elongation, like every other bound here, since a
   modulation only ever scales the knob down.
 
-On the tool side of the dynamics loop the gain runs the other way: a mask texel on a
-drawn-out tip stands over more canvas, so the track it crosses is that many fewer of its
-own widths and `exchange` books `travel_radii · m`. That is what keeps the books
-balanced — a stretch multiplies the canvas's total exposure by `s` and the area each
-reservoir texel answers for by the same `s`. The reservoir itself does not stretch, for
-the reason it does not ramp: it is the tool's own grid, and `bake`'s rotation out of the
-travel frame is already the rotation out of the *lookup* frame, since the slice index it
-reads carries the difference.
+On the tool side of the dynamics loop `exchange` books its exposure with **no stretch
+factor**. Reservoir heights are thicknesses of the canvas beneath, so the two sides pair
+point to point: once `stretch_gain` undoes the lookup frame's travel scale, the canvas
+texel under a reservoir texel sees `travel_radii · κ` of it over the segment, and the
+tool books the same (`a_stretched_tips_steady_columns_hold_what_it_minted`). The
+reservoir itself does
+not stretch, for the reason it does not ramp: it is the tool's own grid, and `bake`'s
+rotation out of the travel frame is already the rotation out of the *lookup* frame, since
+the slice index it reads carries the difference.
 
 `MAX_ELONGATION` (8) bounds the knob, and what it bounds is **area**: every tile the
 drawn-out tip reaches is a tile the stroke is rasterized into and the dynamics loop
