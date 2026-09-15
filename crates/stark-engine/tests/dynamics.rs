@@ -10,7 +10,9 @@ use common::*;
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
-use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape, LayerId};
+use stark_model::document::{
+    BrushDynamics, BrushEffect, BrushParams, BrushShape, LayerId, OrientationSource,
+};
 use stark_model::geom::Vec2;
 
 /// A brush with the given [`BrushDynamics`].
@@ -956,6 +958,68 @@ fn a_barely_lifting_brush_reads_as_one_that_does_not_lift() {
         })
         .count();
     assert_eq!(speckles, 0, "{speckles} blown-out texels along the stroke");
+}
+
+/// A lift decides where the brush's own `add` settles, not how fast the brush runs dry,
+/// so what a lifting stroke lays as a share of a non-lifting one cannot depend on
+/// `drain`. An obliquely stretched tip seats each reservoir texel far from its mask
+/// position (§6.6); a tool reading the drain at the mask position takes the source back
+/// at a different rate than the canvas under it mints it, and the share moves with it.
+#[test]
+fn a_stretched_tips_lift_share_does_not_depend_on_its_drain() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // Fully stretched along a pen azimuth 60° off the travel: a shear large enough that
+    // a reservoir texel's travel coordinate is nowhere near its mask one.
+    let tilt = Vec2::from_angle(60f32.to_radians()) * 0.5;
+    let mut share = |drain: f32| {
+        let [lifted, still] = [0.95, 0.0].map(|lift| {
+            engine.process(ViewCommand::set_brush(BrushParams {
+                stretch: BrushParams::MAX_STRETCH,
+                orientation: OrientationSource::Pen,
+                drain,
+                effect: BrushEffect::wet_with(
+                    RED,
+                    BrushDynamics {
+                        add: 1.0,
+                        lift,
+                        deposit: 0.95,
+                        ..BrushDynamics::default()
+                    },
+                ),
+                ..brush(RED, 10.0)
+            }));
+            let sample = |x: f32| InputSample {
+                pos: Vec2::new(x, 0.0),
+                tilt,
+                ..InputSample::default()
+            };
+            engine.process(GestureCommand::Start {
+                tool: Tool::Brush,
+                sample: sample(-300.0),
+                tolerance: DEFAULT_TOLERANCE,
+                rope: 0.0,
+            });
+            engine.process(GestureCommand::To {
+                sample: sample(300.0),
+            });
+            engine.process(GestureCommand::End);
+            let h = total_height(&engine, LayerId::ROOT);
+            engine.process(DocCommand::Undo);
+            h
+        });
+        lifted / still
+    };
+    // Dry one and ten radii past the press, both far short of the 60-radius stroke's end.
+    let (strong, gentle) = (share(1.0), share(0.1));
+    eprintln!("lift share at drain 1: {strong:.4}, at drain 0.1: {gentle:.4}");
+    // Read at the mask position the two were 0.025 apart; at the seat, 0.001.
+    assert!(
+        (strong - gentle).abs() < 0.005,
+        "a lifting stretched tip laid {strong:.4} of a still one's height at drain 1 but \
+         {gentle:.4} at drain 0.1 — the tool reads the drain somewhere it is not",
+    );
 }
 
 /// The same visible stretch of stroke, painted with five different tails, must come

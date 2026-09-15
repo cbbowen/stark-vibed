@@ -916,17 +916,12 @@ fn exchange(
         }
         m = m + take_m;
 
-        // The brush's remaining load **where this texel actually is**, not where the
-        // segment starts. The reservoir lives in the shape frame, so turning its
-        // position back into travel — the inverse of the `rot` above, which works out
-        // to `local.x·cos − local.y·sin` — gives its offset along the stroke, and the
-        // tip's own travel this far into the segment gives the rest.
-        //
-        // It has to be this point and not the segment's, or the two halves of the
-        // source stop balancing: the `deposit` hands the canvas `add_w · A` at the
-        // canvas texel's arc, and this takes back `src_w · A` at the tool texel's. The
-        // two are the same place at the same moment, so they must read the same `A`.
-        let arc = st.arc_at_start + f * travel_px() + (local.x * cs - local.y * sn) * st.radius;
+        // The brush's remaining load **where this texel actually is** — its `seat`, the
+        // coordinate `arc_at` reads, and not its mask position, which a stretched tip
+        // (§6.6) carries elsewhere. The `deposit` hands the canvas `add_w · A` at the
+        // canvas texel's arc and this takes back `src_w · A` at the tool texel's: the
+        // same arc, so the same `A`.
+        let arc = st.arc_at_start + f * travel_px() + seat.x * st.radius;
         let drain = stroke_drain(arc);
         let src_h = rate_across(st.add, st.add_ramp, arc) * drain * ex.src_w * sel;
         let src_m = drain * src_h;
