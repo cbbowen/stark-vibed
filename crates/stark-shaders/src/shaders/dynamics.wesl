@@ -96,8 +96,8 @@ import package::lib::latent::{
     latent_scale, latent_sub, latent_unpremult, latent_wsum, latent_zero,
 };
 import package::lib::paint_common::{
-    tooth_at, OPACITY_K, PAINT_EPS, level_sums, claimed_coverage,
-    linear_across,
+    tooth_at, OPACITY_K, PAINT_EPS, level_sums, claimed_coverage, claimed_coverage_with,
+    band_means, linear_across,
 };
 import package::lib::sample::{load1, bilerp_taps, bilerp_mix};
 import package::lib::store::{f16_nearest4};
@@ -1250,8 +1250,7 @@ fn capped_h(fh: f32, fm: f32, o: f32) -> f32 {
 // telescopes as the dial's own does, so a brush routed here by a whisper of some
 // other axis still lays what the fast path lays. A claim can fall by a hair
 // where paint at two factors in one third of the dial averages, and the
-// difference then un-mints — the loop follows the fast path down, as far as the
-// texel's own paint allows.
+// difference then mints nothing (`lay_parcel`).
 
 // The claimed law: the mass a claimed coverage `v` lands as under the ceiling `o`,
 // capped at the raw total `f` it was claimed from — a claim is at most the
@@ -1399,7 +1398,14 @@ fn lay_parcel(
         let lv1 = lv0 + level_sums(o_mod, fresh);
         let moment1 = moment + o_mod * fresh;
         let v0 = claimed_coverage(u.a.z, moment, lv0);
-        let v1 = claimed_coverage(f_m, moment1, lv1);
+        // The band means after this slot, from its sums on the f16 lattice — exactly
+        // the aux's store, and the lane's up to the host's own draw. At a full dial
+        // the law multiplies a mean's error by `e^{K·f}`, so a digit the stores drop
+        // (a pen reporting 1 fits to `1 − 2e-7`) must not enter `v1` when the next
+        // slot's `v0` cannot see it. The masses stay unrounded, for the raw totals'
+        // reason above.
+        let kept = f16_nearest4(vec4<f32>(f_m, moment1, 0.0, 0.0));
+        let v1 = claimed_coverage_with(f_m, lv1, band_means(kept.x, kept.y, f16_nearest4(lv1)));
         let cm1 = claimed_m(v1, f_m, o);
         let cm0 = claimed_m(v0, u.a.z, o);
         // **A mint never runs backwards.** The claimed law is not strictly
@@ -1454,6 +1460,14 @@ fn lay_parcel(
     // nothing landed, no flux says nothing moved sideways. What remains is the
     // identity, whose only observable effect is the rounding above.
     if keep == 1.0 && par_h == 0.0 && par_m == 0.0 && !canvas.bled {
+        // …but a mint of nothing is not an attempt of nothing. Under the pen a flat
+        // claim mints zero while the lane beside it advances, so the budget lanes
+        // must too, or every later claim is taken from a total short of this
+        // attempt. Compared on the lattice, where both sides are exact.
+        let aux = f16_nearest4(vec4<f32>(h, f_h, f_m, moment));
+        if any(aux != u.a) {
+            textureStore(region_aux_w, rt, aux);
+        }
         return;
     }
     // The brush's own color. Its residual is **not** jittered, where the latent above

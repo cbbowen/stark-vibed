@@ -365,19 +365,32 @@ fn level_sums(o: f32, m: f32) -> vec4<f32> {
 // increments, and a mass above a level can round a hair past the mass above the
 // level below it.
 fn claimed_coverage(s0: f32, s1: f32, lv: vec4<f32>) -> f32 {
+    return claimed_coverage_with(s0, lv, band_means(s0, s1, lv));
+}
+
+// Each third's mean factor, held to its third. A third with no mass has `c` equal
+// on both sides of it, so where its mean lands decides nothing.
+fn band_means(s0: f32, s1: f32, lv: vec4<f32>) -> vec3<f32> {
     let m1 = min(lv.x, s0);
     let m2 = min(lv.y, m1);
     let q1 = min(lv.z, s1);
     let q2 = min(lv.w, q1);
+    return vec3<f32>(
+        clamp((s1 - q1) / max(s0 - m1, PAINT_EPS), 0.0, LEVEL_1),
+        clamp((q1 - q2) / max(m1 - m2, PAINT_EPS), LEVEL_1, LEVEL_2),
+        clamp(q2 / max(m2, PAINT_EPS), LEVEL_2, 1.0),
+    );
+}
+
+// `claimed_coverage` with its means `mu` given — for the stamp loop, which reads
+// them at a different precision from the masses (`dynamics.wesl::lay_parcel`).
+fn claimed_coverage_with(s0: f32, lv: vec4<f32>, mu: vec3<f32>) -> f32 {
+    let m1 = min(lv.x, s0);
+    let m2 = min(lv.y, m1);
     let c0 = 1.0 - exp(-OPACITY_K * s0);
     let c1 = 1.0 - exp(-OPACITY_K * m1);
     let c2 = 1.0 - exp(-OPACITY_K * m2);
-    // Each third's mean factor, held to its third. A third with no mass has
-    // `c` equal on both sides of it, so where its mean lands decides nothing.
-    let mu1 = clamp((s1 - q1) / max(s0 - m1, PAINT_EPS), 0.0, LEVEL_1);
-    let mu2 = clamp((q1 - q2) / max(m1 - m2, PAINT_EPS), LEVEL_1, LEVEL_2);
-    let mu3 = clamp(q2 / max(m2, PAINT_EPS), LEVEL_2, 1.0);
-    return mu1 * c0 + (mu2 - mu1) * c1 + (mu3 - mu2) * c2;
+    return mu.x * c0 + (mu.y - mu.x) * c1 + (mu.z - mu.y) * c2;
 }
 
 // **One modulated parameter where a point sits along one segment** (§6.2): the

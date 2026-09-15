@@ -743,3 +743,58 @@ fn the_capped_mint_does_not_depend_on_the_cut() {
         );
     }
 }
+
+/// …and under the pen pressed home at a **full dial**, at a flow that saturates:
+/// where `−ln(1 − o·V)` is steepest, so a claim read two ways across a segment
+/// boundary costs `e^{K·f}` times the disagreement (§6.2). A finely cut run laid
+/// 7.2% less than a coarse one at the wide tip (the coarse kernel), 0.54% at the
+/// narrow (the exact one): a zero mint skipped the store and forgot its attempt, and
+/// the after-claim read band means at a precision the stores drop. Both now sit
+/// within 0.06%; the bounds leave room for the height store's own −0.30%. The fine
+/// run is also held to the swept path's, so a cut-independent error fails too.
+#[test]
+fn a_full_dial_under_the_pen_does_not_depend_on_the_cut() {
+    const BOUND: f64 = 0.003;
+    const COLUMN_BOUND: f64 = 0.015;
+    let total = |p: &[f64]| p.iter().sum::<f64>();
+    for radius in [200.0, 40.0] {
+        let swept = under_the_pen(1.0, radius);
+        let mut looped = swept;
+        // Off zero so the stroke takes the loop, moving no paint of its own.
+        looped.make_wet().dynamics.deposit = 0.01;
+
+        let Some(coarse) = cut_profile(looped, 2.0 * radius, false) else {
+            return;
+        };
+        let fine = cut_profile(looped, 2.0 * radius, true).expect("the adapter answered");
+        let reference = cut_profile(swept, 2.0 * radius, true).expect("the adapter answered");
+        let f = total(&fine);
+        for (what, other) in [
+            ("coarse cut", total(&coarse)),
+            ("swept path", total(&reference)),
+        ] {
+            let drift = (f - other) / other;
+            assert!(
+                drift.abs() <= BOUND,
+                "at radius {radius}, the finely cut loop laid {f:.1} of height against \
+                 the {what}'s {other:.1} ({:+.3}%, bound ±{:.1}%)",
+                drift * 100.0,
+                BOUND * 100.0,
+            );
+        }
+        let (column, worst) = coarse
+            .iter()
+            .zip(&fine)
+            .map(|(cut, fit)| (fit - cut) / cut)
+            .enumerate()
+            .max_by(|x, y| x.1.abs().total_cmp(&y.1.abs()))
+            .expect("the band has columns");
+        assert!(
+            worst.abs() <= COLUMN_BOUND,
+            "at radius {radius}, column {column} of the band drifted {:+.3}% across the \
+             cut (bound ±{:.1}%)",
+            worst * 100.0,
+            COLUMN_BOUND * 100.0,
+        );
+    }
+}

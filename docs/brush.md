@@ -1278,13 +1278,17 @@ lane with the sweep's own pipeline, and resumes — so a deposit reads the lane 
 the segments before it left it, adds its own share, and mints the prefix
 difference of the *claimed* law `−ln(1 − o·V)/K` (`dynamics.wesl::claimed_m`),
 capped at the raw total so a saturated claim lands the whole attempt. The moment
-of the raw mass rides the region aux's `.w` beside the raw totals in `.yz`. The
-differences telescope as the dial's own do, a difference below zero — the
-within-third average falling — *un-mints*, taking the brush's own paint back as
-far as the texel still holds it, and the lane rides the per-tile carry beside
-the mint budget (`LoopCarry::levels`, cut and seeded by
-the same copies). The two renderers agree texel for texel under a pressure ramp
-and across a crossing (`tests/opacity.rs`,
+of the raw mass rides the region aux's `.w` beside the raw totals in `.yz`, and
+both advance by the attempt even where the mint is zero. The differences
+telescope as the dial's own do — provided both ends of one read the band means
+at the precision the stores keep, since at a full dial the inversion multiplies
+a mean's error by `e^{K·f}`, so the claim after a segment takes its means from
+its sums rounded to f16 (`a_full_dial_under_the_pen_does_not_depend_on_the_cut`).
+A difference below zero — the within-third average falling — mints nothing (the
+running maximum, above), and the lane rides the per-tile carry beside the mint
+budget (`LoopCarry::levels`, cut and seeded by the same copies). The two
+renderers agree texel for texel under a pressure ramp and across a crossing
+(`tests/opacity.rs`,
 `the_loop_lays_the_pen_driven_ceiling_the_fast_path_lays`). The `charge` glob is
 scaled by the dial alone: it is minted once, before the pen has moved, and
 `charge` is an initial condition the pen cannot reach (below). Moved paint is
