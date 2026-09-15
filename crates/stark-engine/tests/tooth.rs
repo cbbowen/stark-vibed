@@ -32,7 +32,9 @@ use common::palette::RED;
 use common::*;
 use stark_engine::command::DocCommand;
 use stark_model::SubstrateId;
-use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape, ToothParams};
+use stark_model::document::{
+    BrushDynamics, BrushEffect, BrushParams, BrushShape, LayerId, ToothParams,
+};
 use stark_model::geom::Vec2;
 
 /// The contact transition every brush here is drawn through, and every bearing here is
@@ -166,8 +168,8 @@ fn no_tooth_leaves_a_substrate_that_has_tooth_alone() {
 }
 
 /// A smooth canvas has no tooth to catch on, whatever the brush says — and that is
-/// structural, not a check: `SubstrateMap::relief` is 0 on `Flat`, which zeroes the uv
-/// scale the shader gates on before the brush's number is ever consulted.
+/// structural, not a check: `Flat` reads the map through `TexelsPerPx::NONE`, whose zero
+/// the shader gates on before the brush's number is ever consulted.
 ///
 /// It is what keeps the axis orthogonal to the golden suite, nearly all of which
 /// paints on `Flat` to isolate some other feature (§6.4).
@@ -441,12 +443,11 @@ fn the_tooth_reads_the_same_on_both_render_paths() {
         .filter(|(x, y)| (**x > solid && **y < blank) || (**y > solid && **x < blank))
         .count();
     assert!(material > 200, "too little mark to compare: {material}");
-    // The slack is for the tip's hardness shoulder, where τ falls off a cliff and the
-    // two paths' different prefix machinery can land a rim texel a fraction of a texel
-    // apart. A path whose gate differed would flip a third of the mark, not a rim.
-    // Measured at 3.4% of 7091 material texels.
+    // Measured at 0 of 7447 material texels. It was 3.4% while the two paths tapped
+    // neighbouring map texels, so the slack left is for a rim texel on another adapter,
+    // not for a gate that differs — which would flip a third of the mark.
     assert!(
-        (disagree as f64) < 0.05 * material as f64,
+        (disagree as f64) < 0.01 * material as f64,
         "the two paths disagree about the substrate on {disagree} of {material} texels (solid > {solid:.0}, blank < {blank:.0})"
     );
     let (ink_a, ink_b) = (a.iter().sum::<f64>(), b.iter().sum::<f64>());
@@ -454,6 +455,63 @@ fn the_tooth_reads_the_same_on_both_render_paths() {
     assert!(
         (0.8..1.25).contains(&ratio),
         "and about how much they laid through it: {ink_b} vs {ink_a}"
+    );
+}
+
+/// **Both paths bite the same map texel under each canvas px** (§6.4). On hard stripes
+/// the loop's column heights must track the swept path's up to a constant gain; a path
+/// that reads the neighbouring texel moves the gate at every stripe's shoulder, and that
+/// is a column-for-column disagreement no hysteresis pair over the lit image resolves.
+#[test]
+fn both_paths_bite_the_same_substrate_texel() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let id = engine
+        .import_substrate(&stripe_substrate())
+        .expect("the stripes import");
+    engine.process(DocCommand::SetSubstrate(id));
+    let xs = -100..100;
+    let mut lay = |effect| {
+        stroke_with(
+            &mut engine,
+            BrushParams {
+                effect,
+                ..toothed(0.0)
+            },
+            &run(),
+        );
+        let cols = column_height(&engine, LayerId::ROOT, xs.clone());
+        engine.process(DocCommand::Undo);
+        cols
+    };
+    let swept = lay(BrushEffect::painted(RED));
+    let looped = lay(BrushEffect::wet_with(RED, BrushDynamics::default()));
+
+    let peak = swept.iter().copied().fold(0.0, f64::max);
+    let trough = swept.iter().copied().fold(f64::INFINITY, f64::min);
+    assert!(
+        peak > 0.0 && trough < 0.5 * peak,
+        "the stripes did not gate the stroke ({trough:.1}..{peak:.1}), so this measures nothing"
+    );
+    let gain = looped.iter().sum::<f64>() / swept.iter().sum::<f64>();
+    assert!(gain > 0.0, "the loop laid nothing");
+    let (off, worst) = swept
+        .iter()
+        .zip(&looped)
+        .fold((0.0, 0.0f64), |(off, worst), (s, l)| {
+            let d = (l / gain - s).abs();
+            (off + d, worst.max(d / peak))
+        });
+    let off = off / swept.iter().sum::<f64>();
+    // Measured at 0.005% of the ink (worst column 0.02% of the peak) with both paths on
+    // the canvas texel; the loop on map texel 2x and the sweep on 2x+1 put it at 11% (31%).
+    assert!(
+        off < 0.01 && worst < 0.02,
+        "the loop's gate strays {:.1}% of the ink from the swept one's (worst column {:.1}% of \
+         the peak) — the two paths read different substrate texels",
+        off * 100.0,
+        worst * 100.0
     );
 }
 

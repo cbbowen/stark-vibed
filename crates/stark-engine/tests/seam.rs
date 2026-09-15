@@ -283,6 +283,96 @@ fn apron_makes_dynamics_writeback_seamless_under_zoom() {
     );
 }
 
+/// The worst height step between any tile's apron and the neighbour interior it
+/// duplicates, and the tallest texel either holds. Read off the tiles rather than a
+/// render, so the lit image cannot blur a one-texel slip away.
+fn apron_mismatch(engine: &stark_engine::Engine) -> (f32, f32) {
+    use stark_model::document::LayerId;
+    use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord};
+
+    let layer = LayerId::ROOT;
+    let coords: Vec<TileCoord> = engine
+        .document()
+        .layer(layer)
+        .and_then(|l| l.tiles())
+        .map(|t| t.keys().copied().collect())
+        .unwrap_or_default();
+    let (lo, hi) = (TILE_APRON, TILE_APRON + TILE_SIZE);
+    let at = |row: u32, col: u32| (row * TILE_TEX + col) as usize;
+    let (mut worst, mut peak) = (0.0f32, 0.0f32);
+    for &a in &coords {
+        let here = engine
+            .tile_channels(layer, a)
+            .expect("a listed tile reads back");
+        peak = here.height.iter().copied().fold(peak, f32::max);
+        for (dx, dy) in [(1, 0), (0, 1)] {
+            let Some(there) = engine.tile_channels(layer, TileCoord::new(a.x + dx, a.y + dy))
+            else {
+                continue;
+            };
+            // A texel by its place along the shared edge and across it.
+            let rc = |along, across| {
+                if dx == 1 {
+                    at(along, across)
+                } else {
+                    at(across, along)
+                }
+            };
+            for k in lo..hi {
+                // Each side's last interior texel against the other's apron copy of it.
+                worst = worst
+                    .max((here.height[rc(k, hi - 1)] - there.height[rc(k, lo - 1)]).abs())
+                    .max((there.height[rc(k, lo)] - here.height[rc(k, hi)]).abs());
+            }
+        }
+    }
+    (worst, peak)
+}
+
+/// **A toothed stroke keeps its aprons** (§6.4), on the swept path and the loop. The
+/// substrate is read in canvas space, so an apron texel must bite the same map texel as
+/// the neighbour interior it duplicates; on hard stripes at two map texels per px a
+/// one-texel slip is a full step of the gate.
+#[test]
+fn a_toothed_stroke_keeps_its_aprons() {
+    use stark_model::document::{BrushEffect, ToothParams};
+
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let id = engine
+        .import_substrate(&stripe_substrate())
+        .expect("the stripes import");
+    engine.process(DocCommand::SetSubstrate(id));
+    let effects = [
+        BrushEffect::painted(RED),
+        BrushEffect::wet_with(RED, BrushDynamics::default()),
+    ];
+    for effect in effects {
+        let mut b = brush(RED, 40.0);
+        b.effect = effect;
+        b.jitter = 0.0;
+        b.drain = 0.0;
+        b.tooth = ToothParams {
+            give: 0.0,
+            softness: 0.06,
+        };
+        // Diagonal, so the gate varies along the horizontal edges' apron rows too.
+        let run = [Vec2::new(-70.0, -60.0), Vec2::new(70.0, 80.0)];
+        stroke_with(&mut engine, b, &run);
+        let (worst, peak) = apron_mismatch(&engine);
+        engine.process(DocCommand::Undo);
+        assert!(peak > 0.0, "the stroke laid nothing");
+        // Bit-identical on the adapter the suite runs on, whose rasterizer interpolates
+        // the same under an integer shift of the target; the slack is for one that does not.
+        assert!(
+            worst <= 0.01 * peak,
+            "an apron differs from the interior it duplicates by {worst} of a {peak} peak — \
+             the tooth is not a pure function of canvas position"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The other tile writers
 //

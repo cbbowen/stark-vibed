@@ -6,7 +6,7 @@
 // reuses it, since its deposit is the same premultiplied-"over").
 
 import package::lib::noise::{color_jitter, jitter};
-import package::lib::paint_common::{substrate_texel_at, rise_ahead, tooth_gate, linear_across};
+import package::lib::paint_common::{tooth_at, linear_across};
 import package::lib::sample::{bilerp_taps, bilerp_mix1};
 
 struct TileXform {
@@ -38,11 +38,10 @@ struct TileXform {
     // does not allocate.
     resid: vec4<f32>,
     // The `drain` falloff per canvas px in .x (`BrushParams::drain_px` — the brush's
-    // own knob is quoted per *radius*, and the host divides), the canvas →
-    // substrate-tile uv scale (1/SUBSTRATE_TILE_PX, zero when the substrate has no relief
-    // to gate with) in .y, and the **width of the tooth's contact transition** in the
-    // rise's own units in .z (`ToothParams::softness`, §6.4); .w unused. All
-    // three stroke constants in the only sense that matters — each is a function of
+    // own knob is quoted per *radius*, and the host divides) and the **width of the
+    // tooth's contact transition** in the rise's own units in .z
+    // (`ToothParams::softness`, §6.4); .yw unused. Both stroke constants in the only
+    // sense that matters — each is a function of
     // something the fragment already knows, so it is evaluated there (`stroke_drain`,
     // `substrate_tooth`). The tooth's *depth* is not among them, and neither is `add`:
     // both are pen-driven (§6.2) and ride the segment instance, like the radius. What
@@ -63,6 +62,10 @@ struct TileXform {
     // tile; the stamp loop's ceiling pass draws the same segments into its
     // region, which is not square (§6.2).
     ndc: vec2<f32>,
+    // Substrate map texels per canvas px, `.xy / .z` per axis (`Stamp::substrate_num` and
+    // `substrate_den`, off the same stroke constant); .w unused. `.xy` is zero when the
+    // substrate has no relief to gate with.
+    substrate: vec4<u32>,
 }
 
 @group(0) @binding(0) var<uniform> xf: TileXform;
@@ -84,10 +87,10 @@ struct TileXform {
 // Read in *canvas* space, so the grain belongs to the canvas and successive strokes
 // in one direction register with each other; that is also what keeps the gate a pure
 // function of canvas position and the tile aprons bit-consistent. A `Flat` canvas
-// binds its 1×1 texel and arrives here with the uv scale zeroed, so the gate is
+// binds its 1×1 texel and arrives here with `substrate.xy` zeroed, so the gate is
 // exactly 1.
 //
-// No sampler: the tap is nearest (`substrate_texel_at`), for the reasons given there.
+// No sampler: the tap is nearest (`substrate_texel`), for the reasons given there.
 @group(2) @binding(2) var substrate_tex: texture_2d<f32>;
 
 struct VsOut {
@@ -699,28 +702,35 @@ fn stroke_drain(arc: f32) -> f32 {
 }
 
 // The share of its paint this fragment's texel receives from the substrate under it
-// (§6.4) — the deposition tooth, `paint_common.wesl::tooth_gate` fed the rise this
-// fragment's tip meets along its travel there (`rise_ahead`).
+// (§6.4) — `paint_common::tooth_at`, the gate the exchange loop's `substrate_tooth` calls
+// too, fed the rise this fragment's tip meets along its travel there.
 //
-// Sampled at the fragment's own canvas position, and read ahead along the tip's travel
-// *there* (`sw.tangent`), which the fragment recovers from the segment's frame at that
-// same position. So it is still a pure function of canvas position within a pass: a
-// tile's apron is rewritten identically to its neighbour's interior with no copy pass,
-// and the gate factors out of the sum over one segment's overlapping quads exactly as
-// before, leaving the deposit as independent of the flattening as it was.
+// Keyed on the fragment's canvas texel, `floor(in.canvas)` — exact, since a fragment
+// (or supersample) centre sits well off the canvas px grid, and every subsample of one px
+// reads its one map texel — and read ahead along the tip's travel *there*
+// (`sw.tangent`), which the fragment recovers from the segment's frame at that same
+// position. So it is a pure function of canvas position: a tile's apron is rewritten
+// identically to its neighbour's interior with no copy pass, and the gate factors out of
+// the sum over one segment's overlapping quads, leaving the deposit as independent of
+// the flattening as it was.
 //
-// `xf.paint.y` is zero on a canvas with no relief (`Surface::relief`), so the guard
-// returns exactly 1.0 before the map is read: a `Flat` document deposits bit-for-bit
-// what it always did whatever the brush's tooth says.
+// `xf.substrate.xy` is zero on a canvas with no relief (`TexelsPerPx::NONE`), so the
+// guard returns exactly 1.0 before the map is read: a `Flat` document deposits
+// bit-for-bit what it always did whatever the brush's tooth says.
 fn substrate_tooth(in: VsOut, sw: Sweep) -> f32 {
-    let uv_scale = xf.paint.y;
     let give = tooth_give_of(in, sw);
-    if uv_scale <= 0.0 || give >= 1.0 {
+    if xf.substrate.x == 0u || give >= 1.0 {
         return 1.0;
     }
-    let dims = textureDimensions(substrate_tex);
-    let g = textureLoad(substrate_tex, substrate_texel_at(in.canvas * uv_scale, dims), 0);
-    return tooth_gate(rise_ahead(g, sweep_tangent(in.dir, sw.turn)), give, xf.paint.z);
+    return tooth_at(
+        substrate_tex,
+        vec2<i32>(floor(in.canvas)),
+        xf.substrate.xy,
+        xf.substrate.z,
+        sweep_tangent(in.dir, sw.turn),
+        give,
+        xf.paint.z,
+    );
 }
 
 // The three per-texel pen targets at this fragment (§6.2): each segment's two ends

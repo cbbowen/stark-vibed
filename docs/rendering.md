@@ -637,10 +637,14 @@ Filtering would average away the faces the tooth exists to catch on, and — wor
 it would draw from a narrower distribution than the one the CPU integrates, so the
 two halves of the transfer would disagree systematically. It also sidesteps the
 reduced-precision filter weights `prefix_slice` documents, so the tap is
-bit-reproducible. The histogram's bins are the byte lattice of the encoding
-itself, so a projection that hovers a rounding error either side of flat — every
-texel of a substrate crossed at right angles — bins identically from both directions
-instead of straddling an edge. What is *not* exact is the direction: the row grid
+bit-reproducible. The tap is chosen in integers too — the map texel under the canvas
+texel's centre, through the exact fraction `SubstrateMap::texels_per_px` — because at
+two map texels per px that centre lies exactly on a texel edge, where a float lookup
+lets rasterizer error pick the neighbour, and the two render paths, which reach the
+texel differently, would read different ones. The histogram's bins are the byte
+lattice of the encoding itself, so a projection that hovers a rounding error either
+side of flat — every texel of a substrate crossed at right angles — bins identically
+from both directions instead of straddling an edge. What is *not* exact is the direction: the row grid
 quantizes it and the bins quantize the diagonal projections, both far under the
 mean-field freeze the loop already carries.
 
@@ -654,7 +658,7 @@ antisymmetric, since the two threads of a pair stand over different substrate an
 would otherwise disagree about their shared edge.
 
 Orthogonality is structural rather than checked. `SubstrateMap::relief` is 0 on `Flat`
-and on any substrate whose bytes have not arrived, which zeroes the uv scale the
+and on any substrate whose bytes have not arrived, which zeroes the texel pitch the
 shaders gate on before the brush's number is consulted — so every golden that
 paints on `Flat` is untouched by the axis existing, exactly as it is by the media
 pass's substrate.

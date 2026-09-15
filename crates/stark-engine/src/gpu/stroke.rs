@@ -488,7 +488,7 @@ impl StrokeRenderer {
             // erase, the loop's mint and the charge — through the one number.
             opacity: rec.brush.effect.opacity() * selection.opacity(),
             ceiling_lane: rec.brush.effect.opacity_modulated(),
-            substrate_uv_scale: substrate.relief * substrate.uv_scale,
+            substrate: substrate.texels_per_px(),
             tooth_softness: rec.brush.tooth.softness,
             nfreq,
             namp,
@@ -543,10 +543,13 @@ struct StrokeConstants {
     /// stroke has claimed off the lane instead of scaling by the dial above. The
     /// segments carry the pen's factor; this says whether anything reads it.
     ceiling_lane: bool,
-    /// Canvas px → substrate-tile uv (§6.4). Zero on a substrate with no relief — a `Flat`
-    /// canvas, or one whose bytes have not arrived — which sends the tooth to exactly
-    /// 1 and leaves the deposit bit-for-bit what it was before the tooth existed.
-    substrate_uv_scale: f32,
+    /// How the tooth reads the substrate map (§6.4). [`TexelsPerPx::NONE`] on a substrate
+    /// with no relief — a `Flat` canvas, or one whose bytes have not arrived — which sends
+    /// the tooth to exactly 1 and leaves the deposit bit-for-bit what it was before the
+    /// tooth existed.
+    ///
+    /// [`TexelsPerPx::NONE`]: crate::gpu::substrate::TexelsPerPx::NONE
+    substrate: crate::gpu::substrate::TexelsPerPx,
     /// The width of the tooth's contact transition, in the rise's own units
     /// (`BrushParams::tooth_softness`, §6.4).
     ///

@@ -96,7 +96,7 @@ import package::lib::latent::{
     latent_scale, latent_sub, latent_unpremult, latent_wsum, latent_zero,
 };
 import package::lib::paint_common::{
-    substrate_texel_at, rise_ahead, tooth_gate, OPACITY_K, PAINT_EPS, level_sums, claimed_coverage,
+    tooth_at, OPACITY_K, PAINT_EPS, level_sums, claimed_coverage,
     linear_across,
 };
 import package::lib::sample::{load1, bilerp_taps, bilerp_mix};
@@ -164,7 +164,7 @@ fn bleed_rate() -> f32 { return -st.lambda_bleed; }
 @group(0) @binding(20) var bake_latm: texture_2d<f32>;
 // The canvas substrate's tileable height map (§6.4) — height in `r` (the media pass's),
 // the rise one reach ahead in `gb` — whose rise along the travel scales the exposure
-// a canvas texel sees. Read nearest (`substrate_texel_at`), so no sampler. Named
+// a canvas texel sees. Read nearest (`substrate_texel`), so no sampler. Named
 // by `deposit` and `settle`, the two entry points that put paint on the canvas.
 @group(0) @binding(22) var substrate_tex: texture_2d<f32>;
 
@@ -422,13 +422,9 @@ fn exchange_at(e: f32) -> Exchange {
 }
 
 // The share of the tip's contact a canvas texel gets from the substrate under it (§6.4)
-// — the same `rise_ahead`/`tooth_gate` pair the swept fast path applies, from the same
-// map, so a brush's tooth reads the same whether or not some other axis put it on this
-// path.
+// — `paint_common::tooth_at`, which the swept fast path calls too, at the same canvas
+// texel: `st.canvas_origin + rt`, as `jitter_at` reaches it.
 //
-// `rt` is in region px; `st.substrate_uv_bias` folds the piece's own canvas origin into
-// the map, so the value is a pure function of canvas position exactly as the fast
-// path's is.
 // `turn` is how far the tip's heading has swung by this point (`segment_frame(rt)`),
 // which `sweep_tangent` turns into the direction the rise is read along —
 // after the guards, so an ordinary brush never pays for the rotation. A settle slot
@@ -443,13 +439,18 @@ fn exchange_at(e: f32) -> Exchange {
 // over it, so there is no travel to read the substrate's rise along, and gating it would
 // break the flux's antisymmetry (the two threads of a pair sit over different substrate).
 fn substrate_tooth(rt: vec2<i32>, turn: f32, give: f32) -> f32 {
-    if st.substrate_uv_scale <= 0.0 || give >= 1.0 {
+    if st.substrate_num.x == 0u || give >= 1.0 {
         return 1.0;
     }
-    let uv = vec2<f32>(rt) * st.substrate_uv_scale + st.substrate_uv_bias;
-    let dims = textureDimensions(substrate_tex);
-    let g = textureLoad(substrate_tex, substrate_texel_at(uv, dims), 0);
-    return tooth_gate(rise_ahead(g, sweep_tangent(st.dir, turn)), give, st.tooth_softness);
+    return tooth_at(
+        substrate_tex,
+        st.canvas_origin + rt,
+        st.substrate_num,
+        st.substrate_den,
+        sweep_tangent(st.dir, turn),
+        give,
+        st.tooth_softness,
+    );
 }
 
 // The deposit jitter's gate at region texel `rt` (§6.2) —

@@ -31,7 +31,7 @@ pub(super) const PREFIX_SLOTS: &[Slot] = &[Slot::at(sd::PREFIX_TEX)];
 pub(super) const NOISE_SLOTS: &[Slot] = &[
     Slot::sampled(sd::NOISE_TEX),
     Slot::at(sd::NOISE_SAMP),
-    // The substrate is read **nearest** (`substrate_texel_at`, §6.4), so it needs no
+    // The substrate is read **nearest** (`substrate_texel`, §6.4), so it needs no
     // filtering and has no sampler.
     Slot::at(sd::SUBSTRATE_TEX),
 ];
@@ -895,17 +895,13 @@ pub(super) fn tile_xform(
         ],
         color: [k.channels[0], k.channels[1], k.channels[2], 1.0],
         resid: k.resid,
-        paint: [
-            rec.brush.drain_px(),
-            k.substrate_uv_scale,
-            k.tooth_softness,
-            0.0,
-        ],
+        paint: [rec.brush.drain_px(), 0.0, k.tooth_softness, 0.0],
         noise_freq: k.nfreq,
         noise_amp: k.namp,
         jitter_eps: k.jitter_eps,
         jitter_seed: k.jitter_seed,
         ndc: [2.0 / size.0, 2.0 / size.1],
+        substrate: [k.substrate.num[0], k.substrate.num[1], k.substrate.den, 0],
     }
 }
 

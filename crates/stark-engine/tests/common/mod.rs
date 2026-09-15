@@ -263,6 +263,31 @@ pub fn brush(color: [f32; 3], radius: f32) -> BrushParams {
     }
 }
 
+/// A substrate of hard vertical stripes, 2048 texels wide — two map texels per canvas px
+/// at natural scale, so which of a canvas px's two texels a path reads decides whether a
+/// stripe's shoulder gates it. An odd period puts both parities on a shoulder (§6.4).
+pub fn stripe_substrate() -> Vec<u8> {
+    const W: u32 = stark_assetid::MAX_SUBSTRATE_DIM;
+    const H: u32 = 8;
+    const PERIOD: u32 = 25;
+    let row: Vec<u8> = (0..W)
+        .map(|x| if x % PERIOD < PERIOD / 2 { 200 } else { 0 })
+        .collect();
+    gray_png(W, H, &row.repeat(H as usize))
+}
+
+/// An 8-bit grayscale PNG of `w` × `h` row-major `pixels`.
+pub fn gray_png(w: u32, h: u32, pixels: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(&mut out, w, h);
+    encoder.set_color(png::ColorType::Grayscale);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().expect("png header");
+    writer.write_image_data(pixels).expect("png body");
+    writer.finish().expect("png finish");
+    out
+}
+
 /// Paint and commit a stroke through `points` with an explicit brush.
 pub fn stroke_with(engine: &mut Engine, b: BrushParams, points: &[Vec2]) {
     engine.process(ViewCommand::set_brush(b));

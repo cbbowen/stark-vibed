@@ -182,10 +182,46 @@ const RISE_LIMIT: f32 = 0.25;
 // CPU tabulate the same distribution, byte for byte, and keep booking the tool's
 // half against the real thing.
 //
-// `dims` is the map's size; the modulo is the Repeat the sampler would have done.
-fn substrate_texel_at(uv: vec2<f32>, dims: vec2<u32>) -> vec2<i32> {
-    let d = vec2<f32>(dims);
-    return vec2<i32>(fract(uv - floor(uv)) * d);
+// **Keyed on the integer canvas texel `c`, in integers**: the map texel under its centre,
+// `⌊(c + ½)·num/den⌋ mod dims` per axis, `num/den` being map texels per canvas px
+// (`SubstrateMap::texels_per_px`). At two texels per px that centre lies exactly on a
+// texel edge, where a float lookup lets rasterizer error pick the neighbour; integers make
+// the tap a pure function of canvas position on every path that reads it (§6.4).
+fn substrate_texel(canvas: vec2<i32>, num: vec2<u32>, den: u32, dims: vec2<u32>) -> vec2<i32> {
+    return vec2<i32>(
+        i32(substrate_texel_along(canvas.x, num.x, den, dims.x)),
+        i32(substrate_texel_along(canvas.y, num.y, den, dims.y)),
+    );
+}
+
+// One axis of `substrate_texel`, in half px so the centre `2c + 1` is an integer. `q`, `r`
+// are the floor quotient and remainder by `2·den` and `wraps` is `q` mod `n` taken
+// Euclidean, so negative texels wrap like positive ones; the split keeps `r·num` in a u32
+// (checked by `gpu::substrate`'s `every_texel_pitch_is_exact_and_fits_the_shaders_arithmetic`).
+fn substrate_texel_along(c: i32, num: u32, den: u32, n: u32) -> u32 {
+    let d = i32(2u * den);
+    let t = 2 * c + 1;
+    let q = t / d - select(0, 1, t % d < 0);
+    let r = u32(t - q * d);
+    let qn = q % i32(n);
+    let wraps = u32(qn + select(0, i32(n), qn < 0));
+    return (wraps * (num % n) + r * num / (2u * den)) % n;
+}
+
+// The tooth's gate at canvas texel `canvas` — the whole of what the swept stamp and the
+// exchange loop share of it: one nearest tap of `substrate`, its rise along `travel`, and
+// the gate. The guards stay with the callers, which read them off different lanes.
+fn tooth_at(
+    substrate: texture_2d<f32>,
+    canvas: vec2<i32>,
+    num: vec2<u32>,
+    den: u32,
+    travel: vec2<f32>,
+    give: f32,
+    softness: f32,
+) -> f32 {
+    let texel = substrate_texel(canvas, num, den, textureDimensions(substrate));
+    return tooth_gate(rise_ahead(textureLoad(substrate, texel, 0), travel), give, softness);
 }
 
 // The **rise ahead** at a substrate texel `g`, under a tip whose travel here is the
@@ -224,7 +260,7 @@ fn rise_ahead(g: vec4<f32>, travel: vec2<f32>) -> f32 {
 // −∞ as `give → 1` (infinite give — the transition band runs out below any rise the
 // map can encode, so the knob's top meets the callers' `tooth_give >= 1` guard
 // *continuously*: a pen mapping sweeping through it cannot pop). A `Flat` canvas never
-// gets here: its `relief` of 0 zeroes the uv scale upstream and the gate is exactly 1.
+// gets here: its `relief` of 0 zeroes the texel pitch upstream and the gate is exactly 1.
 //
 // The floor under the division is inert, not a tuning: every level below −0.39 is
 // already past the steepest fall the encoding can express plus the whole transition

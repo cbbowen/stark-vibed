@@ -31,7 +31,32 @@ use tooth::{Bearing, pack_substrate};
 ///
 /// The document's [`SubstrateScale`] multiplies it — see [`Substrate`], which is the pair
 /// everything downstream actually reads.
-pub const SUBSTRATE_TILE_PX: f32 = 1024.0;
+///
+/// An integer, because the deposition tooth reads the map through an exact fraction of
+/// it ([`TexelsPerPx`]).
+pub const SUBSTRATE_TILE_PX: u32 = 1024;
+
+/// Map texels per canvas px along each axis, as the exact fractions `num[axis] / den` —
+/// what the deposition tooth reads the map through (`paint_common.wesl::substrate_texel`,
+/// §6.4). One denominator, because both axes divide by the same `tile_px`.
+///
+/// Integers, so every pass that reads one canvas texel taps one map texel however it came
+/// by the texel: in floats a fragment centre lands exactly on a map texel's edge, and
+/// rasterizer error chooses between the two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TexelsPerPx {
+    pub num: [u32; 2],
+    pub den: u32,
+}
+
+impl TexelsPerPx {
+    /// No map to read: the shaders' guard sees `num == 0` and returns a gate of exactly 1
+    /// before anything divides by `den`.
+    pub const NONE: Self = Self {
+        num: [0; 2],
+        den: 1,
+    };
+}
 
 /// **A canvas substrate as the renderer builds it: which map, and how large it is
 /// laid** (§6.4).
@@ -67,16 +92,35 @@ impl Substrate {
 
     /// Canvas px spanned by one full tile of this substrate's map.
     fn tile_px(self) -> f32 {
-        SUBSTRATE_TILE_PX * self.scale.factor()
+        SUBSTRATE_TILE_PX as f32 * self.scale.factor()
+    }
+
+    /// [`TexelsPerPx`] for a `w` × `h` map laid at this scale: `n / tile_px` per axis, with
+    /// `tile_px = SUBSTRATE_TILE_PX · percent / 100`, reduced by the factor all three share.
+    fn texels_per_px(self, w: u32, h: u32) -> TexelsPerPx {
+        fn gcd(mut a: u32, mut b: u32) -> u32 {
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+            a
+        }
+        let (num, den) = (
+            [100 * w, 100 * h],
+            SUBSTRATE_TILE_PX * u32::from(self.scale.percent()),
+        );
+        let g = gcd(gcd(num[0], num[1]), den);
+        TexelsPerPx {
+            num: num.map(|n| n / g),
+            den: den / g,
+        }
     }
 
     /// Canvas px → substrate-tile uv: `1 / tile_px`.
     ///
-    /// **The one definition**, reached by both passes that sample the substrate — the
-    /// deposition tooth by way of the bake it was built for ([`SubstrateMap::uv_scale`]),
-    /// the media pass by asking the document. The substrate the paint catches on and the
-    /// substrate the light catches on have to be the *same* substrate, or the highlights
-    /// sit beside the grain instead of on it.
+    /// What the media pass samples the substrate with. The deposition tooth reads the same
+    /// `tile_px` as an exact fraction ([`SubstrateMap::texels_per_px()`]): the substrate the
+    /// paint catches on and the substrate the light catches on have to be the *same*
+    /// substrate, or the highlights sit beside the grain instead of on it.
     pub fn uv_scale(self) -> f32 {
         1.0 / self.tile_px()
     }
@@ -88,12 +132,13 @@ impl Substrate {
 pub struct SubstrateMap {
     pub view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
-    /// [`Substrate::uv_scale`] for the pair this map was baked for.
+    /// How the deposit reads this map ([`TexelsPerPx`]), read through
+    /// [`texels_per_px`](Self::texels_per_px()).
     ///
     /// A fact *about this bake*: the deposit samples the rise channels, which were
     /// measured over a reach in the texels this scale implies, so reading them at any
-    /// other uv would be reading the wrong substrate.
-    pub uv_scale: f32,
+    /// other pitch would be reading the wrong substrate.
+    texels_per_px: TexelsPerPx,
     /// 1.0 if this is a real (image) substrate with substrate to interact with, 0.0 for
     /// the procedural `Flat`. Lets effects keyed on substrate relief (e.g. the knife's
     /// scrape, §6.2) be a no-op on `Flat`, whose height is a constant 0.
@@ -116,6 +161,16 @@ impl SubstrateMap {
             relief: 0.0,
             ..Self::from_height(ctx, substrate, &[0u8], 1, 1)
         }
+    }
+
+    /// How the deposition tooth reads this map (§6.4) — [`TexelsPerPx::NONE`] on a
+    /// substrate with no relief, which the shaders gate on for a tooth of exactly 1, as
+    /// [`bearing`](Self::bearing) answers 1 on the tool's side.
+    pub fn texels_per_px(&self) -> TexelsPerPx {
+        if self.relief <= 0.0 {
+            return TexelsPerPx::NONE;
+        }
+        self.texels_per_px
     }
 
     /// The **bearing fraction** at a given tooth — the tip's give and the width of its
@@ -180,7 +235,7 @@ impl SubstrateMap {
         Self {
             view,
             sampler,
-            uv_scale: substrate.uv_scale(),
+            texels_per_px: substrate.texels_per_px(w, h),
             relief: 1.0,
             bearing: Bearing::tabulate(&packed),
             texture_bytes: packed.len() as u64,
@@ -230,6 +285,54 @@ impl crate::gpu::registry::Resource for Substrate {
                 SubstrateMap::from_height(gpu, self, &f.texels, f.width, f.height)
             }
             _ => SubstrateMap::flat(gpu, self),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The fraction is exact and, over every scale and map size, small enough for the
+    /// shader's integer arithmetic: `substrate_texel_along` multiplies up to `2·den·num`
+    /// in a u32 and takes `2·den` as an i32.
+    #[test]
+    fn every_texel_pitch_is_exact_and_fits_the_shaders_arithmetic() {
+        let natural = Substrate::new(SubstrateId::Flat).texels_per_px(2048, 1024);
+        assert_eq!(
+            natural,
+            TexelsPerPx {
+                num: [2, 1],
+                den: 1
+            }
+        );
+
+        let max = stark_assetid::MAX_SUBSTRATE_DIM;
+        let ladder =
+            (SubstrateScale::MIN..=SubstrateScale::MAX).step_by(SubstrateScale::STEP.into());
+        for percent in ladder {
+            let substrate = Substrate {
+                id: SubstrateId::Flat,
+                scale: SubstrateScale::new(percent),
+            };
+            // Beside a one-texel axis the shared factor is the least it can be,
+            // `gcd(100, 1024·percent)`, so each size's terms are at their largest.
+            for (w, h) in (1..=max).flat_map(|n| [(n, 1), (1, n)]) {
+                let p = substrate.texels_per_px(w, h);
+                let den = u64::from(p.den);
+                assert!(2 * den < 1 << 31, "{w}x{h} at {percent}%");
+                for (num, n) in p.num.map(u64::from).into_iter().zip([w, h]) {
+                    assert!(
+                        2 * num * den <= u64::from(u32::MAX),
+                        "{w}x{h} at {percent}%"
+                    );
+                    assert_eq!(
+                        num * u64::from(SUBSTRATE_TILE_PX) * u64::from(percent),
+                        den * 100 * u64::from(n),
+                        "{w}x{h} at {percent}%"
+                    );
+                }
+            }
         }
     }
 }

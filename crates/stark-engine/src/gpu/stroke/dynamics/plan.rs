@@ -18,6 +18,7 @@ use super::super::budget::extent_cell;
 use super::super::region::{coverage_bounds, segment_end};
 use super::super::segments::{BleedFire, Segment, Stretch};
 use super::bleed::bleed_stencil;
+use crate::gpu::substrate::TexelsPerPx;
 // The `Stamp` uniform, generated from `dynamics_common.wesl`'s own declaration
 // (`stark-shaders/build/mirror.rs`): the shader decides how the lanes are read, so it
 // is the only place they are written down (§6.10).
@@ -91,16 +92,11 @@ struct SlotCommon<'a> {
     /// and the swept path's `TileXform` are demonstrably reading one resolution of
     /// them.
     k: &'a super::super::StrokeConstants,
-    /// `i.yzw`: the region texel → substrate map, with the piece's origin already
-    /// folded into the bias. Only `i.x` — how deep this slot's tip bites — varies.
-    ///
-    /// The one lane here that is not a stroke constant: the bias is where the *piece*
-    /// sits, which `k` cannot know.
-    substrate: [f32; 3],
-    /// The region's canvas origin in texels — the deposit jitter's map from a region
-    /// texel to the absolute canvas one its gate is keyed on (§6.2). Integral by the
-    /// cell grid's own argument ([`cell_geometry`]'s assert), and a plan fact like
-    /// `substrate` above: the piece's placement, which `k` cannot know.
+    /// The region's canvas origin in texels — the map from a region texel to the
+    /// absolute canvas one the deposit jitter (§6.2) and the substrate tap (§6.4) are
+    /// keyed on. Integral by the cell grid's own argument ([`cell_geometry`]'s assert),
+    /// and the one lane here that is not a stroke constant: the piece's placement, which
+    /// `k` cannot know.
     origin: [i32; 2],
 }
 
@@ -121,8 +117,9 @@ impl SlotCommon<'_> {
             // …and whether the pen drives it, which is likewise the stroke's. A
             // bleed or settle slot carries the flag inertly with the dial.
             ceiling_lane: self.k.ceiling_lane,
-            substrate_uv_scale: self.substrate[0],
-            substrate_uv_bias: Vec2::new(self.substrate[1], self.substrate[2]),
+            // Off `k` like the color: the swept path's `TileXform` reads the same pair,
+            // and both key it on the canvas texel.
+            substrate: self.k.substrate,
             // A stroke constant like the color above it, and off `k` for the same
             // reason: it is the one number the tooth needs that the pen never moves,
             // so every slot kind carries the same width and the swept path's
@@ -236,13 +233,11 @@ struct Slot {
     bearing: f32,
     /// The lateral canvas diffusion rate (≤ 0) — nonzero **only** on a bleed slot.
     lambda_bleed: f32,
-    /// How little give this slot's tip has (0 = the substrate gates nothing), how wide
-    /// the transition around that is, and the region texel → substrate map
-    /// `uv = rt · substrate_uv_scale + substrate_uv_bias` (§6.4).
+    /// How much give this slot's tip has (1 = the substrate gates nothing), how wide
+    /// the transition around that is, and how the substrate map is read (§6.4).
     tooth_give: f32,
     tooth_softness: f32,
-    substrate_uv_scale: f32,
-    substrate_uv_bias: Vec2,
+    substrate: TexelsPerPx,
     /// The extent cell's edge in texels (§6.2) — 1 is the exact per-texel deposit,
     /// which is also the neutral value: the exact kernels never read the lane.
     cell: f32,
@@ -323,8 +318,7 @@ impl Default for Slot {
             // than the brush's default because a slot that reads it is a slot
             // `SlotCommon` filled, and this is what an unfilled one looks like.
             tooth_softness: 0.0,
-            substrate_uv_scale: 0.0,
-            substrate_uv_bias: Vec2::ZERO,
+            substrate: TexelsPerPx::NONE,
             cell: 1.0,
             cell_anchor: Vec2::ZERO,
             radius_ramp: 0.0,
@@ -372,13 +366,13 @@ impl Slot {
                 self.stretch.lateral,
             ],
             orientation: self.orient,
-            substrate_uv_bias: self.substrate_uv_bias.to_array(),
+            substrate_num: self.substrate.num,
+            substrate_den: self.substrate.den,
             rect_origin: [self.rect_origin.x as i32, self.rect_origin.y as i32],
             cell_anchor: [self.cell_anchor.x as i32, self.cell_anchor.y as i32],
             tooth_give: self.tooth_give,
             tooth_softness: self.tooth_softness,
             tooth_bearing: self.bearing,
-            substrate_uv_scale: self.substrate_uv_scale,
             cell_px: self.cell as i32,
             bleed_reach: self.bleed_reach as i32,
             jitter_eps: self.jitter_eps,
@@ -635,13 +629,6 @@ pub(super) fn dynamics_plan(
         ..
     } = ctx;
     let b = &rec.brush;
-    // The canvas → substrate map, folded so the shader can go straight from its
-    // *region* texel to the substrate under it:
-    // `uv = rt · substrate_uv_scale + substrate_uv_bias` (§6.4). Only the bias belongs
-    // to the piece — the shader never learns where the piece sits, only where the
-    // substrate does; the scale is a stroke constant off `consts`, which keeps it the
-    // same number the swept path writes.
-    let substrate_uv_bias = region_origin * consts.substrate_uv_scale;
     // What share of the substrate a tip with this tooth, going this way, stands on —
     // per segment, because the tooth's *give* is modulated per segment (§6.2) and the
     // direction is the segment's own. The canvas side of the exchange asks the
@@ -656,11 +643,6 @@ pub(super) fn dynamics_plan(
     // resolved from the pen (§6.2), because a segment is where the exchange happens.
     let common = SlotCommon {
         k: consts,
-        substrate: [
-            consts.substrate_uv_scale,
-            substrate_uv_bias.x,
-            substrate_uv_bias.y,
-        ],
         origin: [region_origin.x as i32, region_origin.y as i32],
     };
 
@@ -915,14 +897,8 @@ pub(super) fn liquify_plan(
         ..
     } = ctx;
     let b = &rec.brush;
-    let substrate_uv_bias = region_origin * consts.substrate_uv_scale;
     let common = SlotCommon {
         k: consts,
-        substrate: [
-            consts.substrate_uv_scale,
-            substrate_uv_bias.x,
-            substrate_uv_bias.y,
-        ],
         origin: [region_origin.x as i32, region_origin.y as i32],
     };
     // The same three-pass shape as [`dynamics_plan`], with one source kind: the
@@ -1124,8 +1100,10 @@ mod tests {
             lambda_bleed: 31.0,
             tooth_give: 32.0,
             tooth_softness: 48.0,
-            substrate_uv_scale: 33.0,
-            substrate_uv_bias: Vec2::new(34.0, 35.0),
+            substrate: TexelsPerPx {
+                num: [33, 34],
+                den: 35,
+            },
             resid: [36.0, 37.0, 38.0, 39.0],
             cell: 40.0,
             cell_anchor: Vec2::new(41.0, 42.0),
@@ -1148,8 +1126,8 @@ mod tests {
         assert_eq!(packed.arc_at_start, 29.0, "dist → arc_at_start");
         assert_eq!(packed.radius_ramp, 44.0, "ramp → radius_ramp (§6.2)");
         assert_eq!(packed.tooth_bearing, 30.0, "bearing → tooth_bearing (§6.4)");
-        assert_eq!(packed.substrate_uv_scale, 33.0, "substrate_uv_scale");
-        assert_eq!(packed.substrate_uv_bias, [34.0, 35.0], "substrate_uv_bias");
+        assert_eq!(packed.substrate_num, [33, 34], "substrate.num (§6.4)");
+        assert_eq!(packed.substrate_den, 35, "substrate.den (§6.4)");
         assert_eq!(packed.cell_px, 40, "cell → cell_px, as an integer (§6.2)");
         assert_eq!(packed.cell_anchor, [41, 42], "cell_anchor, as integers");
         assert_eq!(packed.rect_origin, [13, 14], "rect_origin, as integers");
@@ -1229,8 +1207,14 @@ mod tests {
             d.opacity_mod, 1.0,
             "the default ceiling factor must be 1 — the pen taking nothing — not 0"
         );
+        // The substrate pitch's denominator is a divisor: `TexelsPerPx::NONE` gates on
+        // its zero numerator, and keeps 1 below it so a missed guard cannot divide by 0.
+        assert_eq!(
+            d.substrate_den, 1,
+            "the default substrate pitch must be `NONE`"
+        );
         // And everything else is zero, which for the rest of the slot *is* neutral —
-        // stated as the complement of the five above so a new member has to be
+        // stated as the complement of the members above so a new one has to be
         // classified rather than silently joining whichever list it was written near.
         let z = Stamp {
             tooth_bearing: 1.0,
@@ -1239,12 +1223,13 @@ mod tests {
             stretch: [1.0, 0.0, 1.0],
             opacity: 1.0,
             opacity_mod: 1.0,
+            substrate_den: 1,
             ..Default::default()
         };
         assert_eq!(
             bytemuck::bytes_of(&d),
             bytemuck::bytes_of(&z),
-            "a member of the default slot is neither zero nor one of the seven neutrals",
+            "a member of the default slot is neither zero nor one of the neutrals above",
         );
     }
 

@@ -315,8 +315,10 @@ impl Bearing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpu::substrate::SUBSTRATE_TILE_PX;
     use stark_model::document::ToothParams;
+
+    /// [`SUBSTRATE_TILE_PX`](crate::gpu::substrate::SUBSTRATE_TILE_PX), as `pack_substrate` takes it.
+    const TILE_PX: f32 = crate::gpu::substrate::SUBSTRATE_TILE_PX as f32;
 
     /// A substrate of **ramps**: height climbing steadily to a peak, then dropping back
     /// over a few texels. Every feature has a long near face and a short far one, and —
@@ -380,7 +382,7 @@ mod tests {
     #[test]
     fn a_tip_dragged_up_the_faces_contacts_more_than_one_dragged_down_them() {
         let (w, h) = (256, 256);
-        let hist = tabulate_bearing(&pack_substrate(&ramps(w, h, 32), w, h, SUBSTRATE_TILE_PX));
+        let hist = tabulate_bearing(&pack_substrate(&ramps(w, h, 32), w, h, TILE_PX));
         for give in [0.3, 0.5, 0.7] {
             let up = row_mean(&hist, 0, give);
             let down = row_mean(&hist, BEARING_DIRS / 2, give);
@@ -400,7 +402,7 @@ mod tests {
     #[test]
     fn a_tip_crossing_the_ramps_sideways_reads_them_the_same_both_ways() {
         let (w, h) = (256, 256);
-        let hist = tabulate_bearing(&pack_substrate(&ramps(w, h, 32), w, h, SUBSTRATE_TILE_PX));
+        let hist = tabulate_bearing(&pack_substrate(&ramps(w, h, 32), w, h, TILE_PX));
         let (quarter, three) = (BEARING_DIRS / 4, 3 * BEARING_DIRS / 4);
         for give in [0.3, 0.5, 0.7] {
             let (a, b) = (row_mean(&hist, quarter, give), row_mean(&hist, three, give));
@@ -421,7 +423,7 @@ mod tests {
     fn a_brush_with_full_give_is_full_contact_on_any_substrate() {
         let (w, h) = (64, 64);
         for substrate in [vec![90u8; (w * h) as usize], ramps(w, h, 8)] {
-            let hist = tabulate_bearing(&pack_substrate(&substrate, w, h, SUBSTRATE_TILE_PX));
+            let hist = tabulate_bearing(&pack_substrate(&substrate, w, h, TILE_PX));
             for dir in 0..BEARING_DIRS {
                 assert_eq!(
                     row_mean(&hist, dir, ToothParams::DEFAULT_GIVE),
@@ -475,7 +477,7 @@ mod tests {
     #[test]
     fn a_tip_with_no_give_still_bears_on_the_faces_that_rise_to_meet_it() {
         let (w, h) = (256, 256);
-        let hist = tabulate_bearing(&pack_substrate(&ramps(w, h, 32), w, h, SUBSTRATE_TILE_PX));
+        let hist = tabulate_bearing(&pack_substrate(&ramps(w, h, 32), w, h, TILE_PX));
         let up = row_mean(&hist, 0, 0.0);
         let down = row_mean(&hist, BEARING_DIRS / 2, 0.0);
         assert!(
@@ -509,7 +511,7 @@ mod tests {
     #[test]
     fn a_softer_contact_bears_on_the_substrate_more_evenly() {
         let (w, h) = (256, 256);
-        let hist = tabulate_bearing(&pack_substrate(&ramps(w, h, 32), w, h, SUBSTRATE_TILE_PX));
+        let hist = tabulate_bearing(&pack_substrate(&ramps(w, h, 32), w, h, TILE_PX));
         for (dir, give) in [(0, 0.0), (BEARING_DIRS / 2, 0.0), (0, 0.6)] {
             let hard = row_mean_at(&hist, dir, give, NARROW);
             let soft = row_mean_at(&hist, dir, give, 8.0 * NARROW);

@@ -146,11 +146,11 @@ struct Stamp {
     // The shape's orientation in turns ∈ [0,1) — which picks the prefix-τ slice (§6.6)
     // and is the rotation `bake` and `exchange` take out of the travel frame.
     orientation: f32,
-    // The map from this dispatch's *region* texel to the substrate:
-    // `uv = rt·substrate_uv_scale + substrate_uv_bias`, with the piece's own canvas origin
-    // already folded into the bias. The scale is zero on a substrate with no relief, which
-    // is what makes a `Flat` canvas render exactly what it always did.
-    substrate_uv_bias: vec2<f32>,
+    // Substrate map texels per canvas px, `substrate_num / substrate_den` per axis
+    // (`paint_common::substrate_texel`) — a stroke constant the swept path's `TileXform`
+    // carries too. `num` is zero on a substrate with no relief, which is what makes a
+    // `Flat` canvas render exactly what it always did.
+    substrate_num: vec2<u32>,
     // Where this dispatch's extent rect sits in the region, in texels.
     rect_origin: vec2<i32>,
     // The cell grid's canvas anchor: the region's canvas origin modulo the cell, so
@@ -182,7 +182,8 @@ struct Stamp {
     // under itself, and a reservoir cell, which has no substrate of its own, scales by
     // this. 1 where there is nothing to bite.
     tooth_bearing: f32,
-    substrate_uv_scale: f32,
+    // `substrate_num`'s denominator, declared here to keep the struct free of padding.
+    substrate_den: u32,
     // The **extent cell** (§6.2): its edge in texels, ≥ 1 — the square the coarse
     // pair (`cell_hoist`/`deposit_coarse`) evaluates the exchange laws once per. 1 (and
     // `cell_anchor` zero) on every slot the host keeps on the exact path: small tips,
