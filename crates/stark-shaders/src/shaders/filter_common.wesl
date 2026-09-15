@@ -55,6 +55,7 @@
 // differ by a fixed linear matrix, and a scalar gain commutes with it.
 
 import package::lib::color::{oklab_to_linear_srgb, linear_srgb_to_oklab, light_to_linear, floor_light};
+import package::lib::paint_common::{COVERAGE_EPS};
 
 // Filter codes — the shader ABI for `document::Filter`, so they live next to the
 // shader rather than on the enum, which has no business knowing a `u32`. Mirrored
@@ -550,8 +551,16 @@ fn blur_read(frag: vec2<f32>) -> Blurred {
         );
     }
     let w = max(aux.y, 1e-6);
+    // The un-premultiply's guard is **relative to `w`**, because every lane here
+    // carries a factor of the kernel's own sum (`make_kernel` never normalizes, see
+    // `blur.wesl`) and `w` is that sum. An absolute floor sits orders of magnitude
+    // under the planes' round-off, so where the kernel gathered no coverage — a ring
+    // aperture over an isolated mark — this divided noise by noise and handed back an
+    // arbitrary hue, which the clipped path then laid down at the backdrop's own
+    // coverage. `light.w / w` is the coverage, so the floor is the one every other
+    // un-premultiply of a composited target uses.
     let lin = max(
-        light_to_linear(light.xyz / max(light.w, 1e-6)),
+        light_to_linear(light.xyz / max(light.w, COVERAGE_EPS * w)),
         vec3<f32>(0.0),
     );
     return Blurred(lin, clamp(light.w / w, 0.0, 1.0), max(aux.x / w, 0.0));

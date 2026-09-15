@@ -1351,6 +1351,75 @@ fn a_clipped_focal_blur_stays_inside_the_paint() {
     );
 }
 
+/// **A blur reports the light its aperture gathered, or none — never a hue it
+/// invented** (§21.12).
+///
+/// `make_kernel` deliberately never normalizes, so every lane of the convolution
+/// planes carries a factor of the kernel's own sum and the resolve's division by the
+/// blurred border weight is what normalizes them. The divisor that un-premultiplies
+/// the *light* has to be floored on that same scale: an absolute floor sits orders of
+/// magnitude under the planes' own round-off, so where the aperture gathered no
+/// coverage at all the resolve divided noise by noise.
+///
+/// A ring aperture over an isolated mark is that case — at the mark's own texel the
+/// disc is all bare canvas — and the clipped path is where it shows, since a clip
+/// lays the blurred *color* at the backdrop's own coverage rather than at the blur's.
+/// This picture holds red paint on warm paper and nothing that leads green; the
+/// arbitrary hue put the mark 19 levels green.
+#[test]
+fn a_ring_blur_that_gathers_nothing_invents_no_hue() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // Far smaller than the ring's 0.9 inner radius, so nothing of it is in the disc.
+    paint(
+        &mut engine,
+        RED_SOFT,
+        7.0,
+        &[Vec2::new(0.0, 0.0), Vec2::new(0.5, 0.0)],
+    );
+    let sharp = engine.render_to_image();
+    let id = add_filter(
+        &mut engine,
+        None,
+        Filter::FocalBlur(FocalBlur {
+            radius: 70.0,
+            aperture: Aperture::Disc { obstruction: 0.9 },
+        }),
+    );
+    engine.process(DocCommand::SetLayerClip(id, true));
+    let shut = engine.render_to_image();
+
+    /// How far green leads the other two anywhere in the frame — the one direction
+    /// this picture has none of, so any of it was invented.
+    fn greenest(img: &RgbaImage) -> i32 {
+        (0..img.height)
+            .flat_map(|y| (0..img.width).map(move |x| (x, y)))
+            .map(|(x, y)| {
+                let p = img.pixel(x, y);
+                i32::from(p[1]) - i32::from(p[0]).max(i32::from(p[2]))
+            })
+            .max()
+            .expect("a frame has pixels")
+    }
+    let before = greenest(&sharp);
+    assert!(
+        before <= 2,
+        "red paint on warm paper already leads green by {before} — the case cannot \
+         tell an invented hue from the picture's own",
+    );
+    assert!(
+        !images_match(&sharp, &shut, 0),
+        "the blur changed nothing, so it gathered nothing to be wrong about",
+    );
+    let after = greenest(&shut);
+    assert!(
+        after <= 5,
+        "a clipped ring blur over bare canvas leads green by {after} — it is reporting \
+         round-off divided by round-off, not the light it gathered",
+    );
+}
+
 /// **A focal blur survives an extreme zoom-in** (§21.12) — the crash this pins:
 /// the radius is a canvas fact, so zooming in multiplies it on screen, and the
 /// FFT's guard band once grew with it until the planes blew past the device's
