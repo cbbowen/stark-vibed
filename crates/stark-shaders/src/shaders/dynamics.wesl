@@ -1338,7 +1338,13 @@ fn lay_parcel(
     // height.
     // The tool's per-unit opacity, from the two means it carries. Recovered here
     // rather than carried, so the one expression answers for both front halves.
-    let tool_op = tool.m / max(tool.h, PAINT_EPS);
+    //
+    // `min` because the two are **separately** cancelled differences of large prefix
+    // sums (`bake`), each clamped at zero on its own, so out at the rim — where both
+    // differences are noise — the mass may round above the height it is a fraction of.
+    // An alpha over 1 is not a material (§6.1): the parcel below would store it on the
+    // region, and the next `exchange` would lift it back onto the reservoir.
+    let tool_op = min(tool.m, tool.h) / max(tool.h, PAINT_EPS);
     // Carried paint moves in the mask's fraction, like the lift above — moved
     // paint is what the ceiling below does not touch, and a fraction is the one
     // gate that conserves it (§6.8).

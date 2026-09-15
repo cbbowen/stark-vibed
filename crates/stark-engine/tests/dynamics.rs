@@ -2211,3 +2211,60 @@ fn a_wet_tapers_coarse_deposit_tracks_the_swept_one() {
         spread * 100.0
     );
 }
+
+/// **What a wet deposit stores in alpha is a material, not a ratio** (§6.1): per-unit
+/// opacity is bounded by 1, and the tool's is `mean mass / mean height` — two separately
+/// cancelled differences of `bake`'s prefix sums, each clamped at zero on its own.
+///
+/// A wide, very soft tip on bare canvas is where those differences are smallest and the
+/// rim longest, and that is where the ratio used to invert: before `lay_parcel` took the
+/// `min`, this left texels at 1.00098 — one f16 ULP over — which the next `exchange`
+/// then lifted back onto the reservoir.
+#[test]
+fn a_wet_deposit_never_stores_an_opacity_over_one() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let mut b = dyn_brush(
+        GREEN,
+        140.0,
+        BrushDynamics {
+            add: 1.0,
+            lift: 0.95,
+            deposit: 0.95,
+            ..Default::default()
+        },
+    );
+    b.shape = BrushShape::Round { hardness: 0.0 };
+    b.drain = 0.0;
+    let run: Vec<Vec2> = (0..=40)
+        .map(|i| Vec2::new(-200.0 + 10.0 * i as f32, (i as f32 * 0.3).cos() * 80.0))
+        .collect();
+    stroke_with(&mut engine, b, &run);
+
+    let coords: Vec<_> = engine
+        .document()
+        .layer(LayerId::ROOT)
+        .and_then(|l| l.tiles())
+        .map(|t| t.keys().copied().collect::<Vec<_>>())
+        .unwrap_or_default();
+    assert!(!coords.is_empty(), "the stroke laid no tiles");
+    // Apron included: a texel over 1 is a defect wherever it sits, and the apron is
+    // some neighbour's interior (§6.4).
+    let (worst, over) = coords
+        .iter()
+        .filter_map(|c| engine.tile_channels(LayerId::ROOT, *c))
+        .flat_map(|ch| {
+            (0..ch.height.len())
+                .map(|i| ch.color[i * 4 + 3])
+                .collect::<Vec<_>>()
+        })
+        .fold((0.0f32, 0usize), |(worst, over), op| {
+            (worst.max(op), over + usize::from(op > 1.0))
+        });
+    assert!(
+        worst <= 1.0,
+        "{over} texels store a per-unit opacity over 1, worst {worst} — an alpha above \
+         1 is not a material (§6.1)",
+    );
+}
