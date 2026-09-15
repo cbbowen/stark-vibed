@@ -17,10 +17,11 @@ mod common;
 
 use common::palette::RED;
 use common::*;
-use stark_engine::command::DocCommand;
+use stark_engine::command::{DocCommand, GestureCommand, InputSample, Tool, ViewCommand};
+use stark_engine::path::{DEFAULT_TOLERANCE, MIN_TOLERANCE};
 use stark_model::Srgb;
 use stark_model::document::{
-    BrushDynamics, BrushParams, BrushShape, FillOp, ModSource, Modulation, SelectionShape,
+    BrushDynamics, BrushParams, BrushShape, FillOp, LayerId, ModSource, Modulation, SelectionShape,
     ToothParams,
 };
 use stark_model::geom::Vec2;
@@ -663,4 +664,82 @@ fn the_loop_lays_the_pen_driven_ceiling_the_fast_path_lays() {
         apart(bore, eased) > 10,
         "the pressure ramp did not reach the ceiling ({bore:?} against {eased:?}), so this          test measured nothing"
     );
+}
+
+// ---- the ceiling across cuts (§6.2) -----------------------------------------------
+
+/// Height down each column of the middle half of a straight loop-routed run along
+/// `y = 0`, laid whole. `fine` reports it every quarter px and fits it at the finest
+/// tolerance, which cuts a segment about every px; the coarse delivery's two reports
+/// are cut at the brush's own budget, a radius apiece.
+fn cut_profile(b: BrushParams, half: f32, fine: bool) -> Option<Vec<f64>> {
+    let mut engine = engine_or_skip()?;
+    let (samples, tolerance): (Vec<Vec2>, f32) = if fine {
+        let n = (2.0 * half / 0.25) as usize;
+        let at = |i: usize| Vec2::new(-half + i as f32 * 0.25, 0.0);
+        ((0..=n).map(at).collect(), MIN_TOLERANCE)
+    } else {
+        (
+            vec![Vec2::new(-half, 0.0), Vec2::new(half, 0.0)],
+            DEFAULT_TOLERANCE,
+        )
+    };
+    engine.process(ViewCommand::set_brush(b));
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(samples[0]),
+        tolerance,
+        rope: 0.0,
+    });
+    for &p in &samples[1..] {
+        engine.process(GestureCommand::To {
+            sample: InputSample::at(p),
+        });
+    }
+    engine.process(GestureCommand::End);
+    // Folded again whole, so the live preview's own head/tail cut is not measured.
+    engine.process(DocCommand::Undo);
+    engine.process(DocCommand::Redo);
+    let band = (half / 2.0) as i32;
+    Some(column_height(&engine, LayerId::ROOT, -band..band))
+}
+
+/// **The capped mint does not depend on how the path was cut** (§6.2): the loop
+/// mints prefix differences of the capped law against running raw totals, so a run
+/// cut a segment per px lays what the same run cut a radius at a time lays — under
+/// the dial and under the pen alike.
+///
+/// Pinned where it has teeth: a wide tip short of saturation, whose per-segment
+/// increments are ULP-sized against the f16 budget lanes. Both sit within 0.09% of
+/// their coarse cut. Differencing the *stored* (rounded) totals instead measured
+/// +0.27%, and the uncapped stroke drifts +0.36% on its height store, so a ceiling
+/// that stopped reaching the loop fails this too.
+#[test]
+fn the_capped_mint_does_not_depend_on_the_cut() {
+    const RADIUS: f32 = 200.0;
+    const BOUND: f64 = 0.0015;
+    for (label, pen) in [("dial", false), ("pen", true)] {
+        let mut b = if pen {
+            under_the_pen(0.5, RADIUS)
+        } else {
+            washed(0.5, RADIUS)
+        };
+        b.paint_mut().expect("a paint brush").flow = 0.5;
+        // Off zero so the stroke takes the loop, moving no paint of its own.
+        b.make_wet().dynamics.deposit = 0.01;
+
+        let Some(coarse) = cut_profile(b, 2.0 * RADIUS, false) else {
+            return;
+        };
+        let fine = cut_profile(b, 2.0 * RADIUS, true).expect("the adapter answered once already");
+        let (c, f): (f64, f64) = (coarse.iter().sum(), fine.iter().sum());
+        let drift = (f - c) / c;
+        assert!(
+            drift.abs() <= BOUND,
+            "under the {label}, the finely cut run laid {f:.1} of height where the coarse \
+             cut laid {c:.1} ({:+.3}%, bound ±{:.2}%) — the capped mint depends on the cut",
+            drift * 100.0,
+            BOUND * 100.0,
+        );
+    }
 }

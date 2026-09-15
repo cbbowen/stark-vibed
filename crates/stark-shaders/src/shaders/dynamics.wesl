@@ -1366,6 +1366,11 @@ fn lay_parcel(
     // well below this — so a stroke scrubbing one spot for hours cannot walk a
     // lane into the f16 infinity, whose `inf·0` in `capped_h`'s ratio would be
     // a NaN the region keeps forever.
+    //
+    // Differenced below **unrounded**, though the store rounds them. Rounding first
+    // would telescope the mint to the capped law of the lane's accumulated f16 drift —
+    // a first-order error where this is second-order, and measured worse across cuts
+    // (`opacity.rs`, `the_capped_mint_does_not_depend_on_the_cut`).
     let f_h = min(u.a.y + raw_h, F_MAX);
     let f_m = min(u.a.z + raw_m, F_MAX);
     // The ceiling at this texel: the stroke's, times the mask's coverage here
