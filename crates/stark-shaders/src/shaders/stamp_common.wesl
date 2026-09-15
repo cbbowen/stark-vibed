@@ -352,7 +352,7 @@ fn radius_ramp_scale(radius_ramp: f32, x: f32, lr: f32) -> f32 {
 //
 // Split out of `sweep_at` rather than folded into it because the two callers need it at
 // different moments. The dynamics loop builds its frame per fragment and applies this
-// immediately (`dynamics::segment_frame`). The stamp path builds the frame at the
+// immediately (`dynamics_common::frame_at`). The stamp path builds the frame at the
 // *vertices* and interpolates it, and this correction is not affine in canvas position
 // — it is a ratio of two affine functions — so interpolating its result would be wrong
 // where interpolating `sweep_at`'s is exact. There it is applied after the interpolation

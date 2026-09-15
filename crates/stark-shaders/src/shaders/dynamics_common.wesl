@@ -325,29 +325,34 @@ fn stroke_drain(arc: f32) -> f32 {
 // residual slot: Oklab declares none of them.
 @if(resid) @group(0) @binding(24) var region_resid_w: texture_storage_2d<rgba16float, write>;
 
-// This texel's place in the segment's travel frame — the one the whole exchange is
-// measured in. Straight or curved, `sweep_at` hands back the same three quantities
-// (see stamp_common.wesl), so nothing downstream branches on the segment's shape.
+// Region position `p`'s place in the segment's travel frame — the one the whole
+// exchange is measured in. Straight or curved, `sweep_at` hands back the same three
+// quantities (see stamp_common.wesl), so nothing downstream branches on the segment's
+// shape.
 //
 // `st.travel_radii` carries the travel as `length / radius`, so the arc length it was built
 // from is recovered by multiplying back through.
 //
 // **The single place the loop builds a frame**, which is what lets the radius ramp
-// (§6.2, `Segment::radius_ramp`) be applied in exactly one line: `deposit`, its coarse twin,
-// the bleed flux, `snapshot` and `settle` all come through here, so all five agree
-// about where the sweep's rim is — and `outside_sweep`, which several of them use to
-// skip work the others must then also skip, is computed from the same frame. Applying
-// it anywhere further down would be five chances to disagree.
+// (§6.2, `Segment::radius_ramp`) be applied in exactly one line: `deposit`,
+// `cell_hoist` and `deposit_coarse`, the bleed flux, `snapshot` and `settle` all come
+// through here, so all of them agree about where the sweep's rim is — and
+// `outside_sweep`, which several of them use to skip work the others must then also
+// skip, is computed from the same frame.
 //
 // The tool *reservoir* deliberately does not ramp: `bake` and `exchange` place a
 // brush-local grid, which is the tool's own and does not stretch as the tip does, and
 // they reach the canvas through `st.radius` rather than through a `Sweep` at all.
 // What ramps is the canvas-side coverage — the prefix-τ difference, which is what the
 // stroke's outline is made of.
-fn segment_frame(rt: vec2<i32>) -> Sweep {
-    let p = vec2<f32>(rt) + vec2<f32>(0.5, 0.5);
+fn frame_at(p: vec2<f32>) -> Sweep {
     let sw = sweep_at(p, st.start, st.dir, st.radius, travel_px(), st.curvature);
     return radius_ramp_apply(sw, st.radius_ramp);
+}
+
+// `frame_at` at the texel centre.
+fn segment_frame(rt: vec2<i32>) -> Sweep {
+    return frame_at(vec2<f32>(rt) + vec2<f32>(0.5, 0.5));
 }
 
 // Where that frame lands in the one the prefix-τ volume and the bake rows are indexed

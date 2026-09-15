@@ -2024,3 +2024,49 @@ fn a_bleeding_strokes_preview_is_its_commit() {
         diff_fraction(&committed, &rendered).1,
     );
 }
+
+/// **An add-only wet brush tracks the swept deposit along a taper as it does along
+/// the body** (§6.2): the loop reduces to the swept path up to a constant gain, so the
+/// wet/paint column-height ratio must not move where the radius ramps. The tip is soft
+/// and wide enough for the coarse deposit (`extent_cell`), whose hoisted exposure has
+/// to be taken in the same ramped frame as its rim test.
+#[test]
+fn a_wet_tapers_coarse_deposit_tracks_the_swept_one() {
+    // A 750 px taper from x = -800; the columns sit where its tip is ~160 px and up,
+    // well past the 100 px the coarse deposit engages at, and short of the join.
+    let lay = |effect| -> Option<Vec<f64>> {
+        let mut engine = engine_or_skip()?;
+        let mut b = brush(RED, 250.0);
+        b.effect = effect;
+        b.shape = BrushShape::Round { hardness: 0.2 };
+        b.drain = 0.0;
+        b.start_taper_length = 3.0;
+        let run: Vec<Vec2> = (0..=120)
+            .map(|i| Vec2::new(-800.0 + 10.0 * i as f32, 0.0))
+            .collect();
+        stroke_with(&mut engine, b, &run);
+        Some(column_height(&engine, LayerId::ROOT, -450..-80))
+    };
+    let (Some(wet), Some(paint)) = (
+        lay(BrushEffect::wet_with(RED, BrushDynamics::default())),
+        lay(BrushEffect::painted(RED)),
+    ) else {
+        return;
+    };
+    assert!(
+        paint.iter().all(|&h| h > 0.0),
+        "the stroke does not cover the measured columns"
+    );
+    let (lo, hi) = wet
+        .iter()
+        .zip(&paint)
+        .map(|(w, p)| w / p)
+        .fold((f64::MAX, f64::MIN), |(lo, hi), r| (lo.min(r), hi.max(r)));
+    let spread = hi / lo - 1.0;
+    assert!(
+        spread < 0.01,
+        "along the taper the wet deposit strays {:.1}% from the swept one ({lo:.3}..{hi:.3}) \
+         — the coarse deposit is not in the ramped frame",
+        spread * 100.0
+    );
+}

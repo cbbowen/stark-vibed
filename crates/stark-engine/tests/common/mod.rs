@@ -381,6 +381,37 @@ pub fn total_height(engine: &Engine, layer: LayerId) -> f64 {
         .sum()
 }
 
+/// Height summed down each canvas column in `xs` on `layer`, off the tiles' interiors
+/// — [`total_height`] resolved along x, for a claim about how a deposit varies along a
+/// stroke.
+pub fn column_height(engine: &Engine, layer: LayerId, xs: std::ops::Range<i32>) -> Vec<f64> {
+    let mut cols = vec![0.0f64; xs.len()];
+    let coords: Vec<_> = engine
+        .document()
+        .layer(layer)
+        .and_then(|l| l.tiles())
+        .map(|t| t.keys().copied().collect())
+        .unwrap_or_default();
+    for coord in coords {
+        let ch = engine
+            .tile_channels(layer, coord)
+            .expect("a listed tile reads back");
+        let x0 = coord.origin().x as i32;
+        for lx in 0..TILE_SIZE {
+            let x = x0 + lx as i32;
+            if !xs.contains(&x) {
+                continue;
+            }
+            let col = &mut cols[(x - xs.start) as usize];
+            for ly in 0..TILE_SIZE {
+                let i = (ly + TILE_APRON) * TILE_TEX + lx + TILE_APRON;
+                *col += f64::from(ch.height[i as usize]);
+            }
+        }
+    }
+    cols
+}
+
 /// The **height** and per-unit **opacity** at one canvas point on `layer` — §6.1's two
 /// channels, read off the tile rather than inferred from the pixel they produced.
 ///

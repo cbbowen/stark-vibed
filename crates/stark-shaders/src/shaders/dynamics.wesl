@@ -81,13 +81,13 @@
 // reads the same slot. This file is the wet loop alone.
 
 import package::stamp_common::{
-    prefix_at, stretch_gain, stretch_unlook, Sweep, sweep_at, sweep_tangent,
+    prefix_at, stretch_gain, stretch_unlook, Sweep, sweep_tangent,
 };
 // The slot, the frame it is read in, and the four group-0 slots the liquify
 // field shares with this loop (`dynamics_common.wesl`).
 import package::dynamics_common::{
-    st, TILE_WG, travel_px, rate_across, arc_at, stroke_drain, segment_frame, segment_look,
-    swept_pre, outside_look, outside_sweep, region_color_w, region_aux_w, sel_mask,
+    st, TILE_WG, travel_px, rate_across, arc_at, stroke_drain, frame_at, segment_frame,
+    segment_look, swept_pre, outside_look, outside_sweep, region_color_w, region_aux_w, sel_mask,
 };
 @if(resid) import package::dynamics_common::{region_resid_w};
 import package::lib::noise::{color_jitter, jitter};
@@ -1781,7 +1781,7 @@ fn cell_hoist(@builtin(global_invocation_id) gid: vec3<u32>) {
     // region `[k·c − a, (k+1)·c − a)`, and this is that span's midpoint — a position,
     // not a texel index, so no half-texel offset applies on top.
     let p = (vec2<f32>(cell_base() + ci) + vec2<f32>(0.5, 0.5)) * f32(c) - vec2<f32>(a);
-    let sw = sweep_at(p, st.start, st.dir, st.radius, travel_px(), st.curvature);
+    let sw = frame_at(p);
     var tool = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     var lat = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     @if(resid) var res = vec4<f32>(0.0, 0.0, 0.0, 0.0);
