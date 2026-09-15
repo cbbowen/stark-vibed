@@ -60,6 +60,11 @@ pub const V_STROKE: &[Vec2] = &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 60.0)];
 /// [`assert_golden`]. For adapters other than the one the goldens were blessed on.
 const SKIP_GOLDEN: &str = "STARK_SKIP_GOLDEN";
 
+/// Set to `1` to compare every golden at tolerance 0, whatever the test asked for.
+/// The gate for a change claimed not to move a pixel: a per-test tolerance absorbs
+/// exactly the drift such a change must not have.
+const GOLDEN_EXACT: &str = "STARK_GOLDEN_EXACT";
+
 fn env_flag(name: &str) -> bool {
     std::env::var(name).is_ok_and(|v| v == "1")
 }
@@ -689,7 +694,8 @@ pub fn assert_golden(name: &str, img: &RgbaImage, tol: u8) {
         }
     }
     let (d, i) = worst;
-    if d as u8 > tol {
+    let tol = if env_flag(GOLDEN_EXACT) { 0 } else { tol };
+    if d > u32::from(tol) {
         let actual = path.with_extension("actual.png");
         write_png(&actual, img);
         panic!(

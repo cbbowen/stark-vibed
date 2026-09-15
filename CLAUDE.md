@@ -236,7 +236,9 @@ Test-suite switches: `STARK_ALLOW_NO_GPU=1` opts into skipping when there is no
 adapter — a missing GPU is otherwise a **failure**, because a skipped test still
 reports `ok` and would take the whole golden/seam/dynamics suite green having
 rendered nothing. `STARK_SKIP_GOLDEN=1` renders without comparing pixels (what CI
-uses, since goldens are adapter-specific). Deleting a golden re-blesses it.
+uses, since goldens are adapter-specific). `STARK_GOLDEN_EXACT=1` compares every
+golden at tolerance 0 — the gate for a refactor claimed not to move a pixel, since a
+per-test tolerance hides exactly that drift. Deleting a golden re-blesses it.
 
 ## Rules that are easy to break silently
 
