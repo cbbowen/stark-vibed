@@ -252,6 +252,50 @@ fn blend_only_acts_where_the_layers_meet() {
     );
 }
 
+/// The other half of that: **where the layer has no paint, the backdrop is untouched**,
+/// to the bit and over the whole canvas. A combining layer whose stroke meets nothing
+/// renders exactly as the same layer set to `Normal`.
+///
+/// Every mode's Porter-Duff tail returns the backdrop at `αs = 0`, so the only way to
+/// fail this is to send those texels out to light and back anyway — which clamps an
+/// emission and, in the pigment space, re-quantizes the backdrop's concentrations
+/// through the LUT (§6.3).
+#[test]
+fn a_blend_layer_leaves_the_backdrop_where_it_has_no_paint() {
+    let spaces = [
+        ColorSpaceId::Oklab,
+        #[cfg(feature = "mixbox")]
+        ColorSpaceId::Mixbox,
+    ];
+    for space in spaces {
+        for mode in COMBINING {
+            let Some(mut engine) = engine_or_skip_with(space) else {
+                return;
+            };
+            paint(&mut engine, WARM, 44.0, H_STROKE);
+            engine.process(DocCommand::AddLayer {
+                carrier: None,
+                above: None,
+            });
+            // Clear of the horizontal stroke's 44 px reach by 36 px.
+            paint(
+                &mut engine,
+                COOL,
+                20.0,
+                &[Vec2::new(-60.0, -100.0), Vec2::new(60.0, -100.0)],
+            );
+            let normal = engine.render_to_image();
+            engine.process(DocCommand::SetLayerBlend(top(&engine), mode));
+            let (frac, worst) = diff_fraction(&normal, &engine.render_to_image());
+            assert_eq!(
+                (frac, worst),
+                (0.0, 0),
+                "{space:?} {mode:?}: a layer that meets nothing moved the backdrop"
+            );
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The laws the derivation buys.
 // ---------------------------------------------------------------------------

@@ -84,13 +84,14 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let hs = textureLoad(src_aux, p, 0).x;
 
     var out: FsOut;
-    // Two ways out without the trip to light and back, and here more than anywhere
+    // Three ways out without the trip to light and back, and here more than anywhere
     // that trip is worth skipping: it is a LUT lookup that would re-quantize a latent
     // which is already exact. **Nothing beneath** — every mode is the source, given
-    // back to the bit by `merge`'s `mix(..., ab)` at `ab = 0`. **`Normal`** — it covers
-    // rather than combines, so it has no blend function to be affine anywhere and the
-    // working space is where it belongs. Both halves of the color take the branch.
-    if cb.a <= 0.0 || is_normal() {
+    // back to the bit by `merge`'s `mix(..., ab)` at `ab = 0`. **Nothing above** — the
+    // backdrop, given back to the bit at `as = 0`. **`Normal`** — it covers rather than
+    // combines, so it has no blend function to be affine anywhere and the working space
+    // is where it belongs. Both halves of the color take the branch.
+    if cb.a <= 0.0 || cs.a <= 0.0 || is_normal() {
         let base = merge(cb, cs, chan_s, hb, hs);
         out.color = base.color;
         out.aux = base.aux;

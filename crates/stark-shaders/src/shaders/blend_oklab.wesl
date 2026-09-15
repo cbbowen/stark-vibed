@@ -29,15 +29,17 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let hb = textureLoad(back_aux, p, 0).x;
     let hs = textureLoad(src_aux, p, 0).x;
 
-    // Two ways out without the trip to light and back, and both are exact rather
+    // Three ways out without the trip to light and back, and all are exact rather
     // than merely cheap. **Nothing beneath**: with no backdrop every mode is the
     // source, and `merge` gives it back to the bit — its `mix(…, αb)` at `αb = 0` is
-    // the source term verbatim. **`Normal`**: it covers rather than combines, so there
-    // is no blend function to be affine anywhere and the working space is where it
-    // belongs. Reached only by a clipped layer or a faded group (§14.4).
+    // the source term verbatim. **Nothing above**: at `αs = 0` it is the backdrop
+    // verbatim, where the trip would clamp an emission the backdrop may exceed.
+    // **`Normal`**: it covers rather than combines, so there is no blend function to
+    // be affine anywhere and the working space is where it belongs. Reached only by a
+    // clipped layer or a faded group (§14.4).
     //
-    // `chan_s` stands in for the blend function's opinion, which neither branch reads.
-    if cb.a <= 0.0 || is_normal() {
+    // `chan_s` stands in for the blend function's opinion, which no branch reads.
+    if cb.a <= 0.0 || cs.a <= 0.0 || is_normal() {
         return merge(cb, cs, chan_s, hb, hs);
     }
 
