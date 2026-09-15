@@ -182,8 +182,8 @@ fn bleed_rate() -> f32 { return -st.lambda_bleed; }
 // with 1×1 stand-ins.
 //
 // The region's residual, premultiplied by the same per-unit opacity `region_color`
-// carries in its `.a` — the alpha is not duplicated here because nothing samples
-// this texture without sampling that one.
+// carries in its `.a`, and carrying a duplicate of that alpha as every tile writer's
+// residual does. Readers take the color's (`lib::latent`).
 @if(resid) @group(0) @binding(23) var region_resid: texture_2d<f32>;
 // (Its write target, `region_resid_w` at binding 24, is `dynamics_common`'s: the
 // liquify resample writes it too.)
@@ -932,9 +932,10 @@ fn exchange(
         m = m + src_m;
     }
 
-    textureStore(brush_dst_color_w, t, f16_nearest4(vec4<f32>(col.lat, m / max(h, PAINT_EPS))));
+    let op = m / max(h, PAINT_EPS);
+    textureStore(brush_dst_color_w, t, f16_nearest4(vec4<f32>(col.lat, op)));
     textureStore(brush_dst_aux_w, t, f16_nearest4(vec4<f32>(h, 0.0, 0.0, 0.0)));
-    @if(resid) textureStore(brush_dst_resid_w, t, f16_nearest4(vec4<f32>(col.res, 0.0)));
+    @if(resid) textureStore(brush_dst_resid_w, t, f16_nearest4(vec4<f32>(col.res, op)));
 }
 
 // ---- 4. Deposit: the swept exchange over one segment. ----------------------------
@@ -1499,8 +1500,8 @@ fn lay_parcel(
     // The moment rides in `.w` beside them.
     textureStore(region_aux_w, rt, f16_nearest4(vec4<f32>(h, f_h, f_m, moment)));
     // Premultiplied by the same `op` — the residual is stored exactly as the color
-    // beside it is.
-    @if(resid) textureStore(region_resid_w, rt, f16_nearest4(vec4<f32>(col.res * op, 0.0)));
+    // beside it is, alpha included.
+    @if(resid) textureStore(region_resid_w, rt, f16_nearest4(vec4<f32>(col.res * op, op)));
 }
 
 @compute @workgroup_size(TILE_WG, TILE_WG)
@@ -2239,12 +2240,10 @@ fn settle(@builtin(global_invocation_id) gid: vec3<u32>) {
     let op = m / max(h, PAINT_EPS);
 
     textureStore(region_color_w, rt, f16_nearest4(mix(uc, vec4<f32>(col.lat * op, op), sel)));
-    // The mint-budget lanes pass through whole: a settle delivers carried paint,
-    // which the ceiling deliberately does not touch (§6.2, `lay_parcel`).
-    textureStore(
-        region_aux_w, rt, f16_nearest4(mix(ua, vec4<f32>(h, ua.y, ua.z, 0.0), sel)),
-    );
+    // The mint-budget lanes and the moment pass through whole: a settle delivers
+    // carried paint, which the ceiling deliberately does not touch (§6.2, `lay_parcel`).
+    textureStore(region_aux_w, rt, f16_nearest4(vec4<f32>(mix(ua.x, h, sel), ua.yzw)));
     @if(resid) textureStore(
-        region_resid_w, rt, f16_nearest4(mix(u.r, vec4<f32>(col.res * op, 0.0), sel)),
+        region_resid_w, rt, f16_nearest4(mix(u.r, vec4<f32>(col.res * op, op), sel)),
     );
 }
