@@ -23,10 +23,16 @@
 // pattern" names a function and not a habit.
 //
 // A no-op for a real tile bound 1:1 with its destination, where `c` is always in
-// range; the clamp exists for the 1×1 case and costs a `min`.
+// range; the clamp exists for the 1×1 case and costs a `clamp`.
+//
+// **Both ends**, though only the upper one has a caller that needs it. A negative
+// index is not a wrapped read but an out-of-bounds `textureLoad`, whose value WGSL
+// leaves to the backend — so a caller that ever computes one (a neighbour tap walked
+// off a rect's low edge, say) would get a different picture per adapter, with nothing
+// failing. One `max` buys the whole class.
 fn load1(t: texture_2d<f32>, c: vec2<i32>) -> vec4<f32> {
     let dim = vec2<i32>(textureDimensions(t));
-    return textureLoad(t, min(c, dim - vec2<i32>(1, 1)), 0);
+    return textureLoad(t, clamp(c, vec2<i32>(0, 0), dim - vec2<i32>(1, 1)), 0);
 }
 
 // ---- hand-rolled bilinear ------------------------------------------------------

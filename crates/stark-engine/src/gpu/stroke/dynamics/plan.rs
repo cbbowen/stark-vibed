@@ -1052,9 +1052,10 @@ mod tests {
     use super::*;
     use crate::gpu::stroke::StrokeSpans;
     use crate::gpu::stroke::budget::flatten_budget;
+    use crate::gpu::stroke::region::cover;
     use crate::gpu::stroke::segments::Stretch;
     use crate::gpu::stroke::segments::generate_segments_in;
-    use crate::gpu::stroke::segments::testing::{record, run, seg, smearing};
+    use crate::gpu::stroke::segments::testing::{record, run, seg, seg_between, smearing};
     use stark_model::geom::Vec2;
 
     // --- the slot's lane packing -------------------------------------------
@@ -1545,6 +1546,119 @@ mod tests {
                 &sources_of(&segments, &fires, false),
                 Vec2::ZERO
             )) >= with,
+        );
+    }
+
+    /// **The bleed ladder's no-flux wall at the region edge, as region arithmetic.**
+    ///
+    /// A ladder tap moves height only where the pair's mobility `min(w_t, w_n)` is
+    /// nonzero, and a `w` is nonzero only where the swept exposure is — inside the
+    /// tip's disc about the arc, the box [`coverage_bounds`] measures. So the partner
+    /// of every flux is a texel whose own `deposit` thread ran *exactly when* that box
+    /// sits inside the region: a sweep reaching past it would shed height into a thread
+    /// that returned at the region bounds check, and §6.1's conservation would go with
+    /// it. `bleed_weight` does not test the region, and does not need to.
+    ///
+    /// The low end carries a second claim: a dispatch rect's origin is the box's low
+    /// corner less [`RECT_MARGIN`], floored, so a box inside the region gives a
+    /// **non-negative** `rect_origin` — which is what keeps every `rt` the ladder
+    /// derives from it (`rect_origin + tn`, `tn ≥ 0`) off `lib::sample::load1`'s
+    /// lower clamp.
+    #[test]
+    fn a_sweeps_coverage_box_sits_inside_the_region_dispatched_over_it() {
+        let cases: Vec<(&str, Vec<Segment>)> = vec![
+            (
+                "a dot",
+                vec![seg_between(
+                    Vec2::new(10.0, 10.0),
+                    Vec2::new(10.5, 10.0),
+                    4.0,
+                )],
+            ),
+            (
+                "a sub-pixel drag, cut the way a slow hand is fitted",
+                run(40, 0.39, 22.0),
+            ),
+            (
+                "a fat tip, whose reach runs past its own endpoints",
+                vec![seg_between(
+                    Vec2::new(500.3, 500.7),
+                    Vec2::new(505.0, 500.0),
+                    120.0,
+                )],
+            ),
+            (
+                "across the origin, into negative tiles",
+                vec![seg_between(
+                    Vec2::new(-300.4, -140.6),
+                    Vec2::new(220.0, 90.0),
+                    37.0,
+                )],
+            ),
+            ("a long run, several tiles wide", run(60, 9.0, 30.0)),
+        ];
+        // The margin is a **worst case over where the sweep falls in its tile** — a box
+        // sitting well inside one has margin to spare — so every case is walked a whole
+        // tile period, off the texel grid at both ends of it.
+        let shifts: Vec<f32> = (0..stark_model::geom::TILE_SIZE)
+            .step_by(13)
+            .flat_map(|i| [i as f32, i as f32 + 0.499])
+            .collect();
+        let mut tightest = f32::MAX;
+        for (what, segments) in cases {
+            for shift in &shifts {
+                // Bent too, so a sagitta bows out of every box.
+                for (bend, kappa) in [("straight", 0.0f32), ("bent", 0.004)] {
+                    let segments: Vec<Segment> = segments
+                        .iter()
+                        .map(|s| {
+                            let mut s = *s;
+                            s.sweep.curvature = kappa;
+                            s.sweep.start += Vec2::new(*shift, -*shift);
+                            s
+                        })
+                        .collect();
+                    let (fires, _) = bleed_fires(0.5, &segments);
+                    let rect = cover(&segments, &fires)
+                        .rect()
+                        .expect("a piece is always a region");
+                    let sources = sources_of(&segments, &fires, true);
+                    let rects = rects_for(&sources, rect.origin);
+                    // The last texel index each axis admits: `deposit` returns at
+                    // `rt >= rdim`, and `bleed_weight`'s `t` runs the snapshot square.
+                    let last = Vec2::new(rect.w as f32 - 1.0, rect.h as f32 - 1.0);
+                    for (src, r) in sources.iter().zip(&rects) {
+                        let (lo, hi) = src.bounds();
+                        let (lo, hi) = (lo - rect.origin, hi - rect.origin);
+                        tightest = tightest
+                            .min(lo.x)
+                            .min(lo.y)
+                            .min(last.x - hi.x)
+                            .min(last.y - hi.y);
+                        assert!(
+                            lo.x >= 0.0 && lo.y >= 0.0 && hi.x <= last.x && hi.y <= last.y,
+                            "{what} ({bend}, shifted {shift}): a slot's coverage box \
+                             spans {lo:?}..{hi:?} of a {}x{} region — flux can reach a \
+                             texel whose own thread returned",
+                            rect.w,
+                            rect.h,
+                        );
+                        assert!(
+                            r.origin.x >= 0.0 && r.origin.y >= 0.0,
+                            "{what} ({bend}, shifted {shift}): a dispatch rect starts \
+                             at {:?}, so `rect_origin + tn` can go negative",
+                            r.origin,
+                        );
+                    }
+                }
+            }
+        }
+        // And the walk really did find the tight alignment — otherwise the margin above
+        // is slack nothing measured and the assertions pass on cases that never bite.
+        assert!(
+            tightest < 3.0,
+            "the tightest box sits {tightest} texels inside its region — the shifts do \
+             not reach the alignment the bound is about",
         );
     }
 }
