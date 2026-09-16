@@ -3,7 +3,16 @@
 //! Keeping shaders in their own crate (§2) means the WESL build step
 //! never pollutes the engine crate and the same artifacts can be reused by tools.
 
-use wesl::include_wesl;
+/// The WGSL `build.rs` deposited for one entry point, embedded.
+///
+/// `wesl`'s own `include_wesl!` is this line, and taking it costs the engine — and
+/// every wasm build of it — a compile of the whole WESL compiler for a macro that
+/// names a file.
+macro_rules! include_wesl {
+    ($artifact:literal) => {
+        include_str!(concat!(env!("OUT_DIR"), "/", $artifact, ".wgsl"))
+    };
+}
 
 mod entry_points;
 pub use entry_points::{
@@ -383,25 +392,17 @@ pub fn guides() -> &'static str {
 mod tests {
     use super::*;
 
-    /// Every name in [`ENTRY_POINTS`] has an accessor here, and every accessor has a
-    /// name in [`ENTRY_POINTS`].
-    ///
-    /// The list drives `build.rs`; the accessors are what callers reach for. They used
-    /// to be two independent transcriptions of the same seventeen names, so adding a
-    /// shader to one and not the other failed at the wrong layer — a missing
-    /// `include_wesl!` artifact reports as a build-script problem several frames from
-    /// the shader you just wrote, and an accessor with no `build_artifact` behind it
-    /// does not fail until link time.
-    ///
-    /// Now one of them is generated from the other's evidence: an accessor that is not
-    /// in the list, or a list entry with no accessor, is a failed assertion naming the
-    /// offender.
     /// One accessor, paired with the [`ENTRY_POINTS`] name it must correspond to.
+    ///
+    /// The list drives `build.rs`; the accessors are what callers reach for. Stated
+    /// separately, the two fail at the wrong layer: a missing artifact reports as a
+    /// build-script problem several frames from the shader you just wrote, and an
+    /// accessor with nothing behind it does not fail until link time.
     type Accessor = (&'static str, fn() -> &'static str);
 
     /// One flagged accessor, paired with its [`RESID_ENTRY_POINTS`] name — the same
-    /// correspondence [`Accessor`] states for the plain builds, for the eight passes
-    /// that take a `resid` bool. With the test that uses it: without `mixbox` there
+    /// correspondence [`Accessor`] states for the plain builds, for the passes that
+    /// take a `resid` bool. With the test that uses it: without `mixbox` there
     /// are no residual variants to pair up.
     #[cfg(feature = "mixbox")]
     type ResidAccessor = (&'static str, fn(bool) -> &'static str);
@@ -470,7 +471,7 @@ mod tests {
     /// residual variant links to something *different* from its plain one.
     ///
     /// The second half is what makes this worth a test. `build.rs` sets the feature
-    /// and then calls `build_artifact` twice; if the flag failed to take — a renamed
+    /// and then calls `build_one` twice; if the flag failed to take — a renamed
     /// feature, a `@if` spelt wrong — both passes would deposit the same WGSL, every
     /// pipeline would build, and a Mixbox document would simply go on dropping its
     /// residual with no target to write it to.
@@ -512,7 +513,8 @@ mod tests {
             assert_ne!(
                 accessor(true),
                 accessor(false),
-                "`{name}_resid` is byte-identical to `{name}` — the `{RESID_FEATURE}`                  feature did not reach it",
+                "`{name}_resid` is byte-identical to `{name}` — the `{RESID_FEATURE}` \
+                 feature did not reach it",
             );
         }
     }

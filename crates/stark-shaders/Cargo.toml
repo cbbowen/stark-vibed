@@ -17,7 +17,10 @@ default = ["mixbox"]
 # agree, and `entry_points.rs` is the one place that decides for both.
 mixbox = []
 
-# WESL sources are linked/compiled in build.rs and embedded via `include_wesl!`.
+# WESL sources are linked/compiled in build.rs and embedded by `include_wesl!`, which
+# is this crate's own one-line macro: `wesl`'s is the same `include_str!`, and taking
+# it would put the whole WESL compiler in the engine's graph — and in every wasm
+# build of it — for a macro that names a file.
 [dependencies]
 # Both for the generated host mirrors (`src/lib.rs`'s `mirror`): `bytemuck` for the
 # derives, `wgpu` for the vertex attribute arrays. A vertex buffer layout is derived
@@ -25,12 +28,10 @@ mixbox = []
 # are plain data, no device and no runtime.
 bytemuck = { workspace = true }
 wgpu = { workspace = true }
-wesl = { workspace = true }
 
 [build-dependencies]
-# `eval` for the type resolver and the WGSL size/alignment tables the mirrors are
-# laid out from. Build-only: the resolver keeps build-dependency features separate,
-# so the library above does not carry it.
+# The linker, and `eval` for the type resolver and the WGSL size/alignment tables the
+# mirrors are laid out from. Build-only, which is the whole of this crate's use of it.
 wesl = { workspace = true, features = ["eval"] }
 # The **type checker** (`build.rs::typechecks`). `wesl`'s own `validate` resolves
 # names and checks call arity; it does not typecheck, so a `Sweep` handed to a
@@ -38,7 +39,7 @@ wesl = { workspace = true, features = ["eval"] }
 # `create_shader_module` — on a GPU, in the half of the suite CI cannot diff. This is
 # the same front end `wgpu` runs there, run at build time instead. Already in the
 # graph (wgpu 30 is built on it), so it costs a compile of what is downloaded anyway.
-naga = { version = "30", default-features = false, features = ["wgsl-in"] }
+naga = { workspace = true }
 # Emitting the host mirrors (`build/mirror.rs`). `quote` builds the code as tokens
 # rather than as text, and `prettyplease` renders it readably — which matters here
 # because the lane documentation the generator carries over is meant to be read.

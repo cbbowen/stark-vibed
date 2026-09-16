@@ -142,21 +142,11 @@ fn main() {
         }
     }
 
-    // Every module by name, not just the directory — a directory's mtime does not
-    // move when a file inside it is edited in place, which is every shader edit.
-    // `src/shaders/lib` is walked too: the binding-free leaves live there
-    // (`lib/paint_common.wesl` alone reaches six pipelines), so a module missed here
-    // is exactly the stale-half failure above.
-    for dir in [SHADER_DIR.to_string(), format!("{SHADER_DIR}/lib")] {
-        for entry in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {dir}: {e}")) {
-            let path = entry.expect("shader dir entry").path();
-            if path.extension().is_some_and(|e| e == "wesl") {
-                println!("cargo::rerun-if-changed={}", path.display());
-            }
-        }
-        println!("cargo::rerun-if-changed={dir}");
-    }
-    println!("cargo::rerun-if-changed=src/entry_points.rs");
+    // The tree, by directory: cargo scans a named directory recursively, so this
+    // covers `lib/` and anything nested under it. `src/entry_points.rs` and
+    // `build/mirror.rs` need no line of their own — both are compiled into this
+    // script, and a script that recompiles is re-run.
+    println!("cargo::rerun-if-changed={SHADER_DIR}");
     // Only when it is actually read: naming a path that need not exist would make
     // cargo re-run this script on every build in a configuration without the
     // submodule checked out.
@@ -181,9 +171,13 @@ fn build_one(compiler: &wesl::Wesl<impl wesl::Resolver>, module: &str, artifact:
         panic!("failed to build WESL shader `{path}`.\n{e}");
     });
     bindings_do_not_collide(&compiled.syntax, artifact);
+    // Rendered once and deposited as it stands: `write_artifact` would render the
+    // linked tree a second time to write the same bytes the type check just read.
     let wgsl = compiled.to_string();
     typechecks(&wgsl, artifact);
-    compiled.write_artifact(artifact);
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo sets OUT_DIR"))
+        .join(format!("{artifact}.wgsl"));
+    std::fs::write(&out, &wgsl).unwrap_or_else(|e| panic!("write {}: {e}", out.display()));
 }
 
 /// Fail unless the linked WGSL passes the same front end `wgpu` will run on it.

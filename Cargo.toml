@@ -71,6 +71,10 @@ undocumented_unsafe_blocks = "deny"
 # Single source of truth for shared dependency versions (CLAUDE.md).
 [workspace.dependencies]
 wgpu = "30"
+# `stark-shaders`' build-time type check runs the front end `wgpu` runs at
+# `create_shader_module`, so it is the same answer only while the two agree about
+# which front end that is — which is what keeps this line next to that one.
+naga = { version = "30", default-features = false, features = ["wgsl-in"] }
 glam = { version = "0.33", features = ["serde"] }
 bytemuck = { version = "1", features = ["derive"] }
 rpds = "1"
