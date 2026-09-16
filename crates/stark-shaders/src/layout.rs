@@ -2,8 +2,9 @@
 //! layout reach in one `@group`, and the `wgpu` entries for it.
 //!
 //! **Three things are left to the host**, because no declaration states them: which
-//! entry points share the layout, which uniforms are bound at a dynamic offset, and —
-//! through the first — what the layout is *for*.
+//! pipelines share the layout ([`layout_of`] against [`layout_shared_by`]), which
+//! uniforms are bound at a dynamic offset, and — through the first — what the layout
+//! is *for*.
 
 use std::collections::BTreeMap;
 
@@ -65,14 +66,45 @@ pub fn reached(eps: &[EntryPoint], anchor: Binding) -> Vec<Reach> {
     out.into_values().collect()
 }
 
-/// The bind group layout entries for `anchor`'s `@group`, as `eps` reach it.
+/// The stages of **one** pipeline — what a layout may be exact for ([`layout_of`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stages {
+    /// A compute pipeline's kernel.
+    Compute(EntryPoint),
+    /// A render pipeline's two stages, which share a layout because one pipeline has
+    /// one.
+    Render(EntryPoint, EntryPoint),
+}
+
+/// The bind group layout entries for `anchor`'s `@group`, **exactly** as one pipeline
+/// reaches it.
 ///
-/// Pass every entry point that shares the layout: the entries are their union, so one
-/// left out is a slot missing, an over-narrow visibility, or a texture declared
-/// unfilterable that something samples. Pass **one** where the layout has to be exact
-/// — `wgpu` merges a whole bind group into each dispatch's usage scope, so a compute
-/// kernel that writes a storage texture another kernel samples needs a layout of its
-/// own rather than a union with it.
+/// What a compute dispatch needs: `wgpu` merges a whole bind group into each dispatch's
+/// usage scope, so a kernel that storage-writes a texture another kernel samples cannot
+/// share a layout with it, however alike the two lists look.
+///
+/// See [`layout_shared_by`] for `dynamic` and for what is checked.
+pub fn layout_of(
+    stages: Stages,
+    anchor: Binding,
+    dynamic: &[Binding],
+) -> Vec<wgpu::BindGroupLayoutEntry> {
+    match stages {
+        Stages::Compute(k) => entries(&[k], anchor, dynamic),
+        Stages::Render(vs, fs) => entries(&[vs, fs], anchor, dynamic),
+    }
+}
+
+/// The bind group layout entries for `anchor`'s `@group`, as the **union** of what the
+/// pipelines sharing it reach.
+///
+/// Pass every entry point that shares the layout: one left out is a slot missing, an
+/// over-narrow visibility, or a texture declared unfilterable that something samples.
+///
+/// **Sharing is the caller's claim, and a union cannot check it.** The entries widen to
+/// cover every sharer, so two kernels that disagree about a texture — sampled in one,
+/// storage-written in the next — come out of here as one valid-looking layout and fail
+/// only as a usage conflict at dispatch. Those need [`layout_of`] each.
 ///
 /// `dynamic` names the uniforms bound as one slot of a larger buffer
 /// (`gpu::uniforms`), which is the one thing about a `var<uniform>` the WGSL cannot
@@ -83,7 +115,16 @@ pub fn reached(eps: &[EntryPoint], anchor: Binding) -> Vec<Reach> {
 /// # Panics
 /// If the group is empty — the anchor names a group these entry points do not reach —
 /// or if `dynamic` names something that is not a uniform of it.
-pub fn layout_entries(
+pub fn layout_shared_by(
+    eps: &[EntryPoint],
+    anchor: Binding,
+    dynamic: &[Binding],
+) -> Vec<wgpu::BindGroupLayoutEntry> {
+    entries(eps, anchor, dynamic)
+}
+
+/// The entries themselves, which both spellings above fold the same way.
+fn entries(
     eps: &[EntryPoint],
     anchor: Binding,
     dynamic: &[Binding],
@@ -164,7 +205,7 @@ mod tests {
     #[test]
     fn the_view_group_is_the_two_stages_split_between_its_two_slots() {
         let (c, m) = (composite(Resid::Without), matte(Resid::Without));
-        let entries = layout_entries(
+        let entries = layout_shared_by(
             &[c.vs_main, c.fs_main, m.vs_main, m.fs_main],
             vd::VIEW,
             &[vd::VIEW],
@@ -199,7 +240,7 @@ mod tests {
     #[test]
     fn a_sampled_tile_texture_is_declared_filterable() {
         let c = composite(Resid::Without);
-        let entries = layout_entries(&[c.vs_main, c.fs_main], cd::TILE_COLOR, &[]);
+        let entries = layout_of(Stages::Render(c.vs_main, c.fs_main), cd::TILE_COLOR, &[]);
         assert!(
             entries.iter().all(|e| matches!(
                 e.ty,
@@ -218,7 +259,7 @@ mod tests {
     fn the_residual_channel_is_in_the_residual_variants_layout_alone() {
         let has_resid = |r| {
             let c = composite(r);
-            layout_entries(&[c.vs_main, c.fs_main], cd::TILE_COLOR, &[])
+            layout_of(Stages::Render(c.vs_main, c.fs_main), cd::TILE_COLOR, &[])
                 .iter()
                 .any(|e| e.binding == cd::TILE_RESID.index)
         };
@@ -255,7 +296,7 @@ mod tests {
     #[should_panic(expected = "which none of these entry points reach")]
     fn an_anchor_outside_what_the_entry_points_reach_is_refused() {
         let c = composite(Resid::Without);
-        layout_entries(&[c.vs_main], cd::TILE_COLOR, &[]);
+        layout_shared_by(&[c.vs_main], cd::TILE_COLOR, &[]);
     }
 
     /// A dynamic offset asked of a slot the group does not hold.
@@ -263,6 +304,10 @@ mod tests {
     #[should_panic(expected = "has no such uniform here")]
     fn a_dynamic_offset_on_a_slot_of_another_group_is_refused() {
         let c = composite(Resid::Without);
-        layout_entries(&[c.vs_main, c.fs_main], cd::TILE_COLOR, &[vd::VIEW]);
+        layout_of(
+            Stages::Render(c.vs_main, c.fs_main),
+            cd::TILE_COLOR,
+            &[vd::VIEW],
+        );
     }
 }

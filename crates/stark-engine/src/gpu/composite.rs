@@ -95,7 +95,7 @@ pub(crate) fn tile_bind_group_layout(
     color_space: &dyn ColorSpace,
 ) -> desc::Bindings {
     let c = stark_shaders::composite(color_space.resid());
-    desc::Bindings::derived(
+    desc::Bindings::shared_by(
         device,
         "stark composite tile bgl",
         &[c.vs_main, c.fs_main, c.fs_raw],

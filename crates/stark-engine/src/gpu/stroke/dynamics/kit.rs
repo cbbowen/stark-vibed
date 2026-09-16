@@ -145,10 +145,10 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // the tile itself caches (`composite::tile_bind_group_layout`). The view group has
     // no such cache, so it is built here off the two stages this loop runs — which
     // composite their working region through `composite.wesl` itself (§6.3).
-    let composite_view_bgl = desc::Bindings::derived(
+    let composite_view_bgl = desc::Bindings::of(
         device,
         "stark dynamics composite view bgl",
-        &[composite.vs_main, composite.fs_raw],
+        stark_shaders::Stages::Render(composite.vs_main, composite.fs_raw),
         stark_shaders::mirror::view::decl::VIEW,
         &[stark_shaders::mirror::view::decl::VIEW],
     );

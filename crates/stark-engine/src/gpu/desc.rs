@@ -10,15 +10,15 @@
 //! differences the only ones written down.
 //!
 //! **A layout is not written here at all**, it is read off the shader (§6.10).
-//! [`stark_shaders::layout_entries`] derives a whole group's entries from the entry
-//! points that bind it, and [`Bindings`] keeps them beside the layout so every group
-//! over it is built from the same ones.
+//! [`stark_shaders::layout_of`] derives a whole group's entries from the pipeline that
+//! binds it — [`stark_shaders::layout_shared_by`] where several do — and [`Bindings`]
+//! keeps them beside the layout so every group over it is built from the same ones.
 //!
 //! [`Slot`] is what is left of the hand-written form, for the layouts not yet derived:
 //! a list naming the generated declarations, saying only [`How`] the host binds —
 //! through a sampler, as a dynamic-offset slot, in which stages.
 
-use stark_shaders::EntryPoint;
+use stark_shaders::{EntryPoint, Stages};
 
 use crate::gpu::context::GpuContext;
 
@@ -342,8 +342,8 @@ pub(crate) fn bind_group_for<'a>(
     )
 }
 
-/// The bind group for the `entries` a layout was built from
-/// ([`stark_shaders::layout_entries`]), with `resource` asked for each.
+/// The bind group for the `entries` a layout was built from ([`Bindings`]), with
+/// `resource` asked for each.
 ///
 /// Private, and reached only through [`Bindings`]: the entry list *is* the description
 /// of the group, so a caller that could name a different one is the whole disagreement
@@ -417,30 +417,47 @@ pub(crate) struct Bindings {
 }
 
 impl Bindings {
-    /// The layout `eps` need for `anchor`'s group
-    /// ([`stark_shaders::layout_entries`]), keeping its entries for [`Self::group`]
-    /// and its group number for [`pipeline_layout_of`].
+    /// The layout **one pipeline** needs for `anchor`'s group
+    /// ([`stark_shaders::layout_of`]), keeping its entries for [`Self::group`] and its
+    /// group number for [`pipeline_layout_of`].
     ///
     /// The anchor is taken rather than the finished entries, so a [`Bindings`] cannot
     /// be built over a list that came from nowhere — and so the `@group` it stands at
     /// is the shader's answer rather than a position a call site counted.
-    pub(crate) fn derived(
+    pub(crate) fn of(
+        device: &wgpu::Device,
+        label: &str,
+        stages: Stages,
+        anchor: stark_shaders::Binding,
+        dynamic: &[stark_shaders::Binding],
+    ) -> Self {
+        Self::over(
+            device,
+            label,
+            stark_shaders::layout_of(stages, anchor, dynamic),
+            anchor.group,
+        )
+    }
+
+    /// [`Self::of`] for a layout several pipelines **share**
+    /// ([`stark_shaders::layout_shared_by`], which states what sharing costs).
+    pub(crate) fn shared_by(
         device: &wgpu::Device,
         label: &str,
         eps: &[EntryPoint],
         anchor: stark_shaders::Binding,
         dynamic: &[stark_shaders::Binding],
     ) -> Self {
-        Self::of(
+        Self::over(
             device,
             label,
-            stark_shaders::layout_entries(eps, anchor, dynamic),
+            stark_shaders::layout_shared_by(eps, anchor, dynamic),
             anchor.group,
         )
     }
 
     /// A layout over `entries`, which describe `@group(group)`.
-    fn of(
+    fn over(
         device: &wgpu::Device,
         label: &str,
         entries: Vec<wgpu::BindGroupLayoutEntry>,
@@ -458,8 +475,8 @@ impl Bindings {
         }
     }
 
-    /// [`Self::derived`] over a hand-written slot list, whose group is its first
-    /// slot's declaration ([`slot_entries`] refuses a list spanning two).
+    /// [`Self::of`] over a hand-written slot list, whose group is its first slot's
+    /// declaration ([`slot_entries`] refuses a list spanning two).
     pub(crate) fn new(
         device: &wgpu::Device,
         label: &str,
@@ -472,7 +489,7 @@ impl Bindings {
             .expect("a slot list names at least one binding")
             .decl()
             .group;
-        Self::of(device, label, slot_entries(label, slots, vis, resid), group)
+        Self::over(device, label, slot_entries(label, slots, vis, resid), group)
     }
 
     /// The layout, for a [`pipeline_layout`].

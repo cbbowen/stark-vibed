@@ -12,6 +12,7 @@ use crate::gpu::desc::{self, Bindings};
 use crate::gpu::environment::Environment;
 use crate::gpu::substrate::SubstrateMap;
 use crate::view::{Extent2, ViewTransform};
+use stark_shaders::Stages;
 use stark_shaders::mirror::media_common::binding as mc;
 use stark_shaders::mirror::media_common::decl as mcd;
 use stark_shaders::mirror::media_mixbox::binding as mm;
@@ -76,10 +77,10 @@ pub(super) fn dither_step(format: wgpu::TextureFormat) -> f32 {
 /// placeholder to bind (§6.7) — and says nothing about it here.
 pub(super) fn media_layout(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Bindings {
     let media = color_space.media_shader();
-    Bindings::derived(
+    Bindings::of(
         device,
         "stark media bgl",
-        &[media.vs_main, media.fs_main],
+        Stages::Render(media.vs_main, media.fs_main),
         mcd::M,
         &[],
     )

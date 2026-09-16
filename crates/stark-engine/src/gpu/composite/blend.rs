@@ -17,6 +17,7 @@ use crate::gpu::pigment::PigmentLut;
 use crate::gpu::uniforms::UniformSlots;
 use crate::view::Extent2;
 use stark_model::document::BlendMode;
+use stark_shaders::Stages;
 use stark_shaders::mirror::blend_common::binding as bc;
 use stark_shaders::mirror::blend_common::decl as bcd;
 use stark_shaders::mirror::blend_mixbox::binding as bm;
@@ -70,10 +71,10 @@ impl BlendPass {
         // fragment's own coordinate except the LUT, which Mixbox interpolates in
         // hardware, so it alone comes out filterable.
         let formats = ChannelFormats::of(color_space);
-        let bgl = Bindings::derived(
+        let bgl = Bindings::of(
             device,
             "stark blend bgl",
-            &[blend.vs_main, blend.fs_main],
+            Stages::Render(blend.vs_main, blend.fs_main),
             bcd::B,
             &[bcd::B],
         );

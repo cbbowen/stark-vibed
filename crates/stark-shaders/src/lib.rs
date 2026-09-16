@@ -22,7 +22,7 @@ include!(concat!(env!("OUT_DIR"), "/accessors.rs"));
 
 mod layout;
 
-pub use layout::{Reach, layout_entries, reached};
+pub use layout::{Reach, Stages, layout_of, layout_shared_by, reached};
 
 /// One entry point of a linked artifact, as `naga` reports it (§6.10).
 ///

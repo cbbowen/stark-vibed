@@ -12,10 +12,10 @@
 //! layout objects, the sweep's fragment-visible one and the wet loop's compute-visible
 //! one, and the union spans both.
 //!
-//! A pipeline whose layouts are **derived** (`stark_shaders::layout_entries`) names no
-//! list, and nothing here checks it: there is no second opinion to hold against the
-//! shader. It stays in the table for the other test, which asks that every entry point
-//! declared is built into something.
+//! A pipeline whose layouts are **derived** (`stark_shaders::layout_of`) names no list,
+//! and nothing here checks it: there is no second opinion to hold against the shader. It
+//! stays in the table for the other test, which asks that every entry point declared is
+//! built into something.
 //!
 //! [`KNOWN`] is the differences that stand today; the check is that the differences
 //! found **equal** it. Nothing here changes the engine.
@@ -223,8 +223,8 @@ const KNOWN: &[Known] = &[
 /// and whether any of them samples it.
 ///
 /// **The fold the layout itself is built from** ([`stark_shaders::reached`]), not a
-/// second one shaped like it — otherwise this test and `layout_entries` could agree
-/// with each other while both being wrong about the same thing.
+/// second one shaped like it — otherwise this test and `layout_of` could agree with
+/// each other while both being wrong about the same thing.
 fn shader_uses(entries: &[EntryPoint], anchor: Binding) -> BTreeMap<Key, bool> {
     stark_shaders::reached(entries, anchor)
         .into_iter()

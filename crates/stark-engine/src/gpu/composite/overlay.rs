@@ -7,6 +7,7 @@
 use crate::document::selection::Selection;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Bindings, RenderPipe};
+use stark_shaders::Stages;
 use stark_shaders::mirror::overlay::binding as ob;
 use stark_shaders::mirror::overlay::decl as od;
 use stark_shaders::mirror::view::decl as vd;
@@ -50,16 +51,16 @@ pub(super) struct OverlayLayouts {
 impl OverlayLayouts {
     pub(super) fn new(device: &wgpu::Device) -> Self {
         let ov = stark_shaders::overlay();
-        let stages = [ov.vs_main, ov.fs_main];
+        let stages = Stages::Render(ov.vs_main, ov.fs_main);
         Self {
-            view: Bindings::derived(
+            view: Bindings::of(
                 device,
                 "stark overlay view bgl",
-                &stages,
+                stages,
                 vd::VIEW,
                 &[vd::VIEW],
             ),
-            tile: Bindings::derived(device, "stark overlay tile bgl", &stages, od::MASK, &[]),
+            tile: Bindings::of(device, "stark overlay tile bgl", stages, od::MASK, &[]),
         }
     }
 }

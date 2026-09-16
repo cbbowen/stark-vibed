@@ -9,6 +9,7 @@ use super::display::Transfer;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Bindings};
 use crate::view::Extent2;
+use stark_shaders::Stages;
 use stark_shaders::mirror::resolve::binding as rb;
 use stark_shaders::mirror::resolve::decl as rd;
 
@@ -135,10 +136,10 @@ fn blur_bytes_per_px() -> u64 {
 /// set's bind group is valid against either.
 pub(super) fn resolve_layout(device: &wgpu::Device) -> Bindings {
     let re = stark_shaders::resolve();
-    Bindings::derived(
+    Bindings::of(
         device,
         "stark resolve bgl",
-        &[re.vs_main, re.fs_main],
+        Stages::Render(re.vs_main, re.fs_main),
         rd::R,
         &[],
     )

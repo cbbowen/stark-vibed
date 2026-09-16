@@ -8,6 +8,7 @@
 use crate::colorspace::ColorSpace;
 use crate::gpu::channels::{ChannelFormats, Targets};
 use crate::gpu::desc::{self, Bindings, RenderPipe};
+use stark_shaders::Stages;
 use stark_shaders::mirror::matte::decl as md;
 use stark_shaders::mirror::view::decl as vd;
 
@@ -61,7 +62,7 @@ impl TilePass {
         // `view.wesl`'s uniform comes out vertex-only — the fragment stage gets canvas
         // position as a varying and the zoom through `misc.w` — and its sampler
         // fragment-only, which no list has to say.
-        let view_bgl = Bindings::derived(
+        let view_bgl = Bindings::shared_by(
             device,
             "stark composite view bgl",
             &[
@@ -106,10 +107,10 @@ impl TilePass {
         let matte_shader = desc::Module::new(device, "stark matte", matte);
         // The ramp is per matte where the view is per pass (§22.4), so it is bound at a
         // dynamic offset — the one thing `var<uniform> ramp` does not say.
-        let ramp_bgl = Bindings::derived(
+        let ramp_bgl = Bindings::of(
             device,
             "stark matte ramp bgl",
-            &[matte.vs_main, matte.fs_main],
+            Stages::Render(matte.vs_main, matte.fs_main),
             md::RAMP,
             &[md::RAMP],
         );

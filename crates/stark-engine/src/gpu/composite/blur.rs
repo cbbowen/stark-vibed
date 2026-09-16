@@ -84,7 +84,7 @@ impl BlurPass {
         // one plane both as a read texture and as a storage destination — `build_binds`
         // is what arranges that, wgpu taking the whole group into a dispatch's usage
         // scope whether the kernel stores or not.
-        let bgl = Bindings::derived(
+        let bgl = Bindings::shared_by(
             device,
             "stark blur bgl",
             &[

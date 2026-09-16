@@ -1203,21 +1203,21 @@ Beside it, every entry point of every linked artifact carries the bindings it ac
 for a layout rather than describing one:
 
 ```rust
-let bgl = desc::Bindings::derived(
+let bgl = desc::Bindings::of(
     device, "stark blend bgl",
-    &[blend.vs_main, blend.fs_main],   // the entry points that share this layout
-    bcd::B,                            // an anchor: any declaration in the group
-    &[bcd::B],                         // the uniforms bound at a dynamic offset
+    Stages::Render(blend.vs_main, blend.fs_main),  // the pipeline this layout is for
+    bcd::B,                                        // an anchor: any declaration in the group
+    &[bcd::B],                                     // the uniforms bound at a dynamic offset
 );
 let group = bgl.group(device, label, |binding| /* the view or buffer for it */);
 ```
 
-`stark_shaders::layout_entries` derives every field of every entry: the kind and
+`stark_shaders::layout_of` derives every field of every entry: the kind and
 format from the declaration, `min_binding_size` from the declared struct's own WGSL
-size, **filterability** from whether any of these entry points samples it,
-**visibility** from the union of their stages, and **presence** from the record
-itself — a slot a variant does not declare is simply absent from that variant's entry
-points, so no host counts a residual tail.
+size, **filterability** from whether the pipeline samples it, **visibility** from the
+union of its stages, and **presence** from the record itself — a slot a variant does
+not declare is simply absent from that variant's entry points, so no host counts a
+residual tail.
 
 **The group is named by an anchor declaration, not a number.** `anchor.group` is the
 shader's answer; a `u32` on the host would be a transcription that a regrouping leaves
@@ -1227,17 +1227,19 @@ pipeline layout still writes by hand.
 
 **Three things are genuinely the host's**, because no declaration states them:
 
-- **Which entry points share a layout.** A union is what a shared layout needs; pass
-  one entry point where the layout must be exact, since wgpu merges a whole bind group
-  into each dispatch's usage scope — a compute kernel that storage-writes a texture
-  another kernel samples cannot share a layout with it.
+- **Which pipelines share a layout.** The two spellings are the whole of it:
+  `layout_of` takes one pipeline's `Stages` and cannot express a union, while
+  `layout_shared_by` takes the several that share one and widens to cover them all.
+  Sharing is a claim the fold cannot check — wgpu merges a whole bind group into each
+  dispatch's usage scope, so a compute kernel that storage-writes a texture another
+  kernel samples must not share a layout with it, and a union would hide that.
 - **Which uniforms carry a dynamic offset.** `fill.wesl` declares `f` and `tile` both
   `var<uniform>`; the first is one buffer for the whole fill and the second a per-tile
   slot of one. The WGSL is identical either way.
 - **What resource fills each binding**, which is the closure above.
 
 `slot_agreement.rs` is the bridge while the migration runs: it holds every layout
-still written by hand against the very fold `layout_entries` is built on, with an
+still written by hand against the very fold `layout_of` is built on, with an
 exact table of the differences that stand. A list that disagrees where the table does
 not say so fails, and so does a waiver that has stopped excusing anything.
 

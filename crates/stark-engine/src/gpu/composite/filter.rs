@@ -84,7 +84,7 @@ impl FilterPass {
         // `textureLoad` them, and one filterable declaration serves both. The blur's
         // convolved planes stay unfilterable — their `f32` formats are not filterable
         // everywhere this runs, and nothing samples them (§21.12).
-        let bgl = Bindings::derived(
+        let bgl = Bindings::shared_by(
             device,
             "stark filter bgl",
             &[

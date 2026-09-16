@@ -10,6 +10,7 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Bindings};
 use crate::view::ViewTransform;
 use stark_model::document::GuideScene;
+use stark_shaders::Stages;
 use stark_shaders::mirror::guides::binding as gb;
 use stark_shaders::mirror::guides::decl as gd;
 
@@ -111,10 +112,10 @@ fn pack_guides(scene: &GuideScene, view: ViewTransform, transfer: Transfer) -> G
 /// than once per texel (`guides.wesl`'s `VsOut`).
 pub(super) fn guide_layout(device: &wgpu::Device) -> Bindings {
     let gu = stark_shaders::guides();
-    Bindings::derived(
+    Bindings::of(
         device,
         "stark guides bgl",
-        &[gu.vs_main, gu.fs_main],
+        Stages::Render(gu.vs_main, gu.fs_main),
         gd::GUIDE,
         &[gd::GUIDE],
     )
