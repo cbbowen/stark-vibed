@@ -273,7 +273,7 @@ impl MergeRenderer {
     ///
     /// Nothing is stacked, so there is no second tile map, no coverage arithmetic and
     /// no slab conversion: one pass per tile rewrites the channels and copies
-    /// everything else. See the tile entry point in `filter_oklab.wesl` for why a tile
+    /// everything else. See the tile entry point in `filter.wesl` for why a tile
     /// needs no trip out to composite space to be filtered.
     ///
     /// **Every tile is rewritten**, with no passthrough-by-handle: a filter has an

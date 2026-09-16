@@ -39,6 +39,13 @@ pub struct Axis<'a> {
     /// which case its `on` variant is not generated either, so the choice is
     /// unrepresentable rather than merely wrong.
     pub pigment_only: bool,
+    /// What each side's artifact is called, where the feature's own name will not do.
+    ///
+    /// `None` is the plain rule: the off build keeps the module's name and the on build
+    /// appends `_<feature>`. `Some((off, on))` names both sides — `blend.wesl` links as
+    /// `blend_oklab` and `blend_mixbox` — so an axis that *is* the thing a reader knows
+    /// the artifact by keeps that name rather than taking the gate's.
+    pub artifacts: Option<(&'a str, &'a str)>,
     /// The entry points linked along it, sorted.
     ///
     /// Checked in one direction: each named module must be an entry point, and turning
@@ -96,9 +103,15 @@ impl Entry<'_> {
                 // `read_tree` already refuses two modules that share this name.
                 let mut artifact = self.module.rust.clone();
                 for (axis, is_on) in self.axes.iter().zip(&on) {
-                    if *is_on {
+                    let suffix = match (axis.artifacts, *is_on) {
+                        (Some((off, _)), false) => Some(off),
+                        (Some((_, on)), true) => Some(on),
+                        (None, true) => Some(axis.feature),
+                        (None, false) => None,
+                    };
+                    if let Some(suffix) = suffix {
                         artifact.push('_');
-                        artifact.push_str(axis.feature);
+                        artifact.push_str(suffix);
                     }
                 }
                 Build { on, artifact }
@@ -205,9 +218,16 @@ fn reaches_generated(m: &Module, modules: &[Module], prefix: &ModulePath) -> boo
     let mut seen: Vec<&str> = vec![m.path.as_str()];
     let mut stack: Vec<&Module> = vec![m];
     while let Some(at) = stack.pop() {
-        if at.tu.imports.iter().any(|st| reaches(st, prefix)) {
+        if at
+            .tu
+            .imports
+            .iter()
+            .any(|st| live(st) && reaches(st, prefix))
+        {
             return true;
         }
+        // Gated imports are skipped on the way down too: a module reached only through
+        // one is reached only in the build the gate names, which the axis answers for.
         for path in imported_modules(at, prefix) {
             let Some(next) = modules.iter().find(|other| other.path == path) else {
                 continue;
@@ -234,6 +254,7 @@ fn imported_modules(m: &Module, origin: &ModulePath) -> Vec<String> {
     let mut out = Vec::new();
     for st in &m.tu.imports {
         if let Some(path) = &st.path
+            && live(st)
             && path.origin == origin.origin
         {
             walk_content(&path.components, &st.content, &mut out);
@@ -260,6 +281,17 @@ fn walk_content(base: &[String], content: &ImportContent, out: &mut Vec<String>)
             }
         }
     }
+}
+
+/// Whether an import is one every build of this module makes.
+///
+/// An `@if`-gated one is not: `blend.wesl` names the polynomial only in its pigment
+/// build, and `wesl` evaluates the gate *before* resolving — so a build without
+/// `package::gen` mounted never looks the module up. Which is the whole reason the
+/// colour-space pair can be one module: the axis says which builds exist, and this
+/// would otherwise drop both.
+fn live(st: &ImportStatement) -> bool {
+    !crate::eval::is_gated(&st.attributes)
 }
 
 /// Whether one import statement names anything under `prefix`.
@@ -301,6 +333,7 @@ mod tests {
         off: "Without",
         on: "With",
         pigment_only: true,
+        artifacts: None,
         modules: &["stamp"],
     };
 
@@ -311,6 +344,7 @@ mod tests {
         off: "Plain",
         on: "Ceiling",
         pigment_only: false,
+        artifacts: None,
         modules: &["stamp"],
     };
 
@@ -437,6 +471,59 @@ mod tests {
         // Two axes still, so the accessor still takes two parameters.
         assert!(builds.iter().all(|b| b.on.len() == 2));
         assert!(builds.iter().all(|b| !b.on[0]));
+    }
+
+    /// The colour-space pair's shape: one module, and the artifact names the two spaces
+    /// were separate files under.
+    #[test]
+    fn an_axis_that_names_its_artifacts_names_both_sides() {
+        let tree = [Module::parse(
+            "blend",
+            "@fragment\nfn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(0.0); }\n",
+        )];
+        let axis = Axis {
+            feature: "pigment",
+            ty: "Pigment",
+            off: "Oklab",
+            on: "Mixbox",
+            artifacts: Some(("oklab", "mixbox")),
+            modules: &["blend"],
+            ..RESID
+        };
+        let axes = [axis];
+        let entries = discover(&tree, &axes, true);
+        let builds = entries[0].builds();
+        let names: Vec<&str> = builds.iter().map(|b| b.artifact.as_str()).collect();
+        assert_eq!(names, ["blend_oklab", "blend_mixbox"]);
+        // And the off side keeps its name in a build that links only that one, rather
+        // than falling back to the module's.
+        let entries = discover(&tree, &axes, false);
+        let builds = entries[0].builds();
+        assert_eq!(builds[0].artifact, "blend_oklab");
+    }
+
+    /// An `@if`-gated import is not a dependency of every build, and `wesl` evaluates
+    /// the gate before it resolves — so the module stays, and the axis says which of
+    /// its builds exist. Without this the unified colour-space modules would leave a
+    /// no-Mixbox build with no blend pass at all.
+    #[test]
+    fn a_gated_import_of_the_polynomial_does_not_drop_the_module() {
+        let tree = [
+            Module::parse(
+                "lib/mixbox",
+                "import package::gen::mixbox_poly::{mixbox_eval_polynomial};\n\
+                 fn to_linear(c: vec3<f32>) -> vec3<f32> {\n\
+                 \x20   return mixbox_eval_polynomial(c);\n}\n",
+            ),
+            Module::parse(
+                "blend",
+                "@if(pigment) import package::lib::mixbox::{to_linear};\n\
+                 @fragment\nfn fs_main() -> @location(0) vec4<f32> {\n\
+                 \x20   return vec4<f32>(0.0);\n}\n",
+            ),
+        ];
+        assert_eq!(named(&discover(&tree, &[], false)), ["blend"]);
+        assert_eq!(named(&discover(&tree, &[], true)), ["blend"]);
     }
 
     /// A nested module would otherwise deposit into a directory `OUT_DIR` does not have.

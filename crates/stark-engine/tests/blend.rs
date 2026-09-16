@@ -460,7 +460,7 @@ fn black_is_the_identity_through_the_round_trip() {
         // carried (§6.7). A near-neutral cost 8 levels then and a saturated orange 40,
         // because three concentrations cannot express either color exactly and the
         // difference was dropped on both the CPU and the GPU side of the trip. Now
-        // `rgb_to_resid` keeps it and `blend_mixbox` restores it, so the round trip
+        // `rgb_to_resid` keeps it and the blend's pigment build restores it, so the round trip
         // out to XYZ and back is faithful in a pigment document too.
         //
         // These two are what would catch it going missing again — and a LUT read the

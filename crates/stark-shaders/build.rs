@@ -16,6 +16,25 @@ use stark_shaders_build::{Axis, RESID_FEATURE};
 /// is written here.
 const AXES: &[Axis<'_>] = &[
     Axis {
+        feature: "pigment",
+        what: "the **working space** a color is stored in (§6.7) — three perceptual \
+               channels, or a mixture of pigments plus what the polynomial cannot say \
+               about it",
+        ty: "Pigment",
+        off: "Oklab",
+        on: "Mixbox",
+        pigment_only: true,
+        // The artifacts keep the names the two spaces were separate files under, which
+        // is what let three pairs of near-identical shaders become three modules
+        // without renaming anything downstream.
+        artifacts: Some(("oklab", "mixbox")),
+        // The three passes bracketed by a color space's own conversion (§6.7): out to
+        // light and back for the blend, out to Oklab and back for the filter, out to
+        // display for the media pass. Nothing else in the tree converts — a tile's
+        // channels ride every other pass unread.
+        modules: &["blend", "filter", "media"],
+    },
+    Axis {
         // Named by the generator, which reads `@if(resid)` off a binding to fill
         // `Binding::resid` — one spelling, not two that happen to match.
         feature: RESID_FEATURE,
@@ -25,13 +44,15 @@ const AXES: &[Axis<'_>] = &[
         off: "Without",
         on: "With",
         pigment_only: true,
+        artifacts: None,
         // Every pass that carries a tile's color: a residual goes wherever a latent
         // goes, being the same premultiplied "over" on the same coverage (§6.7).
         //
-        // `blend_mixbox` and `media_mixbox` are **not** here and need no WESL feature:
-        // they are reached only by the space that has a residual, so they declare the
-        // extra binding unconditionally. `slice` is not here either — the one pass
-        // left under that name narrows the region aux, which every space has and
+        // `blend`, `filter` and `media` are **not** here: they carry a residual on the
+        // `pigment` axis above, which is the same texture answering a different
+        // question — what a color *is* in this space, rather than whether the pass
+        // that carries one needs a third target. `slice` is not here either — the one
+        // pass left under that name narrows the region aux, which every space has and
         // neither varies.
         modules: &[
             "composite",
@@ -55,6 +76,7 @@ const AXES: &[Axis<'_>] = &[
         off: "Plain",
         on: "Ceiling",
         pigment_only: false,
+        artifacts: None,
         // Only the sweep. The lane is a render *target* and a pipeline's target list is
         // fixed when the pipeline is, so the sweep that writes it is a second pipeline
         // over a second artifact. The passes that *read* it (`integrate`, `erase`,

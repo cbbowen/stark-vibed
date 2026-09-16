@@ -51,7 +51,7 @@ struct Media {
 // specular from a gloss-selected mip in the reflection direction.
 @group(0) @binding(5) var env: texture_2d<f32>;
 @group(0) @binding(6) var env_samp: sampler;
-// **Binding 7 is `media_mixbox`'s**, and is declared there: the composited residual
+// **The composited residual is `media.wesl`'s own `@group(1)`**, declared there: it
 // (§6.7). It is not here because Oklab has no residual to bind — a
 // declaration in this shared module would put the texture in *both* spaces' layouts
 // and leave the colorimetric one binding a placeholder it never samples.

@@ -42,8 +42,9 @@ pub struct PigmentLut {
 impl PigmentLut {
     /// The LUT `fs` reads, or `None` where it reaches none.
     ///
-    /// **The shader's answer, not the space's.** Only `blend_mixbox.wesl` and
-    /// `filter_mixbox.wesl` declare a LUT, so a colorimetric space's layout has no slot
+    /// **The shader's answer, not the space's.** Only the pigment builds of
+    /// `blend.wesl` and `filter.wesl` declare a LUT, so a colorimetric space's layout
+    /// has no slot
     /// for it — there is nothing to stand in for, and no `needs_pigment_lut` for a space
     /// to answer twice. `lut` is the caller's own module's declaration, the two being
     /// different slots of different modules (§6.10).

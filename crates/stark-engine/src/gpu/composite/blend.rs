@@ -18,10 +18,10 @@ use crate::gpu::uniforms::UniformSlots;
 use crate::view::Extent2;
 use stark_model::document::BlendMode;
 use stark_shaders::Stages;
+use stark_shaders::mirror::blend::binding as bm;
+use stark_shaders::mirror::blend::decl as bmd;
 use stark_shaders::mirror::blend_common::binding as bc;
 use stark_shaders::mirror::blend_common::decl as bcd;
-use stark_shaders::mirror::blend_mixbox::binding as bm;
-use stark_shaders::mirror::blend_mixbox::decl as bmd;
 
 use super::plan::Phase;
 
@@ -66,7 +66,7 @@ impl BlendPass {
     pub(crate) fn new(ctx: &GpuContext, color_space: &dyn ColorSpace) -> Self {
         let device = &ctx.device;
         let blend = color_space.blend_shader();
-        let shader = desc::Module::new(device, "stark blend", &blend);
+        let shader = desc::Module::new(device, "stark blend", blend);
         // A group per module (§6.10): `blend_common`'s, then the space's own, which is
         // empty in a colorimetric one. Every texture here is `textureLoad`ed at the
         // fragment's own coordinate except the LUT, which Mixbox interpolates in
@@ -139,7 +139,7 @@ impl BlendPass {
                 bm::SRC_RESID => {
                     wgpu::BindingResource::TextureView(src.resid.expect("a residual build has one"))
                 }
-                other => unreachable!("`blend_mixbox`'s group has no binding {other}"),
+                other => unreachable!("`blend.wesl`'s own group has no binding {other}"),
             }),
         ]
     }

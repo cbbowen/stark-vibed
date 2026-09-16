@@ -8,7 +8,7 @@
 
 use std::collections::BTreeSet;
 
-use stark_shaders::{EntryPoint, Lane, Resid};
+use stark_shaders::{EntryPoint, Lane, Pigment, Resid};
 
 /// One pipeline the engine creates, and the entry points it is built from.
 ///
@@ -43,44 +43,21 @@ struct Table {
 ///
 /// Shaped like [`ColorSpace::resid`](crate::colorspace::ColorSpace::resid) for the same
 /// reason — without the `mixbox` feature the pigment half does not exist to be named.
-fn space_table(r: Resid) -> Table {
-    match r {
-        // Exhaustive either way, with no gate of its own: `Resid::With` is generated
-        // only where the build linked the pigment variant.
-        #[cfg(feature = "mixbox")]
-        Resid::With => {
-            let (m, b, f) = (
-                stark_shaders::media_mixbox(),
-                stark_shaders::blend_mixbox(),
-                stark_shaders::filter_mixbox(),
-            );
-            space_shaped(
-                ("media_mixbox", m.entries, [m.vs_main, m.fs_main]),
-                ("blend_mixbox", b.entries, [b.vs_main, b.fs_main]),
-                (
-                    "filter_mixbox",
-                    f.entries,
-                    [f.vs_main, f.fs_main, f.fs_tile, f.fs_blur_decode],
-                ),
-            )
-        }
-        Resid::Without => {
-            let (m, b, f) = (
-                stark_shaders::media_oklab(),
-                stark_shaders::blend_oklab(),
-                stark_shaders::filter_oklab(),
-            );
-            space_shaped(
-                ("media_oklab", m.entries, [m.vs_main, m.fs_main]),
-                ("blend_oklab", b.entries, [b.vs_main, b.fs_main]),
-                (
-                    "filter_oklab",
-                    f.entries,
-                    [f.vs_main, f.fs_main, f.fs_tile, f.fs_blur_decode],
-                ),
-            )
-        }
-    }
+fn space_table(p: Pigment) -> Table {
+    let (m, b, f) = (
+        stark_shaders::media(p),
+        stark_shaders::blend(p),
+        stark_shaders::filter(p),
+    );
+    space_shaped(
+        (m.artifact, m.entries, [m.vs_main, m.fs_main]),
+        (b.artifact, b.entries, [b.vs_main, b.fs_main]),
+        (
+            f.artifact,
+            f.entries,
+            [f.vs_main, f.fs_main, f.fs_tile, f.fs_blur_decode],
+        ),
+    )
 }
 
 /// One space's record, as [`space_shaped`] takes it: its name, everything it declares,
@@ -126,12 +103,12 @@ fn space_shaped(media: Shader<2>, blend: Shader<2>, filter: Shader<4>) -> Table 
     }
 }
 
-/// Every pipeline the engine creates, for the colour space `r`.
+/// Every pipeline the engine creates, for the colour space `(r, p)`.
 #[expect(
     clippy::too_many_lines,
     reason = "one entry per pipeline, which is the point"
 )]
-fn table(r: Resid) -> Table {
+fn table(r: Resid, p: Pigment) -> Table {
     let composite = stark_shaders::composite(r);
     let matte = stark_shaders::matte(r);
     let ov = stark_shaders::overlay();
@@ -401,7 +378,7 @@ fn table(r: Resid) -> Table {
             entries: sc.entries,
         },
     ];
-    let space = space_table(r);
+    let space = space_table(p);
     all.extend(space.cases);
     records.extend(space.records);
     Table {
@@ -410,12 +387,17 @@ fn table(r: Resid) -> Table {
     }
 }
 
-/// The colour spaces this build has, which the check below runs over.
-fn spaces() -> Vec<Resid> {
+/// The colour spaces this build has, which the check below runs over: the residual a
+/// space carries and the working space it is in, which are two questions with one
+/// answer each here (`ColorSpace::pigment`).
+fn spaces() -> Vec<(Resid, Pigment)> {
     #[cfg(feature = "mixbox")]
-    let spaces = vec![Resid::Without, Resid::With];
+    let spaces = vec![
+        (Resid::Without, Pigment::Oklab),
+        (Resid::With, Pigment::Mixbox),
+    ];
     #[cfg(not(feature = "mixbox"))]
-    let spaces = vec![Resid::Without];
+    let spaces = vec![(Resid::Without, Pigment::Oklab)];
     spaces
 }
 
@@ -480,8 +462,8 @@ const UNBUILT: &[Unbuilt] = &[
 #[test]
 fn every_entry_point_declared_is_built_into_some_pipeline() {
     let mut found: BTreeSet<(bool, &'static str, &'static str)> = BTreeSet::new();
-    for r in spaces() {
-        let table = table(r);
+    for (r, p) in spaces() {
+        let table = table(r, p);
         for case in &table.cases {
             assert!(
                 !case.entries.is_empty(),
@@ -502,7 +484,7 @@ fn every_entry_point_declared_is_built_into_some_pipeline() {
             }
         }
     }
-    let here = |resid: bool| spaces().iter().any(|r| r.on() == resid);
+    let here = |resid: bool| spaces().iter().any(|(r, _)| r.on() == resid);
     let declared: BTreeSet<_> = UNBUILT
         .iter()
         .map(Unbuilt::at)

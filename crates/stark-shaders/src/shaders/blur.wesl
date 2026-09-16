@@ -1,6 +1,6 @@
 // The focal blur's **FFT convolution** (§21.12): the machinery that turns the
 // accumulator, already decoded into XYZ light by the space's own `fs_blur_decode`
-// (`filter_oklab.wesl` / `filter_mixbox.wesl`), into that light spread through the
+// (`filter.wesl`, in whichever build the document is in), into that light spread through the
 // aperture's circle of confusion. Space-independent, like `resolve.wesl`: by the
 // time anything here runs, a texel is light, and light is the one thing every
 // space agrees about.

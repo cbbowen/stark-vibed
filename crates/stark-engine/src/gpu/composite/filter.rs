@@ -18,10 +18,10 @@ use crate::gpu::desc::{self, Bindings};
 use crate::gpu::uniforms::UniformSlots;
 use crate::view::ViewTransform;
 use stark_shaders::Stages;
+use stark_shaders::mirror::filter::binding as fm;
+use stark_shaders::mirror::filter::decl as fmd;
 use stark_shaders::mirror::filter_common::binding as fc;
 use stark_shaders::mirror::filter_common::decl as fcd;
-use stark_shaders::mirror::filter_mixbox::binding as fm;
-use stark_shaders::mirror::filter_mixbox::decl as fmd;
 
 use super::blend::Bounce;
 use super::group::FilterDraw;
@@ -81,7 +81,7 @@ impl FilterPass {
         let device = &ctx.device;
         let formats = crate::gpu::channels::ChannelFormats::of(color_space);
         let filter = color_space.filter_shader();
-        let shader = desc::Module::new(device, "stark filter", &filter);
+        let shader = desc::Module::new(device, "stark filter", filter);
         // One layout for all three fragment entry points below, so the accumulator's
         // textures come out **filterable**: the chromatic gather (§21.10) reads them
         // through `back_samp` at fractional positions where the point filters
@@ -209,7 +209,7 @@ impl FilterPass {
                 fm::BACK_RESID => wgpu::BindingResource::TextureView(
                     back.resid.expect("a residual build has one"),
                 ),
-                other => unreachable!("`filter_mixbox`'s group has no binding {other}"),
+                other => unreachable!("`filter.wesl`'s own group has no binding {other}"),
             }),
         ]
     }

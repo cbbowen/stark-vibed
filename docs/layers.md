@@ -871,7 +871,7 @@ the ordinary one and it needs no color conversion at all:
 
 Everything else takes the general law, and the general law **borrows the compositor's
 own blend pass**: expand both layers into what they composite to (`slab.wesl`), run
-`blend_oklab`/`blend_mixbox` between them on tile-sized targets, store the result back
+the blend pass between them on tile-sized targets, store the result back
 as a tile. Four passes and three scratch trios per tile where the direct path takes one
 and none — the right trade for an action rather than a frame, and what it buys is that
 **a merged tile is produced by the very shader the screen would have run**. No second
@@ -957,7 +957,7 @@ are the same three numbers: pass A's slab law scales coverage and height and lea
 color where it found it. So the filter's own numbers do not depend on the destination's
 opacity slider at all, which is why there is no `dest_opacity` here and no slab
 conversion — the merge runs the compositor's own filter shader on a second entry point
-that reads a tile instead of the accumulator (`filter_oklab.wesl`).
+that reads a tile instead of the accumulator (`filter.wesl`).
 
 **What has to hold** is §14.11.2's second question, and only that one. A filter rewrites
 the accumulator beneath it, so baking it into `D` is the same picture exactly when that

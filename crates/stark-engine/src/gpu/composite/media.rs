@@ -13,10 +13,10 @@ use crate::gpu::environment::Environment;
 use crate::gpu::substrate::SubstrateMap;
 use crate::view::{Extent2, ViewTransform};
 use stark_shaders::Stages;
+use stark_shaders::mirror::media::binding as mm;
+use stark_shaders::mirror::media::decl as mmd;
 use stark_shaders::mirror::media_common::binding as mc;
 use stark_shaders::mirror::media_common::decl as mcd;
-use stark_shaders::mirror::media_mixbox::binding as mm;
-use stark_shaders::mirror::media_mixbox::decl as mmd;
 
 // Generated from `media_common.wesl`'s own declaration (§6.7).
 pub(super) use stark_shaders::mirror::media_common::Media as MediaUniform;
@@ -74,7 +74,7 @@ pub(super) fn dither_step(format: wgpu::TextureFormat) -> f32 {
 /// are valid against either.
 ///
 /// A group per module (§6.10): `media_common`'s whole `@group(0)`, then
-/// `media_mixbox`'s `@group(1)` — the residual alone, and empty in a space that has
+/// `media.wesl`'s own `@group(1)` — the residual alone, and empty in a space that has
 /// none (§6.7), so an Oklab document binds nothing there rather than a placeholder.
 pub(super) fn media_layout(device: &wgpu::Device, color_space: &dyn ColorSpace) -> [Bindings; 2] {
     let media = color_space.media_shader();
@@ -103,7 +103,7 @@ impl MediaPass {
         target: &[Option<wgpu::ColorTargetState>],
     ) -> Self {
         let media = color_space.media_shader();
-        let shader = desc::Module::new(device, "stark media", &media);
+        let shader = desc::Module::new(device, "stark media", media);
         let layout = desc::pipeline_layout_of(device, "stark media layout", &[&bgls[0], &bgls[1]]);
         let pipeline = desc::fullscreen_pipeline(
             device,
@@ -359,7 +359,7 @@ fn media_bind_group(
                     .expect("a residual build has a composited residual")
                     .view(),
             ),
-            other => unreachable!("`media_mixbox`'s group has no binding {other}"),
+            other => unreachable!("`media.wesl`'s own group has no binding {other}"),
         }),
     ]
 }

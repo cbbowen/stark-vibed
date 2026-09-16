@@ -265,8 +265,8 @@ before the trip into Oklab. Doubling light is what an exposure *is*; `L` is roug
 the cube root of that, so scaling `L` by `2^n` would be a number with no referent.
 (The shader computes the gain on linear sRGB, which is the same operation: the two
 encodings differ by a fixed linear matrix, and a scalar commutes with it.) The pass
-is bracketed per color space exactly as the blend pass is — `filter_oklab.wesl` and
-`filter_mixbox.wesl` supply only channels ↔ **Oklab**, and `filter_common.wesl` holds
+is bracketed per color space exactly as the blend pass is — `filter.wesl`'s two
+builds supply only channels ↔ **Oklab**, and `filter_common.wesl` holds
 the adjustment; Oklab rather than light as the interface because it is where the
 adjustment happens anyway, so an Oklab document passes its channels straight in
 instead of paying a conversion the first thing inside would exactly undo.
@@ -281,7 +281,7 @@ by the generator (§6.10), and derived rather than trusted by a unit test.
 light falling on it and Mixbox's inverse LUT is defined on `[0,1]` sRGB, so a positive
 exposure saturates at white there instead of pushing past it into the media pass's
 highlight roll-off the way it does in an Oklab document. That is the same thing
-`blend_mixbox.wesl` says about `Radiance`, and for the same reason: paint does not glow.
+`blend.wesl` says about `Radiance`, and for the same reason: paint does not glow.
 
 **Every parameter is bounded and sanitized on the way in — twice.** A fullscreen pass
 has no coverage to hide behind — a `NaN` saturation from a file or a peer reaches every
@@ -441,8 +441,8 @@ right shape.
 - **Peers.** Nothing new. A filter is document state reached by ordinary layer actions,
   so §12 needs no argument it does not already make; two peers tuning one filter
   conflict through `Prop::Filter` and the total order serializes them.
-- **Shaders.** `filter_common.wesl` plus a variant per color space, mirroring
-  `blend_common` / `blend_oklab` / `blend_mixbox` exactly. `linear_to_light` and
+- **Shaders.** `filter_common.wesl` plus `filter.wesl` linked twice along the
+  `pigment` axis, mirroring `blend_common` / `blend.wesl` exactly. `linear_to_light` and
   `light_to_linear` moved out of `blend_common.wesl` into `lib/color.wesl` on the way:
   two passes work in light now, and importing the pair out of `blend_common` would have
   dragged that file's bindings along with it.
@@ -845,8 +845,8 @@ comment.
 
 **The integral runs in light — XYZ, the space light is combined in** (§18.0.4). A
 blur is a sum over displaced light, so like the chromatic integral it is bracketed
-by each space's own decode: `fs_blur_decode` in `filter_oklab.wesl` pays one
-Oklab→light trip per texel, `filter_mixbox.wesl` pays `poly(c) + r` (§6.7), and
+by each space's own decode: `fs_blur_decode` pays one Oklab→light trip per texel in
+a colorimetric document and `poly(c) + r` in a pigment one (§6.7), and
 the blurred light re-enters the space once per output texel — for pigment, through
 the inverse LUT with the residual recomputed. Between those brackets the FFT is
 space-blind, which is why it lives in one shader. Unlike the chromatic gather the

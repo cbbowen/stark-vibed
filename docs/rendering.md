@@ -933,10 +933,9 @@ tolerance for that; both are 2/255 now, the same as Oklab's).
 `resid_format()` is `None`, no third texture is allocated, and the eleven passes that
 carry a tile's color are built in a second variant under WESL's `@if(resid)`
 conditional compilation (the `resid` axis, `stark-shaders/build.rs`).
-`media_mixbox.wesl` and
-`blend_mixbox.wesl` declare their own residual bindings — past where the shared
-`media_common`/`blend_common` stop — so a colorimetric document gets a shorter bind
-group layout rather than a placeholder to bind. What does reach it is one uniform
+`media.wesl` and `blend.wesl` declare their own residual bindings in a `@group(1)`
+of their own, which a colorimetric build leaves empty — so such a document binds an
+empty layout rather than a placeholder texture. What does reach it is one uniform
 lane per **mirrored** struct (`Media.bg_resid`, `TileXform.resid`, `Stamp.j`,
 `Fill.r`, matte's instance attribute): those cannot be conditional, because the
 mirror generator reads *unlinked* sources (§6.10) and has no feature set to evaluate,
@@ -961,7 +960,7 @@ Mixbox is **vendored as a git submodule** (`vendor/mixbox`, Mixbox 2.0 ©2022
 Secret Weapons, **CC BY-NC 4.0** — non-commercial; commercial use needs a licence
 from `mixbox@scrtwpns.com`). CPU `rgb_to_channels`/`channels_to_rgb` call the
 vendored crate (`no_std` + `libm`, so it builds for wasm and embeds its own LUT).
-The GPU polynomial in `media_mixbox.wesl` is **generated at build time** from the
+The GPU polynomial in `lib/mixbox.wesl` is **generated at build time** from the
 vendored GLSL (`stark-shaders-build` transpiles `mixbox_eval_polynomial` into
 a WESL module), so the trained coefficients stay sourced from the licensed
 submodule rather than copied into this repo.
@@ -1284,10 +1283,21 @@ What stays declared is the one thing a shader cannot say about itself: the **axe
 is linked along a second time (`stark-shaders/build.rs`). A `@if(resid)` names a
 feature; it does not name the host type a caller picks a build with. Each axis
 declares that type and its two variants, and the accessors take it as a typed
-parameter — `composite(Resid)`, `stamp(Resid, Lane)` — whose `on` variant is generated
-only where the build linked that variant. So `composite(Resid::With)` does not compile
-in a build with no `composite_resid.wgsl`, which is what retired a pair of
-`cfg`-split macros and the `debug_assert!` in the second of them.
+parameter — `composite(Resid)`, `stamp(Resid, Lane)`, `blend(Pigment)` — whose `on`
+variant is generated only where the build linked that variant. So
+`composite(Resid::With)` does not compile in a build with no `composite_resid.wgsl`,
+which is what retired a pair of `cfg`-split macros and the `debug_assert!` in the
+second of them.
+
+An axis may also name its artifacts. The plain rule appends the feature (`stamp` →
+`stamp_ceiling`); `pigment` declares `("oklab", "mixbox")` instead, so the one
+`blend.wesl` still deposits `blend_oklab.wgsl` and `blend_mixbox.wgsl` and the three
+pairs of near-identical shaders became three modules without renaming anything. Its
+`@if(pigment) import package::gen::mixbox_poly` is what keeps the colorimetric build
+honest: `wesl` evaluates the gate before it resolves, so a build with nothing mounted
+under `package::gen` never looks the vendored module up — and the generator's
+discovery skips a gated import for the same reason, or it would drop the module from
+that build entirely.
 
 Every feature is set explicitly on every link, so no pass depends on what the pass
 before it left the toggles at; and each axis is asserted at build time to *change* the

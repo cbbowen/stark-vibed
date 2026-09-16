@@ -8,7 +8,7 @@
 //
 // Both were spelled `EPS`, in five modules, at two different values: 1e-5 in
 // `paint_common`, `media_common`, `composite` and `resolve`, and 1e-4 in
-// `blend_common` — so `fill.wesl` importing `EPS` from one and `blend_oklab.wesl`
+// `blend_common` — so `fill.wesl` importing `EPS` from one and `blend.wesl`
 // importing `EPS` from the other got different numbers under one name, with nothing
 // at either call site to say so. The values below are unchanged; only the names are
 // new, and they are chosen so the call site says what it is protecting.

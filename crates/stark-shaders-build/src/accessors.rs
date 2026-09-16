@@ -450,6 +450,7 @@ mod tests {
         off: "Without",
         on: "With",
         pigment_only: true,
+        artifacts: None,
         modules: &["stamp"],
     };
 
@@ -460,6 +461,7 @@ mod tests {
         off: "Plain",
         on: "Ceiling",
         pigment_only: false,
+        artifacts: None,
         modules: &["stamp"],
     };
 

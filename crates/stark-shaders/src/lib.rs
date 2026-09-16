@@ -220,7 +220,7 @@ pub struct Binding {
     ///
     /// A slot is identified by its module and its name together, not by either alone:
     /// two modules partition one group between them in half the pipelines here
-    /// (`blend_common` and `blend_mixbox`), and two modules may declare the same name.
+    /// (`blend_common` and `blend`), and two modules may declare the same name.
     pub module: &'static str,
     pub kind: BindKind,
     /// Whether the declaration is `@if(resid)`-gated, i.e. exists only in the residual

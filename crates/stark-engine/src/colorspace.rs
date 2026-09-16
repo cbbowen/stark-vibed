@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use stark_model::Srgb;
 use stark_model::{ColorSpaceId, color};
-use stark_shaders::{Lane, Resid};
+use stark_shaders::{Lane, Pigment, Resid};
 
 /// Construct the color space implementation for `id`, or `None` when this
 /// build does not carry it.
@@ -112,6 +112,18 @@ pub trait ColorSpace {
         self.resid_format().is_some()
     }
 
+    /// Which build of the three passes bracketed by a space's own conversion this space
+    /// reads (§6.7).
+    ///
+    /// **Declared, not derived from [`resid_format`](Self::resid_format)**, though the
+    /// two agree for both spaces there are: a residual is a fact about how much of a
+    /// color three channels can hold, and this is a fact about what those channels
+    /// *are*. Deriving one from the other would make a colorimetric space with a
+    /// residual unstateable rather than merely absent.
+    fn pigment(&self) -> Pigment {
+        Pigment::Oklab
+    }
+
     /// Which build of a pass that carries a tile's color this space reads (§6.7).
     ///
     /// **Derived** from [`resid_format`](Self::resid_format), like
@@ -161,70 +173,30 @@ pub trait ColorSpace {
     /// (`stamp.wesl`) and so share its type — which the three below do not.
     fn stamp_shader(&self, lane: Lane) -> &'static stark_shaders::Stamp;
     /// The media/lighting + present pass — §6.3.
-    fn media_shader(&self) -> SpaceShader;
-    /// The per-layer blend pass — §18.0.4. One isolated
-    /// layer merged into the accumulator through a light-combining mode.
     ///
-    /// A space needs its own variant because blending happens in *light* (normalized
-    /// CIE XYZ) while the targets hold channels, so the pass is bracketed by this
-    /// space's conversion out and back. The algebra between them is shared.
-    fn blend_shader(&self) -> SpaceShader;
-    /// The **filter layer** pass — §21. The accumulator beneath a filter
-    /// layer, read and rewritten.
+    /// Defaulted, with the two below: the three are one module linked twice along
+    /// [`pigment`](Self::pigment), so what a space picks is the axis and not the
+    /// shader.
+    fn media_shader(&self) -> &'static stark_shaders::Media {
+        stark_shaders::media(self.pigment())
+    }
+    /// The per-layer blend pass — §18.0.4. One isolated layer merged into the
+    /// accumulator through a light-combining mode.
     ///
-    /// A space needs its own variant for the reason
-    /// [`blend_shader`](Self::blend_shader) does, and it is the same reason twice: a
-    /// color adjustment is a statement about light and about perceived color,
-    /// while the targets hold channels, so the pass is bracketed by this space's
-    /// conversion out and back. The adjustment between them is shared.
-    fn filter_shader(&self) -> FilterShader;
-}
-
-/// One space's build of a pass with a single fragment entry point — the media and
-/// blend shaders.
-///
-/// The two spaces link **different modules** (`blend_oklab.wesl`, `blend_mixbox.wesl`),
-/// so their generated records are different types and no accessor can answer for both.
-/// This is the shape they share, written out once: the WGSL a module is compiled from
-/// and the entry points a pipeline over it names (§6.10).
-#[derive(Clone, Copy)]
-pub struct SpaceShader {
-    pub wgsl: &'static str,
-    /// The record's own, so a module compiled here answers to the entry points beside
-    /// it (`desc::Module`).
-    pub artifact: &'static str,
-    pub vs_main: stark_shaders::EntryPoint,
-    pub fs_main: stark_shaders::EntryPoint,
-}
-
-impl stark_shaders::Artifact for SpaceShader {
-    fn wgsl(&self) -> &'static str {
-        self.wgsl
+    /// A space needs its own build because blending happens in *light* (normalized CIE
+    /// XYZ) while the targets hold channels, so the pass is bracketed by this space's
+    /// conversion out and back. The algebra between them is shared.
+    fn blend_shader(&self) -> &'static stark_shaders::Blend {
+        stark_shaders::blend(self.pigment())
     }
-    fn name(&self) -> &'static str {
-        self.artifact
-    }
-}
-
-/// [`SpaceShader`] for the filter pass, whose three fragment entry points share one
-/// module, one layout and — for two of the three — one set of targets (§21).
-#[derive(Clone, Copy)]
-pub struct FilterShader {
-    pub wgsl: &'static str,
-    /// See [`SpaceShader::artifact`].
-    pub artifact: &'static str,
-    pub vs_main: stark_shaders::EntryPoint,
-    pub fs_main: stark_shaders::EntryPoint,
-    pub fs_tile: stark_shaders::EntryPoint,
-    pub fs_blur_decode: stark_shaders::EntryPoint,
-}
-
-impl stark_shaders::Artifact for FilterShader {
-    fn wgsl(&self) -> &'static str {
-        self.wgsl
-    }
-    fn name(&self) -> &'static str {
-        self.artifact
+    /// The **filter layer** pass — §21. The accumulator beneath a filter layer, read
+    /// and rewritten.
+    ///
+    /// A space needs its own build for the reason [`blend_shader`](Self::blend_shader)
+    /// does: a color adjustment is a statement about light and about perceived color,
+    /// while the targets hold channels.
+    fn filter_shader(&self) -> &'static stark_shaders::Filter {
+        stark_shaders::filter(self.pigment())
     }
 }
 
@@ -280,35 +252,6 @@ impl ColorSpace for OkLabColorSpace {
 
     fn stamp_shader(&self, lane: Lane) -> &'static stark_shaders::Stamp {
         stark_shaders::stamp(self.resid(), lane)
-    }
-    fn media_shader(&self) -> SpaceShader {
-        let s = stark_shaders::media_oklab();
-        SpaceShader {
-            wgsl: s.wgsl,
-            artifact: s.artifact,
-            vs_main: s.vs_main,
-            fs_main: s.fs_main,
-        }
-    }
-    fn blend_shader(&self) -> SpaceShader {
-        let s = stark_shaders::blend_oklab();
-        SpaceShader {
-            wgsl: s.wgsl,
-            artifact: s.artifact,
-            vs_main: s.vs_main,
-            fs_main: s.fs_main,
-        }
-    }
-    fn filter_shader(&self) -> FilterShader {
-        let s = stark_shaders::filter_oklab();
-        FilterShader {
-            wgsl: s.wgsl,
-            artifact: s.artifact,
-            vs_main: s.vs_main,
-            fs_main: s.fs_main,
-            fs_tile: s.fs_tile,
-            fs_blur_decode: s.fs_blur_decode,
-        }
     }
 }
 
@@ -381,38 +324,13 @@ impl ColorSpace for MixboxColorSpace {
         mixbox::latent_to_float_rgb(&latent)
     }
 
+    fn pigment(&self) -> Pigment {
+        Pigment::Mixbox
+    }
+
     fn stamp_shader(&self, lane: Lane) -> &'static stark_shaders::Stamp {
         // Deposit is premultiplied-over of the channels — the same law as Oklab's,
         // run over one more target.
         stark_shaders::stamp(self.resid(), lane)
-    }
-    fn media_shader(&self) -> SpaceShader {
-        let s = stark_shaders::media_mixbox();
-        SpaceShader {
-            wgsl: s.wgsl,
-            artifact: s.artifact,
-            vs_main: s.vs_main,
-            fs_main: s.fs_main,
-        }
-    }
-    fn blend_shader(&self) -> SpaceShader {
-        let s = stark_shaders::blend_mixbox();
-        SpaceShader {
-            wgsl: s.wgsl,
-            artifact: s.artifact,
-            vs_main: s.vs_main,
-            fs_main: s.fs_main,
-        }
-    }
-    fn filter_shader(&self) -> FilterShader {
-        let s = stark_shaders::filter_mixbox();
-        FilterShader {
-            wgsl: s.wgsl,
-            artifact: s.artifact,
-            vs_main: s.vs_main,
-            fs_main: s.fs_main,
-            fs_tile: s.fs_tile,
-            fs_blur_decode: s.fs_blur_decode,
-        }
     }
 }

@@ -13,7 +13,7 @@
 // (§6.1), so the two cannot meet without a conversion. These are that conversion, and
 // having them lets a merge run the **real blend pass**, on tile-sized targets, rather
 // than a second copy of its algebra: expand both layers, run
-// `blend_oklab`/`blend_mixbox` unchanged, store the result. A merged layer therefore
+// the blend pass unchanged, store the result. A merged layer therefore
 // cannot drift from the stack it replaced, which is the same argument the eyedropper
 // makes for sampling through the compositor rather than beside it (§18.0.2).
 //

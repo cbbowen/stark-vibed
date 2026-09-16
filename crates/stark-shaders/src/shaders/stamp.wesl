@@ -5,8 +5,8 @@
 // the deposit is the same premultiplied "over" whatever the three channels mean —
 // the shader never interprets them. The name read as the surviving half of a
 // `stamp_mixbox.wesl` pair that has never existed, which is a worse thing for a name
-// to do than merely be long. (`blend_oklab`/`blend_mixbox` and
-// `media_oklab`/`media_mixbox` are genuine pairs; those keep their suffixes.)
+// to do than merely be long. (`blend`, `filter` and `media` do link twice, and their
+// artifacts keep the `_oklab`/`_mixbox` names — but each is one module.)
 //
 // Shares all geometry/sweep math with both spaces via `stamp_common.wesl`. The extent deposits into a *cleared scratch* tile, which
 // holds the **parcel this stroke is laying** rather than a tile of paint: color
