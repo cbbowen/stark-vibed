@@ -8,7 +8,7 @@ publish = false
 [features]
 default = ["mixbox"]
 # The Mixbox pigment space (§6.7). On by default; turning it off drops
-# `blend_mixbox`/`media_mixbox` from [`ENTRY_POINTS`], skips the transpile of the
+# [`MIXBOX_ENTRY_POINTS`] from [`ENTRY_POINTS`], skips the transpile of the
 # vendored GLSL polynomial, and skips the whole `_resid` build pass — because the
 # residual channel exists only for a pigment space, and Mixbox is the only one.
 #

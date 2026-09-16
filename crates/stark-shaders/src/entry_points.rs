@@ -108,7 +108,7 @@ pub const CEILING_ENTRY_POINTS: &[&str] = &["stamp"];
 ///
 /// **This whole pass is skipped without the `mixbox` cargo feature.** A residual is
 /// something a *pigment* space has, Mixbox is the only one, and `resid_format()` is
-/// then `None` for every space in the build — so the variants would be seven artifacts
+/// then `None` for every space in the build — so the variants would be artifacts
 /// nothing could ever select. `build.rs` skips the pass and `lib.rs` compiles the
 /// `resid`-taking accessors down to their plain arm.
 ///

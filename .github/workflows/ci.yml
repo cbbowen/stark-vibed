@@ -100,7 +100,7 @@ jobs:
       - name: Install nextest
         run: curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "${CARGO_HOME:-$HOME/.cargo}/bin"
 
-      # Covers the five crates/ members only — the vendored trees are excluded
+      # Covers the crates/ members only — the vendored trees are excluded
       # from the workspace (see the root Cargo.toml), so their own test suites do
       # not run here.
       #

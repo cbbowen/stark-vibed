@@ -146,7 +146,13 @@ fn mirrors(
 
     let items = items.iter().map(|(module, items)| {
         let ident = format_ident!("{module}");
-        let doc = format!(" Host mirrors of what `{module}.wesl` declares.");
+        // Named by the file, `lib/` and all: a mirror module is the leaf's name, but
+        // the file a reader has to open is the one the tree holds.
+        let path = modules
+            .iter()
+            .find(|m| m.rust == *module)
+            .map_or(module.as_str(), |m| m.path.as_str());
+        let doc = format!(" Host mirrors of what `{path}.wesl` declares.");
         quote! {
             #[doc = #doc]
             pub mod #ident {
