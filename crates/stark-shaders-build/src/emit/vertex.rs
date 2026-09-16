@@ -95,11 +95,7 @@ pub(super) fn emit(m: &Module, entry: &str, name: &str) -> TokenStream {
         });
 
         let member = p.ident.name();
-        // Refused for the same reason a uniform struct's `@if` member is: this is read
-        // from the unlinked source, which has no feature set, so one record would have
-        // to be the layout of two. `matte.wesl` declares its residual attribute
-        // unconditionally — sixteen bytes per matte — rather than let `MatteInstance`
-        // have two layouts, and says so where the attribute is.
+        // Refused for the same reason a uniform struct's `@if` member is (`layout`).
         assert!(
             !is_gated(&p.attributes),
             "`{module}.wesl`'s `{entry}.{member}` is an `@if`-gated `@location` \

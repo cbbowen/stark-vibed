@@ -9,13 +9,15 @@
 //!
 //! None of those *type* rules are implemented here. `wesl` resolves a type expression
 //! ([`ty_eval_ty`]) and `wgsl-types` gives that type its WGSL [`Type::size_of`] and
-//! [`Type::align_of`] — the spec's own tables, `f16` and nested structs included. The
-//! member's own `@size`/`@align` overrides are read with `wgsl-types`' own accessors
-//! ([`EvalAttrs`]), which is the reading [`Type::size_of`] uses when it sizes a whole
-//! struct — and so the one `min_binding_size` is computed from, two paths that
-//! `emit::bindings` now asserts agree. What is left is where the *host* has a choice:
-//! which Rust spelling occupies a given stride, and the padding that gets the real
-//! members onto their offsets.
+//! [`Type::align_of`] — the spec's own tables, `f16` and nested structs included.
+//!
+//! The member's own `@size`/`@align` overrides are read with [`EvalAttrs`], which is how
+//! [`Type::size_of`] reads them when it sizes a whole struct — so this fold and the
+//! `min_binding_size` computed from that one cannot read an attribute two ways.
+//! `emit::bindings` asserts they agree.
+//!
+//! What is left is where the *host* has a choice: which Rust spelling occupies a given
+//! stride, and the padding that gets the real members onto their offsets.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
@@ -47,10 +49,14 @@ pub(crate) struct Laid {
 /// Place `s`'s members at their WGSL offsets.
 ///
 /// Fallible rather than panicking, because discovery calls it on every uniform in the
-/// tree (`emit::structs`) and one it cannot spell has to be skipped with a note, not
-/// stop the build. A member it *can* reach but cannot place is still fatal to the
-/// struct as a whole — every member after it would land at the wrong offset — which is
-/// what the error says.
+/// tree (`emit::structs`) and one it cannot *spell* has to be skipped with a note, not
+/// stop the build. A member it can reach but cannot place is still fatal to the struct
+/// as a whole — every member after it would land at the wrong offset.
+///
+/// # Panics
+/// On the three member declarations that are *wrong* rather than merely unspellable: an
+/// `@if` gate, an `@align` that is not a power of two, and a `@size` below its type's
+/// own. Skipping one of those with a note would be the silence this exists to remove.
 pub(crate) fn lay_out(s: &Struct, module: &Module) -> Result<Laid, String> {
     let (src, tu, path) = (module.src.as_str(), &module.tu, module.path.as_str());
     let name = s.ident.name();
@@ -77,11 +83,7 @@ pub(crate) fn lay_out(s: &Struct, module: &Module) -> Result<Laid, String> {
             )
         };
 
-        // **`@if` is refused, never evaluated.** A mirror is generated from the
-        // *unlinked* source, which carries no feature set — so one Rust struct would
-        // have to answer for both the plain and the residual artifact, and could match
-        // at most one. `matte.wesl` states the rule in prose beside the attribute it
-        // cost; this is it made structural.
+        // Refused, never evaluated — the message says why.
         assert!(
             !is_gated(&m.attributes),
             "{} is `@if`-gated. A uniform struct is mirrored from the unlinked source, \
@@ -101,24 +103,25 @@ pub(crate) fn lay_out(s: &Struct, module: &Module) -> Result<Laid, String> {
             return Err(fail("has no Rust spelling"));
         };
 
-        // What the *member* says about its own stride, over what its type says. Read
-        // with `wgsl-types`' accessors, so this and `Type::size_of` — which is where
-        // `min_binding_size` comes from — cannot read one attribute two ways.
-        let attr = |what: &str, got: Result<Option<u32>, wesl::eval::EvalError>| {
-            got.unwrap_or_else(|e| {
+        // What the *member* says about its own stride, over what its type says.
+        let m_align = m
+            .attr_align(&mut ctx)
+            .unwrap_or_else(|e| {
                 panic!(
-                    "{} has an `@{what}` that does not evaluate: {e}",
+                    "{} has an `@align` that does not evaluate: {e}",
                     at_member()
                 )
             })
-        };
-        let m_align = attr("align", m.attr_align(&mut ctx)).unwrap_or(ty_align);
+            .unwrap_or(ty_align);
         assert!(
             m_align.is_power_of_two(),
             "{} declares `@align({m_align})`, which is not a power of two",
             at_member(),
         );
-        let m_size = attr("size", m.attr_size(&mut ctx)).unwrap_or(ty_size);
+        let m_size = m
+            .attr_size(&mut ctx)
+            .unwrap_or_else(|e| panic!("{} has a `@size` that does not evaluate: {e}", at_member()))
+            .unwrap_or(ty_size);
         assert!(
             m_size >= ty_size,
             "{} declares `@size({m_size})` for a {ty_size}-byte `{}`. `@size` pads a \
@@ -142,9 +145,9 @@ pub(crate) fn lay_out(s: &Struct, module: &Module) -> Result<Laid, String> {
             real: true,
         });
 
-        // An `@size` past the type's own is the member's trailing padding. The lane the
-        // shader reads is still the type's, so the Rust spelling stays the type's too —
-        // widening it would tell the host there are lanes the shader never wrote.
+        // An `@size` past the type's own is trailing padding: the lane the shader reads
+        // is still the type's, so widening the Rust spelling would claim lanes nothing
+        // writes.
         if m_size > ty_size {
             fields.push(pad(
                 fields.len(),

@@ -17,9 +17,8 @@ use crate::tree::Module;
 /// source and could do neither: a derived constant is not a literal, and the linker had
 /// already stripped anything no entry point reached.
 ///
-/// **A constant naming another evaluates too**, in [`module_context`]'s scope — see
-/// `emit::tests::a_const_derived_from_its_neighbours_mirrors_as_its_value`. No `const`
-/// in the tree names another today.
+/// A constant naming another evaluates too, in [`module_context`]'s scope. No `const` in
+/// the tree names another today.
 pub(super) fn emit(m: &Module) -> (TokenStream, Vec<String>) {
     let (tu, src, module) = (&m.tu, m.src.as_str(), m.path.as_str());
     let mut ctx = module_context(tu);

@@ -34,14 +34,11 @@ use crate::tree::{Module, read_tree};
 /// The WGSL type a `var<uniform>` names, resolved against the module that declares it.
 ///
 /// **A name this module neither declares nor shares with WGSL is an imported struct, and
-/// that is refused.** The generator reads the *unlinked* source, where an import is a
-/// name and nothing more — so the struct's members are somewhere this has not read, the
-/// lookup came back empty, and the uniform was passed over without a word. Resolving it
-/// instead would mean a second import resolver here (`self::`, `super::`, `package::`,
-/// aliases, item collections), which is the transcription §6.10 is about; and the mirror
-/// it produced would land under the *importing* module, naming a file that does not
-/// declare the struct. Declare it where the uniform is, or name both modules in
-/// `SHARED`, which is what that list is for.
+/// that is refused.** Not resolved: an import path (`self::`, `super::`, `package::`,
+/// aliases, item collections) would be a second resolver written here, which is the
+/// transcription §6.10 is about — and the mirror it produced would land under the
+/// *importing* module, naming a file that does not declare the struct. `SHARED` is
+/// already the answer for one host type several modules name.
 fn uniform_type(ty: &TypeExpression, m: &Module, member: &str, ctx: &mut Context<'_>) -> Type {
     ty_eval_ty(ty, ctx).unwrap_or_else(|e| {
         panic!(
@@ -53,6 +50,14 @@ fn uniform_type(ty: &TypeExpression, m: &Module, member: &str, ctx: &mut Context
             ty.ident.name(),
         )
     })
+}
+
+/// [`uniform_type`] for a caller that wants the refusal and not the type.
+///
+/// `structs::discover` has already looked the struct up locally and missed; what is left
+/// to decide is whether that was a type the host already has or an import.
+fn refuse_imported_uniform(ty: &TypeExpression, m: &Module, member: &str, ctx: &mut Context<'_>) {
+    uniform_type(ty, m, member, ctx);
 }
 
 /// Generate the host mirrors of everything the shader tree at `shader_dir` declares,
@@ -224,8 +229,8 @@ mod tests {
     use super::*;
 
     /// The generated file's **body** for one module of inline WESL. The header is one
-    /// test's business ([`a_const_derived_from_its_neighbours_is_skipped`]) rather than
-    /// every test's.
+    /// test's business ([`a_const_derived_from_its_neighbours_mirrors_as_its_value`])
+    /// rather than every test's.
     fn generated(src: &str) -> String {
         past_header(&mirrors(&[Module::parse("probe", src)], &[], &[]))
     }
@@ -358,14 +363,8 @@ pub mod probe {
         );
     }
 
-    /// The header, and the one shape that still reaches it.
-    ///
-    /// `DOUBLE` used to be here too: `Context::new` opens a *function* scope, where the
-    /// evaluator never looks a name up in the module's declarations, so a constant
-    /// naming its neighbour was dropped where `consts::emit` says it comes out as the
-    /// number the shader computes with. [`crate::eval::module_context`] is what fills
-    /// that scope. No `const` in the tree names another today, so the real mirror is
-    /// unchanged either way.
+    /// The header, and the one shape that still reaches it. `DOUBLE` used to be here
+    /// too — see [`crate::eval::module_context`].
     #[test]
     fn a_const_derived_from_its_neighbours_mirrors_as_its_value() {
         let out = mirrors(
@@ -580,6 +579,20 @@ pub mod probe {
 }
 "#,
         );
+    }
+
+    /// `dynamics.wesl`'s shape: a declaration no context built from the unlinked source
+    /// can execute, with constants below it (see [`crate::eval::module_context`]).
+    #[test]
+    fn a_const_below_a_declaration_that_will_not_execute_still_mirrors() {
+        let out = generated(
+            r"
+var<workgroup> ws: array<Latent, 4>;
+const RISE: f32 = 0.05;
+const DOUBLE: f32 = RISE * 2.0;
+",
+        );
+        assert!(out.contains("pub const DOUBLE: f32 = 0.1;"), "{out}");
     }
 
     /// `@size` pads a member out and `@align` moves it; `wgsl-types` honours both when

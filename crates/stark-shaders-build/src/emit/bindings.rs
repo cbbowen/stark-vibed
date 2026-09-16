@@ -4,12 +4,12 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use wesl::eval::Context;
 use wesl::syntax::{
-    AddressSpace, Attribute, Declaration, DeclarationKind, Expression, ExpressionNode,
-    GlobalDeclaration, TypeExpression,
+    AddressSpace, Declaration, DeclarationKind, Expression, ExpressionNode, GlobalDeclaration,
+    TypeExpression,
 };
 
 use crate::docs::doc_lines;
-use crate::eval::{group_binding, module_context};
+use crate::eval::{gated_on, group_binding, module_context};
 use crate::layout::{lay_out, lit};
 use crate::tree::Module;
 
@@ -52,7 +52,7 @@ pub(super) fn emit(m: &Module) -> TokenStream {
         // so this is what lets the host assert that a slot list names one — and what a
         // table keyed on the index alone could never have said.
         let Some((group, index)) =
-            group_binding(decl, &mut ctx, &format!("`{module}.wesl`'s `{member}`"))
+            group_binding(decl, &mut ctx, || format!("`{module}.wesl`'s `{member}`"))
         else {
             continue;
         };
@@ -86,10 +86,7 @@ pub(super) fn emit(m: &Module) -> TokenStream {
         // `@if(resid)` — the shader's own gate on the slot, carried through so a
         // layout never has to restate it as an element count (`[..12 + 4 *
         // usize::from(resid)]`).
-        let resid = decl.attributes.iter().any(|a| match &**a {
-            Attribute::If(e) => src[e.span().range()].trim() == "resid",
-            _ => false,
-        });
+        let resid = gated_on(&decl.attributes, src, "resid");
         // `super::`, because `binding` is `decl`'s sibling inside the shader's module,
         // not its child — the bare path resolved from nowhere and every one of these
         // (132 of them, one per declared binding) was a broken intra-doc link. Nothing
@@ -258,12 +255,11 @@ fn expr_ident(expr: &ExpressionNode) -> Option<String> {
 
 /// The WGSL size of a uniform binding's declared type — its `min_binding_size`.
 ///
-/// **Two paths reach one number, and this is where they are made to agree.** The size is
-/// `wgsl-types`' own, over the resolved type; the generated struct's `size_of` assertion
-/// comes from [`lay_out`] walking the members itself. Nothing compared them, so a member
-/// attribute one honoured and the other did not left a host struct and the
-/// `min_binding_size` guarding it quietly out of step — a buffer the right size for a
-/// struct of the wrong one.
+/// Asserted equal to what [`lay_out`] makes of the same struct. The two are `wgsl-types`
+/// over the resolved type and our own fold over the members, and they agree by
+/// construction today — both read `@size`/`@align` through `EvalAttrs`. The assertion is
+/// what keeps that true if either grows a rule the other has not: the host binds a buffer
+/// against this number and writes a struct laid out by that one.
 fn uniform_size(ty: &TypeExpression, m: &Module, member: &str, ctx: &mut Context<'_>) -> u64 {
     let resolved = uniform_type(ty, m, member, ctx);
     let at = || format!("`{}.wesl`'s `{member}`", m.path);

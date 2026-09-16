@@ -8,7 +8,7 @@ use crate::eval::module_context;
 use crate::layout::{Laid, lay_out, lit};
 use crate::tree::Module;
 
-use super::uniform_type;
+use super::refuse_imported_uniform;
 
 /// Emit a mirror for every struct a `var<uniform>` in `m` names — the boundary the
 /// host writes across, discovered rather than listed (§2).
@@ -46,9 +46,8 @@ pub(super) fn discover(m: &Module, aliased: &[(String, String)]) -> (TokenStream
         let Some(s) = m.struct_named(name) else {
             // Either a type the host already has — `var<uniform> x: vec4<f32>` is legal
             // WGSL and wants no mirror — or a struct this module *imported*, which is
-            // refused rather than passed over in silence. `uniform_type` is the one that
-            // tells the two apart, and it is what `bindings` asks for `min_binding_size`.
-            uniform_type(ty, m, decl.ident.name().as_str(), &mut ctx);
+            // refused rather than passed over in silence.
+            refuse_imported_uniform(ty, m, decl.ident.name().as_str(), &mut ctx);
             continue;
         };
         done.push(name.to_string());

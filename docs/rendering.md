@@ -1096,9 +1096,16 @@ happened to agree here because every member was a `vec4`. A `vec3` anywhere but
 last would have put every later lane four bytes early, with nothing failing to say
 so.
 
-None of those rules are implemented in the generator. `wesl::eval::ty_eval_ty`
+None of those *type* rules are implemented in the generator. `wesl::eval::ty_eval_ty`
 resolves a member's type and `wgsl-types` gives it the spec's own `size_of` /
-`align_of`, including the `@size`/`@align` attributes, nested structs and `f16`.
+`align_of`, nested structs and `f16` included; the member's own `@size`/`@align`
+are read with `wesl::eval::EvalAttrs`, which is how `size_of` reads them when it
+sizes a whole struct — so the placement fold and the `min_binding_size` computed
+from that one cannot read an attribute two ways, and the generator asserts they
+agree for every uniform struct. A member that is *wrong* rather than merely
+unspellable — an `@if` gate, which would make one Rust struct answer for both the
+plain and the residual artifact; a non-power-of-two `@align`; a `@size` below its
+type's own — stops the build instead.
 What is left is where the *host* has a choice: which Rust spelling occupies a given
 stride, and the explicit padding fields that put the real members on their offsets
 (explicit, so the struct has no *implicit* padding and stays `Pod`; a `Default` of

@@ -58,13 +58,12 @@ impl Module {
 
 /// Read every `.wesl` in the tree, at any depth.
 ///
-/// Deterministic, because `read_dir` order is not and the generated file's module order
-/// is this one: a directory's own files sorted by name, then its subdirectories sorted
-/// by name, depth-first.
+/// Recursive — `lib/` is a placement rule at any depth, not a fixed list, and a walk of
+/// `["", "lib"]` gave anything below it no mirror at all without saying so.
 ///
-/// **Recursive.** `lib/` is a placement rule rather than a fixed list — a module at
-/// `lib/ramp/stops.wesl` links exactly as one at `lib/stops.wesl` does — and a walk of
-/// `["", "lib"]` gave anything deeper no mirror at all, without saying so.
+/// Deterministic, because `read_dir` order is not and the generated file's module order
+/// is this one: a directory's own files sorted, then its subdirectories sorted,
+/// depth-first.
 pub(crate) fn read_tree(shader_dir: &Path) -> Vec<Module> {
     let mut out: Vec<Module> = Vec::new();
     walk(shader_dir, "", &mut out);
@@ -74,7 +73,9 @@ pub(crate) fn read_tree(shader_dir: &Path) -> Vec<Module> {
 fn walk(at: &Path, prefix: &str, out: &mut Vec<Module>) {
     let (mut files, mut dirs) = (Vec::new(), Vec::new());
     for entry in std::fs::read_dir(at).unwrap_or_else(|e| panic!("read {}: {e}", at.display())) {
-        let path = entry.expect("shader dir entry").path();
+        let path = entry
+            .unwrap_or_else(|e| panic!("read an entry of {}: {e}", at.display()))
+            .path();
         if path.is_dir() {
             dirs.push(path);
         } else if path.extension().is_some_and(|e| e == "wesl") {
@@ -85,10 +86,9 @@ fn walk(at: &Path, prefix: &str, out: &mut Vec<Module>) {
     dirs.sort();
 
     for p in files {
-        let stem = name_of(&p);
         let src = std::fs::read_to_string(&p)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", p.display()));
-        let module = Module::parse(&format!("{prefix}{stem}"), &src);
+        let module = Module::parse(&format!("{prefix}{}", utf8(p.file_stem(), &p)), &src);
         // Two shaders with the same file name in different directories would land in
         // one Rust module and silently merge their items. Refused rather than merged —
         // the mirror's whole job is that one declaration answers for one thing.
@@ -101,14 +101,15 @@ fn walk(at: &Path, prefix: &str, out: &mut Vec<Module>) {
         out.push(module);
     }
     for d in dirs {
-        walk(&d, &format!("{prefix}{}/", name_of(&d)), out);
+        // The whole name, where a file contributes its stem: `ramp.v2/` and `ramp/` are
+        // two directories, and trimming at the dot would silently make them one.
+        walk(&d, &format!("{prefix}{}/", utf8(d.file_name(), &d)), out);
     }
 }
 
-/// A path's final component, which is a WESL module's name or a directory's.
-fn name_of(p: &Path) -> &str {
-    p.file_stem()
-        .and_then(|s| s.to_str())
+/// A path component as a `str`, refused rather than lossily converted.
+fn utf8<'a>(name: Option<&'a std::ffi::OsStr>, p: &Path) -> &'a str {
+    name.and_then(|s| s.to_str())
         .unwrap_or_else(|| panic!("{} has no usable name", p.display()))
 }
 
@@ -121,8 +122,13 @@ mod tests {
 
     impl Tree {
         /// `files` are `(path under the root, source)`, directories created as needed.
+        ///
+        /// The process id is in the name because this project routinely runs the suite
+        /// from several worktrees at once, and a fixed name would have two runs deleting
+        /// each other's tree.
         fn new(tag: &str, files: &[(&str, &str)]) -> Self {
-            let root = std::env::temp_dir().join(format!("stark-shaders-build-{tag}"));
+            let root = std::env::temp_dir()
+                .join(format!("stark-shaders-build-{}-{tag}", std::process::id()));
             let _ = std::fs::remove_dir_all(&root);
             for (path, src) in files {
                 let at = root.join(path);
@@ -181,6 +187,17 @@ mod tests {
         assert_eq!(
             tree.read(),
             [("lib/ramp/stops".to_string(), "stops".to_string())]
+        );
+    }
+
+    /// A directory keeps its whole name. Trimming at the dot the way a file's stem is
+    /// trimmed would make `ramp.v2/` and `ramp/` one WESL path.
+    #[test]
+    fn a_directory_with_a_dot_in_its_name_keeps_it() {
+        let tree = Tree::new("dotted", &[("lib/ramp.v2/stops.wesl", "")]);
+        assert_eq!(
+            tree.read(),
+            [("lib/ramp.v2/stops".to_string(), "stops".to_string())]
         );
     }
 

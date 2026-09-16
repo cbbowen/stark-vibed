@@ -36,18 +36,23 @@ pub(crate) fn bindings_do_not_collide(
     artifact: &str,
 ) {
     let mut ctx = module_context(linked);
+    let source = |name: &str| {
+        sourcemap
+            .get_decl(name)
+            .map_or_else(|| artifact.to_string(), |(path, _)| path.to_string())
+    };
     let mut seen: Vec<(u32, u32, String, String)> = Vec::new();
     for d in &linked.global_declarations {
         let GlobalDeclaration::Declaration(decl) = &**d else {
             continue;
         };
-        let name = decl.ident.name().to_string();
-        let from = sourcemap
-            .get_decl(&name)
-            .map_or_else(|| artifact.to_string(), |(path, _)| path.to_string());
-        let Some((g, b)) = group_binding(decl, &mut ctx, &format!("`{from}`'s `{name}`")) else {
+        let name = decl.ident.name();
+        let Some((g, b)) = group_binding(decl, &mut ctx, || {
+            format!("`{}`'s `{name}`", source(name.as_str()))
+        }) else {
             continue;
         };
+        let (name, from) = (name.to_string(), source(name.as_str()));
         if let Some((_, _, other, other_from)) = seen
             .iter()
             .find(|(sg, sb, _, sf)| *sg == g && *sb == b && *sf != from)
