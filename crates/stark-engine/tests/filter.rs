@@ -1354,14 +1354,9 @@ fn a_clipped_focal_blur_stays_inside_the_paint() {
 /// **A blur reports the light its aperture gathered, or none — never a hue it
 /// invented** (§21.12).
 ///
-/// `make_kernel` deliberately never normalizes, so every lane of the convolution
-/// planes carries a factor of the kernel's own sum and the resolve's division by the
-/// blurred border weight is what normalizes them. The divisor that un-premultiplies
-/// the *light* has to be floored on that same scale: an absolute floor sits orders of
-/// magnitude under the planes' own round-off, so where the aperture gathered no
-/// coverage at all the resolve divided noise by noise.
-///
-/// A ring aperture over an isolated mark is that case — at the mark's own texel the
+/// A ring aperture over an isolated mark is the case where the aperture gathers no
+/// coverage at all, and the un-premultiply then divides round-off by round-off
+/// (`filter_common::blur_read`) — at the mark's own texel the
 /// disc is all bare canvas — and the clipped path is where it shows, since a clip
 /// lays the blurred *color* at the backdrop's own coverage rather than at the blur's.
 /// This picture holds red paint on warm paper and nothing that leads green; the
@@ -1408,9 +1403,17 @@ fn a_ring_blur_that_gathers_nothing_invents_no_hue() {
         "red paint on warm paper already leads green by {before} — the case cannot \
          tell an invented hue from the picture's own",
     );
+    // The clip confines the blur to the mark, so that is where it has to have rewritten
+    // something — a handful of texels would be a pass that barely ran, and the hue
+    // below one nothing had the chance to invent.
+    let rewritten = (0..shut.height)
+        .flat_map(|y| (0..shut.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| shut.pixel(x, y) != sharp.pixel(x, y))
+        .count();
     assert!(
-        !images_match(&sharp, &shut, 0),
-        "the blur changed nothing, so it gathered nothing to be wrong about",
+        rewritten > 100,
+        "the clipped blur rewrote {rewritten} texels, so it gathered nothing to be \
+         wrong about",
     );
     let after = greenest(&shut);
     assert!(

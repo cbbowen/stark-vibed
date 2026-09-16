@@ -553,12 +553,8 @@ fn blur_read(frag: vec2<f32>) -> Blurred {
     let w = max(aux.y, 1e-6);
     // The un-premultiply's guard is **relative to `w`**, because every lane here
     // carries a factor of the kernel's own sum (`make_kernel` never normalizes, see
-    // `blur.wesl`) and `w` is that sum. An absolute floor sits orders of magnitude
-    // under the planes' round-off, so where the kernel gathered no coverage — a ring
-    // aperture over an isolated mark — this divided noise by noise and handed back an
-    // arbitrary hue, which the clipped path then laid down at the backdrop's own
-    // coverage. `light.w / w` is the coverage, so the floor is the one every other
-    // un-premultiply of a composited target uses.
+    // `blur.wesl`) and `w` is that sum. `light.w / w` is the coverage, so the floor is
+    // the one every other un-premultiply of a composited target uses.
     let lin = max(
         light_to_linear(light.xyz / max(light.w, COVERAGE_EPS * w)),
         vec3<f32>(0.0),

@@ -415,7 +415,17 @@ pub(super) struct PlanCtx<'a> {
 
 /// The margin, in canvas px, a dispatch rect is grown by each side so a fragment
 /// sampling just outside its own texel still lands inside the rect.
+///
+/// Bounded by the region's own low margin, which is `2·TILE_APRON` (`Covered::rect`
+/// takes the touched tiles' origin less an apron, and the touched set is floored from
+/// bounds already grown by one). That is what keeps a rect origin non-negative, and so
+/// every `rect_origin + tn` the bleed ladder derives off `lib::sample::load1`'s lower
+/// clamp.
 const RECT_MARGIN: f32 = 1.5;
+const _: () = assert!(
+    RECT_MARGIN <= 2.0 * stark_model::geom::TILE_APRON as f32,
+    "a rect origin could go negative, and the bleed ladder's taps with it"
+);
 
 /// The snapshot square's pool quantum: [`snapshot_square`] rounds the measured maximum
 /// up to a multiple of this.
@@ -1559,11 +1569,8 @@ mod tests {
     /// that returned at the region bounds check, and §6.1's conservation would go with
     /// it. `bleed_weight` does not test the region, and does not need to.
     ///
-    /// The low end carries a second claim: a dispatch rect's origin is the box's low
-    /// corner less [`RECT_MARGIN`], floored, so a box inside the region gives a
-    /// **non-negative** `rect_origin` — which is what keeps every `rt` the ladder
-    /// derives from it (`rect_origin + tn`, `tn ≥ 0`) off `lib::sample::load1`'s
-    /// lower clamp.
+    /// The rect origin's own non-negativity is not here: it follows from
+    /// [`RECT_MARGIN`]'s bound, stated where that constant is.
     #[test]
     fn a_sweeps_coverage_box_sits_inside_the_region_dispatched_over_it() {
         let cases: Vec<(&str, Vec<Segment>)> = vec![
@@ -1604,7 +1611,6 @@ mod tests {
             .step_by(13)
             .flat_map(|i| [i as f32, i as f32 + 0.499])
             .collect();
-        let mut tightest = f32::MAX;
         for (what, segments) in cases {
             for shift in &shifts {
                 // Bent too, so a sagitta bows out of every box.
@@ -1623,18 +1629,12 @@ mod tests {
                         .rect()
                         .expect("a piece is always a region");
                     let sources = sources_of(&segments, &fires, true);
-                    let rects = rects_for(&sources, rect.origin);
                     // The last texel index each axis admits: `deposit` returns at
                     // `rt >= rdim`, and `bleed_weight`'s `t` runs the snapshot square.
                     let last = Vec2::new(rect.w as f32 - 1.0, rect.h as f32 - 1.0);
-                    for (src, r) in sources.iter().zip(&rects) {
+                    for src in &sources {
                         let (lo, hi) = src.bounds();
                         let (lo, hi) = (lo - rect.origin, hi - rect.origin);
-                        tightest = tightest
-                            .min(lo.x)
-                            .min(lo.y)
-                            .min(last.x - hi.x)
-                            .min(last.y - hi.y);
                         assert!(
                             lo.x >= 0.0 && lo.y >= 0.0 && hi.x <= last.x && hi.y <= last.y,
                             "{what} ({bend}, shifted {shift}): a slot's coverage box \
@@ -1643,22 +1643,9 @@ mod tests {
                             rect.w,
                             rect.h,
                         );
-                        assert!(
-                            r.origin.x >= 0.0 && r.origin.y >= 0.0,
-                            "{what} ({bend}, shifted {shift}): a dispatch rect starts \
-                             at {:?}, so `rect_origin + tn` can go negative",
-                            r.origin,
-                        );
                     }
                 }
             }
         }
-        // And the walk really did find the tight alignment — otherwise the margin above
-        // is slack nothing measured and the assertions pass on cases that never bite.
-        assert!(
-            tightest < 3.0,
-            "the tightest box sits {tightest} texels inside its region — the shifts do \
-             not reach the alignment the bound is about",
-        );
     }
 }

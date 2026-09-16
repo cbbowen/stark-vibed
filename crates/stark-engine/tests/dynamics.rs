@@ -2254,11 +2254,7 @@ fn a_wet_deposit_never_stores_an_opacity_over_one() {
     let (worst, over) = coords
         .iter()
         .filter_map(|c| engine.tile_channels(LayerId::ROOT, *c))
-        .flat_map(|ch| {
-            (0..ch.height.len())
-                .map(|i| ch.color[i * 4 + 3])
-                .collect::<Vec<_>>()
-        })
+        .flat_map(|ch| (0..ch.height.len()).map(move |i| ch.color[i * 4 + 3]))
         .fold((0.0f32, 0usize), |(worst, over), op| {
             (worst.max(op), over + usize::from(op > 1.0))
         });
@@ -2266,5 +2262,11 @@ fn a_wet_deposit_never_stores_an_opacity_over_one() {
         worst <= 1.0,
         "{over} texels store a per-unit opacity over 1, worst {worst} — an alpha above \
          1 is not a material (§6.1)",
+    );
+    // With no drain the core mints at exactly 1, so a run that stays well under it
+    // never reached the regime the bound is about.
+    assert!(
+        worst > 0.99,
+        "the stroke's heaviest texel stores {worst}, so nothing here approached the cap",
     );
 }
