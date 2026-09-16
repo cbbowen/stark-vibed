@@ -154,7 +154,7 @@ pub(super) fn stamp_module(
             Lane::Ceiling => "stark stamp ceiling",
             Lane::Plain => "stark stamp",
         }),
-        source: wgpu::ShaderSource::Wgsl(color_space.stamp_shader(lane).into()),
+        source: wgpu::ShaderSource::Wgsl(color_space.stamp_shader(lane).wgsl.into()),
     })
 }
 
@@ -228,14 +228,18 @@ pub(super) fn build_swept_kit(
         // (`accum::MAX_LANES`).
         ceiling_target(color_space),
     ];
-    let sweep_pipeline = |label, module, fs, targets: &[Option<wgpu::ColorTargetState>]| {
+    // The same two records `stamp_module` compiled, for the entry points the
+    // pipelines below name (§6.10).
+    let plain = color_space.stamp_shader(Lane::Plain);
+    let ceiling = color_space.stamp_shader(Lane::Ceiling);
+    let sweep_pipeline = |label, module, vs, fs, targets: &[Option<wgpu::ColorTargetState>]| {
         desc::render_pipeline(
             device,
             desc::RenderPipe {
                 label,
                 layout: &layout,
                 module,
-                vs: "vs_main",
+                vs,
                 fs,
                 primitive: desc::QUAD_STRIP,
                 buffers: &[Some(stark_shaders::mirror::stamp::segment_instance_layout(
@@ -248,13 +252,15 @@ pub(super) fn build_swept_kit(
     let pipeline = sweep_pipeline(
         "stark sweep pipeline",
         shader,
-        "fs_main",
+        plain.vs_main,
+        plain.fs_main,
         &targets[..2 + usize::from(color_space.has_resid())],
     );
     let pipeline_ceiling = sweep_pipeline(
         "stark sweep ceiling pipeline",
         shader_ceiling,
-        "fs_main",
+        ceiling.vs_main,
+        ceiling.fs_main,
         &targets,
     );
     // The lane alone, for the stamp loop's per-segment draw of it (§6.2) — over
@@ -263,7 +269,8 @@ pub(super) fn build_swept_kit(
     let levels_pipeline = sweep_pipeline(
         "stark sweep levels pipeline",
         shader,
-        "fs_levels",
+        plain.vs_main,
+        plain.fs_levels,
         &[ceiling_target(color_space)],
     );
 
@@ -943,9 +950,10 @@ pub(super) fn build_integrate_pipeline(
     color_space: &dyn ColorSpace,
 ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
     let resid = color_space.has_resid();
+    let integrate = stark_shaders::integrate(color_space.resid());
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark integrate"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::integrate(color_space.resid()).wgsl.into()),
+        source: wgpu::ShaderSource::Wgsl(integrate.wgsl.into()),
     });
     let frag = wgpu::ShaderStages::FRAGMENT;
     let bgl = desc::layout_for(device, "stark integrate bgl", INTEGRATE_SLOTS, frag, resid);
@@ -957,7 +965,7 @@ pub(super) fn build_integrate_pipeline(
         "stark integrate pipeline",
         &layout,
         &shader,
-        ("vs_main", "fs_main"),
+        (integrate.vs_main, integrate.fs_main),
         // The space's own three, as `ChannelFormats` counts them — the last of the
         // hand-counted `[..2 + usize::from(resid)]` slices (§6.7).
         &crate::gpu::channels::ChannelFormats::of(color_space).targets(),

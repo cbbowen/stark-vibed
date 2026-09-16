@@ -463,11 +463,10 @@ impl TransformRenderer {
         let formats = ChannelFormats::of(color_space);
         let resid = formats.has_resid();
 
+        let xf = stark_shaders::transform(color_space.resid());
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark transform"),
-            source: wgpu::ShaderSource::Wgsl(
-                stark_shaders::transform(color_space.resid()).wgsl.into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(xf.wgsl.into()),
         });
 
         let frag = wgpu::ShaderStages::FRAGMENT;
@@ -558,37 +557,37 @@ impl TransformRenderer {
         let parcel_pipeline = quad(
             "stark transform parcel",
             &quad_layout,
-            "fs_parcel",
+            xf.fs_parcel,
             &paint,
-            "vs_quad",
+            xf.vs_quad,
         );
         let mask_pipeline = quad(
             "stark transform mask",
             &mask_layout,
-            "fs_mask",
+            xf.fs_mask,
             &mask,
-            "vs_quad",
+            xf.vs_quad,
         );
         let parcel_gated_pipeline = quad(
             "stark transform parcel gated",
             &gated_layout,
-            "fs_parcel_gated",
+            xf.fs_parcel_gated,
             &paint,
-            "vs_gated",
+            xf.vs_gated,
         );
         let mask_gated_pipeline = quad(
             "stark transform mask gated",
             &gated_mask_layout,
-            "fs_mask_gated",
+            xf.fs_mask_gated,
             &mask_union,
-            "vs_gated",
+            xf.vs_gated,
         );
         let combine_pipeline = desc::fullscreen_pipeline(
             device,
             "stark transform combine",
             &combine_layout,
             &shader,
-            ("vs_fill", "fs_combine"),
+            (xf.vs_fill, xf.fs_combine),
             &paint,
         );
         // The residue is a *gated* pass — it reads `qg`'s source rect (`fs_mask_base`)
@@ -598,7 +597,7 @@ impl TransformRenderer {
             "stark transform mask base",
             &gated_mask_layout,
             &shader,
-            ("vs_fill", "fs_mask_base"),
+            (xf.vs_fill, xf.fs_mask_base),
             &mask,
         );
 

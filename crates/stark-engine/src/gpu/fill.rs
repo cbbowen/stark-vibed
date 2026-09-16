@@ -101,9 +101,10 @@ impl FillRenderer {
         let device = &ctx.device;
         let formats = ChannelFormats::of(color_space.as_ref());
 
+        let fill = stark_shaders::fill(color_space.resid());
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark fill"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::fill(color_space.resid()).wgsl.into()),
+            source: wgpu::ShaderSource::Wgsl(fill.wgsl.into()),
         });
         let frag = wgpu::ShaderStages::FRAGMENT;
         let bindings = desc::Bindings::new(
@@ -120,7 +121,7 @@ impl FillRenderer {
             "stark fill pipeline",
             &layout,
             &shader,
-            ("vs_main", "fs_main"),
+            (fill.vs_main, fill.fs_main),
             &targets,
         );
 

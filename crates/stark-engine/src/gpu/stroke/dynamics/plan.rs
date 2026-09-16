@@ -1068,6 +1068,39 @@ mod tests {
     use crate::gpu::stroke::segments::testing::{record, run, seg, seg_between, smearing};
     use stark_model::geom::Vec2;
 
+    /// Every kernel the plan's grid is dispatched over declares that grid's own side.
+    ///
+    /// [`groups_for`] turns texels into workgroups through `TILE_WG`, and the inverse
+    /// (`groups * TILE_WG`) turns them back — arithmetic that is right only while the
+    /// kernels reading it are `@workgroup_size(TILE_WG, TILE_WG)`. The declarations say
+    /// so (§6.10), so they are asked rather than assumed. Device-free: both sides are
+    /// generated.
+    #[test]
+    fn the_tile_kernels_are_dispatched_over_the_grid_they_declare() {
+        let d = stark_shaders::dynamics(stark_shaders::Resid::Without);
+        let l = stark_shaders::liquify(stark_shaders::Resid::Without);
+        let tile = [
+            d.snapshot,
+            d.bleed_weight,
+            d.exchange,
+            d.deposit,
+            d.deposit_coarse,
+            d.cell_hoist,
+            d.settle,
+            l.snapshot_field,
+            l.warp,
+            l.warp_apply,
+        ];
+        for ep in tile {
+            assert_eq!(
+                ep.workgroup_size,
+                [TILE_WG, TILE_WG, 1],
+                "`{}` is dispatched over `groups_for`'s grid but declares another",
+                ep.name,
+            );
+        }
+    }
+
     // --- the slot's lane packing -------------------------------------------
 
     /// Every field of the plan's slot reaches the member of `Stamp` the shader reads

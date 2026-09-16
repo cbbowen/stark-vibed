@@ -58,9 +58,9 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Slot};
 use crate::gpu::uniforms::UniformSlots;
 use crate::view::{Extent2, ViewTransform};
+use stark_shaders::mirror::blur::Fft as FftUniform;
 use stark_shaders::mirror::blur::binding as bb;
 use stark_shaders::mirror::blur::decl as bd;
-use stark_shaders::mirror::blur::{BLUR_WG, Fft as FftUniform};
 
 use super::filter::FilterPass;
 use super::group::FilterDraw;
@@ -90,9 +90,10 @@ pub(crate) struct BlurPass {
 impl BlurPass {
     pub(crate) fn new(ctx: &GpuContext) -> Self {
         let device = &ctx.device;
+        let blur = stark_shaders::blur();
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark blur"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::blur().wgsl.into()),
+            source: wgpu::ShaderSource::Wgsl(blur.wgsl.into()),
         });
         let bgl = desc::layout_for(
             device,
@@ -102,21 +103,13 @@ impl BlurPass {
             false,
         );
         let layout = desc::pipeline_layout(device, "stark blur layout", &[Some(&bgl)]);
-        let cpipe = |label: &str, entry: &str| {
-            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(label),
-                layout: Some(&layout),
-                module: &module,
-                entry_point: Some(entry),
-                compilation_options: Default::default(),
-                cache: None,
-            })
-        };
+        let cpipe =
+            |label: &str, entry| desc::compute_pipeline(device, label, &layout, &module, entry);
         Self {
-            fft_both: cpipe("stark blur fft", "fft_both"),
-            fft_one: cpipe("stark blur kernel fft", "fft_one"),
-            make_kernel: cpipe("stark blur make kernel", "make_kernel"),
-            apply_kernel: cpipe("stark blur apply kernel", "apply_kernel"),
+            fft_both: cpipe("stark blur fft", blur.fft_both),
+            fft_one: cpipe("stark blur kernel fft", blur.fft_one),
+            make_kernel: cpipe("stark blur make kernel", blur.make_kernel),
+            apply_kernel: cpipe("stark blur apply kernel", blur.apply_kernel),
             bgl,
         }
     }
@@ -349,6 +342,20 @@ enum Pipe {
     ApplyKernel,
 }
 
+impl Pipe {
+    /// The kernel this dispatch runs — and so the `@workgroup_size` its grid is
+    /// counted in (§6.10).
+    fn entry(self) -> stark_shaders::EntryPoint {
+        let blur = stark_shaders::blur();
+        match self {
+            Self::FftBoth => blur.fft_both,
+            Self::FftOne => blur.fft_one,
+            Self::MakeKernel => blur.make_kernel,
+            Self::ApplyKernel => blur.apply_kernel,
+        }
+    }
+}
+
 /// Which cached bind group one dispatch reads through: the source set, and whether the
 /// destination is the other set or the kernel texture. Four per frame however many
 /// dispatches — two ping-pong phases, two kernel-chain endings.
@@ -372,7 +379,7 @@ struct Dispatch {
     /// The dynamic-offset slot of this dispatch's [`FftUniform`] — its own index,
     /// since the two lists are built in one loop.
     slot: u32,
-    groups: (u32, u32),
+    groups: (u32, u32, u32),
 }
 
 /// One focal-blur layer's share of the frame: which filter slot it serves, and
@@ -567,7 +574,7 @@ impl BlurFrame {
                 Binds::BToKernel => 3,
             }];
             cp.set_bind_group(0, bind, &[UniformSlots::<FftUniform>::offset(d.slot)]);
-            cp.dispatch_workgroups(d.groups.0, d.groups.1, 1);
+            cp.dispatch_workgroups(d.groups.0, d.groups.1, d.groups.2);
         }
     }
 }
@@ -691,7 +698,7 @@ fn plan(
                 },
                 Pipe::MakeKernel,
                 Binds::BToA,
-                full_groups(conv),
+                (conv.width, conv.height),
             );
             b.sweep(conv, Pipe::FftOne, -1.0, true, true);
             kern_holds = Some((aperture, radius, conv));
@@ -710,7 +717,7 @@ fn plan(
             },
             Pipe::ApplyKernel,
             if from_a { Binds::AToB } else { Binds::BToA },
-            full_groups(conv),
+            (conv.width, conv.height),
         );
         b.sweep(conv, Pipe::FftBoth, 1.0, !from_a, false);
         jobs.push(Job {
@@ -733,12 +740,6 @@ fn for_conv(conv: Extent2) -> FftUniform {
     }
 }
 
-/// The workgroup grid covering every texel of `conv` — `make_kernel` and
-/// `apply_kernel`'s shape.
-fn full_groups(conv: Extent2) -> (u32, u32) {
-    (conv.width.div_ceil(BLUR_WG), conv.height.div_ceil(BLUR_WG))
-}
-
 /// [`plan`]'s pen: the two lists grown in step, so slot `i` is dispatch `i`'s by
 /// construction rather than by two counters agreeing.
 struct Builder {
@@ -747,7 +748,10 @@ struct Builder {
 }
 
 impl Builder {
-    fn push(&mut self, u: FftUniform, pipe: Pipe, binds: Binds, groups: (u32, u32)) {
+    /// `extent` is the texel grid the kernel covers; the workgroup count comes from
+    /// the kernel's own declaration rather than from a host division (§6.10).
+    fn push(&mut self, u: FftUniform, pipe: Pipe, binds: Binds, extent: (u32, u32)) {
+        let groups = pipe.entry().groups(extent);
         let slot = self.uniforms.len() as u32;
         self.uniforms.push(u);
         self.dispatches.push(Dispatch {
@@ -776,7 +780,7 @@ impl Builder {
             // The lines run along the other axis; each pass is n/2 butterflies
             // per line.
             let lines = if axis == 0 { h } else { w };
-            let groups = ((n / 2).div_ceil(BLUR_WG), lines.div_ceil(BLUR_WG));
+            let extent = (n / 2, lines);
             for s in 0..n.trailing_zeros() {
                 let last = i + 1 == total;
                 let binds = match (from_a, into_kernel && last) {
@@ -794,7 +798,7 @@ impl Builder {
                     },
                     pipe,
                     binds,
-                    groups,
+                    extent,
                 );
                 from_a = !from_a;
                 i += 1;

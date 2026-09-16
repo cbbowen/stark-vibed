@@ -159,9 +159,10 @@ impl MergeRenderer {
         // The channel targets both of this module's own passes write.
         let targets = formats.targets();
 
+        let merge = stark_shaders::merge(color_space.resid());
         let merge_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark merge"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::merge(color_space.resid()).wgsl.into()),
+            source: wgpu::ShaderSource::Wgsl(merge.wgsl.into()),
         });
         let direct_bindings =
             desc::Bindings::new(device, "stark merge bgl", MERGE_SLOTS, frag, resid);
@@ -174,15 +175,16 @@ impl MergeRenderer {
                 &[Some(direct_bindings.layout())],
             ),
             &merge_shader,
-            ("vs_main", "fs_main"),
+            (merge.vs_main, merge.fs_main),
             &targets,
         );
 
         // One layout for both slab directions: they take the same shapes in and put
         // the same shapes out, which is what makes them one module (`slab.wesl`).
+        let slab_shader_src = stark_shaders::slab(color_space.resid());
         let slab_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark slab"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::slab(color_space.resid()).wgsl.into()),
+            source: wgpu::ShaderSource::Wgsl(slab_shader_src.wgsl.into()),
         });
         let slab_bindings = desc::Bindings::new(device, "stark slab bgl", SLAB_SLOTS, frag, resid);
         let slab_layout =
@@ -193,7 +195,7 @@ impl MergeRenderer {
                 label,
                 &slab_layout,
                 &slab_shader,
-                ("vs_main", fs),
+                (slab_shader_src.vs_main, fs),
                 &targets,
             )
         };
@@ -203,8 +205,8 @@ impl MergeRenderer {
             formats,
             direct,
             direct_bindings,
-            expand: slab("stark slab expand", "fs_expand"),
-            store: slab("stark slab store", "fs_store"),
+            expand: slab("stark slab expand", slab_shader_src.fs_expand),
+            store: slab("stark slab store", slab_shader_src.fs_store),
             slab_bindings,
             blend,
             filter,

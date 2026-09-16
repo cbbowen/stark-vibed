@@ -48,6 +48,26 @@ pub struct EntryPoint {
     pub uses: &'static [Use],
 }
 
+impl EntryPoint {
+    /// The workgroup counts covering `extent`, at this kernel's own
+    /// `@workgroup_size`.
+    ///
+    /// The host used to divide by a mirrored `const` and trust that the kernel
+    /// declared the same one — `TILE_WG`, `BLUR_WG`, the bake's scan width. The
+    /// declaration is right here, so the division goes through it (§6.10).
+    ///
+    /// # Panics
+    /// On anything but a compute entry point, which declares `[0, 0, 0]`.
+    pub const fn groups(&self, extent: (u32, u32)) -> (u32, u32, u32) {
+        let [x, y, _] = self.workgroup_size;
+        assert!(
+            x > 0 && y > 0,
+            "`groups` asked of an entry point that declares no workgroup size",
+        );
+        (extent.0.div_ceil(x), extent.1.div_ceil(y), 1)
+    }
+}
+
 /// One binding an entry point reaches, and how.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Use {

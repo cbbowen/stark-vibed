@@ -83,11 +83,10 @@ impl TilePass {
         // The residual channel a pigment space carries (§6.7): a third sampled tile
         // texture and a third target, on the shader variant built for it.
         let resid = formats.has_resid();
+        let composite = stark_shaders::composite(color_space.resid());
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark composite"),
-            source: wgpu::ShaderSource::Wgsl(
-                stark_shaders::composite(color_space.resid()).wgsl.into(),
-            ),
+            source: wgpu::ShaderSource::Wgsl(composite.wgsl.into()),
         });
 
         // Vertex-only: the fragment stage gets canvas position as a varying, and the
@@ -116,8 +115,8 @@ impl TilePass {
                 label: "stark composite pipeline",
                 layout: &layout,
                 module: &shader,
-                vs: "vs_main",
-                fs: "fs_main",
+                vs: composite.vs_main,
+                fs: composite.fs_main,
                 primitive: desc::QUAD_STRIP,
                 buffers: &[Some(stark_shaders::mirror::composite::instance_layout(
                     wgpu::VertexStepMode::Instance,
@@ -127,9 +126,10 @@ impl TilePass {
         );
 
         // ---- Matte layers, inside pass A (§15.4), on pass A's own view group.
+        let matte = stark_shaders::matte(color_space.resid());
         let matte_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark matte"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::matte(color_space.resid()).wgsl.into()),
+            source: wgpu::ShaderSource::Wgsl(matte.wgsl.into()),
         });
         let ramp_bgl = desc::layout_for(device, "stark matte ramp bgl", RAMP_SLOTS, frag, resid);
         let matte_layout = desc::pipeline_layout(
@@ -151,8 +151,8 @@ impl TilePass {
                 label: "stark matte pipeline",
                 layout: &matte_layout,
                 module: &matte_shader,
-                vs: "vs_main",
-                fs: "fs_main",
+                vs: matte.vs_main,
+                fs: matte.fs_main,
                 primitive: desc::QUAD_STRIP,
                 buffers: &[Some(stark_shaders::mirror::matte::matte_instance_layout(
                     wgpu::VertexStepMode::Instance,

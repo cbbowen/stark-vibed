@@ -18,6 +18,7 @@
 //! its pipelines, and the one decision that is this pass's — a tile the layer does
 //! not have is nothing to erase ([`BareCanvas::Skip`]).
 
+use stark_shaders::Lane;
 use stark_shaders::mirror::erase::binding as eb;
 use stark_shaders::mirror::erase::decl as ed;
 
@@ -141,15 +142,19 @@ pub(super) fn build_erase_kit(
         super::swept::ceiling_target(color_space),
         desc::blended_target(ACCUM_FORMAT, Some(color_space.aux_blend())),
     ];
-    let sweep_pipeline = |label, module, targets: &[Option<wgpu::ColorTargetState>]| {
+    // The same two records `swept::stamp_module` compiled, for the entry points the
+    // two pipelines below name (§6.10).
+    let plain = color_space.stamp_shader(Lane::Plain);
+    let ceiling = color_space.stamp_shader(Lane::Ceiling);
+    let sweep_pipeline = |label, module, vs, fs, targets: &[Option<wgpu::ColorTargetState>]| {
         desc::render_pipeline(
             device,
             desc::RenderPipe {
                 label,
                 layout: &layout,
                 module,
-                vs: "vs_main",
-                fs: "fs_erase",
+                vs,
+                fs,
                 primitive: desc::QUAD_STRIP,
                 buffers: &[Some(stark_shaders::mirror::stamp::segment_instance_layout(
                     wgpu::VertexStepMode::Instance,
@@ -158,17 +163,26 @@ pub(super) fn build_erase_kit(
             },
         )
     };
-    let sweep = sweep_pipeline("stark erase sweep pipeline", shader, &targets[..1]);
+    let sweep = sweep_pipeline(
+        "stark erase sweep pipeline",
+        shader,
+        plain.vs_main,
+        plain.fs_erase,
+        &targets[..1],
+    );
     let sweep_ceiling = sweep_pipeline(
         "stark erase sweep ceiling pipeline",
         shader_ceiling,
+        ceiling.vs_main,
+        ceiling.fs_erase,
         &targets,
     );
 
     let resid = color_space.has_resid();
+    let erase = stark_shaders::erase(color_space.resid());
     let integrate_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark erase"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::erase(color_space.resid()).wgsl.into()),
+        source: wgpu::ShaderSource::Wgsl(erase.wgsl.into()),
     });
     let frag = wgpu::ShaderStages::FRAGMENT;
     let integrate_bgl = desc::layout_for(device, "stark erase bgl", ERASE_SLOTS, frag, resid);
@@ -180,7 +194,7 @@ pub(super) fn build_erase_kit(
         "stark erase pipeline",
         &integrate_layout,
         &integrate_shader,
-        ("vs_main", "fs_main"),
+        (erase.vs_main, erase.fs_main),
         &crate::gpu::channels::ChannelFormats::of(color_space).targets(),
     );
 

@@ -21,6 +21,8 @@
 //! layout together with the list and the residual it was built from, so a group built
 //! through it cannot be handed a different pair.
 
+use stark_shaders::EntryPoint;
+
 use crate::gpu::context::GpuContext;
 
 // ---- bind group layout entries -------------------------------------------------
@@ -488,27 +490,51 @@ pub(crate) fn attach(
 
 /// What a render pipeline in this subsystem actually varies. Everything absent from
 /// this struct is a default no pass here has ever wanted to change.
+///
+/// The two stages are the shader's own [`EntryPoint`]s, not their names, so
+/// [`render_pipeline`] can check what the pass attaches against what the entry point
+/// writes — and so no call site spells a function name `wgpu` would only miss on a
+/// GPU.
 pub(crate) struct RenderPipe<'a> {
     pub label: &'a str,
     pub layout: &'a wgpu::PipelineLayout,
     /// One module for both stages — every shader here declares its vertex and
     /// fragment entry points together.
     pub module: &'a wgpu::ShaderModule,
-    pub vs: &'a str,
-    pub fs: &'a str,
+    pub vs: EntryPoint,
+    pub fs: EntryPoint,
     pub primitive: wgpu::PrimitiveState,
     pub buffers: &'a [Option<wgpu::VertexBufferLayout<'a>>],
     pub targets: &'a [Option<wgpu::ColorTargetState>],
 }
 
 /// A render pipeline, with the five fields no pass here varies filled in.
+///
+/// # Panics
+/// If a stage is handed the other stage's entry point, or if the color targets are
+/// not the ones the fragment entry point writes ([`targets_agree`]).
 pub(crate) fn render_pipeline(device: &wgpu::Device, p: RenderPipe<'_>) -> wgpu::RenderPipeline {
+    assert_eq!(
+        p.vs.stage,
+        wgpu::ShaderStages::VERTEX,
+        "`{}` builds its vertex stage from `{}`, which is not one",
+        p.label,
+        p.vs.name,
+    );
+    assert_eq!(
+        p.fs.stage,
+        wgpu::ShaderStages::FRAGMENT,
+        "`{}` builds its fragment stage from `{}`, which is not one",
+        p.label,
+        p.fs.name,
+    );
+    targets_agree(p.label, p.fs, p.targets);
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(p.label),
         layout: Some(p.layout),
         vertex: wgpu::VertexState {
             module: p.module,
-            entry_point: Some(p.vs),
+            entry_point: Some(p.vs.name),
             compilation_options: Default::default(),
             buffers: p.buffers,
         },
@@ -517,13 +543,38 @@ pub(crate) fn render_pipeline(device: &wgpu::Device, p: RenderPipe<'_>) -> wgpu:
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
             module: p.module,
-            entry_point: Some(p.fs),
+            entry_point: Some(p.fs.name),
             compilation_options: Default::default(),
             targets: p.targets,
         }),
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// Fail unless `targets` carries a state at exactly the `@location`s `fs` writes.
+///
+/// **A short target list is silent.** WebGPU discards a fragment output with no
+/// target, so a pass that stops one entry early loses that lane with nothing to say
+/// so — and the lists here are sliced by hand against the residual and the ceiling
+/// (`swept`, `erase`), which is where the count comes from. The entry point knows its
+/// own `@location`s (§6.10), so the two are compared rather than one trusted.
+///
+/// A `None` in the middle is a hole the space does not have (a residual at location 2
+/// with the ceiling at 3), and the shader writes no location there either — so the
+/// comparison is over the positions that carry a state, not over the length.
+fn targets_agree(label: &str, fs: EntryPoint, targets: &[Option<wgpu::ColorTargetState>]) {
+    let attached: Vec<u32> = targets
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.is_some())
+        .map(|(i, _)| i as u32)
+        .collect();
+    assert_eq!(
+        attached, fs.targets,
+        "`{label}` attaches color targets at {attached:?}, where `{}` writes {:?}",
+        fs.name, fs.targets,
+    );
 }
 
 /// [`render_pipeline`] for the **fullscreen triangle** shape: no vertex buffers, no
@@ -534,7 +585,7 @@ pub(crate) fn fullscreen_pipeline(
     label: &str,
     layout: &wgpu::PipelineLayout,
     module: &wgpu::ShaderModule,
-    entries: (&str, &str),
+    entries: (EntryPoint, EntryPoint),
     targets: &[Option<wgpu::ColorTargetState>],
 ) -> wgpu::RenderPipeline {
     render_pipeline(
@@ -550,6 +601,34 @@ pub(crate) fn fullscreen_pipeline(
             targets,
         },
     )
+}
+
+/// A compute pipeline over one kernel, with the fields no dispatch here varies filled
+/// in.
+///
+/// # Panics
+/// If `entry` is not a compute entry point.
+pub(crate) fn compute_pipeline(
+    device: &wgpu::Device,
+    label: &str,
+    layout: &wgpu::PipelineLayout,
+    module: &wgpu::ShaderModule,
+    entry: EntryPoint,
+) -> wgpu::ComputePipeline {
+    assert_eq!(
+        entry.stage,
+        wgpu::ShaderStages::COMPUTE,
+        "`{label}` dispatches `{}`, which is not a compute entry point",
+        entry.name,
+    );
+    device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some(label),
+        layout: Some(layout),
+        module,
+        entry_point: Some(entry.name),
+        compilation_options: Default::default(),
+        cache: None,
+    })
 }
 
 /// An instanced quad drawn as a triangle strip — the shape every pass that

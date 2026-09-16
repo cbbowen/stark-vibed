@@ -1308,9 +1308,8 @@ impl<'a> DynamicsRun<'a> {
                     cpass.set_pipeline(&kit.bake_pipeline);
                     cpass.set_bind_group(0, bind.bake(cur), &[off]);
                     cpass.set_bind_group(1, prefix_bg, &[]);
-                    // One BAKE_RES-wide workgroup per row: the shader's scan width is a
-                    // constant, so the two must agree.
-                    cpass.dispatch_workgroups(1, BAKE_RES, 1);
+                    let bake = kit.bake_groups;
+                    cpass.dispatch_workgroups(bake.0, bake.1, bake.2);
                     // Then the tool's own side of this segment's transfer, off the
                     // region as the segment found it. Reads `cur` and writes the other
                     // half, so the next segment's bake sees a tool that has travelled
@@ -1402,7 +1401,8 @@ impl<'a> DynamicsRun<'a> {
                     cpass.set_pipeline(&kit.bake_pipeline);
                     cpass.set_bind_group(0, bind.bake(cur), &[off]);
                     cpass.set_bind_group(1, prefix_bg, &[]);
-                    cpass.dispatch_workgroups(1, BAKE_RES, 1);
+                    let bake = kit.bake_groups;
+                    cpass.dispatch_workgroups(bake.0, bake.1, bake.2);
                     cpass.set_pipeline(&kit.settle_pipeline);
                     cpass.set_bind_group(0, bind.settle(), &[off]);
                     cpass.set_bind_group(1, prefix_bg, &[]);

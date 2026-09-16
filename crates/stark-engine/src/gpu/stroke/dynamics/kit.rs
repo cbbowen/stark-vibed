@@ -8,6 +8,7 @@
 use crate::colorspace::ColorSpace;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
+use stark_shaders::mirror::dynamics::BAKE_RES;
 use stark_shaders::mirror::dynamics::decl as d;
 use stark_shaders::mirror::dynamics_common::decl as sd;
 use stark_shaders::mirror::slice::decl as sld;
@@ -63,6 +64,10 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     /// read the whole pass instead of one mid-pass sample (`dynamics.wesl::bake`).
     pub(in crate::gpu::stroke) bake_pipeline: wgpu::ComputePipeline,
     pub(in crate::gpu::stroke) bake_bgl: wgpu::BindGroupLayout,
+    /// The grid the bake is dispatched over — one workgroup per row of the
+    /// [`BAKE_RES`]² reservoir, counted at the kernel's own scan width rather than
+    /// against a mirrored constant the host hopes it still declares (§6.10).
+    pub(in crate::gpu::stroke) bake_groups: (u32, u32, u32),
     pub(in crate::gpu::stroke) deposit_pipeline: wgpu::ComputePipeline,
     pub(in crate::gpu::stroke) deposit_bgl: wgpu::BindGroupLayout,
     /// The **coarse deposit** pair (§6.2), for the slots whose tip's shoulder lets
@@ -134,9 +139,10 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
 
     // ---- Region composite: the `composite` shader over region-sized targets
     // (color + the wide aux, so nothing is narrowed until the write-back).
+    let composite = stark_shaders::composite(color_space.resid());
     let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark dynamics composite"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::composite(color_space.resid()).wgsl.into()),
+        source: wgpu::ShaderSource::Wgsl(composite.wgsl.into()),
     });
     // Pass A's own tile layout, because the group this loop binds per tile is the one
     // the tile itself caches (`composite::tile_bind_group_layout`). The view group has
@@ -172,12 +178,12 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             label: "stark dynamics composite pipeline",
             layout: &composite_layout,
             module: &composite_shader,
-            vs: "vs_main",
+            vs: composite.vs_main,
             // `fs_raw`, NOT the screen path's `fs_main`: the loop's region must hold
             // the tile representation itself (opacity in alpha), not the
             // coverage-weighted channels pass A shows — the exchange reads this
             // region and the slice writes it back to persistent tiles.
-            fs: "fs_raw",
+            fs: composite.fs_raw,
             primitive: desc::QUAD_STRIP,
             buffers: &[Some(stark_shaders::mirror::composite::instance_layout(
                 wgpu::VertexStepMode::Instance,
@@ -197,13 +203,15 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // layouts, each built from the slot list in `slots`. Both modules take that
     // declaration from `dynamics_common.wesl`, so a pipeline's layout names the same
     // uniform whichever module it came from.
+    let dynamics = stark_shaders::dynamics(color_space.resid());
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark dynamics loop"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::dynamics(color_space.resid()).wgsl.into()),
+        source: wgpu::ShaderSource::Wgsl(dynamics.wgsl.into()),
     });
+    let liquify = stark_shaders::liquify(color_space.resid());
     let liquify_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark liquify field"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::liquify(color_space.resid()).wgsl.into()),
+        source: wgpu::ShaderSource::Wgsl(liquify.wgsl.into()),
     });
     // Every layout below is compute-visible and opens with the dynamic-offset stamp
     // slot; the binding numbers partition the module's group(0), so a layout lists only
@@ -237,31 +245,24 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     );
     let pipe_in = |module: &wgpu::ShaderModule,
                    label: &str,
-                   entry: &str,
+                   entry,
                    bgls: &[Option<&wgpu::BindGroupLayout>]| {
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some(label),
             bind_group_layouts: bgls,
             immediate_size: 0,
         });
-        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some(label),
-            layout: Some(&layout),
-            module,
-            entry_point: Some(entry),
-            compilation_options: Default::default(),
-            cache: None,
-        })
+        desc::compute_pipeline(device, label, &layout, module, entry)
     };
-    let cpipe = |label: &str, entry: &str, bgls: &[Option<&wgpu::BindGroupLayout>]| {
+    let cpipe = |label: &str, entry, bgls: &[Option<&wgpu::BindGroupLayout>]| {
         pipe_in(&module, label, entry, bgls)
     };
-    let lpipe = |label: &str, entry: &str, bgls: &[Option<&wgpu::BindGroupLayout>]| {
+    let lpipe = |label: &str, entry, bgls: &[Option<&wgpu::BindGroupLayout>]| {
         pipe_in(&liquify_module, label, entry, bgls)
     };
     let snapshot_pipeline = cpipe(
         "stark dynamics snapshot",
-        "snapshot",
+        dynamics.snapshot,
         &[Some(&snapshot_bgl)],
     );
     // The bleed ladder's mobility, hoisted (§6.2). It reads the prefix-τ volume, so it
@@ -269,36 +270,36 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // whole of it.
     let bleed_weight_pipeline = cpipe(
         "stark dynamics bleed weight",
-        "bleed_weight",
+        dynamics.bleed_weight,
         &[Some(&bleed_weight_bgl), Some(&prefix_bgl)],
     );
     let exchange_pipeline = cpipe(
         "stark dynamics exchange",
-        "exchange",
+        dynamics.exchange,
         &[Some(&exchange_bgl)],
     );
     // The bake reads the prefix-τ volume too (group 1) — the exposure weights in
     // its integral are that volume's own differences.
     let bake_pipeline = cpipe(
         "stark dynamics bake",
-        "bake",
+        dynamics.bake,
         &[Some(&bake_bgl), Some(&prefix_bgl)],
     );
     let deposit_pipeline = cpipe(
         "stark dynamics deposit",
-        "deposit",
+        dynamics.deposit,
         &[Some(&deposit_bgl), Some(&prefix_bgl)],
     );
     // The hoist takes the same prefix-τ taps the deposit's front half did; the coarse
     // deposit takes none, so its layout stops at group 0.
     let hoist_pipeline = cpipe(
         "stark dynamics cell hoist",
-        "cell_hoist",
+        dynamics.cell_hoist,
         &[Some(&hoist_bgl), Some(&prefix_bgl)],
     );
     let deposit_coarse_pipeline = cpipe(
         "stark dynamics deposit coarse",
-        "deposit_coarse",
+        dynamics.deposit_coarse,
         &[Some(&deposit_coarse_bgl)],
     );
     // The settle reads the prefix-τ volume too (group 1): its exposure is a pair of
@@ -306,7 +307,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // than over the few pixels of its coverage knee.
     let settle_pipeline = cpipe(
         "stark dynamics settle",
-        "settle",
+        dynamics.settle,
         &[Some(&settle_bgl), Some(&prefix_bgl)],
     );
     // The liquify field's kernels (§6.13). The composition reads its exposure
@@ -315,17 +316,17 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // snapshot and the resample read no tip at all.
     let snapshot_field_pipeline = lpipe(
         "stark liquify snapshot field",
-        "snapshot_field",
+        liquify.snapshot_field,
         &[Some(&snapshot_field_bgl)],
     );
     let warp_pipeline = lpipe(
         "stark liquify warp",
-        "warp",
+        liquify.warp,
         &[Some(&warp_bgl), Some(&prefix_bgl)],
     );
     let warp_apply_pipeline = lpipe(
         "stark liquify warp apply",
-        "warp_apply",
+        liquify.warp_apply,
         &[Some(&warp_apply_bgl)],
     );
     let exchange_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -341,9 +342,10 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // channels are copied out of the region bit-exactly (`DynamicsRun::write_back`),
     // so this draws once over the whole region rather than once per tile, and needs
     // neither a per-tile uniform nor a residual variant.
+    let slice = stark_shaders::slice();
     let slice_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark dynamics slice"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::slice().wgsl.into()),
+        source: wgpu::ShaderSource::Wgsl(slice.wgsl.into()),
     });
     let slice_bgl = desc::layout_for(device, "stark dynamics slice bgl", SLICE_SLOTS, frag, false);
     let slice_layout =
@@ -353,7 +355,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         "stark dynamics slice pipeline",
         &slice_layout,
         &slice_shader,
-        ("vs_main", "fs_main"),
+        (slice.vs_main, slice.fs_main),
         &[desc::target(color_space.aux_format())],
     );
 
@@ -387,6 +389,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         exchange_bgl,
         bake_pipeline,
         bake_bgl,
+        bake_groups: dynamics.bake.groups((BAKE_RES, BAKE_RES)),
         deposit_pipeline,
         deposit_bgl,
         hoist_pipeline,

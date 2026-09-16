@@ -135,9 +135,10 @@ impl GuidePass {
         target_format: wgpu::TextureFormat,
         bgl: &wgpu::BindGroupLayout,
     ) -> Self {
+        let guides = stark_shaders::guides();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark guides"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::guides().wgsl.into()),
+            source: wgpu::ShaderSource::Wgsl(guides.wgsl.into()),
         });
         let layout = desc::pipeline_layout(device, "stark guides layout", &[Some(bgl)]);
         let pipeline = desc::fullscreen_pipeline(
@@ -145,7 +146,7 @@ impl GuidePass {
             "stark guides pipeline",
             &layout,
             &shader,
-            ("vs_main", "fs_main"),
+            (guides.vs_main, guides.fs_main),
             // The shader accumulates its elements premultiplied, so the pass
             // composites `src + dst·(1 − src.a)`.
             &[desc::blended_target(

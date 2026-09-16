@@ -104,9 +104,10 @@ impl FilterPass {
         let device = &ctx.device;
         let formats = crate::gpu::channels::ChannelFormats::of(color_space);
         let frag = wgpu::ShaderStages::FRAGMENT;
+        let filter = color_space.filter_shader();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark filter"),
-            source: wgpu::ShaderSource::Wgsl(color_space.filter_shader().into()),
+            source: wgpu::ShaderSource::Wgsl(filter.wgsl.into()),
         });
         let resid_format = formats.resid;
         let bgl = desc::layout_for(
@@ -126,7 +127,7 @@ impl FilterPass {
             "stark filter pipeline",
             &layout,
             &shader,
-            ("vs_main", "fs_main"),
+            (filter.vs_main, filter.fs_main),
             &targets,
         );
         // The same module, the same layout, the same targets — a tile's channel
@@ -137,7 +138,7 @@ impl FilterPass {
             "stark filter tile pipeline",
             &layout,
             &shader,
-            ("vs_main", "fs_tile"),
+            (filter.vs_main, filter.fs_tile),
             &targets,
         );
         // The blur decode's targets are the FFT planes' own formats, read off the
@@ -152,7 +153,7 @@ impl FilterPass {
             "stark filter blur decode pipeline",
             &layout,
             &shader,
-            ("vs_main", "fs_blur_decode"),
+            (filter.vs_main, filter.fs_blur_decode),
             &blur_targets,
         );
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {

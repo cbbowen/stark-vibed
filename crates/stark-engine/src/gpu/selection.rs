@@ -148,9 +148,10 @@ impl SelectionRenderer {
     pub(crate) fn new(ctx: &GpuContext, scratch: ScratchPool) -> Self {
         let device = &ctx.device;
 
+        let selection = stark_shaders::selection();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark selection"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::selection().wgsl.into()),
+            source: wgpu::ShaderSource::Wgsl(selection.wgsl.into()),
         });
         let frag = wgpu::ShaderStages::FRAGMENT;
         // The mask targets take no blend: the shader does the combine and writes
@@ -168,14 +169,15 @@ impl SelectionRenderer {
             "stark selection pipeline",
             &layout,
             &shader,
-            ("vs_main", "fs_main"),
+            (selection.vs_main, selection.fs_main),
             &mask_target,
         );
 
         // ---- Region gather (for the brush-dynamics stamp loop, §6.2).
+        let region = stark_shaders::mask_region();
         let region_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark selection region"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::mask_region().wgsl.into()),
+            source: wgpu::ShaderSource::Wgsl(region.wgsl.into()),
         });
         let region_view_bindings = desc::Bindings::new(
             device,
@@ -205,8 +207,8 @@ impl SelectionRenderer {
                 label: "stark selection region pipeline",
                 layout: &region_layout,
                 module: &region_shader,
-                vs: "vs_main",
-                fs: "fs_main",
+                vs: region.vs_main,
+                fs: region.fs_main,
                 primitive: desc::QUAD_STRIP,
                 buffers: &[Some(
                     stark_shaders::mirror::mask_region::mask_instance_layout(

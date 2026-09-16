@@ -78,9 +78,10 @@ impl OverlayPass {
         target_format: wgpu::TextureFormat,
         layouts: &OverlayLayouts,
     ) -> Self {
+        let overlay = stark_shaders::overlay();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark selection overlay"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::overlay().wgsl.into()),
+            source: wgpu::ShaderSource::Wgsl(overlay.wgsl.into()),
         });
         let layout = desc::pipeline_layout(
             device,
@@ -93,8 +94,8 @@ impl OverlayPass {
                 label: "stark overlay pipeline",
                 layout: &layout,
                 module: &shader,
-                vs: "vs_main",
-                fs: "fs_main",
+                vs: overlay.vs_main,
+                fs: overlay.fs_main,
                 primitive: desc::QUAD_STRIP,
                 buffers: &[Some(
                     stark_shaders::mirror::overlay::overlay_instance_layout(

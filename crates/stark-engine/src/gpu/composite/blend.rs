@@ -86,9 +86,10 @@ impl BlendPass {
     pub(crate) fn new(ctx: &GpuContext, color_space: &dyn ColorSpace) -> Self {
         let device = &ctx.device;
         let frag = wgpu::ShaderStages::FRAGMENT;
+        let blend = color_space.blend_shader();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark blend"),
-            source: wgpu::ShaderSource::Wgsl(color_space.blend_shader().into()),
+            source: wgpu::ShaderSource::Wgsl(blend.wgsl.into()),
         });
         // Its own bind group layout: every texture here is read with `textureLoad`
         // at the fragment's own coordinate, so nothing needs filtering — except the
@@ -107,7 +108,7 @@ impl BlendPass {
             "stark blend pipeline",
             &layout,
             &shader,
-            ("vs_main", "fs_main"),
+            (blend.vs_main, blend.fs_main),
             &targets,
         );
         // An Oklab document gets a 1×1 stand-in, so the one bind group layout still
