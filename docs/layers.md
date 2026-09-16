@@ -787,6 +787,16 @@ weight. It lands in range (`M ≤ h·opl` for every `opacity ≤ 1`), so the mea
 is still a per-unit opacity, and both sliders end up **inside the merged tiles**:
 merging two half-faded layers gives one layer at full strength that looks the same.
 
+**Exact at texel centres, and only there.** The identity above is per texel, and the
+compositor does not always read a texel: it interpolates `op` and `h` separately and
+applies the slab law to the pair, so a merged tile composites `lerp(M/H)·lerp(H)`
+where the stack composited `lerp(M/H)` against `lerp(H)`. On any rotated, fractionally
+panned or magnified view the two differ — a unit slab under a hard-edged eight-unit
+one, sampled halfway across the edge, covers 0.950 as a pair and 0.993 merged, which is
+85 levels over a light substrate. It is confined to edges with a large height step (~1%
+of such a frame) and vanishes the moment the view lands on the grid again;
+`a_merge_is_exact_at_texel_centres_and_drifts_off_them` pins both halves.
+
 #### 14.11.2 What has to hold for a pair
 
 Write `B` for everything composited beneath the pair, `D` for the lower layer (the
@@ -1010,6 +1020,9 @@ agreement with the compositor, and the compositor is what a render runs.
 5. Undo restores both layers — record, place, and the destination's own opacity,
    which the fold had set to 1 — by handle, so it is exact; redo reproduces the
    merge exactly.
+7. A hard height step, viewed **off the texel grid**, moves by up to 85 levels and
+   on the grid by one — the limitation §14.11.1 ends on, held from both sides so
+   that a regression cannot widen it and a fix cannot go unnoticed.
 
 ## 14.12 A layer's frame — translation as a property
 

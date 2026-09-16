@@ -854,3 +854,149 @@ fn a_filter_merges_in_a_pigment_document() {
     let (before, after, _) = merged(&mut engine, filter);
     unchanged(&before, &after, 2, "a filter merged in pigment");
 }
+
+// ---------------------------------------------------------------------------
+// Off the texel grid (§14.11) — where the merge identity stops being exact.
+// ---------------------------------------------------------------------------
+
+/// **A merge is exact at texel centres and drifts off them** (§14.11).
+///
+/// `composite.wesl` interpolates per-unit opacity and height separately and applies
+/// the slab law to the pair; a merged tile stores `op = M/H`, so it composites
+/// `lerp(M/H)·lerp(H)` where the stack composited `lerp(M/H)` against `lerp(H)`. The
+/// two agree wherever a sample lands on a texel centre — every existing test in this
+/// file looks at one — and part company on any rotated, fractionally panned or
+/// magnified view.
+///
+/// The case here is the worst one the law admits: a unit slab under a hard-edged
+/// eight-unit one, so a texel pair straddling the edge carries `h = 9` beside `h = 1`.
+/// Halfway between them the pair composites 0.950 of coverage and the merged tile
+/// 0.993. Measured, over a light substrate:
+///
+/// | view | worst |
+/// |---|---|
+/// | on grid | 1 level |
+/// | half a texel | 84 levels |
+/// | zoom 3 | 85 levels |
+///
+/// The colour drifts with the coverage — a merged tile carries one colour per texel
+/// where the stack carried two — so a same-coloured pair, which isolates the coverage
+/// term, moves 34 and 45 instead. All of it is confined to the edge: 0.5–1.2% of the
+/// frame.
+///
+/// A known limitation, pinned rather than fixed, and recorded in `docs/layers.md`
+/// §14.11.
+#[test]
+fn a_merge_is_exact_at_texel_centres_and_drifts_off_them() {
+    use stark_engine::MediaParams;
+    use stark_engine::command::ViewCommand;
+    use stark_model::Srgb;
+    use stark_model::document::{FillOp, SelectionShape};
+
+    /// What an off-grid view may move. Today's worst is 85.
+    const OFF_GRID: u8 = 110;
+
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // The display dither is keyed to the screen pixel (§6.5), so it would differ
+    // between two views of the same picture and fog what is being measured.
+    engine.process(ViewCommand::SetMediaParams(MediaParams {
+        dither: false,
+        ..MediaParams::default()
+    }));
+    let rect = |x0: f32, x1: f32| {
+        SelectionShape::rect_from_corners(Vec2::new(x0, -60.0), Vec2::new(x1, 60.0))
+    };
+    // A fill lays fully opaque paint, so its height is the mass the slab law needs:
+    // opacity 1 − e⁻¹ inverts to h = 1, and opacity 1 to h = OPAQUE_MASS = 8.
+    engine.process(DocCommand::Fill {
+        layer: ROOT,
+        op: FillOp::new(
+            rect(-100.0, 100.0),
+            0.0,
+            Srgb::new(WARM),
+            1.0 - (-1.0f32).exp(),
+        ),
+    });
+    let top = add_layer(&mut engine);
+    // Its edge on the texel boundary at x = 0, so the step spans one texel pair.
+    engine.process(DocCommand::Fill {
+        layer: top,
+        op: FillOp::new(rect(-100.0, 0.0), 0.0, Srgb::new(COOL), 1.0),
+    });
+    let (inside, outside) = (Vec2::new(-4.0, 0.0), Vec2::new(3.0, 0.0));
+    assert_eq!(
+        (
+            paint_at(&engine, top, inside),
+            paint_at(&engine, top, outside),
+            paint_at(&engine, ROOT, inside).map(|(h, _)| h > 0.99 && h < 1.01),
+        ),
+        (Some((8.0, 1.0)), Some((0.0, 0.0)), Some(true)),
+        "the step this measures — eight units of paint beside none, over a unit \
+         slab — is not what the two fills laid",
+    );
+
+    // Three views of the one picture: the default, which lands every screen pixel on a
+    // texel centre; that view panned half a texel, which lands every one of them
+    // exactly between four; and a magnification, which sweeps every phase in between.
+    let views: [(&str, f32, Vec2); 3] = [
+        ("on grid", 1.0, Vec2::ZERO),
+        ("half a texel", 1.0, Vec2::splat(0.5)),
+        ("zoom 3", 3.0, Vec2::splat(0.5)),
+    ];
+    // `Zoom` is a factor on the view in hand, so the walk carries where it left the
+    // zoom and puts it back — the two calls must show the same three views.
+    let shot = |engine: &mut Engine| -> Vec<RgbaImage> {
+        let anchor = Vec2::new(SIZE.width as f32, SIZE.height as f32) * 0.5;
+        let mut zoom = 1.0f32;
+        let shots = views
+            .iter()
+            .map(|&(_, z, c)| {
+                engine.process(ViewCommand::Zoom {
+                    anchor,
+                    factor: z / zoom,
+                });
+                zoom = z;
+                engine.process(ViewCommand::CenterOn(c));
+                engine.render_to_image()
+            })
+            .collect();
+        engine.process(ViewCommand::Zoom {
+            anchor,
+            factor: 1.0 / zoom,
+        });
+        shots
+    };
+    let before = shot(&mut engine);
+    // …and the half-texel view really did resample: it is a different picture from the
+    // on-grid one, which is what makes the comparison below about the grid.
+    assert!(
+        !images_match(&before[0], &before[1], 8),
+        "the half-texel pan rendered the same pixels as the on-grid view, so nothing \
+         here is being sampled off a texel centre",
+    );
+
+    engine.process(DocCommand::MergeLayerDown(top));
+    assert!(
+        info(&engine, top).is_none(),
+        "the merge was refused, so both renders are of the same document",
+    );
+    assert_eq!(
+        paint_at(&engine, ROOT, inside).map(|(h, op)| ((h * 16.0).round(), op)),
+        Some((144.0, 1.0)),
+        "the merged tile does not carry the two heights added (§14.11)",
+    );
+    let after = shot(&mut engine);
+
+    for ((name, _, _), (b, a)) in views.iter().zip(before.iter().zip(&after)) {
+        let (frac, worst) = diff_fraction(b, a);
+        let tol = if *name == "on grid" { 1 } else { OFF_GRID };
+        assert!(
+            worst <= tol,
+            "{name}: the merge moved a pixel by {worst} (over {:.2}% of the frame), \
+             past the {tol} levels pinned for this view",
+            frac * 100.0,
+        );
+    }
+}
