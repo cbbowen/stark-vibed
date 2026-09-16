@@ -156,8 +156,8 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
         slot * Self::STRIDE as u32
     }
 
-    /// The same slot as a bare resource, for a group built from a shader-declared slot
-    /// list (`desc::bind_group_for`), which supplies the binding index itself.
+    /// The same slot as a bare resource, for a group whose builder supplies the
+    /// binding index itself (`desc::Bindings::group`).
     pub(crate) fn resource(&self) -> wgpu::BindingResource<'_> {
         wgpu::BindingResource::Buffer(wgpu::BufferBinding {
             buffer: &self.buf,

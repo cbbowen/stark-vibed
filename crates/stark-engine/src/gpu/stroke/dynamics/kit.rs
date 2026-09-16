@@ -145,22 +145,17 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // the tile itself caches (`composite::tile_bind_group_layout`). The view group has
     // no such cache, so it is built here off the two stages this loop runs — which
     // composite their working region through `composite.wesl` itself (§6.3).
-    let composite_view_bgl = desc::Bindings::of(
+    let composite_view_bgl = desc::Bindings::derived(
         device,
         "stark dynamics composite view bgl",
-        stark_shaders::layout_entries(
-            &[composite.vs_main, composite.fs_raw],
-            stark_shaders::mirror::view::decl::VIEW,
-            &[stark_shaders::mirror::view::decl::VIEW],
-        ),
+        &[composite.vs_main, composite.fs_raw],
+        stark_shaders::mirror::view::decl::VIEW,
+        &[stark_shaders::mirror::view::decl::VIEW],
     );
-    let composite_layout = desc::pipeline_layout(
+    let composite_layout = desc::pipeline_layout_of(
         device,
         "stark dynamics composite layout",
-        &[
-            Some(composite_view_bgl.layout()),
-            Some(composite_tile_bgl.layout()),
-        ],
+        &[&composite_view_bgl, &composite_tile_bgl],
     );
     // Not `ChannelFormats::blended`: the region's aux is the *wide* scratch format and
     // takes the aux blend where the two color targets take the color's. Built rather

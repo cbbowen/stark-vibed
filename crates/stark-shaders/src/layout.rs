@@ -1,10 +1,6 @@
 //! A bind group layout read off the shader (§6.10): what the entry points sharing one
 //! layout reach in one `@group`, and the `wgpu` entries for it.
 //!
-//! The host had been writing that list by hand — a slot per binding, each restating
-//! whether it is a uniform and how wide, a sampler, a texture of a scalar, a storage
-//! texture of a format and an access mode. All of that is in the declaration.
-//!
 //! **Three things are left to the host**, because no declaration states them: which
 //! entry points share the layout, which uniforms are bound at a dynamic offset, and —
 //! through the first — what the layout is *for*.
@@ -80,7 +76,9 @@ pub fn reached(eps: &[EntryPoint], anchor: Binding) -> Vec<Reach> {
 ///
 /// `dynamic` names the uniforms bound as one slot of a larger buffer
 /// (`gpu::uniforms`), which is the one thing about a `var<uniform>` the WGSL cannot
-/// say: it is identical either way.
+/// say: it is identical either way. Everything named must be such a uniform of this
+/// group, which is checked — but a uniform *left out* of it is not, and comes out
+/// whole-bound to fail at the first `set_bind_group` that passes an offset.
 ///
 /// # Panics
 /// If the group is empty — the anchor names a group these entry points do not reach —
@@ -123,8 +121,9 @@ fn entry(r: &Reach, dynamic: &[Binding]) -> wgpu::BindGroupLayoutEntry {
             has_dynamic_offset: dynamic.contains(&r.decl),
             min_binding_size: wgpu::BufferSize::new(min_size),
         },
-        // Filtering either way: the flag describes the image side of the pair, and a
-        // sampler nothing samples with is bound but never read.
+        // `Filtering` accepts any non-comparison sampler, and the generator refuses
+        // `sampler_comparison` outright — so there is no declaration this can be wrong
+        // for.
         BindKind::Sampler => wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
         BindKind::Texture { dim, sample } => wgpu::BindingType::Texture {
             sample_type: sample.of(r.sampled),

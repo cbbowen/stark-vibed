@@ -8,7 +8,6 @@
 use crate::colorspace::ColorSpace;
 use crate::gpu::channels::{ChannelFormats, Targets};
 use crate::gpu::desc::{self, Bindings, RenderPipe};
-use stark_shaders::layout_entries;
 use stark_shaders::mirror::matte::decl as md;
 use stark_shaders::mirror::view::decl as vd;
 
@@ -62,25 +61,20 @@ impl TilePass {
         // `view.wesl`'s uniform comes out vertex-only — the fragment stage gets canvas
         // position as a varying and the zoom through `misc.w` — and its sampler
         // fragment-only, which no list has to say.
-        let view_bgl = Bindings::of(
+        let view_bgl = Bindings::derived(
             device,
             "stark composite view bgl",
-            layout_entries(
-                &[
-                    composite.vs_main,
-                    composite.fs_main,
-                    matte.vs_main,
-                    matte.fs_main,
-                ],
-                vd::VIEW,
-                &[vd::VIEW],
-            ),
+            &[
+                composite.vs_main,
+                composite.fs_main,
+                matte.vs_main,
+                matte.fs_main,
+            ],
+            vd::VIEW,
+            &[vd::VIEW],
         );
-        let layout = desc::pipeline_layout(
-            device,
-            "stark composite layout",
-            &[Some(view_bgl.layout()), Some(tile_bgl.layout())],
-        );
+        let layout =
+            desc::pipeline_layout_of(device, "stark composite layout", &[&view_bgl, &tile_bgl]);
         // Pass A is the one pipeline whose targets do *not* share a blend, so this is
         // spelled out rather than `formats.blended(..)`: premultiplied `over` on the
         // color, additive on the height aux, and the residual through the *color's*
@@ -112,16 +106,15 @@ impl TilePass {
         let matte_shader = desc::Module::new(device, "stark matte", matte);
         // The ramp is per matte where the view is per pass (§22.4), so it is bound at a
         // dynamic offset — the one thing `var<uniform> ramp` does not say.
-        let ramp_bgl = Bindings::of(
+        let ramp_bgl = Bindings::derived(
             device,
             "stark matte ramp bgl",
-            layout_entries(&[matte.vs_main, matte.fs_main], md::RAMP, &[md::RAMP]),
+            &[matte.vs_main, matte.fs_main],
+            md::RAMP,
+            &[md::RAMP],
         );
-        let matte_layout = desc::pipeline_layout(
-            device,
-            "stark matte layout",
-            &[Some(view_bgl.layout()), Some(ramp_bgl.layout())],
-        );
+        let matte_layout =
+            desc::pipeline_layout_of(device, "stark matte layout", &[&view_bgl, &ramp_bgl]);
         // Premultiplied `over` on BOTH targets. On the aux that is the load-bearing
         // difference from pass A's additive blend: additive would keep the height of
         // paint *underneath* the matte, and the media pass would emboss it as ghost

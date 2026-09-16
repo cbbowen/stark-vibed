@@ -76,10 +76,12 @@ pub(super) fn dither_step(format: wgpu::TextureFormat) -> f32 {
 /// placeholder to bind (§6.7) — and says nothing about it here.
 pub(super) fn media_layout(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Bindings {
     let media = color_space.media_shader();
-    Bindings::of(
+    Bindings::derived(
         device,
         "stark media bgl",
-        stark_shaders::layout_entries(&[media.vs_main, media.fs_main], mcd::M, &[]),
+        &[media.vs_main, media.fs_main],
+        mcd::M,
+        &[],
     )
 }
 
@@ -102,7 +104,7 @@ impl MediaPass {
     ) -> Self {
         let media = color_space.media_shader();
         let shader = desc::Module::new(device, "stark media", &media);
-        let layout = desc::pipeline_layout(device, "stark media layout", &[Some(bgl.layout())]);
+        let layout = desc::pipeline_layout_of(device, "stark media layout", &[bgl]);
         let pipeline = desc::fullscreen_pipeline(
             device,
             "stark media pipeline",

@@ -156,11 +156,8 @@ impl SelectionRenderer {
         let mask_target = [desc::target(MASK_FORMAT)];
         let rasterize_bindings =
             desc::Bindings::new(device, "stark selection bgl", RASTERIZE_SLOTS, frag, false);
-        let layout = desc::pipeline_layout(
-            device,
-            "stark selection layout",
-            &[Some(rasterize_bindings.layout())],
-        );
+        let layout =
+            desc::pipeline_layout_of(device, "stark selection layout", &[&rasterize_bindings]);
         let rasterize_pipeline = desc::fullscreen_pipeline(
             device,
             "stark selection pipeline",
@@ -187,13 +184,10 @@ impl SelectionRenderer {
             frag,
             false,
         );
-        let region_layout = desc::pipeline_layout(
+        let region_layout = desc::pipeline_layout_of(
             device,
             "stark selection region layout",
-            &[
-                Some(region_view_bindings.layout()),
-                Some(region_tile_bindings.layout()),
-            ],
+            &[&region_view_bindings, &region_tile_bindings],
         );
         let region_pipeline = desc::render_pipeline(
             device,

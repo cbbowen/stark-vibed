@@ -66,6 +66,10 @@ pub(crate) struct FilterPass {
     /// merge, which refuses a resampling filter and so never reads them (§14.11.7).
     /// The §6.8 stand-in pattern.
     blur_zero: (wgpu::TextureView, wgpu::TextureView),
+    /// Whether **this** shader reads Mixbox's LUT, which its own layout holds a slot
+    /// for. The LUT itself is the blend pass's, so this is the half of the pair this
+    /// side can answer; [`SharedPasses`](super::SharedPasses) holds the two together.
+    wants_lut: bool,
 }
 
 impl FilterPass {
@@ -80,21 +84,19 @@ impl FilterPass {
         // `textureLoad` them, and one filterable declaration serves both. The blur's
         // convolved planes stay unfilterable — their `f32` formats are not filterable
         // everywhere this runs, and nothing samples them (§21.12).
-        let bgl = Bindings::of(
+        let bgl = Bindings::derived(
             device,
             "stark filter bgl",
-            stark_shaders::layout_entries(
-                &[
-                    filter.vs_main,
-                    filter.fs_main,
-                    filter.fs_tile,
-                    filter.fs_blur_decode,
-                ],
-                fcd::F,
-                &[fcd::F],
-            ),
+            &[
+                filter.vs_main,
+                filter.fs_main,
+                filter.fs_tile,
+                filter.fs_blur_decode,
+            ],
+            fcd::F,
+            &[fcd::F],
         );
-        let layout = desc::pipeline_layout(device, "stark filter layout", &[Some(bgl.layout())]);
+        let layout = desc::pipeline_layout_of(device, "stark filter layout", &[&bgl]);
         // No fixed-function blend: the pass computes the whole texel — including the
         // height it copies straight across — and *replaces* what it writes. That is
         // what the ping-pong is for.
@@ -152,7 +154,13 @@ impl FilterPass {
             bgl,
             sampler,
             blur_zero,
+            wants_lut: crate::gpu::pigment::read_by(filter.fs_main),
         }
+    }
+
+    /// Whether this pass's layout holds the pigment LUT — its own shader's answer.
+    pub(crate) fn wants_lut(&self) -> bool {
+        self.wants_lut
     }
 
     /// **The one description of `filter_common.wesl`'s group**, the screen's and the

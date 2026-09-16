@@ -166,11 +166,7 @@ impl MergeRenderer {
         let direct = desc::fullscreen_pipeline(
             device,
             "stark merge pipeline",
-            &desc::pipeline_layout(
-                device,
-                "stark merge layout",
-                &[Some(direct_bindings.layout())],
-            ),
+            &desc::pipeline_layout_of(device, "stark merge layout", &[&direct_bindings]),
             &merge_shader,
             (merge.vs_main, merge.fs_main),
             &targets,
@@ -181,8 +177,7 @@ impl MergeRenderer {
         let slab_shader_src = stark_shaders::slab(color_space.resid());
         let slab_shader = desc::Module::new(device, "stark slab", slab_shader_src);
         let slab_bindings = desc::Bindings::new(device, "stark slab bgl", SLAB_SLOTS, frag, resid);
-        let slab_layout =
-            desc::pipeline_layout(device, "stark slab layout", &[Some(slab_bindings.layout())]);
+        let slab_layout = desc::pipeline_layout_of(device, "stark slab layout", &[&slab_bindings]);
         let slab = |label, fs| {
             desc::fullscreen_pipeline(
                 device,

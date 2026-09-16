@@ -111,7 +111,7 @@ impl FillRenderer {
             frag,
             formats.has_resid(),
         );
-        let layout = desc::pipeline_layout(device, "stark fill layout", &[Some(bindings.layout())]);
+        let layout = desc::pipeline_layout_of(device, "stark fill layout", &[&bindings]);
         let targets = formats.targets();
         let pipeline = desc::fullscreen_pipeline(
             device,

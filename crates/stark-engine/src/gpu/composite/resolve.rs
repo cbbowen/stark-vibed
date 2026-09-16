@@ -9,7 +9,6 @@ use super::display::Transfer;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Bindings};
 use crate::view::Extent2;
-use stark_shaders::layout_entries;
 use stark_shaders::mirror::resolve::binding as rb;
 use stark_shaders::mirror::resolve::decl as rd;
 
@@ -136,10 +135,12 @@ fn blur_bytes_per_px() -> u64 {
 /// set's bind group is valid against either.
 pub(super) fn resolve_layout(device: &wgpu::Device) -> Bindings {
     let re = stark_shaders::resolve();
-    Bindings::of(
+    Bindings::derived(
         device,
         "stark resolve bgl",
-        layout_entries(&[re.vs_main, re.fs_main], rd::R, &[]),
+        &[re.vs_main, re.fs_main],
+        rd::R,
+        &[],
     )
 }
 
@@ -161,7 +162,7 @@ impl ResolvePass {
         // integer block of its own choosing, so nothing here needs a sampler.
         let resolve = stark_shaders::resolve();
         let shader = desc::Module::new(device, "stark resolve", resolve);
-        let layout = desc::pipeline_layout(device, "stark resolve layout", &[Some(bgl.layout())]);
+        let layout = desc::pipeline_layout_of(device, "stark resolve layout", &[bgl]);
         // The pass covers every texel and carries the alpha it averaged, so there is
         // nothing for a fixed-function blend to do.
         let pipeline = desc::fullscreen_pipeline(

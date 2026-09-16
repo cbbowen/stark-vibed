@@ -1194,47 +1194,52 @@ device, no runtime.
 
 ### Adding a binding table
 
-Nothing to add: every `@binding` declaration in the tree is discovered, and two
-things are generated from each of them:
-
-- `mirror::<module>::binding::<NAME>` — the index, uppercased from the WESL
-  variable. This is what a host layout and a host bind group name a slot by.
-- `mirror::<module>::BINDINGS` — a `&[Binding]` carrying, per slot, its **kind**
-  (uniform and how wide, sampler, texture, storage texture *and its format*) and
-  whether it is `@if(resid)`-gated.
-
-The host then writes **one list per entry point** naming the slots it reads, and
-builds both sides from it:
+Nothing to add, and nothing to list. Every `@binding` in the tree is discovered and
+mirrored as a whole **declaration** — `mirror::<module>::decl::<NAME>`, carrying its
+group, its index, its kind (uniform and how wide, sampler, texture and its scalar,
+storage texture and its format and access mode) and whether it is `@if(resid)`-gated.
+Beside it, every entry point of every linked artifact carries the bindings it actually
+*reaches*, callees included, and whether it reads each through a sampler. A host asks
+for a layout rather than describing one:
 
 ```rust
-const DEPOSIT: &[Slot] = &[Slot::at(b::ST), Slot::sampled(b::DYN_NOISE_TEX), …];
-
-let bgl   = desc::layout_for(device, label, DEPOSIT, vis, BINDINGS, resid);
-let group = desc::bind_group_for(device, label, &bgl, DEPOSIT, BINDINGS, resid,
-                                 |slot| /* the view or buffer for that slot */);
+let bgl = desc::Bindings::derived(
+    device, "stark blend bgl",
+    &[blend.vs_main, blend.fs_main],   // the entry points that share this layout
+    bcd::B,                            // an anchor: any declaration in the group
+    &[bcd::B],                         // the uniforms bound at a dynamic offset
+);
+let group = bgl.group(device, label, |binding| /* the view or buffer for it */);
 ```
 
-`crates/stark-engine/src/gpu/stroke/dynamics/slots.rs` is the worked example.
+`stark_shaders::layout_entries` derives every field of every entry: the kind and
+format from the declaration, `min_binding_size` from the declared struct's own WGSL
+size, **filterability** from whether any of these entry points samples it,
+**visibility** from the union of their stages, and **presence** from the record
+itself — a slot a variant does not declare is simply absent from that variant's entry
+points, so no host counts a residual tail.
 
-**A list is a membership statement and nothing more.** What kind of thing occupies
-a slot, what format a storage texture is, how wide a uniform is, and whether the
-build has it at all are read off the declaration — so the host cannot choose
-`stor` where the shader said `rgba32float`, and cannot miscount a residual tail.
-Because the layout and the group come from the same list, they cannot disagree
-about which slots are present or in what order.
+**The group is named by an anchor declaration, not a number.** `anchor.group` is the
+shader's answer; a `u32` on the host would be a transcription that a regrouping leaves
+silently wrong. `Bindings` keeps that number, and `desc::pipeline_layout_of` checks it
+against the position each layout is bound at — which is the one shader-stated fact a
+pipeline layout still writes by hand.
 
-The **one** thing a list still says for itself is filterability: `Slot::at` for a
-slot this entry point reads with `textureLoad`, `Slot::sampled` for one it reads
-through a sampler. That is not an omission in the generator — it is genuinely a
-property of the *(entry point, binding)* pair. `dynamics.wesl`'s `region_color` is
-loaded by `snapshot` and sampled by `exchange`, so the same slot is non-filterable
-in one layout and filterable in the next.
+**Three things are genuinely the host's**, because no declaration states them:
 
-Two unit tests stand behind the hand-written half (`slots::tests`): every list
-names bindings the shader declares, and names none twice; and a list takes a
-residual slot exactly when it takes the plain slot that rides with it — checked
-against the generated `resid` flags, so the shader gaining an `@if(resid)`
-declaration that nothing pairs is a failure rather than a gap.
+- **Which entry points share a layout.** A union is what a shared layout needs; pass
+  one entry point where the layout must be exact, since wgpu merges a whole bind group
+  into each dispatch's usage scope — a compute kernel that storage-writes a texture
+  another kernel samples cannot share a layout with it.
+- **Which uniforms carry a dynamic offset.** `fill.wesl` declares `f` and `tile` both
+  `var<uniform>`; the first is one buffer for the whole fill and the second a per-tile
+  slot of one. The WGSL is identical either way.
+- **What resource fills each binding**, which is the closure above.
+
+`slot_agreement.rs` is the bridge while the migration runs: it holds every layout
+still written by hand against the very fold `layout_entries` is built on, with an
+exact table of the differences that stand. A list that disagrees where the table does
+not say so fails, and so does a waiver that has stopped excusing anything.
 
 ### What this does and does not cover
 
@@ -1248,12 +1253,14 @@ the same as cheap: a validation error arrives at run time, on a machine with an
 adapter, which is the half of the suite CI does not exercise against real pixels —
 and the seven layouts of `dynamics.wesl` were seven pairs of hand-kept arrays
 joined by magic element counts (`[..12 + 4 * usize::from(resid)]`), recounted by
-hand on every edit. So the slots are generated now too, and what is left on the
-host is the shortest thing that is genuinely the host's: which bindings an entry
-point reads, and how it reads them.
+hand on every edit. First the slots were generated and the host wrote a membership
+list per entry point; then the reflection reached what an entry point *reads*, and
+the list went too.
 
-The layouts outside the stamp loop stay hand-written, being short enough that a list
-would be longer than the entries.
+A **module** is still not tied to its entry points by wgpu — a pipeline is a module
+plus two names, and the plain stamp module under the ceiling record's `fs_main` would
+attach a location the fragment never writes. So an entry point carries the artifact
+that declares it, and `desc::Module` is a compiled module beside that same name.
 
 **Which modules become artifacts is discovered too.** A module declaring a `@vertex`,
 `@fragment` or `@compute` function links as its own artifact and gets a Rust accessor;

@@ -43,7 +43,7 @@ fn tex_entry(
 }
 
 /// A filtering sampler.
-pub(crate) fn sampler(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
+fn sampler(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: vis,
@@ -58,11 +58,7 @@ pub(crate) fn sampler(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupL
 ///
 /// `slot` is the struct's own size, and declaring it as `min_binding_size` is free
 /// validation against a truncated write: the layouts that pass `None` here get none.
-pub(crate) fn uniform_slot(
-    binding: u32,
-    vis: wgpu::ShaderStages,
-    slot: u64,
-) -> wgpu::BindGroupLayoutEntry {
+fn uniform_slot(binding: u32, vis: wgpu::ShaderStages, slot: u64) -> wgpu::BindGroupLayoutEntry {
     buffer_entry(binding, vis, true, wgpu::BufferSize::new(slot))
 }
 
@@ -263,10 +259,11 @@ fn slot_entry(
     })
 }
 
-/// The most slots one list may name — [`bind_group_for`] fills its entries into an
-/// array of this size on the stack, since it runs once per tile per pass. Checked at
-/// [`layout_for`] too, so a longer list fails where its renderer is built rather than
-/// at its first draw. The longest list today is the dynamics' deposit at 17.
+/// The most bindings one group may hold — [`bind_group_over`] fills its entries into
+/// an array of this size on the stack, since it runs once per tile per pass. Checked
+/// where the **layout** is built, both by [`slot_entries`] and by [`Bindings::of`], so
+/// a longer one fails where its renderer is built rather than at its first draw. The
+/// longest today is the dynamics' deposit at 17.
 const MAX_SLOTS: usize = 24;
 
 /// The layout entries for `slots`, in list order, with the residual gate applied.
@@ -415,23 +412,54 @@ fn bind_group_over<'a>(
 pub(crate) struct Bindings {
     layout: wgpu::BindGroupLayout,
     entries: Vec<wgpu::BindGroupLayoutEntry>,
+    /// The `@group` this describes, for [`pipeline_layout_of`].
+    group: u32,
 }
 
 impl Bindings {
-    /// A layout over `entries` — [`stark_shaders::layout_entries`]' answer — keeping
-    /// them for [`Self::group`].
-    pub(crate) fn of(
+    /// The layout `eps` need for `anchor`'s group
+    /// ([`stark_shaders::layout_entries`]), keeping its entries for [`Self::group`]
+    /// and its group number for [`pipeline_layout_of`].
+    ///
+    /// The anchor is taken rather than the finished entries, so a [`Bindings`] cannot
+    /// be built over a list that came from nowhere — and so the `@group` it stands at
+    /// is the shader's answer rather than a position a call site counted.
+    pub(crate) fn derived(
+        device: &wgpu::Device,
+        label: &str,
+        eps: &[EntryPoint],
+        anchor: stark_shaders::Binding,
+        dynamic: &[stark_shaders::Binding],
+    ) -> Self {
+        Self::of(
+            device,
+            label,
+            stark_shaders::layout_entries(eps, anchor, dynamic),
+            anchor.group,
+        )
+    }
+
+    /// A layout over `entries`, which describe `@group(group)`.
+    fn of(
         device: &wgpu::Device,
         label: &str,
         entries: Vec<wgpu::BindGroupLayoutEntry>,
+        group: u32,
     ) -> Self {
+        assert!(
+            entries.len() <= MAX_SLOTS,
+            "`{label}` holds {} bindings; a bind group holds at most {MAX_SLOTS}",
+            entries.len(),
+        );
         Self {
             layout: bind_group_layout(device, label, &entries),
             entries,
+            group,
         }
     }
 
-    /// [`Self::of`] over a hand-written slot list.
+    /// [`Self::derived`] over a hand-written slot list, whose group is its first
+    /// slot's declaration ([`slot_entries`] refuses a list spanning two).
     pub(crate) fn new(
         device: &wgpu::Device,
         label: &str,
@@ -439,7 +467,12 @@ impl Bindings {
         vis: wgpu::ShaderStages,
         resid: bool,
     ) -> Self {
-        Self::of(device, label, slot_entries(label, slots, vis, resid))
+        let group = slots
+            .first()
+            .expect("a slot list names at least one binding")
+            .decl()
+            .group;
+        Self::of(device, label, slot_entries(label, slots, vis, resid), group)
     }
 
     /// The layout, for a [`pipeline_layout`].
@@ -470,6 +503,32 @@ pub(crate) fn pipeline_layout(
         bind_group_layouts: bgls,
         immediate_size: 0,
     })
+}
+
+/// [`pipeline_layout`] over layouts that know which `@group` they are — so the one
+/// thing a pipeline layout states, **position**, is checked rather than trusted.
+///
+/// A pipeline layout is positional: the i-th layout *is* `@group(i)`. That is the last
+/// shader-stated fact the host still writes by hand, and a swapped pair is otherwise a
+/// failure only a device reports.
+///
+/// # Panics
+/// If any layout stands at a group other than its position.
+pub(crate) fn pipeline_layout_of(
+    device: &wgpu::Device,
+    label: &str,
+    bindings: &[&Bindings],
+) -> wgpu::PipelineLayout {
+    for (i, b) in bindings.iter().enumerate() {
+        assert_eq!(
+            b.group, i as u32,
+            "`{label}` binds a layout for @group({}) at position {i}",
+            b.group,
+        );
+    }
+    let bgls: Vec<Option<&wgpu::BindGroupLayout>> =
+        bindings.iter().map(|b| Some(b.layout())).collect();
+    pipeline_layout(device, label, &bgls)
 }
 
 // ---- render pass attachments ---------------------------------------------------

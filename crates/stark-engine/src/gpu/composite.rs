@@ -95,14 +95,12 @@ pub(crate) fn tile_bind_group_layout(
     color_space: &dyn ColorSpace,
 ) -> desc::Bindings {
     let c = stark_shaders::composite(color_space.resid());
-    desc::Bindings::of(
+    desc::Bindings::derived(
         device,
         "stark composite tile bgl",
-        stark_shaders::layout_entries(
-            &[c.vs_main, c.fs_main, c.fs_raw],
-            stark_shaders::mirror::composite::decl::TILE_COLOR,
-            &[],
-        ),
+        &[c.vs_main, c.fs_main, c.fs_raw],
+        stark_shaders::mirror::composite::decl::TILE_COLOR,
+        &[],
     )
 }
 
@@ -610,6 +608,16 @@ impl CompositorPipeline {
             filter,
             tile_bgl,
         } = shared;
+        // The two passes ask their own shaders whether they read Mixbox's LUT, and only
+        // the blend pass owns one — so this is where the pair is held together. They
+        // agree because a space links both Mixbox shaders or neither (§6.7); a build
+        // that broke that would have the filter's layout declare a slot with nothing to
+        // fill it.
+        assert_eq!(
+            blend.pigment.is_some(),
+            filter.wants_lut(),
+            "the blend and filter shaders disagree about the pigment LUT",
+        );
         let passes = CompositorPasses {
             tiles: TilePass::new(device, color_space, formats, tile_bgl),
             blend,

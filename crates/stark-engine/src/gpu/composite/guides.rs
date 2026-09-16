@@ -10,7 +10,7 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Bindings};
 use crate::view::ViewTransform;
 use stark_model::document::GuideScene;
-use stark_shaders::layout_entries;
+use stark_shaders::mirror::guides::binding as gb;
 use stark_shaders::mirror::guides::decl as gd;
 
 use crate::gpu::uniforms::UniformSlots;
@@ -111,10 +111,12 @@ fn pack_guides(scene: &GuideScene, view: ViewTransform, transfer: Transfer) -> G
 /// than once per texel (`guides.wesl`'s `VsOut`).
 pub(super) fn guide_layout(device: &wgpu::Device) -> Bindings {
     let gu = stark_shaders::guides();
-    Bindings::of(
+    Bindings::derived(
         device,
         "stark guides bgl",
-        layout_entries(&[gu.vs_main, gu.fs_main], gd::GUIDE, &[gd::GUIDE]),
+        &[gu.vs_main, gu.fs_main],
+        gd::GUIDE,
+        &[gd::GUIDE],
     )
 }
 
@@ -131,7 +133,7 @@ impl GuidePass {
     ) -> Self {
         let guides = stark_shaders::guides();
         let shader = desc::Module::new(device, "stark guides", guides);
-        let layout = desc::pipeline_layout(device, "stark guides layout", &[Some(bgl.layout())]);
+        let layout = desc::pipeline_layout_of(device, "stark guides layout", &[bgl]);
         let pipeline = desc::fullscreen_pipeline(
             device,
             "stark guides pipeline",
@@ -180,8 +182,12 @@ impl GuidePass {
         // Cached, and dropped by whatever write reallocates the buffer under it, which
         // `UniformSlots::group` handles.
         let bindings = &self.bgl;
-        let bg =
-            slots.group(|slot| bindings.group(&ctx.device, "stark guides bg", |_| slot.clone()));
+        let bg = slots.group(|slot| {
+            bindings.group(&ctx.device, "stark guides bg", |i| match i {
+                gb::GUIDE => slot.clone(),
+                other => unreachable!("the guide group has no binding {other}"),
+            })
+        });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark guides pass"),
             color_attachments: &[Some(desc::attach(target, desc::LOAD))],

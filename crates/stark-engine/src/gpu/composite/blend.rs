@@ -70,12 +70,14 @@ impl BlendPass {
         // fragment's own coordinate except the LUT, which Mixbox interpolates in
         // hardware, so it alone comes out filterable.
         let formats = ChannelFormats::of(color_space);
-        let bgl = Bindings::of(
+        let bgl = Bindings::derived(
             device,
             "stark blend bgl",
-            stark_shaders::layout_entries(&[blend.vs_main, blend.fs_main], bcd::B, &[bcd::B]),
+            &[blend.vs_main, blend.fs_main],
+            bcd::B,
+            &[bcd::B],
         );
-        let layout = desc::pipeline_layout(device, "stark blend layout", &[Some(bgl.layout())]);
+        let layout = desc::pipeline_layout_of(device, "stark blend layout", &[&bgl]);
         // No fixed-function blend on either target: the pass computes the whole
         // merge — backdrop included — and *replaces* what it writes. That is the
         // point of the ping-pong.
@@ -88,7 +90,7 @@ impl BlendPass {
             (blend.vs_main, blend.fs_main),
             &targets,
         );
-        let pigment = PigmentLut::read_by(ctx, blend.fs_main);
+        let pigment = PigmentLut::of(ctx, blend.fs_main);
         Self {
             pipeline,
             bgl,

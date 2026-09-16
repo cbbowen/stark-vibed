@@ -44,6 +44,20 @@ const fn group(name: &'static str, slots: &'static [Slot], resid: bool) -> Group
     Group { name, slots, resid }
 }
 
+/// The layouts a pipeline holds, numbered from `@group(0)` up — what every case here
+/// is today, since a pipeline's lists are all hand-written or all derived.
+///
+/// [`Case::groups`] carries the position rather than taking it from the index, so a
+/// case whose group 0 is derived and whose group 1 is still a list can say so without
+/// this.
+fn numbered(groups: Vec<Group>) -> Vec<(u32, Group)> {
+    groups
+        .into_iter()
+        .enumerate()
+        .map(|(i, g)| (i as u32, g))
+        .collect()
+}
+
 /// One pipeline the engine creates: the entry points it is built from, and the groups
 /// its pipeline layout lists.
 struct Case {
@@ -52,10 +66,13 @@ struct Case {
     /// Every stage's entry point. A render pipeline's layout has to satisfy the vertex
     /// and fragment stages together, so the two are read as one set.
     entries: Vec<EntryPoint>,
-    /// The hand-written lists its pipeline layout **begins** with — empty where every
-    /// one of them is derived. A case naming some but not all must name them from
-    /// group 0 up, which is what [`by_list`]'s position check reads.
-    groups: Vec<Group>,
+    /// The hand-written lists its pipeline layout holds, each at **its own position**
+    /// — empty where every one of them is derived.
+    ///
+    /// The position is carried rather than read off the index, so a pipeline whose
+    /// group 0 is derived and whose group 1 is still a list is sayable: that is the
+    /// shape the sweep and the wet loop take, sharing `PREFIX_SLOTS` at group 1.
+    groups: Vec<(u32, Group)>,
 }
 
 /// A slot as both sides can name it: the module that declares it, and the declaration.
@@ -442,115 +459,127 @@ fn table(r: Resid) -> Table {
         Case {
             what: "fill",
             entries: vec![fi.vs_main, fi.fs_main],
-            groups: vec![group("FILL_SLOTS", fill::FILL_SLOTS, resid)],
+            groups: numbered(vec![group("FILL_SLOTS", fill::FILL_SLOTS, resid)]),
         },
         Case {
             what: "merge",
             entries: vec![me.vs_main, me.fs_main],
-            groups: vec![group("MERGE_SLOTS", merge::MERGE_SLOTS, resid)],
+            groups: numbered(vec![group("MERGE_SLOTS", merge::MERGE_SLOTS, resid)]),
         },
         Case {
             what: "slab expand",
             entries: vec![sl.vs_main, sl.fs_expand],
-            groups: vec![group("SLAB_SLOTS", merge::SLAB_SLOTS, resid)],
+            groups: numbered(vec![group("SLAB_SLOTS", merge::SLAB_SLOTS, resid)]),
         },
         Case {
             what: "slab store",
             entries: vec![sl.vs_main, sl.fs_store],
-            groups: vec![group("SLAB_SLOTS", merge::SLAB_SLOTS, resid)],
+            groups: numbered(vec![group("SLAB_SLOTS", merge::SLAB_SLOTS, resid)]),
         },
         Case {
             what: "transform parcel",
             entries: vec![tr.vs_quad, tr.fs_parcel],
-            groups: vec![
+            groups: numbered(vec![
                 group("QUAD_SLOTS", transform::QUAD_SLOTS, resid),
                 group("SRC_SLOTS", transform::SRC_SLOTS, resid),
-            ],
+            ]),
         },
         Case {
             what: "transform mask",
             entries: vec![tr.vs_quad, tr.fs_mask],
-            groups: vec![
+            groups: numbered(vec![
                 group("QUAD_SLOTS", transform::QUAD_SLOTS, resid),
                 group("MASK_SRC_SLOTS", transform::MASK_SRC_SLOTS, resid),
-            ],
+            ]),
         },
         Case {
             what: "transform parcel gated",
             entries: vec![tr.vs_gated, tr.fs_parcel_gated],
-            groups: vec![
+            groups: numbered(vec![
                 group("GATED_SLOTS", transform::GATED_SLOTS, resid),
                 group("SRC_SLOTS", transform::SRC_SLOTS, resid),
-            ],
+            ]),
         },
         Case {
             what: "transform mask gated",
             entries: vec![tr.vs_gated, tr.fs_mask_gated],
-            groups: vec![
+            groups: numbered(vec![
                 group("GATED_SLOTS", transform::GATED_SLOTS, resid),
                 group("MASK_SRC_SLOTS", transform::MASK_SRC_SLOTS, resid),
-            ],
+            ]),
         },
         Case {
             what: "transform combine",
             entries: vec![tr.vs_fill, tr.fs_combine],
-            groups: vec![group("COMBINE_SLOTS", transform::COMBINE_SLOTS, resid)],
+            groups: numbered(vec![group(
+                "COMBINE_SLOTS",
+                transform::COMBINE_SLOTS,
+                resid,
+            )]),
         },
         Case {
             what: "transform mask base",
             entries: vec![tr.vs_fill, tr.fs_mask_base],
-            groups: vec![
+            groups: numbered(vec![
                 group("GATED_SLOTS", transform::GATED_SLOTS, resid),
                 group("MASK_SRC_SLOTS", transform::MASK_SRC_SLOTS, resid),
-            ],
+            ]),
         },
         Case {
             what: "selection",
             entries: vec![se.vs_main, se.fs_main],
-            groups: vec![group("RASTERIZE_SLOTS", selection::RASTERIZE_SLOTS, false)],
+            groups: numbered(vec![group(
+                "RASTERIZE_SLOTS",
+                selection::RASTERIZE_SLOTS,
+                false,
+            )]),
         },
         Case {
             what: "selection region",
             entries: vec![mr.vs_main, mr.fs_main],
-            groups: vec![
+            groups: numbered(vec![
                 group("REGION_VIEW_SLOTS", selection::REGION_VIEW_SLOTS, false),
                 group("REGION_TILE_SLOTS", selection::REGION_TILE_SLOTS, false),
-            ],
+            ]),
         },
         Case {
             what: "sweep",
             entries: vec![plain.vs_main, plain.fs_main],
-            groups: sweep(),
+            groups: numbered(sweep()),
         },
         Case {
             what: "sweep ceiling",
             entries: vec![ceiling.vs_main, ceiling.fs_main],
-            groups: sweep(),
+            groups: numbered(sweep()),
         },
         Case {
             what: "sweep levels",
             entries: vec![plain.vs_main, plain.fs_levels],
-            groups: sweep(),
+            groups: numbered(sweep()),
         },
         Case {
             what: "erase sweep",
             entries: vec![plain.vs_main, plain.fs_erase],
-            groups: sweep(),
+            groups: numbered(sweep()),
         },
         Case {
             what: "erase sweep ceiling",
             entries: vec![ceiling.vs_main, ceiling.fs_erase],
-            groups: sweep(),
+            groups: numbered(sweep()),
         },
         Case {
             what: "integrate",
             entries: vec![ig.vs_main, ig.fs_main],
-            groups: vec![group("INTEGRATE_SLOTS", swept::INTEGRATE_SLOTS, resid)],
+            groups: numbered(vec![group(
+                "INTEGRATE_SLOTS",
+                swept::INTEGRATE_SLOTS,
+                resid,
+            )]),
         },
         Case {
             what: "erase",
             entries: vec![er.vs_main, er.fs_main],
-            groups: vec![group("ERASE_SLOTS", erase::ERASE_SLOTS, resid)],
+            groups: numbered(vec![group("ERASE_SLOTS", erase::ERASE_SLOTS, resid)]),
         },
         Case {
             what: "dynamics composite",
@@ -560,71 +589,83 @@ fn table(r: Resid) -> Table {
         Case {
             what: "dynamics snapshot",
             entries: vec![dy.snapshot],
-            groups: vec![dyn_group("dynamics::SNAPSHOT", dyn_slots::SNAPSHOT)],
+            groups: numbered(vec![dyn_group("dynamics::SNAPSHOT", dyn_slots::SNAPSHOT)]),
         },
         Case {
             what: "dynamics bleed weight",
             entries: vec![dy.bleed_weight],
-            groups: vec![
+            groups: numbered(vec![
                 dyn_group("dynamics::BLEED_WEIGHT", dyn_slots::BLEED_WEIGHT),
                 prefix(),
-            ],
+            ]),
         },
         Case {
             what: "dynamics exchange",
             entries: vec![dy.exchange],
-            groups: vec![dyn_group("dynamics::EXCHANGE", dyn_slots::EXCHANGE)],
+            groups: numbered(vec![dyn_group("dynamics::EXCHANGE", dyn_slots::EXCHANGE)]),
         },
         Case {
             what: "dynamics bake",
             entries: vec![dy.bake],
-            groups: vec![dyn_group("dynamics::BAKE", dyn_slots::BAKE), prefix()],
+            groups: numbered(vec![dyn_group("dynamics::BAKE", dyn_slots::BAKE), prefix()]),
         },
         Case {
             what: "dynamics deposit",
             entries: vec![dy.deposit],
-            groups: vec![dyn_group("dynamics::DEPOSIT", dyn_slots::DEPOSIT), prefix()],
+            groups: numbered(vec![
+                dyn_group("dynamics::DEPOSIT", dyn_slots::DEPOSIT),
+                prefix(),
+            ]),
         },
         Case {
             what: "dynamics cell hoist",
             entries: vec![dy.cell_hoist],
-            groups: vec![dyn_group("dynamics::HOIST", dyn_slots::HOIST), prefix()],
+            groups: numbered(vec![
+                dyn_group("dynamics::HOIST", dyn_slots::HOIST),
+                prefix(),
+            ]),
         },
         Case {
             what: "dynamics deposit coarse",
             entries: vec![dy.deposit_coarse],
-            groups: vec![dyn_group(
+            groups: numbered(vec![dyn_group(
                 "dynamics::DEPOSIT_COARSE",
                 dyn_slots::DEPOSIT_COARSE,
-            )],
+            )]),
         },
         Case {
             what: "dynamics settle",
             entries: vec![dy.settle],
-            groups: vec![dyn_group("dynamics::SETTLE", dyn_slots::SETTLE), prefix()],
+            groups: numbered(vec![
+                dyn_group("dynamics::SETTLE", dyn_slots::SETTLE),
+                prefix(),
+            ]),
         },
         Case {
             what: "liquify snapshot field",
             entries: vec![li.snapshot_field],
-            groups: vec![dyn_group(
+            groups: numbered(vec![dyn_group(
                 "liquify::SNAPSHOT_FIELD",
                 dyn_slots::SNAPSHOT_FIELD,
-            )],
+            )]),
         },
         Case {
             what: "liquify warp",
             entries: vec![li.warp],
-            groups: vec![dyn_group("liquify::WARP", dyn_slots::WARP), prefix()],
+            groups: numbered(vec![dyn_group("liquify::WARP", dyn_slots::WARP), prefix()]),
         },
         Case {
             what: "liquify warp apply",
             entries: vec![li.warp_apply],
-            groups: vec![dyn_group("liquify::WARP_APPLY", dyn_slots::WARP_APPLY)],
+            groups: numbered(vec![dyn_group(
+                "liquify::WARP_APPLY",
+                dyn_slots::WARP_APPLY,
+            )]),
         },
         Case {
             what: "dynamics slice",
             entries: vec![sc.vs_main, sc.fs_main],
-            groups: vec![group("SLICE_SLOTS", kit::SLICE_SLOTS, false)],
+            groups: numbered(vec![group("SLICE_SLOTS", kit::SLICE_SLOTS, false)]),
         },
     ];
     // One line per accessor, from the very values the cases above are built out of —
@@ -734,13 +775,14 @@ fn by_list(cases: &[Case]) -> BTreeMap<&'static str, (Group, Vec<EntryPoint>)> {
             "`{}` names no entry point, so it says nothing about any list it holds",
             case.what,
         );
-        for (i, g) in case.groups.iter().enumerate() {
+        for (i, g) in &case.groups {
             // A pipeline layout is positional: the i-th layout *is* `@group(i)`. The
             // declaration says which group a list is, so the two are compared here —
-            // a swapped pair is otherwise a device-only failure.
+            // a swapped pair is otherwise a device-only failure. `desc::pipeline_layout_of`
+            // makes the same comparison for the layouts the engine actually builds.
             assert_eq!(
                 list_group(*g),
-                i as u32,
+                *i,
                 "`{}` binds `{}` at position {i} of its pipeline layout, where the \
                  shader declares that list `@group({})`",
                 case.what,
@@ -748,7 +790,7 @@ fn by_list(cases: &[Case]) -> BTreeMap<&'static str, (Group, Vec<EntryPoint>)> {
                 list_group(*g),
             );
         }
-        for g in &case.groups {
+        for (_, g) in &case.groups {
             let (seen, entries) = out.entry(g.name).or_insert_with(|| (*g, Vec::new()));
             // By content, not by address: a `const` reference is re-evaluated at every
             // use, so two mentions of one list need not be one allocation.

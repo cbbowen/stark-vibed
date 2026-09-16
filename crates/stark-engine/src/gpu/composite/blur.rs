@@ -84,21 +84,19 @@ impl BlurPass {
         // one plane both as a read texture and as a storage destination — `build_binds`
         // is what arranges that, wgpu taking the whole group into a dispatch's usage
         // scope whether the kernel stores or not.
-        let bgl = Bindings::of(
+        let bgl = Bindings::derived(
             device,
             "stark blur bgl",
-            stark_shaders::layout_entries(
-                &[
-                    blur.fft_both,
-                    blur.fft_one,
-                    blur.make_kernel,
-                    blur.apply_kernel,
-                ],
-                bd::F,
-                &[bd::F],
-            ),
+            &[
+                blur.fft_both,
+                blur.fft_one,
+                blur.make_kernel,
+                blur.apply_kernel,
+            ],
+            bd::F,
+            &[bd::F],
         );
-        let layout = desc::pipeline_layout(device, "stark blur layout", &[Some(bgl.layout())]);
+        let layout = desc::pipeline_layout_of(device, "stark blur layout", &[&bgl]);
         let cpipe =
             |label: &str, entry| desc::compute_pipeline(device, label, &layout, &module, entry);
         Self {

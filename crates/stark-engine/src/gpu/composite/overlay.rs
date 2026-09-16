@@ -7,7 +7,7 @@
 use crate::document::selection::Selection;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Bindings, RenderPipe};
-use stark_shaders::layout_entries;
+use stark_shaders::mirror::overlay::binding as ob;
 use stark_shaders::mirror::overlay::decl as od;
 use stark_shaders::mirror::view::decl as vd;
 
@@ -52,16 +52,14 @@ impl OverlayLayouts {
         let ov = stark_shaders::overlay();
         let stages = [ov.vs_main, ov.fs_main];
         Self {
-            view: Bindings::of(
+            view: Bindings::derived(
                 device,
                 "stark overlay view bgl",
-                layout_entries(&stages, vd::VIEW, &[vd::VIEW]),
+                &stages,
+                vd::VIEW,
+                &[vd::VIEW],
             ),
-            tile: Bindings::of(
-                device,
-                "stark overlay tile bgl",
-                layout_entries(&stages, od::MASK, &[]),
-            ),
+            tile: Bindings::derived(device, "stark overlay tile bgl", &stages, od::MASK, &[]),
         }
     }
 }
@@ -79,10 +77,10 @@ impl OverlayPass {
     ) -> Self {
         let overlay = stark_shaders::overlay();
         let shader = desc::Module::new(device, "stark selection overlay", overlay);
-        let layout = desc::pipeline_layout(
+        let layout = desc::pipeline_layout_of(
             device,
             "stark overlay layout",
-            &[Some(layouts.view.layout()), Some(layouts.tile.layout())],
+            &[&layouts.view, &layouts.tile],
         );
         let pipeline = desc::render_pipeline(
             device,
@@ -152,9 +150,16 @@ impl OverlayPass {
                 // redraw every frame a selection is live, and the mask is immutable.
                 mask_tiles.push(handle.overlay_bg(|| {
                     self.tile_bgl
-                        .group(&ctx.device, "stark selection outline tile bg", |_| {
-                            wgpu::BindingResource::TextureView(handle.view())
-                        })
+                        .group(
+                            &ctx.device,
+                            "stark selection outline tile bg",
+                            |i| match i {
+                                ob::MASK => wgpu::BindingResource::TextureView(handle.view()),
+                                other => {
+                                    unreachable!("the outline tile group has no binding {other}")
+                                }
+                            },
+                        )
                 }));
             }
         }

@@ -476,36 +476,30 @@ impl TransformRenderer {
         let mask_src_bindings = bindings("stark transform mask src bgl", MASK_SRC_SLOTS);
         let combine_bindings = bindings("stark transform combine bgl", COMBINE_SLOTS);
 
-        let gated_layout = desc::pipeline_layout(
+        let gated_layout = desc::pipeline_layout_of(
             device,
             "stark transform gated layout",
-            &[Some(gated_bindings.layout()), Some(src_bindings.layout())],
+            &[&gated_bindings, &src_bindings],
         );
-        let gated_mask_layout = desc::pipeline_layout(
+        let gated_mask_layout = desc::pipeline_layout_of(
             device,
             "stark transform gated mask layout",
-            &[
-                Some(gated_bindings.layout()),
-                Some(mask_src_bindings.layout()),
-            ],
+            &[&gated_bindings, &mask_src_bindings],
         );
-        let quad_layout = desc::pipeline_layout(
+        let quad_layout = desc::pipeline_layout_of(
             device,
             "stark transform quad layout",
-            &[Some(quad_bindings.layout()), Some(src_bindings.layout())],
+            &[&quad_bindings, &src_bindings],
         );
-        let mask_layout = desc::pipeline_layout(
+        let mask_layout = desc::pipeline_layout_of(
             device,
             "stark transform mask layout",
-            &[
-                Some(quad_bindings.layout()),
-                Some(mask_src_bindings.layout()),
-            ],
+            &[&quad_bindings, &mask_src_bindings],
         );
-        let combine_layout = desc::pipeline_layout(
+        let combine_layout = desc::pipeline_layout_of(
             device,
             "stark transform combine layout",
-            &[Some(combine_bindings.layout())],
+            &[&combine_bindings],
         );
 
         // A negative-determinant affine (a flip) reverses winding, so both faces must
