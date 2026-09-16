@@ -25,10 +25,35 @@ use std::path::Path;
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use wesl::syntax::Struct;
+use wesl::eval::{Context, Type, ty_eval_ty};
+use wesl::syntax::{Struct, TypeExpression};
 
 use crate::layout::lay_out;
 use crate::tree::{Module, read_tree};
+
+/// The WGSL type a `var<uniform>` names, resolved against the module that declares it.
+///
+/// **A name this module neither declares nor shares with WGSL is an imported struct, and
+/// that is refused.** The generator reads the *unlinked* source, where an import is a
+/// name and nothing more — so the struct's members are somewhere this has not read, the
+/// lookup came back empty, and the uniform was passed over without a word. Resolving it
+/// instead would mean a second import resolver here (`self::`, `super::`, `package::`,
+/// aliases, item collections), which is the transcription §6.10 is about; and the mirror
+/// it produced would land under the *importing* module, naming a file that does not
+/// declare the struct. Declare it where the uniform is, or name both modules in
+/// `SHARED`, which is what that list is for.
+fn uniform_type(ty: &TypeExpression, m: &Module, member: &str, ctx: &mut Context<'_>) -> Type {
+    ty_eval_ty(ty, ctx).unwrap_or_else(|e| {
+        panic!(
+            "`{}.wesl`'s `var<uniform> {member}: {}` names a type the module does not \
+             declare ({e}). A struct reached through an import has no mirror: the \
+             generator reads the unlinked source, where the import is only a name. \
+             Declare it here, or name both modules in `SHARED`.",
+            m.path,
+            ty.ident.name(),
+        )
+    })
+}
 
 /// Generate the host mirrors of everything the shader tree at `shader_dir` declares,
 /// into `dest`.
@@ -555,6 +580,73 @@ pub mod probe {
 }
 "#,
         );
+    }
+
+    /// `lib/` holds the binding-free leaves (§2). A binding there lands in every
+    /// artifact that imports the leaf, at a slot no importer chose — and this is the loop
+    /// that sees every binding in the tree, so the rule stops being prose.
+    #[test]
+    #[should_panic(expected = "a module under `lib/` may not declare a binding")]
+    fn a_binding_in_a_lib_module_fails_the_build() {
+        mirrors(
+            &[Module::parse(
+                "lib/store",
+                "@group(0) @binding(0) var st: texture_2d<f32>;\n",
+            )],
+            &[],
+            &[],
+        );
+    }
+
+    /// The rule is the directory at any depth, not the one level the walk used to reach.
+    #[test]
+    #[should_panic(expected = "a module under `lib/` may not declare a binding")]
+    fn a_binding_below_lib_fails_the_build_too() {
+        mirrors(
+            &[Module::parse(
+                "lib/ramp/store",
+                "@group(0) @binding(0) var st: texture_2d<f32>;\n",
+            )],
+            &[],
+            &[],
+        );
+    }
+
+    /// And what a leaf is *for*: everything but a binding still mirrors.
+    #[test]
+    fn a_lib_module_mirrors_everything_else() {
+        let out = past_header(&mirrors(
+            &[Module::parse("lib/ramp", "const STOPS: u32 = 4u;\n")],
+            &[],
+            &[],
+        ));
+        assert!(out.contains("pub mod ramp {"), "{out}");
+        assert!(out.contains("pub const STOPS: u32 = 4;"), "{out}");
+    }
+
+    /// A struct reached through an import has no mirror — the generator reads the
+    /// unlinked source, where the import is only a name — and the lookup coming back
+    /// empty used to mean the uniform was passed over without a word.
+    #[test]
+    #[should_panic(expected = "names a type the module does not declare")]
+    fn a_uniform_whose_struct_is_imported_is_refused() {
+        generated("var<uniform> view: View;\n");
+    }
+
+    /// The same refusal by the other route: `bindings` asks for the type first, to size
+    /// `min_binding_size` from it.
+    #[test]
+    #[should_panic(expected = "names a type the module does not declare")]
+    fn an_imported_uniform_struct_is_refused_at_its_binding_too() {
+        generated("@group(0) @binding(0) var<uniform> view: View;\n");
+    }
+
+    /// What the silence was *right* about, and the reason it cannot simply become a
+    /// panic: a uniform of a predeclared type needs no mirror, the host having the type
+    /// already.
+    #[test]
+    fn a_uniform_of_a_predeclared_type_needs_no_mirror() {
+        assert_eq!(generated("var<uniform> origin: vec4<f32>;\n"), "");
     }
 
     /// The `VERTEX` list is a name, not a membership statement — a record the host would

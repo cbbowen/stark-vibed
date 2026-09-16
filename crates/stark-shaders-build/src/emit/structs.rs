@@ -4,8 +4,11 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use wesl::syntax::{AddressSpace, DeclarationKind, GlobalDeclaration};
 
+use crate::eval::module_context;
 use crate::layout::{Laid, lay_out, lit};
 use crate::tree::Module;
+
+use super::uniform_type;
 
 /// Emit a mirror for every struct a `var<uniform>` in `m` names — the boundary the
 /// host writes across, discovered rather than listed (§2).
@@ -14,6 +17,7 @@ use crate::tree::Module;
 /// under another module, so the two do not both emit one. The second return is what
 /// discovery reached and could not spell.
 pub(super) fn discover(m: &Module, aliased: &[(String, String)]) -> (TokenStream, Vec<String>) {
+    let mut ctx = module_context(&m.tu);
     let mut out = TokenStream::new();
     let mut skipped = Vec::new();
     let mut done: Vec<String> = Vec::new();
@@ -39,9 +43,12 @@ pub(super) fn discover(m: &Module, aliased: &[(String, String)]) -> (TokenStream
         {
             continue;
         }
-        // Not a struct at all — a `var<uniform> x: vec4<f32>` is legal WGSL and needs
-        // no mirror, since the host already has the type.
         let Some(s) = m.struct_named(name) else {
+            // Either a type the host already has — `var<uniform> x: vec4<f32>` is legal
+            // WGSL and wants no mirror — or a struct this module *imported*, which is
+            // refused rather than passed over in silence. `uniform_type` is the one that
+            // tells the two apart, and it is what `bindings` asks for `min_binding_size`.
+            uniform_type(ty, m, decl.ident.name().as_str(), &mut ctx);
             continue;
         };
         done.push(name.to_string());

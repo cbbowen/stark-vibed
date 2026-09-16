@@ -2,7 +2,7 @@
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use wesl::eval::{Context, ty_eval_ty};
+use wesl::eval::Context;
 use wesl::syntax::{
     AddressSpace, Attribute, Declaration, DeclarationKind, Expression, ExpressionNode,
     GlobalDeclaration, TypeExpression,
@@ -12,6 +12,8 @@ use crate::docs::doc_lines;
 use crate::eval::{group_binding, module_context};
 use crate::layout::lit;
 use crate::tree::Module;
+
+use super::uniform_type;
 
 /// Emit the `@binding` declarations of `m` three ways: `binding::NAME` (the index, for
 /// a `match` arm), `decl::NAME` (the whole declaration, for a slot list), and
@@ -54,6 +56,16 @@ pub(super) fn emit(m: &Module) -> TokenStream {
         else {
             continue;
         };
+        // `lib/` holds the binding-free leaves (§2) — a rule that had been prose alone,
+        // though this is the loop that sees every binding in the tree.
+        assert!(
+            !m.under_lib(),
+            "`{module}.wesl` declares `@group({group}) @binding({index}) var {member}`, \
+             but a module under `lib/` may not declare a binding (§2): those are the \
+             leaves a pipeline's modules import, and a binding in one lands in every \
+             artifact that reaches it, at a slot no importer chose. Move it to the \
+             module that owns the pipeline."
+        );
         let name = member.to_uppercase();
         assert!(
             !names.contains(&name),
@@ -70,7 +82,7 @@ pub(super) fn emit(m: &Module) -> TokenStream {
 
         // The rest of what the declaration decides: what kind of thing occupies the
         // slot, and whether it exists at all in a build without the residual.
-        let kind = bind_kind(decl, module, &member, &mut ctx);
+        let kind = bind_kind(decl, m, &member, &mut ctx);
         // `@if(resid)` — the shader's own gate on the slot, carried through so a
         // layout never has to restate it as an element count (`[..12 + 4 *
         // usize::from(resid)]`).
@@ -155,7 +167,8 @@ pub(super) fn emit(m: &Module) -> TokenStream {
 /// `&'static str` bought nothing but a pair of string matches on the host, each with a
 /// runtime panic for a fact known here. Now an unmapped format stops *this* build,
 /// naming the declaration.
-fn bind_kind(decl: &Declaration, module: &str, member: &str, ctx: &mut Context<'_>) -> TokenStream {
+fn bind_kind(decl: &Declaration, m: &Module, member: &str, ctx: &mut Context<'_>) -> TokenStream {
+    let module = m.path.as_str();
     let ty = decl
         .ty
         .as_ref()
@@ -169,7 +182,7 @@ fn bind_kind(decl: &Declaration, module: &str, member: &str, ctx: &mut Context<'
         &decl.kind,
         DeclarationKind::Var(Some((AddressSpace::Uniform, _)))
     ) {
-        let size = uniform_size(ty, module, member, ctx);
+        let size = uniform_size(ty, m, member, ctx);
         let size = proc_macro2::Literal::u64_unsuffixed(size);
         return quote!(BindKind::Uniform { min_size: #size });
     }
@@ -244,12 +257,9 @@ fn expr_ident(expr: &ExpressionNode) -> Option<String> {
 }
 
 /// The WGSL size of a uniform binding's declared type — its `min_binding_size`.
-fn uniform_size(ty: &TypeExpression, module: &str, member: &str, ctx: &mut Context<'_>) -> u64 {
-    let resolved = ty_eval_ty(ty, ctx).unwrap_or_else(|e| {
-        panic!("`{module}.wesl`'s `{member}` has an unresolvable uniform type: {e}")
-    });
-    resolved
+fn uniform_size(ty: &TypeExpression, m: &Module, member: &str, ctx: &mut Context<'_>) -> u64 {
+    uniform_type(ty, m, member, ctx)
         .size_of()
-        .unwrap_or_else(|| panic!("`{module}.wesl`'s `{member}` has an unsized uniform type"))
+        .unwrap_or_else(|| panic!("`{}.wesl`'s `{member}` has an unsized uniform type", m.path))
         as u64
 }
