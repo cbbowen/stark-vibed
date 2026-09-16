@@ -39,6 +39,8 @@ default-members = [
     "crates/stark-net",
     "crates/stark-pen",
     "crates/stark-shaders",
+    # Host-only, and it carries the tests of what the build script used to be.
+    "crates/stark-shaders-build",
     "crates/stark-wgpui-frontend",
 ]
 

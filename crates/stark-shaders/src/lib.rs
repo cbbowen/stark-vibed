@@ -153,7 +153,7 @@ impl Binding {
 /// Rust mirrors of what the WESL declares — the uniform structs the host fills in,
 /// the constants both sides compute with, the `@binding` declarations, and the
 /// per-instance vertex records — generated from the shader sources at build time
-/// (`build/mirror.rs`).
+/// (`stark-shaders-build`).
 ///
 /// The shader decides how the lanes are read, so the shader's declaration is the
 /// only one: these are not transcriptions to be kept in step, and the lane

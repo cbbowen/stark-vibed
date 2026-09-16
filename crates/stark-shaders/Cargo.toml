@@ -30,25 +30,10 @@ bytemuck = { workspace = true }
 wgpu = { workspace = true }
 
 [build-dependencies]
-# The linker, and `eval` for the type resolver and the WGSL size/alignment tables the
-# mirrors are laid out from. Build-only, which is the whole of this crate's use of it.
-wesl = { workspace = true, features = ["eval"] }
-# The **type checker** (`build.rs::typechecks`). `wesl`'s own `validate` resolves
-# names and checks call arity; it does not typecheck, so a `Sweep` handed to a
-# parameter expecting a `vec3<f32>` linked cleanly and failed at
-# `create_shader_module` — on a GPU, in the half of the suite CI cannot diff. This is
-# the same front end `wgpu` runs there, run at build time instead. Already in the
-# graph (wgpu 30 is built on it), so it costs a compile of what is downloaded anyway.
-naga = { workspace = true }
-# Emitting the host mirrors (`build/mirror.rs`). `quote` builds the code as tokens
-# rather than as text, and `prettyplease` renders it readably — which matters here
-# because the lane documentation the generator carries over is meant to be read.
-# `default-features = false` drops the bridge to the compiler's `libproc_macro`,
-# which only exists inside a real macro expansion and is dead weight in a script.
-prettyplease = "0.2"
-proc-macro2 = { version = "1", default-features = false }
-quote = { version = "1", default-features = false }
-syn = { version = "2", default-features = false, features = ["full", "parsing", "printing"] }
+# The whole of `build.rs`'s work — the linker, the type check and the mirror generator.
+# Build-only: nothing of it reaches this crate's own graph, so `wesl`, `naga`, `syn` and
+# `quote` are not in it either.
+stark-shaders-build = { path = "../stark-shaders-build" }
 
 # The shared lint set (root Cargo.toml).
 [lints]

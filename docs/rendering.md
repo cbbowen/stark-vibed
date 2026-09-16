@@ -930,7 +930,7 @@ the polynomial's reachable set (`tests/blend.rs` carried an 8/255 and a 40/255
 tolerance for that; both are 2/255 now, the same as Oklab's).
 
 **Oklab pays nothing.** Its three channels reproduce every sRGB color, so
-`resid_format()` is `None`, no third texture is allocated, and the eight passes that
+`resid_format()` is `None`, no third texture is allocated, and the eleven passes that
 carry a tile's color are built in a second variant under WESL's `@if(resid)`
 conditional compilation (`RESID_ENTRY_POINTS`). `media_mixbox.wesl` and
 `blend_mixbox.wesl` declare their own residual bindings — past where the shared
@@ -961,7 +961,7 @@ Secret Weapons, **CC BY-NC 4.0** — non-commercial; commercial use needs a lice
 from `mixbox@scrtwpns.com`). CPU `rgb_to_channels`/`channels_to_rgb` call the
 vendored crate (`no_std` + `libm`, so it builds for wasm and embeds its own LUT).
 The GPU polynomial in `media_mixbox.wesl` is **generated at build time** from the
-vendored GLSL (`stark-shaders/build.rs` transpiles `mixbox_eval_polynomial` into
+vendored GLSL (`stark-shaders-build` transpiles `mixbox_eval_polynomial` into
 a WESL module), so the trained coefficients stay sourced from the licensed
 submodule rather than copied into this repo.
 
@@ -1000,7 +1000,7 @@ Three consequences worth stating, because each is a place the obvious move is wr
   colorimetric one renders every pixel wrong while looking like it worked.
 - **The residual goes with it.** A residual is what a *pigment* space needs and this
   is the only one, so without the feature no space declares a `resid_format`: the
-  eight `_resid` variants are not built, and the loop's storage-texture requirement
+  eleven `_resid` variants are not built, and the loop's storage-texture requirement
   drops from six back to WebGPU's guaranteed four. What stays unconditional is the
   handful of mirrored uniform lanes — one host struct layout in both configurations,
   16 bytes each, which is the same reason they are unconditional across the *WESL*
@@ -1018,17 +1018,19 @@ said 80 and it was 96 (`surf_m`, §18.1.2), `GuideUniform`'s said 240 and it was
 304 (§20.8), and `Stamp.e.zw` was still documented on the host as the midpoint
 `exchange` samples the canvas at, long after the shader stopped reading the lane.
 
-**So the shader's declaration is now the only one.** `stark-shaders/build.rs`
-already holds a parsed WESL tree; `build/mirror.rs` walks it and emits the Rust
-struct into `stark_shaders::mirror::<wesl module>::<Name>` — fields, padding, and
-the lane documentation, which lives exactly once and is read off the WESL comment
-that abuts each member.
+**So the shader's declaration is now the only one.** `stark-shaders-build` reads
+the WESL tree, and its `emit` module walks it and emits the Rust struct into
+`stark_shaders::mirror::<wesl module>::<Name>` — fields, padding, and the lane
+documentation, which lives exactly once and is read off the WESL comment that abuts
+each member. It is a library rather than the build script it used to be because a
+build script's `#[cfg(test)]` is never compiled, so none of it was testable there.
 
 ### Adding a mirror
 
-1. Add `(&["<wesl module>"], "<Struct>")` to `MIRRORS` in
-   `stark-shaders/build.rs`. Where several shaders declare the same struct against
-   one host type, list them all: the first is generated from and the rest are
+1. Nothing, usually. Every struct a `var<uniform>` names is **discovered**; there is
+   no list to join. The one exception is a struct several shaders declare against one
+   host type — add `(&["<module>", …], "<Struct>")` to `SHARED` in
+   `stark-shaders/build.rs`, and the first named is generated from while the rest are
    **checked to agree**, member for member and offset for offset. `View` is why —
    `composite.wesl`, `matte.wesl` and `overlay.wesl` each write it out separately.
 2. Delete the hand-written struct and import the generated one in its place,
@@ -1041,10 +1043,11 @@ that abuts each member.
 
 ### Adding a constant
 
-Add `("<wesl module>", "<NAME>")` to `CONSTS` and delete the host's copy. The path
-may reach into `lib/` (`("lib/paint_common", "TOOTH_RISE")`); the generated Rust
-module is named for the file, since `lib` is a placement rule — binding-free leaves
-— rather than a namespace.
+Delete the host's copy; every typed `const` in the tree is already mirrored, so
+there is nothing to add. The generated Rust module is named for the *file*, even
+under `lib/` (`lib/paint_common.wesl`'s `TOOTH_RISE` is
+`mirror::paint_common::TOOTH_RISE`), since `lib` is a placement rule — binding-free
+leaves — rather than a namespace.
 
 A constant that disagrees is worse-behaved than a struct that does. A struct
 usually surfaces as a wgpu validation error; a constant leaves both sides rendering
@@ -1151,8 +1154,8 @@ device, no runtime.
 
 ### Adding a binding table
 
-Add the WESL module to `BINDINGS` in `stark-shaders/build.rs`. Two things are
-generated from every `@binding` declaration in it:
+Nothing to add: every `@binding` declaration in the tree is discovered, and two
+things are generated from each of them:
 
 - `mirror::<module>::binding::<NAME>` — the index, uppercased from the WESL
   variable. This is what a host layout and a host bind group name a slot by.
@@ -1227,9 +1230,10 @@ transcription drifted, and in each case the drift was invisible until it was a
 picture.
 
 So before adding a host-side declaration of anything a `.wesl` file already says,
-check whether it belongs in `MIRRORS`, `CONSTS`, `VERTEX` or `BINDINGS`. The
-generator has an AST of every shader in the tree; if the shader states it, the host
-should be reading it rather than repeating it. What is left over — a name, a step
+look for it in `stark_shaders::mirror` — it is almost certainly already there, since
+the generator discovers rather than being given a list. The generator has an AST of
+every shader in the tree; if the shader states it, the host should be reading it
+rather than repeating it. What is left over — a name, a step
 mode, whether *this* pass samples *that* texture — is worth writing by hand
 precisely because the shader does not say it.
 

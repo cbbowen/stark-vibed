@@ -79,7 +79,12 @@ crates/
                    mirrors generated from them (§6.10)
     src/shaders/   the WESL tree; `lib/` under it holds the binding-free leaves
                    — a module there may NOT declare a binding
-    build/         the generator: WESL declarations -> Rust structs/consts/attrs
+  stark-shaders-build/
+                   the generator, and the only thing `stark-shaders`'s build script
+                   depends on: the link and type check of each artifact, and the host
+                   mirrors — WESL declarations -> Rust structs/consts/attrs. A library
+                   rather than the script it used to be, because a build script's
+                   `#[cfg(test)]` is never compiled, so none of it was testable there
   stark-testdata/  recorded pen input + asset paths; dev-only
   stark-net/       iroh transport ↔ the replicated timeline
   stark-pen/       the stylus (§11.3): pressure, tilt and the reports a digitizer
@@ -293,9 +298,9 @@ per-test tolerance hides exactly that drift. Deleting a golden re-blesses it.
 - **Never transcribe onto the host what a `.wesl` file already states** (§6.10).
   Uniform lanes, constants, vertex formats, binding indices and binding *types*
   are all generated from the shader's own declaration — and **discovered, not
-  listed**: `stark-shaders/build/mirror.rs` mirrors every typed `const`, every
-  `@binding` and every `var<uniform>` struct in the tree (`emit_consts`,
-  `emit_bindings`, `emit_uniform_structs`), so a host transcription is always
+  listed**: `stark-shaders-build`'s `emit` mirrors every typed `const`, every
+  `@binding` and every `var<uniform>` struct in the tree (`emit::consts`,
+  `emit::bindings`, `emit::structs`), so a host transcription is always
   avoidable. `build.rs` names only what a shader cannot say about itself:
   `SHARED` (one host type several shaders declare identically) and `VERTEX` (the
   name of a per-instance record). A hand-written second copy drifts, and the

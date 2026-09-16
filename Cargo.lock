@@ -9904,13 +9904,20 @@ name = "stark-shaders"
 version = "0.0.0"
 dependencies = [
  "bytemuck",
+ "stark-shaders-build",
+ "wgpu",
+]
+
+[[package]]
+name = "stark-shaders-build"
+version = "0.0.0"
+dependencies = [
  "naga",
  "prettyplease",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
  "wesl",
- "wgpu",
 ]
 
 [[package]]

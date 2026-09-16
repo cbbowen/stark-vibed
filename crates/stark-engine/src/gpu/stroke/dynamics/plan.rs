@@ -20,8 +20,8 @@ use super::super::segments::{BleedFire, Segment, Stretch};
 use super::bleed::bleed_stencil;
 use crate::gpu::substrate::TexelsPerPx;
 // The `Stamp` uniform, generated from `dynamics_common.wesl`'s own declaration
-// (`stark-shaders/build/mirror.rs`): the shader decides how the lanes are read, so it
-// is the only place they are written down (§6.10).
+// (`stark-shaders-build`): the shader decides how the lanes are read, so it is the
+// only place they are written down (§6.10).
 use stark_shaders::mirror::dynamics::CELL_BORDER;
 use stark_shaders::mirror::dynamics_common::{Stamp, TILE_WG};
 

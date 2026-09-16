@@ -1,0 +1,34 @@
+# The body of `stark-shaders`'s build script (§6.10), as a library. See the crate docs
+# for why it is one.
+[package]
+name = "stark-shaders-build"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Links Stark's WESL tree to WGSL and generates the Rust mirrors of what it declares."
+
+[dependencies]
+# The linker, and `eval` for the type resolver and the WGSL size/alignment tables the
+# mirrors are laid out from.
+wesl = { workspace = true, features = ["eval"] }
+# The **type checker** (`check.rs`). `wesl`'s own `validate` resolves names and checks
+# call arity; it does not typecheck, so a `Sweep` handed to a parameter expecting a
+# `vec3<f32>` linked cleanly and failed at `create_shader_module` — on a GPU, in the
+# half of the suite CI cannot diff. This is the same front end `wgpu` runs there, run
+# at build time instead. Already in the graph (wgpu 30 is built on it), so it costs a
+# compile of what is downloaded anyway.
+naga = { workspace = true }
+# Emitting the host mirrors (`emit.rs`). `quote` builds the code as tokens rather than
+# as text, and `prettyplease` renders it readably — which matters here because the lane
+# documentation the generator carries over is meant to be read. `default-features =
+# false` drops the bridge to the compiler's `libproc_macro`, which only exists inside a
+# real macro expansion and is dead weight outside one.
+prettyplease = "0.2"
+proc-macro2 = { version = "1", default-features = false }
+quote = { version = "1", default-features = false }
+syn = { version = "2", default-features = false, features = ["full", "parsing", "printing"] }
+
+# The shared lint set (root Cargo.toml).
+[lints]
+workspace = true
