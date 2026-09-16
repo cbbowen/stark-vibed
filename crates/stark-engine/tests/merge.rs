@@ -14,7 +14,8 @@
 //! can demand zero do. Where the tile is genuinely recomputed — the overlap, and every
 //! texel of a faded layer — the arithmetic runs in f32 and lands in f16 storage whose
 //! rounding is implementation-defined, so a least-significant bit is allowed and no
-//! more. A merge that moved a pixel by 2 would pass no test in this file.
+//! more — of a view that lands on the texel grid, which every test here but
+//! [`a_merge_is_exact_at_texel_centres_and_drifts_off_them`] looks at.
 //!
 //! The other half is [`document::merge`]'s own unit tests, which pin *which* pairs are
 //! offered. This file pins that the offered ones are honest, which is the part a rule
@@ -925,14 +926,17 @@ fn a_merge_is_exact_at_texel_centres_and_drifts_off_them() {
         layer: top,
         op: FillOp::new(rect(-100.0, 0.0), 0.0, Srgb::new(COOL), 1.0),
     });
-    let (inside, outside) = (Vec2::new(-4.0, 0.0), Vec2::new(3.0, 0.0));
+    // The straddling pair itself: the last texel the top fill covers and the first it
+    // does not. `None` there is as good as zero — an unminted tile is not a tile of
+    // zeroes — so the claim is "no paint", not "a tile exists holding none".
+    let (inside, outside) = (Vec2::new(-1.0, 0.0), Vec2::new(0.0, 0.0));
     assert_eq!(
         (
             paint_at(&engine, top, inside),
-            paint_at(&engine, top, outside),
+            paint_at(&engine, top, outside).unwrap_or((0.0, 0.0)),
             paint_at(&engine, ROOT, inside).map(|(h, _)| h > 0.99 && h < 1.01),
         ),
-        (Some((8.0, 1.0)), Some((0.0, 0.0)), Some(true)),
+        (Some((8.0, 1.0)), (0.0, 0.0), Some(true)),
         "the step this measures — eight units of paint beside none, over a unit \
          slab — is not what the two fills laid",
     );
@@ -940,10 +944,13 @@ fn a_merge_is_exact_at_texel_centres_and_drifts_off_them() {
     // Three views of the one picture: the default, which lands every screen pixel on a
     // texel centre; that view panned half a texel, which lands every one of them
     // exactly between four; and a magnification, which sweeps every phase in between.
-    let views: [(&str, f32, Vec2); 3] = [
-        ("on grid", 1.0, Vec2::ZERO),
-        ("half a texel", 1.0, Vec2::splat(0.5)),
-        ("zoom 3", 3.0, Vec2::splat(0.5)),
+    // Each carries what it may move by, rather than the tolerance being chosen from
+    // the name: the on-grid bound is the whole claim, and a renamed row must not
+    // quietly relax it to the off-grid one.
+    let views: [(&str, f32, Vec2, u8); 3] = [
+        ("on grid", 1.0, Vec2::ZERO, 1),
+        ("half a texel", 1.0, Vec2::splat(0.5), OFF_GRID),
+        ("zoom 3", 3.0, Vec2::splat(0.5), OFF_GRID),
     ];
     // `Zoom` is a factor on the view in hand, so the walk carries where it left the
     // zoom and puts it back — the two calls must show the same three views.
@@ -952,7 +959,7 @@ fn a_merge_is_exact_at_texel_centres_and_drifts_off_them() {
         let mut zoom = 1.0f32;
         let shots = views
             .iter()
-            .map(|&(_, z, c)| {
+            .map(|&(_, z, c, _)| {
                 engine.process(ViewCommand::Zoom {
                     anchor,
                     factor: z / zoom,
@@ -989,9 +996,8 @@ fn a_merge_is_exact_at_texel_centres_and_drifts_off_them() {
     );
     let after = shot(&mut engine);
 
-    for ((name, _, _), (b, a)) in views.iter().zip(before.iter().zip(&after)) {
+    for (&(name, _, _, tol), (b, a)) in views.iter().zip(before.iter().zip(&after)) {
         let (frac, worst) = diff_fraction(b, a);
-        let tol = if *name == "on grid" { 1 } else { OFF_GRID };
         assert!(
             worst <= tol,
             "{name}: the merge moved a pixel by {worst} (over {:.2}% of the frame), \

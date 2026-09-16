@@ -809,8 +809,11 @@ fn swept_cut(b: BrushParams, half: f32, step: Option<f32>) -> Option<(f64, Vec<f
     let mut engine = engine_or_skip()?;
     let (samples, tolerance): (Vec<Vec2>, f32) = match step {
         Some(s) => {
-            let n = (2.0 * half / s) as usize;
-            let at = |i: usize| Vec2::new(-half + i as f32 * s, 0.0);
+            // Ending at exactly `+half`, like the coarse delivery: a truncated last
+            // step shortens the fine run's end cap, which is a deficit in the same
+            // direction as the one being measured and of the same order at radius 40.
+            let n = (2.0 * half / s).ceil() as usize;
+            let at = |i: usize| Vec2::new((-half + i as f32 * s).min(half), 0.0);
             ((0..=n).map(at).collect(), MIN_TOLERANCE)
         }
         None => (
@@ -846,28 +849,28 @@ fn swept_cut(b: BrushParams, half: f32, step: Option<f32>) -> Option<(f64, Vec<f
 /// The deposit is additive in τ, so the *same* run cut finely and coarsely must lay the
 /// same height. It does not, quite: the swept path accumulates into `Rgba16Float`
 /// scratch (`SCRATCH_AUX_FORMAT`), and an increment below half an ULP of the running
-/// total rounds away — so a finer cut lays *less*, and by more the wider the tip, since
-/// each segment's share of a texel's total is about `seg/2r`.
+/// total rounds away.
 ///
-/// A known limitation, pinned rather than fixed. Measured deficits of the fine cut
-/// against the coarse one, total and worst mid-band column:
+/// A known limitation, pinned rather than fixed. The fine cut against the coarse one,
+/// total and worst mid-band column, at the wider of the two knot spacings:
 ///
 /// | radius | total | column |
 /// |---|---|---|
-/// | 40 | −0.06% | +0.04% |
-/// | 200 | −0.11% | −0.18% |
+/// | 40 | +0.01% | +0.04% |
+/// | 200 | −0.10% | −0.18% |
 /// | 500 | −0.62% | −0.94% |
-/// | 1000 | −3.88% | −5.37% |
+/// | 1000 | −3.61% | −4.90% |
 ///
-/// The bounds below are those at 500 and 40 with room to spare. A regression that took
-/// the scratch narrower, or dropped the resolve that keeps the increments comparable,
-/// shows up here as the 1000-radius column figure at 500.
+/// So an ordinary tip does not measurably have it and a wide one does. The bounds
+/// below are those at 500 and 40 with room to spare; a regression that took the
+/// scratch narrower shows up here as the 1000-radius figure at 500.
 #[test]
 fn a_swept_strokes_weight_holds_across_the_cut_to_the_f16_bound() {
     // Radius, and what its cut may move the weight by. Wide is where the limitation
     // lives; 40 px is an ordinary tip, where it is not measurable.
-    const CASES: [(f32, f64); 2] = [(500.0, 0.015), (40.0, 0.0025)];
+    const CASES: [(f32, f64); 2] = [(500.0, 0.015), (40.0, 0.001)];
 
+    let mut widest = 0.0f64;
     for (radius, bound) in CASES {
         let mut b = brush(RED, radius);
         // Off, so nothing but the segment count varies along the run: `drain` runs the
@@ -895,16 +898,28 @@ fn a_swept_strokes_weight_holds_across_the_cut_to_the_f16_bound() {
                 .enumerate()
                 .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
                 .expect("the band has columns");
+            if radius == CASES[0].0 {
+                widest = widest.max(worst.abs());
+            }
             assert!(
                 drift.abs() <= bound && worst.abs() <= bound,
                 "at radius {radius}, a run cut every {step} px laid {fine:.1} of height \
-                 where the coarse cut laid {coarse:.1} ({:+.3}%, worst column {col} \
+                 where the coarse cut laid {coarse:.1} ({:+.3}%, worst column x={} \
                  {:+.3}%, bound ±{:.2}%) — the f16 scratch is dropping more of each \
                  segment's increment than it did",
                 drift * 100.0,
+                col as i32 - (half / 2.0) as i32,
                 worst * 100.0,
                 bound * 100.0,
             );
         }
     }
+    // The wide case has to still show the limitation, or the two cuts are rendering
+    // the same segmentation and this compared a run with itself.
+    assert!(
+        widest > 0.002,
+        "the widest tip's cut moved its weight by only {:+.3}% — the fine delivery is \
+         no longer being cut differently from the coarse one",
+        widest * 100.0,
+    );
 }

@@ -286,7 +286,7 @@ fn apron_makes_dynamics_writeback_seamless_under_zoom() {
 /// The worst height step between any tile's apron and the neighbour interior it
 /// duplicates, and the tallest texel either holds. Read off the tiles rather than a
 /// render, so the lit image cannot blur a one-texel slip away.
-fn apron_mismatch(engine: &stark_engine::Engine) -> (f32, f32) {
+fn apron_mismatch(engine: &stark_engine::Engine) -> (f32, f32, usize) {
     use stark_model::document::LayerId;
     use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord};
 
@@ -299,6 +299,9 @@ fn apron_mismatch(engine: &stark_engine::Engine) -> (f32, f32) {
         .unwrap_or_default();
     let (lo, hi) = (TILE_APRON, TILE_APRON + TILE_SIZE);
     let at = |row: u32, col: u32| (row * TILE_TEX + col) as usize;
+    // Counted and handed back, because a run whose tiles are not adjacent compares no
+    // boundary at all and would report a worst of zero.
+    let mut pairs = 0usize;
     let (mut worst, mut peak) = (0.0f32, 0.0f32);
     for &a in &coords {
         let here = engine
@@ -310,6 +313,7 @@ fn apron_mismatch(engine: &stark_engine::Engine) -> (f32, f32) {
             else {
                 continue;
             };
+            pairs += 1;
             // A texel by its place along the shared edge and across it.
             let rc = |along, across| {
                 if dx == 1 {
@@ -326,7 +330,7 @@ fn apron_mismatch(engine: &stark_engine::Engine) -> (f32, f32) {
             }
         }
     }
-    (worst, peak)
+    (worst, peak, pairs)
 }
 
 /// **A toothed stroke keeps its aprons** (§6.4), on the swept path and the loop. The
@@ -360,9 +364,13 @@ fn a_toothed_stroke_keeps_its_aprons() {
         // Diagonal, so the gate varies along the horizontal edges' apron rows too.
         let run = [Vec2::new(-70.0, -60.0), Vec2::new(70.0, 80.0)];
         stroke_with(&mut engine, b, &run);
-        let (worst, peak) = apron_mismatch(&engine);
+        let (worst, peak, pairs) = apron_mismatch(&engine);
         engine.process(DocCommand::Undo);
         assert!(peak > 0.0, "the stroke laid nothing");
+        assert!(
+            pairs > 0,
+            "the run spans one tile, so no boundary was compared"
+        );
         // Bit-identical on the adapter the suite runs on, whose rasterizer interpolates
         // the same under an integer shift of the target; the slack is for one that does not.
         assert!(
@@ -421,8 +429,15 @@ fn a_stroke_far_from_the_origin_keeps_its_aprons() {
     use stark_model::document::{BrushEffect, LayerId};
     use stark_model::geom::{TILE_SIZE, TileCoord};
 
-    // Shift from the origin, and what it may add to the stroke's weight.
-    const CASES: [(f32, f64); 3] = [(0.0, 0.0), (1_048_576.0, 0.02), (4_194_304.0, 0.08)];
+    // Shift from the origin, and what it may move the stroke's weight by — `None` at
+    // the origin, which is what the other two are measured against. Both shifts are
+    // whole multiples of `TILE_SIZE` and exact in f32, so the comparison holds tile
+    // phase and sub-texel phase fixed and only the frame's own precision varies.
+    const CASES: [(f32, Option<f64>); 3] = [
+        (0.0, None),
+        (1_048_576.0, Some(0.02)),
+        (4_194_304.0, Some(0.08)),
+    ];
 
     let Some(mut engine) = engine_or_skip() else {
         return;
@@ -442,7 +457,7 @@ fn a_stroke_far_from_the_origin_keeps_its_aprons() {
                 b,
                 &[o + Vec2::new(-70.0, -60.0), o + Vec2::new(70.0, 80.0)],
             );
-            let (worst, peak) = apron_mismatch(&engine);
+            let (worst, peak, pairs) = apron_mismatch(&engine);
             let total = total_height(&engine, LayerId::ROOT);
             // The mark is where it was asked for, not back at the origin — without this
             // a stroke the engine had declined would compare an empty layer with itself.
@@ -452,8 +467,9 @@ fn a_stroke_far_from_the_origin_keeps_its_aprons() {
                 .is_some();
             engine.process(DocCommand::Undo);
             assert!(
-                peak > 0.0 && landed,
-                "{what}: the stroke at {shift} left no tile at ({out_there}, {out_there})"
+                peak > 0.0 && landed && pairs > 0,
+                "{what}: the stroke at {shift} left no tile at ({out_there}, \
+                 {out_there}), or none adjacent to compare across"
             );
             // One f16 ULP at this peak is 0.00098 of it, so this is four of them — a
             // hundredth of what the toothed case above allows, and what says the two
@@ -464,16 +480,16 @@ fn a_stroke_far_from_the_origin_keeps_its_aprons() {
                  duplicates by {worst} of a {peak} peak — the absolute canvas frame has \
                  stopped resolving a tile boundary the same way from both sides"
             );
-            if shift == 0.0 {
+            let Some(drift_bound) = drift_bound else {
                 at_origin = total;
                 continue;
-            }
+            };
             let drift = (total - at_origin) / at_origin;
             assert!(
                 drift.abs() <= drift_bound,
                 "{what}: at {shift} px out the same stroke laid {total:.1} of height \
                  against {at_origin:.1} at the origin ({:+.2}%, bound ±{:.0}%) — the \
-                 f32 canvas frame is losing the tip faster than it did",
+                 f32 canvas frame is resolving the tip differently than it did",
                 drift * 100.0,
                 drift_bound * 100.0,
             );
