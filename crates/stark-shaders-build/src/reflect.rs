@@ -149,8 +149,9 @@ fn uses(
 /// Through the compiler's own sourcemap rather than by unpicking the mangled spelling:
 /// the mangler is a setting, and a name this build's mangler did not produce would be
 /// read as a different declaration rather than refused. A name the sourcemap does not
-/// hold is the root module's, which is not mangled ([`crate::collide`] leans on the
-/// same fact).
+/// hold is the root module's, which is not mangled — [`crate::collide`] leans on that
+/// same fact, though it names the root by the artifact it is linking rather than by the
+/// module path, its message being about which *files* claimed one slot.
 fn declared_at(
     sourcemap: &impl SourceMap,
     name: &str,
@@ -184,12 +185,13 @@ fn targets(naga: &naga::Module, ep: &naga::EntryPoint, artifact: &str) -> Vec<u3
     let Some(result) = &ep.function.result else {
         return Vec::new();
     };
+    let at = |binding| location(binding, &ep.name, artifact);
     let mut out: Vec<u32> = match &result.binding {
-        Some(binding) => location(binding).into_iter().collect(),
+        Some(binding) => at(binding).into_iter().collect(),
         None => match &naga.types[result.ty].inner {
             naga::TypeInner::Struct { members, .. } => members
                 .iter()
-                .filter_map(|m| m.binding.as_ref().and_then(location))
+                .filter_map(|m| m.binding.as_ref().and_then(at))
                 .collect(),
             _ => panic!(
                 "`{artifact}`'s `{}` returns an unbound non-struct, which names no \
@@ -202,8 +204,25 @@ fn targets(naga: &naga::Module, ep: &naga::EntryPoint, artifact: &str) -> Vec<u3
     out
 }
 
-fn location(binding: &naga::Binding) -> Option<u32> {
+/// The `@location` one output carries, or `None` for a builtin.
+///
+/// **`@blend_src` is refused rather than reported.** Dual-source blending gives one
+/// target two outputs at one `@location`, so the list this builds would hold that
+/// location twice — and the host's target array is checked against it one entry per
+/// location (`desc::render_pipeline`). A shader that wanted it would want that check
+/// thought about rather than silently doubled.
+fn location(binding: &naga::Binding, ep: &str, artifact: &str) -> Option<u32> {
     match binding {
+        naga::Binding::Location {
+            location,
+            blend_src: Some(src),
+            ..
+        } => panic!(
+            "`{artifact}`'s `{ep}` writes `@location({location}) @blend_src({src})`. \
+             Dual-source blending is two outputs at one color target, which this \
+             mirror reports as two targets — and the host builds its target array \
+             against that count."
+        ),
         naga::Binding::Location { location, .. } => Some(*location),
         naga::Binding::BuiltIn(_) => None,
     }
@@ -376,6 +395,26 @@ fn tap(uv: vec2<f32>) -> vec4<f32> { return textureSample(src, samp, uv); }
             &NoSourceMap,
         );
         assert_eq!(uses_of(named(&eps, "k")), [("probe", "USED", false)]);
+    }
+
+    /// Two outputs at one color target: the list would hold `[0, 0]`, and the host
+    /// builds its target array one entry per location.
+    #[test]
+    #[should_panic(expected = "@location(0) @blend_src(1)")]
+    fn dual_source_blending_is_refused() {
+        reflect(
+            "enable dual_source_blending;\n\
+             struct Out {\n\
+             \x20 @location(0) @blend_src(0) a: vec4<f32>,\n\
+             \x20 @location(0) @blend_src(1) b: vec4<f32>,\n\
+             }\n\
+             @fragment fn fs_main() -> Out {\n\
+             \x20 return Out(vec4<f32>(0.0), vec4<f32>(0.0));\n\
+             }\n",
+            "probe",
+            &["probe"],
+            &NoSourceMap,
+        );
     }
 
     /// The sourcemap naming a module the tree does not hold — the transpiled

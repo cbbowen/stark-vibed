@@ -12,6 +12,7 @@
 //! about them, since a `@if` that dropped an entry point would otherwise surface as a
 //! missing-entry-point panic from `wgpu` in exactly one colour space.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use proc_macro2::TokenStream;
@@ -26,6 +27,42 @@ use crate::reflect::Reflected;
 /// one of them would be a redefinition several hundred generated lines away from the
 /// file that caused it.
 const RESERVED: &[&str] = &["BindKind", "Binding", "EntryPoint", "Use", "Sample"];
+
+/// Fail unless every item this generator puts at the crate root has a name of its own.
+///
+/// Three families land there — a record and an accessor per module, an enum per axis —
+/// from spellings that are not distinct on their face: `a_b.wesl` and `a__b.wesl` both
+/// camel-case to `AB`, and a `resid.wesl` would take the `Resid` axis's name. Asked as
+/// one uniqueness question rather than as a list of the collisions someone thought of.
+fn names_are_distinct(entries: &[Entry<'_>], axes: &[Axis<'_>]) {
+    let mut seen: BTreeMap<String, String> = BTreeMap::new();
+    let mut claim = |name: String, what: String| {
+        assert!(
+            !RESERVED.contains(&name.as_str()),
+            "{what} is `{name}`, which `stark-shaders` declares by hand.",
+        );
+        if let Some(other) = seen.insert(name.clone(), what.clone()) {
+            panic!("{what} and {other} are both `{name}`.");
+        }
+    };
+    for axis in axes {
+        claim(
+            axis.ty.to_string(),
+            format!("the `{}` axis's type", axis.feature),
+        );
+    }
+    for entry in entries {
+        let module = entry.module.path.as_str();
+        claim(
+            record_ident(entry).to_string(),
+            format!("`{module}.wesl`'s record"),
+        );
+        claim(
+            entry.module.rust.clone(),
+            format!("`{module}.wesl`'s accessor"),
+        );
+    }
+}
 
 /// Generate the accessors, the records and the axis types into `dest`.
 pub(crate) fn generate(
@@ -45,6 +82,7 @@ fn accessors(
     pigment: bool,
     reflections: &Reflections,
 ) -> String {
+    names_are_distinct(entries, axes);
     let types = axes.iter().map(|a| axis_type(a, pigment));
     let records = entries.iter().map(|e| record(e, reflections));
     let fns = entries.iter().map(|e| accessor(e, reflections));
@@ -113,12 +151,6 @@ fn record_ident(entry: &Entry<'_>) -> proc_macro2::Ident {
                 .unwrap_or_default()
         })
         .collect();
-    assert!(
-        !RESERVED.contains(&name.as_str()),
-        "`{}.wesl`'s record would be `{name}`, which `stark-shaders` already declares \
-         by hand.",
-        entry.module.path,
-    );
     format_ident!("{name}")
 }
 
@@ -140,6 +172,14 @@ fn record(entry: &Entry<'_>, reflections: &Reflections) -> TokenStream {
          pipeline names an entry point at compile time rather than by string."
     ));
     let fields = eps.iter().map(|ep| {
+        // The two fields this record carries besides its entry points. An entry point
+        // of either name would be one field declared twice, several hundred generated
+        // lines from the `.wesl` that named it.
+        assert!(
+            !["wgsl", "entries"].contains(&ep.name.as_str()),
+            "`{module}.wesl`'s `{}` would take a field its record already has.",
+            ep.name,
+        );
         let field = format_ident!("{}", ep.name);
         let doc = format!(" `@{} fn {}`.", stage_word(ep.stage), ep.name);
         quote! {
@@ -153,6 +193,9 @@ fn record(entry: &Entry<'_>, reflections: &Reflections) -> TokenStream {
         pub struct #ident {
             /// The linked WGSL, for `wgpu::ShaderSource::Wgsl`.
             pub wgsl: &'static str,
+            /// Every entry point below, in one slice — for a consumer asking about the
+            /// *set* rather than naming a field.
+            pub entries: &'static [EntryPoint],
             #(#fields)*
         }
     }
@@ -228,16 +271,30 @@ fn entry_point_value(ep: &Reflected) -> TokenStream {
 }
 
 /// One artifact's whole record, as a value.
+///
+/// Each entry point is bound to a `const` first, so its field and its place in the
+/// record's `entries` slice name one value rather than two copies of one.
 fn record_value(ident: &proc_macro2::Ident, artifact: &str, eps: &[Reflected]) -> TokenStream {
-    let fields = eps.iter().map(|ep| {
-        let field = format_ident!("{}", ep.name);
+    let bound: Vec<proc_macro2::Ident> = eps
+        .iter()
+        .map(|ep| format_ident!("{}", ep.name.to_uppercase()))
+        .collect();
+    let consts = eps.iter().zip(&bound).map(|(ep, name)| {
         let value = entry_point_value(ep);
-        quote!(#field: #value,)
+        quote!(const #name: EntryPoint = #value;)
+    });
+    let fields = eps.iter().zip(&bound).map(|(ep, name)| {
+        let field = format_ident!("{}", ep.name);
+        quote!(#field: #name,)
     });
     quote! {
-        #ident {
-            wgsl: include_wesl!(#artifact),
-            #(#fields)*
+        {
+            #(#consts)*
+            #ident {
+                wgsl: include_wesl!(#artifact),
+                entries: &[#(#bound),*],
+                #(#fields)*
+            }
         }
     }
 }
@@ -499,15 +556,19 @@ mod tests {
         assert_eq!(
             body(&out, "pub fn guides"),
             "pub fn guides() -> &'static Guides {\n\
-             \x20   static IT: Guides = Guides {\n\
-             \x20       wgsl: include_wesl!(\"guides\"),\n\
-             \x20       fs_main: EntryPoint {\n\
+             \x20   static IT: Guides = {\n\
+             \x20       const FS_MAIN: EntryPoint = EntryPoint {\n\
              \x20           name: \"fs_main\",\n\
              \x20           stage: wgpu::ShaderStages::FRAGMENT,\n\
              \x20           workgroup_size: [0, 0, 0],\n\
              \x20           targets: &[0],\n\
              \x20           uses: &[],\n\
-             \x20       },\n\
+             \x20       };\n\
+             \x20       Guides {\n\
+             \x20           wgsl: include_wesl!(\"guides\"),\n\
+             \x20           entries: &[FS_MAIN],\n\
+             \x20           fs_main: FS_MAIN,\n\
+             \x20       }\n\
              \x20   };\n\
              \x20   &IT\n}\n",
         );
@@ -534,6 +595,9 @@ mod tests {
             "pub struct MaskRegion {\n\
              \x20   /// The linked WGSL, for `wgpu::ShaderSource::Wgsl`.\n\
              \x20   pub wgsl: &'static str,\n\
+             \x20   /// Every entry point below, in one slice \u{2014} for a consumer asking about the\n\
+             \x20   /// *set* rather than naming a field.\n\
+             \x20   pub entries: &'static [EntryPoint],\n\
              \x20   /// `@fragment fn fs_main`.\n\
              \x20   pub fs_main: EntryPoint,\n\
              \x20   /// `@vertex fn vs_main`.\n\
@@ -563,6 +627,40 @@ mod tests {
                 && out.contains("targets: &[]"),
             "{out}"
         );
+    }
+
+    /// Two spellings of one camel-cased name — the collision no list of reserved
+    /// words would have held, since neither module's own name is taken.
+    #[test]
+    #[should_panic(expected = "are both `AB`")]
+    fn two_modules_whose_records_share_a_name_are_refused() {
+        generated(
+            &[
+                Module::parse("a_b", &frag("")),
+                Module::parse("a__b", &frag("")),
+            ],
+            &[],
+            true,
+        );
+    }
+
+    /// A module taking an axis's type name: two enums by one name, several hundred
+    /// generated lines apart.
+    #[test]
+    #[should_panic(expected = "are both `Resid`")]
+    fn a_module_named_after_an_axis_is_refused() {
+        let axis = Axis {
+            modules: &["resid"],
+            ..RESID
+        };
+        generated(&[Module::parse("resid", &frag(""))], &[axis], true);
+    }
+
+    /// And one taking a hand-written name from `stark-shaders`' own crate root.
+    #[test]
+    #[should_panic(expected = "which `stark-shaders` declares by hand")]
+    fn a_module_named_after_a_hand_written_type_is_refused() {
+        generated(&[Module::parse("binding", &frag(""))], &[], true);
     }
 
     /// A variant that lost an entry point would be a missing-entry-point panic from

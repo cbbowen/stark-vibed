@@ -141,6 +141,16 @@ pub(crate) fn discover<'a>(
             axis.ty,
         );
         assert!(
+            axis.ty
+                .strip_prefix(|c: char| c.is_ascii_uppercase())
+                .is_some_and(|rest| rest.chars().all(|c| c.is_ascii_alphanumeric())),
+            "the `{}` axis generates `{}`, which is not one capitalized word — the \
+             accessor's parameter is that name lowercased, and anything else makes a \
+             parameter no reader would connect to the type.",
+            axis.feature,
+            axis.ty,
+        );
+        assert!(
             axis.modules.windows(2).all(|w| w[0] < w[1]),
             "the `{}` axis's modules are not sorted, which is what makes a missing one \
              visible at a glance.",
@@ -373,6 +383,19 @@ mod tests {
             ..RESID
         };
         discover(&tree, &[RESID, twin], true);
+    }
+
+    /// The type name is the accessor's parameter, lowercased, so "one word" is what
+    /// makes `resid: Resid` readable — and nothing else said so.
+    #[test]
+    #[should_panic(expected = "which is not one capitalized word")]
+    fn a_multi_word_axis_type_is_refused() {
+        let tree = tree();
+        let axis = Axis {
+            ty: "Resid_Lane",
+            ..RESID
+        };
+        discover(&tree, &[axis], true);
     }
 
     #[test]
