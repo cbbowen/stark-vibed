@@ -37,6 +37,7 @@ use crate::noise::NOISE_TILE_PX;
 use crate::unpoisoned;
 use stark_model::Srgb;
 use stark_model::document::StrokeRecord;
+use stark_shaders::Lane;
 
 mod accum;
 mod budget;
@@ -267,8 +268,8 @@ impl StrokeRenderer {
         // One compile of `stamp.wesl` per variant — plain, and with the ceiling lane
         // (§6.2) — lent to the two kits that draw the swept extent through them
         // (`swept::stamp_module`).
-        let stamp = swept::stamp_module(&ctx.device, color_space.as_ref(), false);
-        let stamp_ceiling = swept::stamp_module(&ctx.device, color_space.as_ref(), true);
+        let stamp = swept::stamp_module(&ctx.device, color_space.as_ref(), Lane::Plain);
+        let stamp_ceiling = swept::stamp_module(&ctx.device, color_space.as_ref(), Lane::Ceiling);
         let swept = build_swept_kit(&ctx.device, color_space.as_ref(), &stamp, &stamp_ceiling);
         let dynamics = build_dynamics_kit(ctx, color_space.as_ref(), tile_bgl);
         let erase = build_erase_kit(

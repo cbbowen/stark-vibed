@@ -57,7 +57,7 @@ default = ["mixbox"]
 #
 # Off, the build carries **no CC BY-NC 4.0 code at all**: the vendored crate is not
 # compiled, `stark-shaders` skips transpiling the polynomial out of the submodule and
-# does not build the two shaders that import it, and `vendor/mixbox` need not exist.
+# so does not build the shaders that import it, and `vendor/mixbox` need not exist.
 # That is the point of the flag — the licence is non-commercial, so a commercial
 # build has to be able to leave it out entirely rather than merely not reach it.
 #
@@ -70,9 +70,10 @@ default = ["mixbox"]
 # `EngineError::UnsupportedColorSpace` rather than a decode failure.
 #
 # The residual channel goes with it, because a residual is something a *pigment*
-# space has and this is the only one: no space declares a `resid_format`, the eight
-# `_resid` shader variants are not built, and the loop's storage-texture requirement
-# drops back to WebGPU's guaranteed four.
+# space has and this is the only one: no space declares a `resid_format`, the `_resid`
+# shader variants are not built, `Resid::With` is not generated for anything to name
+# one, and the loop's storage-texture requirement drops back to WebGPU's guaranteed
+# four.
 mixbox = ["dep:mixbox", "stark-shaders/mixbox"]
 # Stroke-fitting debug aids. Build-time only: there is no command and no UI toggle
 # for these, so a build without the feature has no code path that reaches them.

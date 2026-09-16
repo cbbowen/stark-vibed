@@ -9,6 +9,7 @@ use crate::gpu::desc;
 use crate::gpu::desc::Slot;
 use stark_model::document::StrokeRecord;
 use stark_model::geom::{TILE_APRON, TILE_TEX, TileCoord, Vec2};
+use stark_shaders::Lane;
 use stark_shaders::mirror::integrate::binding as ib;
 use stark_shaders::mirror::integrate::decl as id;
 use stark_shaders::mirror::stamp_common::binding as sc;
@@ -136,8 +137,8 @@ pub(super) struct SweptKit {
     pub(super) integrate_bgl: wgpu::BindGroupLayout,
 }
 
-/// Compile `stamp.wesl` for `color_space` (§6.2, §6.7) — with or without the
-/// ceiling lane, the two artifacts `stark_shaders::stamp` chooses between.
+/// Compile `stamp.wesl` for `color_space` (§6.2, §6.7) — with or without the ceiling
+/// lane, which is the axis the caller picks and the residual the space does.
 ///
 /// **Once per renderer per variant, lent to both kits.** The erase pass builds its own
 /// pipelines over the same modules (§6.12), differing only in fragment entry point and
@@ -146,15 +147,14 @@ pub(super) struct SweptKit {
 pub(super) fn stamp_module(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
-    ceiling: bool,
+    lane: Lane,
 ) -> wgpu::ShaderModule {
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(if ceiling {
-            "stark stamp ceiling"
-        } else {
-            "stark stamp"
+        label: Some(match lane {
+            Lane::Ceiling => "stark stamp ceiling",
+            Lane::Plain => "stark stamp",
         }),
-        source: wgpu::ShaderSource::Wgsl(color_space.stamp_shader(ceiling).into()),
+        source: wgpu::ShaderSource::Wgsl(color_space.stamp_shader(lane).into()),
     })
 }
 
@@ -945,7 +945,7 @@ pub(super) fn build_integrate_pipeline(
     let resid = color_space.has_resid();
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark integrate"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::integrate(resid).into()),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::integrate(color_space.resid()).into()),
     });
     let frag = wgpu::ShaderStages::FRAGMENT;
     let bgl = desc::layout_for(device, "stark integrate bgl", INTEGRATE_SLOTS, frag, resid);

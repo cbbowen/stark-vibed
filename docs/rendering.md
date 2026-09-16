@@ -932,7 +932,8 @@ tolerance for that; both are 2/255 now, the same as Oklab's).
 **Oklab pays nothing.** Its three channels reproduce every sRGB color, so
 `resid_format()` is `None`, no third texture is allocated, and the eleven passes that
 carry a tile's color are built in a second variant under WESL's `@if(resid)`
-conditional compilation (`RESID_ENTRY_POINTS`). `media_mixbox.wesl` and
+conditional compilation (the `resid` axis, `stark-shaders/build.rs`).
+`media_mixbox.wesl` and
 `blend_mixbox.wesl` declare their own residual bindings — past where the shared
 `media_common`/`blend_common` stop — so a colorimetric document gets a shorter bind
 group layout rather than a placeholder to bind. What does reach it is one uniform
@@ -970,9 +971,12 @@ submodule rather than copied into this repo.
 Because that licence is non-commercial, the whole space is behind a **default-on
 `mixbox` feature**, and turning it off means *not built* rather than merely
 *unreached*: the vendored crate leaves the dependency graph, `build.rs` does not
-transpile the polynomial, `blend_mixbox`/`media_mixbox` leave `ENTRY_POINTS`, and
-`pigment.rs` does not `include_bytes!` the LUT. Nothing under `vendor/mixbox`
-reaches the binary.
+transpile the polynomial, and `pigment.rs` does not `include_bytes!` the LUT. Nothing
+under `vendor/mixbox` reaches the binary. The three shaders that go with it are not
+named anywhere — they *import* the transpiled polynomial, and that is what makes them
+the pigment set; with nothing mounted under `package::gen` they would not link, so
+they are not built, and neither are the accessors that would have embedded them
+(§6.10).
 
 **The submodule still has to be checked out, and that is cargo rather than a
 leak.** A `path` dependency's manifest is read while the dependency *graph* is
@@ -1248,8 +1252,36 @@ hand on every edit. So the slots are generated now too, and what is left on the
 host is the shortest thing that is genuinely the host's: which bindings an entry
 point reads, and how it reads them.
 
-Entry-point names stay hand-written. So do the layouts outside the stamp loop,
-which are short enough that a list would be longer than the entries.
+The layouts outside the stamp loop stay hand-written, being short enough that a list
+would be longer than the entries.
+
+**Which modules become artifacts is discovered too.** A module declaring a `@vertex`,
+`@fragment` or `@compute` function links as its own artifact and gets a Rust accessor;
+every other module in the tree is reached only by import and would fail to link as a
+root. A module importing the transpiled pigment polynomial (`package::gen::`) is one
+the `mixbox` feature builds, and is the only kind that can be. That replaced four
+hand-kept lists in `entry_points.rs` and twenty-four hand-written accessors in
+`lib.rs` — two statements of one set, failing at different layers: an accessor whose
+artifact was never deposited is a link error, and an artifact no accessor names is
+nothing at all.
+
+What stays declared is the one thing a shader cannot say about itself: the **axes** it
+is linked along a second time (`stark-shaders/build.rs`). A `@if(resid)` names a
+feature; it does not name the host type a caller picks a build with. Each axis
+declares that type and its two variants, and the accessors take it as a typed
+parameter — `composite(Resid)`, `stamp(Resid, Lane)` — whose `on` variant is generated
+only where the build linked that variant. So `composite(Resid::With)` does not compile
+in a build with no `composite_resid.wgsl`, which is what retired a pair of
+`cfg`-split macros and the `debug_assert!` in the second of them.
+
+Every feature is set explicitly on every link, so no pass depends on what the pass
+before it left the toggles at; and each axis is asserted at build time to *change* the
+artifact it is turned on for. A `@if` spelt wrong, or a feature renamed on one side
+only, otherwise deposits the plain pass under the variant's name: every pipeline is
+still created, and the residual has no target to write to.
+
+Each accessor's documentation is its module's own opening paragraph, read off the
+`.wesl` header — the last piece of prose that was written twice.
 
 `gpu/wesl.rs` is gone entirely, both of its halves with it. `mirrors_wesl!` pinned
 a hand-written struct's size against a number written beside it; `wesl_const`

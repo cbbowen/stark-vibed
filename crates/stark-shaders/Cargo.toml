@@ -7,14 +7,17 @@ publish = false
 
 [features]
 default = ["mixbox"]
-# The Mixbox pigment space (§6.7). On by default; turning it off drops
-# [`MIXBOX_ENTRY_POINTS`] from [`ENTRY_POINTS`], skips the transpile of the
-# vendored GLSL polynomial, and skips the whole `_resid` build pass — because the
-# residual channel exists only for a pigment space, and Mixbox is the only one.
+# The Mixbox pigment space (§6.7). On by default; turning it off skips the transpile
+# of the vendored GLSL polynomial, which leaves the shaders that import it unbuildable
+# and so unbuilt — and with no pigment space in the build there is nothing that could
+# select a residual, so the whole `_resid` pass goes too, along with the `Resid::With`
+# that would have named one.
 #
-# `build.rs` cannot read `cfg(feature = ...)` — a build script is compiled without
-# the crate's features — so it reads `CARGO_FEATURE_MIXBOX` instead. The two must
-# agree, and `entry_points.rs` is the one place that decides for both.
+# Nothing lists any of that: `build.rs` reads `CARGO_FEATURE_MIXBOX` (a build script is
+# compiled without the crate's own features, so `cfg(feature = ..)` is not available
+# there) and the rest follows from the shader tree. The accessors this crate exposes
+# are generated from the same pass, so the two sides cannot disagree about which
+# artifacts exist.
 mixbox = []
 
 # WESL sources are linked/compiled in build.rs and embedded by `include_wesl!`, which

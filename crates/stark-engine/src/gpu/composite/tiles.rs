@@ -85,7 +85,7 @@ impl TilePass {
         let resid = formats.has_resid();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark composite"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::composite(resid).into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::composite(color_space.resid()).into()),
         });
 
         // Vertex-only: the fragment stage gets canvas position as a varying, and the
@@ -127,7 +127,7 @@ impl TilePass {
         // ---- Matte layers, inside pass A (§15.4), on pass A's own view group.
         let matte_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark matte"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::matte(resid).into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::matte(color_space.resid()).into()),
         });
         let ramp_bgl = desc::layout_for(device, "stark matte ramp bgl", RAMP_SLOTS, frag, resid);
         let matte_layout = desc::pipeline_layout(

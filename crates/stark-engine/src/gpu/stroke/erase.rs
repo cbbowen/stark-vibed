@@ -168,7 +168,7 @@ pub(super) fn build_erase_kit(
     let resid = color_space.has_resid();
     let integrate_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark erase"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::erase(resid).into()),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::erase(color_space.resid()).into()),
     });
     let frag = wgpu::ShaderStages::FRAGMENT;
     let integrate_bgl = desc::layout_for(device, "stark erase bgl", ERASE_SLOTS, frag, resid);

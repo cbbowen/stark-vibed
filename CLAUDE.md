@@ -304,10 +304,17 @@ per-test tolerance hides exactly that drift. Deleting a golden re-blesses it.
   listed**: `stark-shaders-build`'s `emit` mirrors every typed `const`, every
   `@binding`, every `var<uniform>` struct and every `@vertex` record in the tree
   (`emit::consts`, `emit::bindings`, `emit::structs`, `emit::vertex`), so a host
-  transcription is always avoidable. `build.rs` names nothing a shader declares:
-  a host type several pipelines want is a shared, binding-owning module they
-  import the binding from (`view.wesl`), which is what retired the `SHARED` list
-  and the check that its entries agreed. A hand-written second copy drifts, and the
+  transcription is always avoidable. **Which modules become artifacts is
+  discovered as well** — a module with a `@vertex`/`@fragment`/`@compute` entry
+  point is one, a module importing `package::gen::` is one the `mixbox` feature
+  builds — and the Rust accessors over them are generated, documented from each
+  shader's own opening paragraph (`entries`, `accessors`). `build.rs` names one
+  thing a shader cannot say about itself: the **axes** it is linked along twice
+  (`resid`, `ceiling`), because a `@if(feature)` names the feature and not the
+  host type a caller picks a build with. A host type several pipelines want is a
+  shared, binding-owning module they import the binding from (`view.wesl`), which
+  is what retired the `SHARED` list and the check that its entries agreed. A
+  hand-written second copy drifts, and the
   drift is invisible until it is a picture. What is genuinely the host's — a
   name, a step mode, whether *this* pass samples *that* texture — is worth
   writing by hand for the same reason: the shader does not say it.

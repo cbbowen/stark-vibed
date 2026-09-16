@@ -145,8 +145,8 @@ stark-assetid = { path = "crates/stark-assetid" }
 stark-model = { path = "crates/stark-model" }
 # `default-features = false` is load-bearing: `stark-shaders`'s own default turns its
 # `mixbox` feature on, and cargo unifies features across the graph — so without this,
-# a `--no-default-features` workspace build would still compile the two Mixbox
-# shaders and transpile the vendored GLSL, because stark-engine would go on asking for
+# a `--no-default-features` workspace build would still transpile the vendored GLSL
+# and compile the shaders that import it, because stark-engine would go on asking for
 # them regardless of its own feature. `stark-engine/mixbox` forwards it instead.
 stark-shaders = { path = "crates/stark-shaders", default-features = false }
 nalgebra = "0.35"

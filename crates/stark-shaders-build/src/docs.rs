@@ -1,5 +1,19 @@
 //! Carrying a WESL comment over as the generated item's documentation.
 
+/// The opening paragraph of the `//` run a module begins with — its header's summary.
+///
+/// The first paragraph rather than the whole header, for the reason rustdoc takes the
+/// same one: it says which pass this is, and the rest of a header is the kernel, read
+/// where the kernel is. Nothing is fenced, since a paragraph has no blank line for a
+/// markdown code block to open after.
+pub(crate) fn header_summary(src: &str) -> Vec<String> {
+    src.lines()
+        .map_while(|l| l.trim().strip_prefix("//").map(str::trim_end))
+        .take_while(|l| !l.trim().is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 /// The `//` comment run immediately preceding a member, as doc-comment text.
 ///
 /// Walked backwards from the member, because what makes a comment *this member's*
@@ -69,6 +83,23 @@ fn fence_indented(docs: Vec<String>) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The header's first paragraph, and where it stops: the blank comment line that
+    /// ends it, and the first line that is not a comment at all.
+    #[test]
+    fn a_modules_opening_paragraph_is_its_summary() {
+        assert_eq!(
+            header_summary(
+                "// Compositing pass A.\n// One instanced quad per tile.\n//\n// The rest.\n\nimport x;\n"
+            ),
+            [" Compositing pass A.", " One instanced quad per tile."]
+        );
+    }
+
+    #[test]
+    fn a_module_that_opens_with_code_has_no_summary() {
+        assert!(header_summary("import x;\n// Not a header.\n").is_empty());
+    }
 
     #[test]
     fn the_comment_run_abutting_a_member_is_its_documentation() {

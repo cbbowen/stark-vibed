@@ -161,7 +161,7 @@ impl MergeRenderer {
 
         let merge_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark merge"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::merge(resid).into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::merge(color_space.resid()).into()),
         });
         let direct_bindings =
             desc::Bindings::new(device, "stark merge bgl", MERGE_SLOTS, frag, resid);
@@ -182,7 +182,7 @@ impl MergeRenderer {
         // the same shapes out, which is what makes them one module (`slab.wesl`).
         let slab_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark slab"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::slab(resid).into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::slab(color_space.resid()).into()),
         });
         let slab_bindings = desc::Bindings::new(device, "stark slab bgl", SLAB_SLOTS, frag, resid);
         let slab_layout =

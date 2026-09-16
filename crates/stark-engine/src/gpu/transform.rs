@@ -465,7 +465,7 @@ impl TransformRenderer {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark transform"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::transform(resid).into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::transform(color_space.resid()).into()),
         });
 
         let frag = wgpu::ShaderStages::FRAGMENT;

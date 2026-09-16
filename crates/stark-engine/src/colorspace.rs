@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use stark_model::Srgb;
 use stark_model::{ColorSpaceId, color};
+use stark_shaders::{Lane, Resid};
 
 /// Construct the color space implementation for `id`, or `None` when this
 /// build does not carry it.
@@ -95,9 +96,8 @@ pub trait ColorSpace {
     /// A residual is the part of a color the space's three channels cannot express.
     /// A colorimetric space has none — Oklab's `(L, a, b)` reproduces every sRGB
     /// color exactly — so it allocates no third texture, and the passes that carry
-    /// tile color are built in a variant without one (`stark_shaders`'s
-    /// `RESID_ENTRY_POINTS`). A *pigment* space has one necessarily: four trained
-    /// pigments do not span sRGB.
+    /// tile color are built in a variant without one ([`Resid::Without`]). A *pigment*
+    /// space has one necessarily: four trained pigments do not span sRGB.
     ///
     /// `Some` costs eight bytes a texel and a third render target through every pass
     /// that writes a tile. `None` is a statement, not an optimization: this space's
@@ -107,9 +107,25 @@ pub trait ColorSpace {
     }
 
     /// Whether this space carries a residual — [`resid_format`](Self::resid_format)
-    /// as the flag the shader variants and bind groups actually branch on.
+    /// as the flag the bind groups actually branch on.
     fn has_resid(&self) -> bool {
         self.resid_format().is_some()
+    }
+
+    /// Which build of a pass that carries a tile's color this space reads (§6.7).
+    ///
+    /// **Derived** from [`resid_format`](Self::resid_format), like
+    /// [`has_resid`](Self::has_resid), rather than declared beside it — a space with
+    /// two answers to one question is the drift this whole boundary is about. The
+    /// `cfg` is what the derivation costs: [`Resid::With`] is generated only in a build
+    /// that linked the residual variants, which is the same build a space with a
+    /// `resid_format` can exist in.
+    fn resid(&self) -> Resid {
+        #[cfg(feature = "mixbox")]
+        if self.has_resid() {
+            return Resid::With;
+        }
+        Resid::Without
     }
     /// Blend for the color target when stamping/compositing.
     fn color_blend(&self) -> wgpu::BlendState {
@@ -138,9 +154,9 @@ pub trait ColorSpace {
     fn channels_to_rgb(&self, channels: [f32; 4], resid: [f32; 3]) -> [f32; 3];
 
     /// WGSL for the stamp deposit pass (color + aux MRT outputs) — §6.2.
-    /// `ceiling` asks for the variant that also accumulates the ceiling lane,
+    /// [`Lane::Ceiling`] asks for the variant that also accumulates the ceiling lane,
     /// the fourth target a stroke whose opacity the pen drives sweeps into.
-    fn stamp_shader(&self, ceiling: bool) -> &'static str;
+    fn stamp_shader(&self, lane: Lane) -> &'static str;
     /// WGSL for the media/lighting + present pass — §6.3.
     fn media_shader(&self) -> &'static str;
     /// WGSL for the per-layer blend pass — §18.0.4. One isolated
@@ -222,8 +238,8 @@ impl ColorSpace for OkLabColorSpace {
         ]
     }
 
-    fn stamp_shader(&self, ceiling: bool) -> &'static str {
-        stark_shaders::stamp(false, ceiling)
+    fn stamp_shader(&self, lane: Lane) -> &'static str {
+        stark_shaders::stamp(Resid::Without, lane)
     }
     fn media_shader(&self) -> &'static str {
         stark_shaders::media_oklab()
@@ -305,10 +321,10 @@ impl ColorSpace for MixboxColorSpace {
         mixbox::latent_to_float_rgb(&latent)
     }
 
-    fn stamp_shader(&self, ceiling: bool) -> &'static str {
+    fn stamp_shader(&self, lane: Lane) -> &'static str {
         // Deposit is premultiplied-over of the channels — the same law as Oklab's,
         // run over one more target.
-        stark_shaders::stamp(true, ceiling)
+        stark_shaders::stamp(Resid::With, lane)
     }
     fn media_shader(&self) -> &'static str {
         stark_shaders::media_mixbox()

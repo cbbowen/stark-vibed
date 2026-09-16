@@ -27,7 +27,7 @@ use quote::{format_ident, quote};
 use wesl::eval::{Context, Type, ty_eval_ty};
 use wesl::syntax::TypeExpression;
 
-use crate::tree::{Module, read_tree};
+use crate::tree::Module;
 
 /// The WGSL type a `var<uniform>` names, resolved against the module that declares it.
 ///
@@ -60,10 +60,9 @@ fn refuse_imported_uniform(ty: &TypeExpression, m: &Module, member: &str, ctx: &
     uniform_type(ty, m, member, ctx);
 }
 
-/// Generate the host mirrors of everything the shader tree at `shader_dir` declares,
-/// into `dest`.
-pub(crate) fn generate(shader_dir: &Path, dest: &Path) {
-    let text = mirrors(&read_tree(shader_dir));
+/// Generate the host mirrors of everything the shader tree declares, into `dest`.
+pub(crate) fn generate(modules: &[Module], dest: &Path) {
+    let text = mirrors(modules);
     std::fs::write(dest, text).unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
 }
 

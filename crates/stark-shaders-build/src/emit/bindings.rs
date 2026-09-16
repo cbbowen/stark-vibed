@@ -86,7 +86,7 @@ pub(super) fn emit(m: &Module) -> TokenStream {
         // `@if(resid)` — the shader's own gate on the slot, carried through so a
         // layout never has to restate it as an element count (`[..12 + 4 *
         // usize::from(resid)]`).
-        let resid = gated_on(&decl.attributes, src, "resid");
+        let resid = gated_on(&decl.attributes, src, crate::entries::RESID_FEATURE);
         // `super::`, because `binding` is `decl`'s sibling inside the shader's module,
         // not its child — the bare path resolved from nowhere and every one of these
         // (132 of them, one per declared binding) was a broken intra-doc link. Nothing
