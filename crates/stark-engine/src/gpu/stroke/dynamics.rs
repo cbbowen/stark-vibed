@@ -20,7 +20,6 @@ pub(crate) mod kit;
 mod liquify;
 mod plan;
 mod run;
-pub(crate) mod slots;
 
 pub(in crate::gpu::stroke) use bleed::BLEED_TRAVEL_QUANTUM;
 pub(super) use kit::{DynamicsKit, build_dynamics_kit};

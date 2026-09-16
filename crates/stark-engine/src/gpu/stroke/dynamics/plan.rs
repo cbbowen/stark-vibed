@@ -43,17 +43,21 @@ pub(super) const STAMP_STRIDE: u64 = crate::gpu::uniforms::UniformSlots::<Stamp>
 /// stands for.
 pub(super) struct LoopDispatch {
     pub(super) slot: Stamp,
-    /// Workgroup counts for the slot's extent work — the `deposit`, and the
-    /// `snapshot` that rides in `exchange`'s grid. Over the slot's own coverage box
+    /// The slot's extent work in **region texels** — what the `deposit` covers, and
+    /// the `snapshot` that rides in `exchange`'s grid. Over the slot's own coverage box
     /// rather than a piece-wide square, so an axis-aligned sweep pays for the ~4·r²
     /// texels its extent can reach rather than the ~10·r² a diagonal one might need.
-    pub(super) groups: (u32, u32),
-    /// Workgroup counts for the `cell_hoist` grid when this slot takes the **coarse
-    /// deposit** (§6.2) — `Some` exactly when [`extent_cell`] beat 1 for this
-    /// segment's tip, which only a painting segment's can. `None` is the exact
-    /// per-texel `deposit`; bleed and settle slots are always `None`, so the lateral
-    /// flux and the pen-up never see a cell at all.
-    pub(super) cell_groups: Option<(u32, u32)>,
+    ///
+    /// Texels, not workgroups: each dispatch divides by **its own** kernel's declared
+    /// `@workgroup_size` ([`EntryPoint::groups`](stark_shaders::EntryPoint::groups),
+    /// §6.10), so no host expression states a grid a shader already declares.
+    pub(super) extent: (u32, u32),
+    /// The cells `cell_hoist` must cover when this slot takes the **coarse deposit**
+    /// (§6.2) — `Some` exactly when [`extent_cell`] beat 1 for this segment's tip,
+    /// which only a painting segment's can. `None` is the exact per-texel `deposit`;
+    /// bleed and settle slots are always `None`, so the lateral flux and the pen-up
+    /// never see a cell at all.
+    pub(super) cells: Option<(u32, u32)>,
     pub(super) kind: SlotKind,
 }
 
@@ -462,18 +466,25 @@ struct Rect {
 }
 
 impl Rect {
-    /// Workgroup counts covering it, at the shaders' own tile size (§6.10).
-    fn groups(&self) -> (u32, u32) {
-        (groups_for(self.w), groups_for(self.h))
+    /// The texels a tile kernel actually **scans** over this rect: it rounded up to
+    /// whole workgroups of `TILE_WG`, the side `dynamics_common.wesl` declares (§6.10).
+    ///
+    /// The one place the host still turns texels into a grid and back, and it is the
+    /// inverse that needs it: a rounding texel past the rect reads zero exposure and
+    /// falls out of `deposit` untouched, but it still names a cell, which is what
+    /// [`cell_geometry`] counts over.
+    fn scanned(&self) -> (u32, u32) {
+        (
+            self.w.next_multiple_of(TILE_WG),
+            self.h.next_multiple_of(TILE_WG),
+        )
     }
 }
 
-/// Workgroups covering `texels` along one axis, at the tile kernels' declared side.
-/// `TILE_WG` is generated from `dynamics_common.wesl`'s own `const` (§6.10), and every
-/// host expression that turns texels into groups, or groups back into texels, goes
-/// through it.
-pub(super) fn groups_for(texels: u32) -> u32 {
-    texels.div_ceil(TILE_WG)
+/// One dispatch over the grid its own kernel declares (§6.10) — the form every
+/// `dispatch_workgroups` in the loop and the liquify field takes.
+pub(super) fn dispatch_over(pass: &mut wgpu::ComputePass<'_>, groups: (u32, u32, u32)) {
+    pass.dispatch_workgroups(groups.0, groups.1, groups.2);
 }
 
 /// The snapshot scratch's square for a piece: **the largest rect the piece will
@@ -541,16 +552,12 @@ fn cell_geometry(
         (region_origin.x as i32).rem_euclid(c) as f32,
         (region_origin.y as i32).rem_euclid(c) as f32,
     );
-    let groups = rect.groups();
-    let cells = |origin: f32, a: f32, groups: u32| -> u32 {
-        cell_span(
-            origin as i32 + a as i32,
-            (groups * TILE_WG).min(dsize) as i32,
-            c,
-        )
+    let scanned = rect.scanned();
+    let cells = |origin: f32, a: f32, span: u32| -> u32 {
+        cell_span(origin as i32 + a as i32, span.min(dsize) as i32, c)
     };
-    let cx = cells(rect.origin.x, anchor.x, groups.0);
-    let cy = cells(rect.origin.y, anchor.y, groups.1);
+    let cx = cells(rect.origin.x, anchor.x, scanned.0);
+    let cy = cells(rect.origin.y, anchor.y, scanned.1);
     // Arithmetic rather than a real risk: a rect spans at most `dsize` texels, so at
     // a cell of `c ≥ 2` it names at most
     // `ceil(dsize/c) + 1 + 2·CELL_BORDER ≤ dsize.div_ceil(2) + 3` cells, and
@@ -561,7 +568,7 @@ fn cell_geometry(
         cx <= fit && cy <= fit,
         "a {cx}x{cy}-cell hoist overruns the {fit}-cell scratch",
     );
-    (anchor, Some((groups_for(cx), groups_for(cy))))
+    (anchor, Some((cx, cy)))
 }
 
 /// What one slot of the plan is built from, and — because the walk that produces these
@@ -694,7 +701,7 @@ pub(super) fn dynamics_plan(
     // ---- Pass three: the slots themselves, zipped to the rects measured for them.
     let mut plan = Vec::with_capacity(sources.len());
     for (src, rect) in sources.iter().zip(&rects) {
-        let groups = rect.groups();
+        let extent = (rect.w, rect.h);
         let dispatch = match src {
             SlotSource::Segment(s) => {
                 let (sw, paint) = (&s.sweep, &s.paint);
@@ -712,10 +719,10 @@ pub(super) fn dynamics_plan(
                 // radius (`extent_cell`), so a live tail and its commit pick the same
                 // cell.
                 let cell = extent_cell(&b.shape, sw.radius);
-                let (cell_anchor, cell_groups) = cell_geometry(cell, region_origin, rect, dsize);
+                let (cell_anchor, cells) = cell_geometry(cell, region_origin, rect, dsize);
                 LoopDispatch {
-                    groups,
-                    cell_groups,
+                    extent,
+                    cells,
                     kind: SlotKind::Segment,
                     slot: Slot {
                         start: p,
@@ -785,12 +792,12 @@ pub(super) fn dynamics_plan(
                 // whole meaning is.
                 let (reach, lambda_bleed) = bleed_stencil(fire.bleed, w.radius, w.length);
                 LoopDispatch {
-                    groups,
+                    extent,
                     // Bleed slots keep the exact deposit whatever the tip: the ladder's
                     // flux pairs need both threads of a pair to read per-texel
                     // exposures, and the firings are rare and small next to the
                     // painting they cut.
-                    cell_groups: None,
+                    cells: None,
                     kind: SlotKind::Bleed,
                     // Everything a painting segment carries and this does not is
                     // `Slot::default`'s zero, which is what the slot *means*:
@@ -834,11 +841,11 @@ pub(super) fn dynamics_plan(
                 // different angles.
                 let tan = settle_tangent(rec, ctx.tol, segments);
                 LoopDispatch {
-                    groups,
+                    extent,
                     // The settle is one dispatch at the end of a stroke — nothing to
                     // amortize — and its p-norm handover is exactly the smooth structure
                     // a cell would staircase, so it stays exact whatever the tip.
-                    cell_groups: None,
+                    cells: None,
                     kind: SlotKind::Settle,
                     slot: Slot {
                         start: p,
@@ -922,10 +929,10 @@ pub(super) fn liquify_plan(
         let (sw, paint) = (&s.sweep, &s.paint);
         let p = sw.start - region_origin;
         plan.push(LoopDispatch {
-            groups: rect.groups(),
+            extent: (rect.w, rect.h),
             // The field is gathered whole; a cell would staircase exactly the
             // structure the effect exists to carry.
-            cell_groups: None,
+            cells: None,
             kind: SlotKind::Warp,
             slot: Slot {
                 start: p,
@@ -959,8 +966,8 @@ pub(super) fn liquify_plan(
     // The resample, over the region: its rect is the region itself, at the region's
     // own origin.
     plan.push(LoopDispatch {
-        groups: (groups_for(region.0), groups_for(region.1)),
-        cell_groups: None,
+        extent: region,
+        cells: None,
         kind: SlotKind::WarpApply,
         slot: Slot {
             base_offset,
@@ -1068,37 +1075,22 @@ mod tests {
     use crate::gpu::stroke::segments::testing::{record, run, seg, seg_between, smearing};
     use stark_model::geom::Vec2;
 
-    /// Every kernel the plan's grid is dispatched over declares that grid's own side.
+    /// The coarse deposit scans the grid [`Rect::scanned`] rounds to.
     ///
-    /// [`groups_for`] turns texels into workgroups through `TILE_WG`, and the inverse
-    /// (`groups * TILE_WG`) turns them back — arithmetic that is right only while the
-    /// kernels reading it are `@workgroup_size(TILE_WG, TILE_WG)`. The declarations say
-    /// so (§6.10), so they are asked rather than assumed. Device-free: both sides are
-    /// generated.
+    /// Every dispatch divides its extent by its own kernel's declaration (§6.10) and
+    /// needs nothing said here. What is left is the **inverse**: [`cell_geometry`]
+    /// counts the cells `deposit_coarse` can name over the rect *as that kernel rounds
+    /// it up*, so the rounding has to be the one it declares. Device-free.
     #[test]
-    fn the_tile_kernels_are_dispatched_over_the_grid_they_declare() {
-        let d = stark_shaders::dynamics(stark_shaders::Resid::Without);
-        let l = stark_shaders::liquify(stark_shaders::Resid::Without);
-        let tile = [
-            d.snapshot,
-            d.bleed_weight,
-            d.exchange,
-            d.deposit,
-            d.deposit_coarse,
-            d.cell_hoist,
-            d.settle,
-            l.snapshot_field,
-            l.warp,
-            l.warp_apply,
-        ];
-        for ep in tile {
-            assert_eq!(
-                ep.workgroup_size,
-                [TILE_WG, TILE_WG, 1],
-                "`{}` is dispatched over `groups_for`'s grid but declares another",
-                ep.name,
-            );
-        }
+    fn the_coarse_deposit_scans_the_grid_the_cells_are_counted_over() {
+        assert_eq!(
+            stark_shaders::dynamics(stark_shaders::Resid::Without)
+                .deposit_coarse
+                .workgroup_size,
+            [TILE_WG, TILE_WG, 1],
+            "`cell_geometry` rounds a rect by `TILE_WG`, which `deposit_coarse` no \
+             longer declares",
+        );
     }
 
     // --- the slot's lane packing -------------------------------------------
@@ -1337,7 +1329,7 @@ mod tests {
                     let base = (rect_origin as i32 + a).div_euclid(c) - CELL_BORDER;
                     // The texels the deposit scans: its rect as rounded to whole
                     // workgroups, clamped to the snapshot square — what `cells` counts.
-                    let span = (rect.groups().0 * TILE_WG).min(dsize) as i32;
+                    let span = rect.scanned().0.min(dsize) as i32;
                     let count = cell_span(rect_origin as i32 + a, span, c) as i32;
                     for t in 0..span {
                         let rt = rect_origin as i32 + t;
@@ -1539,16 +1531,14 @@ mod tests {
                             let rects = rects_for(&sources, origin);
                             let dsize = snapshot_square(&rects);
                             for r in &rects {
-                                let (gx, gy) = r.groups();
+                                let (sx, sy) = r.scanned();
                                 assert!(
-                                    gx * 8 <= dsize && gy * 8 <= dsize,
-                                    "a {}x{} rect scans {}x{} texels of a {dsize} \
+                                    sx <= dsize && sy <= dsize,
+                                    "a {}x{} rect scans {sx}x{sy} texels of a {dsize} \
                                      scratch (radius {radius}, length {length}, \
                                      curvature {kappa}, frac {frac})",
                                     r.w,
                                     r.h,
-                                    gx * 8,
-                                    gy * 8,
                                 );
                             }
                         }

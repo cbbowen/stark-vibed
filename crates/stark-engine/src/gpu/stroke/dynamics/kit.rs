@@ -7,23 +7,12 @@
 
 use crate::colorspace::ColorSpace;
 use crate::gpu::desc;
-use crate::gpu::desc::Slot;
-use stark_shaders::mirror::dynamics::BAKE_RES;
+use crate::gpu::tile::SCRATCH_AUX_FORMAT;
+use stark_shaders::Stages;
 use stark_shaders::mirror::dynamics::decl as d;
 use stark_shaders::mirror::dynamics_common::decl as sd;
 use stark_shaders::mirror::slice::decl as sld;
-
-/// The prefix-τ volume at group 1 — the fast path's own list (`stroke::swept`), one
-/// slot from one declaration (§6.6). Only the *stage* differs between the two
-/// layouts, and that is `desc::layout_for`'s argument rather than the list's.
-pub(super) use crate::gpu::stroke::swept::PREFIX_SLOTS;
-
-/// The write-back's aux narrowing (`slice.wesl`, §6.2/§6.4): the wide region aux in,
-/// the tile's one channel out.
-pub(crate) const SLICE_SLOTS: &[Slot] = &[Slot::at(sld::REGION_AUX)];
-use crate::gpu::tile::SCRATCH_AUX_FORMAT;
-
-use super::slots;
+use stark_shaders::mirror::stamp_common::decl as scd;
 /// GPU objects for the brush-dynamics stamp loop (§6.2), built once. All handles are
 /// `Arc`-backed, so the kit is cheap to clone with its renderer.
 ///
@@ -46,10 +35,10 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     /// in, [`SlotKind::Bleed`](super::plan::SlotKind) and
     /// [`SlotKind::Settle`](super::plan::SlotKind), dispatch it standalone.
     pub(in crate::gpu::stroke) snapshot_pipeline: wgpu::ComputePipeline,
-    pub(in crate::gpu::stroke) snapshot_bgl: wgpu::BindGroupLayout,
+    pub(in crate::gpu::stroke) snapshot_bgl: desc::Bindings,
     /// The bleed pair's mobility pass (§6.2) and its layout.
     pub(in crate::gpu::stroke) bleed_weight_pipeline: wgpu::ComputePipeline,
-    pub(in crate::gpu::stroke) bleed_weight_bgl: wgpu::BindGroupLayout,
+    pub(in crate::gpu::stroke) bleed_weight_bgl: desc::Bindings,
     /// What a **painting** segment's deposit binds where a firing binds the scratch: a
     /// 1×1 zero. Such a slot carries `lambda_bleed = 0` and never reads it, so this is
     /// the §6.8 stand-in pattern rather than a case the shader has to branch on.
@@ -59,17 +48,13 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     /// The tool's own side of one segment's transfer — the complement of every share
     /// the `deposit` after it hands the canvas (`dynamics.wesl::exchange`).
     pub(in crate::gpu::stroke) exchange_pipeline: wgpu::ComputePipeline,
-    pub(in crate::gpu::stroke) exchange_bgl: wgpu::BindGroupLayout,
+    pub(in crate::gpu::stroke) exchange_bgl: desc::Bindings,
     /// Integrates the reservoir along the segment's travel axis so the deposit can
     /// read the whole pass instead of one mid-pass sample (`dynamics.wesl::bake`).
     pub(in crate::gpu::stroke) bake_pipeline: wgpu::ComputePipeline,
-    pub(in crate::gpu::stroke) bake_bgl: wgpu::BindGroupLayout,
-    /// The grid the bake is dispatched over — one workgroup per row of the
-    /// [`BAKE_RES`]² reservoir, counted at the kernel's own scan width rather than
-    /// against a mirrored constant the host hopes it still declares (§6.10).
-    pub(in crate::gpu::stroke) bake_groups: (u32, u32, u32),
+    pub(in crate::gpu::stroke) bake_bgl: desc::Bindings,
     pub(in crate::gpu::stroke) deposit_pipeline: wgpu::ComputePipeline,
-    pub(in crate::gpu::stroke) deposit_bgl: wgpu::BindGroupLayout,
+    pub(in crate::gpu::stroke) deposit_bgl: desc::Bindings,
     /// The **coarse deposit** pair (§6.2), for the slots whose tip's shoulder lets
     /// the exchange be evaluated per cell instead of per texel
     /// (`budget::extent_cell`): `cell_hoist` distils the prefix and the bake into
@@ -77,30 +62,30 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     /// texel grid. A slot with a cell of 1 touches neither and keeps
     /// `deposit_pipeline` bit-for-bit.
     pub(in crate::gpu::stroke) hoist_pipeline: wgpu::ComputePipeline,
-    pub(in crate::gpu::stroke) hoist_bgl: wgpu::BindGroupLayout,
+    pub(in crate::gpu::stroke) hoist_bgl: desc::Bindings,
     pub(in crate::gpu::stroke) deposit_coarse_pipeline: wgpu::ComputePipeline,
-    pub(in crate::gpu::stroke) deposit_coarse_bgl: wgpu::BindGroupLayout,
+    pub(in crate::gpu::stroke) deposit_coarse_bgl: desc::Bindings,
     /// The pen-up: settles the transfer the tip was still in the middle of when the
     /// stroke stopped (`dynamics.wesl::settle`). Reads the reservoir through its own
     /// `bake` dispatch — the zero-travel slot bakes the *remaining pass's* delivery
     /// integral, not a per-segment window — never the cell that sits overhead.
     pub(in crate::gpu::stroke) settle_pipeline: wgpu::ComputePipeline,
-    pub(in crate::gpu::stroke) settle_bgl: wgpu::BindGroupLayout,
+    pub(in crate::gpu::stroke) settle_bgl: desc::Bindings,
     /// The liquify field's three kernels (§6.13, `liquify.wesl`): the field's
     /// snapshot under a segment's square, the composition of one segment's step into
     /// it (`warp`), and the one resample of a piece through it (`warp_apply`). Each
     /// over its own layout ([`slots`]); only the composition takes group 1, bound to
     /// the tip's coverage prefix.
     pub(in crate::gpu::stroke) snapshot_field_pipeline: wgpu::ComputePipeline,
-    pub(in crate::gpu::stroke) snapshot_field_bgl: wgpu::BindGroupLayout,
+    pub(in crate::gpu::stroke) snapshot_field_bgl: desc::Bindings,
     pub(in crate::gpu::stroke) warp_pipeline: wgpu::ComputePipeline,
-    pub(in crate::gpu::stroke) warp_bgl: wgpu::BindGroupLayout,
+    pub(in crate::gpu::stroke) warp_bgl: desc::Bindings,
     pub(in crate::gpu::stroke) warp_apply_pipeline: wgpu::ComputePipeline,
-    pub(in crate::gpu::stroke) warp_apply_bgl: wgpu::BindGroupLayout,
+    pub(in crate::gpu::stroke) warp_apply_bgl: desc::Bindings,
     /// The deposit's prefix-τ volume binding (group 1) — the same texture the
     /// swept fast path samples, so the exchange extent *is* the definite
     /// integral of the brush along the travel (compute-visible variant).
-    pub(in crate::gpu::stroke) prefix_bgl: wgpu::BindGroupLayout,
+    pub(in crate::gpu::stroke) prefix_bgl: desc::Bindings,
     /// Bilinear clamp sampler for the region / reservoir / coverage lookups.
     pub(in crate::gpu::stroke) exchange_sampler: wgpu::Sampler,
     // Region → CoW tile write-back: the aux narrow pass. Color and residual leave
@@ -108,7 +93,7 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     // pipeline the write-back keeps is the narrowing of the wide region aux to the
     // persistent height channel — once over the whole region, not once per tile.
     pub(in crate::gpu::stroke) slice_pipeline: wgpu::RenderPipeline,
-    pub(in crate::gpu::stroke) slice_bgl: wgpu::BindGroupLayout,
+    pub(in crate::gpu::stroke) slice_bgl: desc::Bindings,
 }
 
 /// Build the brush-dynamics stamp-loop kit (§6.2, §6.13): the region
@@ -130,12 +115,10 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         sd::REGION_COLOR_W.storage_format(),
         "the loop stores tile color through `region_color_w`; this space's tiles are not that format",
     );
-    let frag = wgpu::ShaderStages::FRAGMENT;
-    // Whether this space carries a **residual** (§6.7). It selects the `_resid` build
-    // of every shader here that touches a tile's color, and adds the bindings and
-    // targets that build declares. Oklab leaves every one of them off, so its layouts
-    // are shorter rather than bound to stand-ins.
-    let resid = color_space.has_resid();
+    // Which **residual** build of every shader here that touches a tile's color this
+    // space links (§6.7). Oklab leaves those bindings and targets off, so its layouts
+    // come out shorter rather than bound to stand-ins — and the layouts below read that
+    // off the record itself rather than being told.
 
     // ---- Region composite: the `composite` shader over region-sized targets
     // (color + the wide aux, so nothing is narrowed until the write-back).
@@ -204,55 +187,56 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     let module = desc::Module::new(device, "stark dynamics loop", dynamics);
     let liquify = stark_shaders::liquify(color_space.resid());
     let liquify_module = desc::Module::new(device, "stark liquify field", liquify);
-    // Every layout below is compute-visible and opens with the dynamic-offset stamp
-    // slot; the binding numbers partition the module's group(0), so a layout lists only
-    // the bindings its own entry point reads.
-    //
-    // **The list is all the host says.** What kind of thing each slot holds, and
-    // whether it exists at all without the residual, come from the generated
-    // `BINDINGS` table and the `@if(resid)` on the declaration itself (§6.10).
-    let bgl = |label: &str, list: &[desc::Slot]| {
-        desc::layout_for(device, label, list, wgpu::ShaderStages::COMPUTE, resid)
+    // Every layout below is one kernel's group 0, **exact** rather than shared: these
+    // dispatches disagree about the region, which one samples and the next
+    // storage-writes, and a union would merge both into one usage scope (§6.10). `ST`,
+    // the dynamic-offset stamp slot, anchors the group for all of them — both modules
+    // take that declaration from `dynamics_common.wesl`.
+    let bgl = |label: &str, kernel| {
+        desc::Bindings::of(device, label, Stages::Compute(kernel), sd::ST, &[sd::ST])
     };
-    let snapshot_bgl = bgl("stark dynamics snapshot bgl", slots::SNAPSHOT);
-    let bleed_weight_bgl = bgl("stark dynamics bleed weight bgl", slots::BLEED_WEIGHT);
-    let exchange_bgl = bgl("stark dynamics exchange bgl", slots::EXCHANGE);
-    let bake_bgl = bgl("stark dynamics bake bgl", slots::BAKE);
-    let settle_bgl = bgl("stark dynamics settle bgl", slots::SETTLE);
-    let deposit_bgl = bgl("stark dynamics deposit bgl", slots::DEPOSIT);
-    let snapshot_field_bgl = bgl("stark dynamics snapshot field bgl", slots::SNAPSHOT_FIELD);
-    let warp_bgl = bgl("stark dynamics warp bgl", slots::WARP);
-    let warp_apply_bgl = bgl("stark dynamics warp apply bgl", slots::WARP_APPLY);
-    let hoist_bgl = bgl("stark dynamics cell hoist bgl", slots::HOIST);
-    let deposit_coarse_bgl = bgl("stark dynamics deposit coarse bgl", slots::DEPOSIT_COARSE);
-    // The deposit's prefix-τ volume (group 1) — same shape as the fast path's
-    // prefix binding, but compute-visible.
-    let prefix_bgl = desc::layout_for(
+    let snapshot_bgl = bgl("stark dynamics snapshot bgl", dynamics.snapshot);
+    let bleed_weight_bgl = bgl("stark dynamics bleed weight bgl", dynamics.bleed_weight);
+    let exchange_bgl = bgl("stark dynamics exchange bgl", dynamics.exchange);
+    let bake_bgl = bgl("stark dynamics bake bgl", dynamics.bake);
+    let settle_bgl = bgl("stark dynamics settle bgl", dynamics.settle);
+    let deposit_bgl = bgl("stark dynamics deposit bgl", dynamics.deposit);
+    let snapshot_field_bgl = bgl("stark dynamics snapshot field bgl", liquify.snapshot_field);
+    let warp_bgl = bgl("stark dynamics warp bgl", liquify.warp);
+    let warp_apply_bgl = bgl("stark dynamics warp apply bgl", liquify.warp_apply);
+    let hoist_bgl = bgl("stark dynamics cell hoist bgl", dynamics.cell_hoist);
+    let deposit_coarse_bgl = bgl("stark dynamics deposit coarse bgl", dynamics.deposit_coarse);
+    // The prefix-τ volume at group 1 — the very texture the fast path samples, so the
+    // exchange extent *is* the definite integral of the brush along the travel (§6.6).
+    // **Shared**, and safely: one read-only texture, which no sharer can disagree with
+    // another about.
+    let prefix_bgl = desc::Bindings::shared_by(
         device,
         "stark dynamics prefix bgl",
-        PREFIX_SLOTS,
-        wgpu::ShaderStages::COMPUTE,
-        false,
+        &[
+            dynamics.bleed_weight,
+            dynamics.bake,
+            dynamics.deposit,
+            dynamics.cell_hoist,
+            dynamics.settle,
+            liquify.warp,
+        ],
+        scd::PREFIX_TEX,
+        &[],
     );
-    let pipe_in =
-        |module: &desc::Module, label: &str, entry, bgls: &[Option<&wgpu::BindGroupLayout>]| {
-            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some(label),
-                bind_group_layouts: bgls,
-                immediate_size: 0,
-            });
-            desc::compute_pipeline(device, label, &layout, module, entry)
-        };
-    let cpipe = |label: &str, entry, bgls: &[Option<&wgpu::BindGroupLayout>]| {
-        pipe_in(&module, label, entry, bgls)
+    let pipe_in = |module: &desc::Module, label: &str, entry, bindings: &[&desc::Bindings]| {
+        let layout = desc::pipeline_layout_of(device, label, bindings);
+        desc::compute_pipeline(device, label, &layout, module, entry)
     };
-    let lpipe = |label: &str, entry, bgls: &[Option<&wgpu::BindGroupLayout>]| {
-        pipe_in(&liquify_module, label, entry, bgls)
+    let cpipe =
+        |label: &str, entry, bindings: &[&desc::Bindings]| pipe_in(&module, label, entry, bindings);
+    let lpipe = |label: &str, entry, bindings: &[&desc::Bindings]| {
+        pipe_in(&liquify_module, label, entry, bindings)
     };
     let snapshot_pipeline = cpipe(
         "stark dynamics snapshot",
         dynamics.snapshot,
-        &[Some(&snapshot_bgl)],
+        &[&snapshot_bgl],
     );
     // The bleed ladder's mobility, hoisted (§6.2). It reads the prefix-τ volume, so it
     // takes group 1 like every other pass that does — one `swept_pre` per texel is the
@@ -260,36 +244,36 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     let bleed_weight_pipeline = cpipe(
         "stark dynamics bleed weight",
         dynamics.bleed_weight,
-        &[Some(&bleed_weight_bgl), Some(&prefix_bgl)],
+        &[&bleed_weight_bgl, &prefix_bgl],
     );
     let exchange_pipeline = cpipe(
         "stark dynamics exchange",
         dynamics.exchange,
-        &[Some(&exchange_bgl)],
+        &[&exchange_bgl],
     );
     // The bake reads the prefix-τ volume too (group 1) — the exposure weights in
     // its integral are that volume's own differences.
     let bake_pipeline = cpipe(
         "stark dynamics bake",
         dynamics.bake,
-        &[Some(&bake_bgl), Some(&prefix_bgl)],
+        &[&bake_bgl, &prefix_bgl],
     );
     let deposit_pipeline = cpipe(
         "stark dynamics deposit",
         dynamics.deposit,
-        &[Some(&deposit_bgl), Some(&prefix_bgl)],
+        &[&deposit_bgl, &prefix_bgl],
     );
     // The hoist takes the same prefix-τ taps the deposit's front half did; the coarse
     // deposit takes none, so its layout stops at group 0.
     let hoist_pipeline = cpipe(
         "stark dynamics cell hoist",
         dynamics.cell_hoist,
-        &[Some(&hoist_bgl), Some(&prefix_bgl)],
+        &[&hoist_bgl, &prefix_bgl],
     );
     let deposit_coarse_pipeline = cpipe(
         "stark dynamics deposit coarse",
         dynamics.deposit_coarse,
-        &[Some(&deposit_coarse_bgl)],
+        &[&deposit_coarse_bgl],
     );
     // The settle reads the prefix-τ volume too (group 1): its exposure is a pair of
     // readings of it, which is what makes the pen-up fade over the whole tip rather
@@ -297,7 +281,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     let settle_pipeline = cpipe(
         "stark dynamics settle",
         dynamics.settle,
-        &[Some(&settle_bgl), Some(&prefix_bgl)],
+        &[&settle_bgl, &prefix_bgl],
     );
     // The liquify field's kernels (§6.13). The composition reads its exposure
     // from a prefix volume at group 1 like every deposit — the **coverage**
@@ -306,17 +290,17 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     let snapshot_field_pipeline = lpipe(
         "stark liquify snapshot field",
         liquify.snapshot_field,
-        &[Some(&snapshot_field_bgl)],
+        &[&snapshot_field_bgl],
     );
     let warp_pipeline = lpipe(
         "stark liquify warp",
         liquify.warp,
-        &[Some(&warp_bgl), Some(&prefix_bgl)],
+        &[&warp_bgl, &prefix_bgl],
     );
     let warp_apply_pipeline = lpipe(
         "stark liquify warp apply",
         liquify.warp_apply,
-        &[Some(&warp_apply_bgl)],
+        &[&warp_apply_bgl],
     );
     let exchange_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("stark dynamics exchange sampler"),
@@ -333,9 +317,15 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // neither a per-tile uniform nor a residual variant.
     let slice = stark_shaders::slice();
     let slice_shader = desc::Module::new(device, "stark dynamics slice", slice);
-    let slice_bgl = desc::layout_for(device, "stark dynamics slice bgl", SLICE_SLOTS, frag, false);
+    let slice_bgl = desc::Bindings::of(
+        device,
+        "stark dynamics slice bgl",
+        Stages::Render(slice.vs_main, slice.fs_main),
+        sld::REGION_AUX,
+        &[],
+    );
     let slice_layout =
-        desc::pipeline_layout(device, "stark dynamics slice layout", &[Some(&slice_bgl)]);
+        desc::pipeline_layout_of(device, "stark dynamics slice layout", &[&slice_bgl]);
     let slice_pipeline = desc::fullscreen_pipeline(
         device,
         "stark dynamics slice pipeline",
@@ -375,7 +365,6 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         exchange_bgl,
         bake_pipeline,
         bake_bgl,
-        bake_groups: dynamics.bake.groups((BAKE_RES, BAKE_RES)),
         deposit_pipeline,
         deposit_bgl,
         hoist_pipeline,

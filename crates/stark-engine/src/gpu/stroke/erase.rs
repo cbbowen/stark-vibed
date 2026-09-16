@@ -18,13 +18,12 @@
 //! its pipelines, and the one decision that is this pass's — a tile the layer does
 //! not have is nothing to erase ([`BareCanvas::Skip`]).
 
-use stark_shaders::Lane;
+use stark_shaders::Stages;
 use stark_shaders::mirror::erase::binding as eb;
 use stark_shaders::mirror::erase::decl as ed;
 
 use crate::colorspace::ColorSpace;
 use crate::gpu::desc;
-use crate::gpu::desc::Slot;
 use crate::gpu::tile::TileMap;
 
 use super::accum::{
@@ -34,20 +33,6 @@ use super::incremental::Carried;
 use super::swept::{SweptKit, sweep_binds, sweep_draws};
 use super::{Progress, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
 use crate::gpu::scratch::{BufKey, Key};
-
-/// The integrate's one group (`erase.wesl`): the pristine tile, the stroke's
-/// accumulated mass, the selection, the opacity uniform, and the ceiling lane —
-/// the parcel's second lane under a pen-driven opacity, the 1×1 zero otherwise.
-pub(crate) const ERASE_SLOTS: &[Slot] = &[
-    Slot::at(ed::BASE_COLOR),
-    Slot::at(ed::BASE_AUX),
-    Slot::at(ed::ACCUM),
-    Slot::at(ed::SELECTION),
-    Slot::at(ed::E),
-    Slot::at(ed::BASE_RESID),
-    Slot::at(ed::CEILING),
-    Slot::at(ed::MOMENT),
-];
 
 /// The accumulator's format: one channel — the transparency mass — additive. f16
 /// is enough because the interesting range is a few times `OPAQUE_MASS`, and by the
@@ -110,7 +95,7 @@ pub(super) struct EraseKit {
     /// The integrate (`erase.wesl`): a fullscreen pass reading the pristine tile
     /// and the accumulated mass, writing the erased tile's color+aux(+resid) MRT.
     pub(super) integrate: wgpu::RenderPipeline,
-    pub(super) integrate_bgl: wgpu::BindGroupLayout,
+    pub(super) integrate_bgl: desc::Bindings,
 }
 
 /// Build the erase kit (§6.12). Takes the [`SweptKit`] because the sweep
@@ -124,14 +109,10 @@ pub(super) fn build_erase_kit(
     shader: &desc::Module,
     shader_ceiling: &desc::Module,
 ) -> EraseKit {
-    let layout = desc::pipeline_layout(
+    let layout = desc::pipeline_layout_of(
         device,
         "stark erase sweep layout",
-        &[
-            Some(&swept.uniform_bgl),
-            Some(&swept.prefix_bgl),
-            Some(&swept.noise_bgl),
-        ],
+        &[&swept.uniform_bgl, &swept.prefix_bgl, &swept.noise_bgl],
     );
     let targets = [
         // The transparency mass, additive across overlapping segment quads —
@@ -144,8 +125,8 @@ pub(super) fn build_erase_kit(
     ];
     // The same two records `swept::stamp_module` compiled, for the entry points the
     // two pipelines below name (§6.10).
-    let plain = color_space.stamp_shader(Lane::Plain);
-    let ceiling = color_space.stamp_shader(Lane::Ceiling);
+    let plain = color_space.stamp_shader(stark_shaders::Lane::Plain);
+    let ceiling = color_space.stamp_shader(stark_shaders::Lane::Ceiling);
     let sweep_pipeline = |label, module, vs, fs, targets: &[Option<wgpu::ColorTargetState>]| {
         desc::render_pipeline(
             device,
@@ -178,13 +159,19 @@ pub(super) fn build_erase_kit(
         &targets,
     );
 
-    let resid = color_space.has_resid();
     let erase = stark_shaders::erase(color_space.resid());
     let integrate_shader = desc::Module::new(device, "stark erase", erase);
-    let frag = wgpu::ShaderStages::FRAGMENT;
-    let integrate_bgl = desc::layout_for(device, "stark erase bgl", ERASE_SLOTS, frag, resid);
+    // The pristine tile, the stroke's accumulated mass, the selection, the opacity
+    // uniform and the ceiling lane — whatever this build of `erase.wesl` reads.
+    let integrate_bgl = desc::Bindings::of(
+        device,
+        "stark erase bgl",
+        Stages::Render(erase.vs_main, erase.fs_main),
+        ed::BASE_COLOR,
+        &[],
+    );
     let integrate_layout =
-        desc::pipeline_layout(device, "stark erase layout", &[Some(&integrate_bgl)]);
+        desc::pipeline_layout_of(device, "stark erase layout", &[&integrate_bgl]);
     // No blend on any target: the shader computes the finished texel.
     let integrate = desc::fullscreen_pipeline(
         device,
@@ -288,13 +275,9 @@ impl StrokeRenderer {
                 pipeline: &self.erase.integrate,
             },
             |l: &Landing<'_>| {
-                desc::bind_group_for(
-                    device,
-                    "stark erase bg",
-                    &self.erase.integrate_bgl,
-                    ERASE_SLOTS,
-                    l.base.resid.is_some(),
-                    |b| match b {
+                self.erase
+                    .integrate_bgl
+                    .group(device, "stark erase bg", |b| match b {
                         eb::BASE_COLOR => wgpu::BindingResource::TextureView(l.base.color),
                         eb::BASE_AUX => wgpu::BindingResource::TextureView(l.base.aux),
                         eb::ACCUM => wgpu::BindingResource::TextureView(l.parcel.lane(MASS)),
@@ -313,9 +296,8 @@ impl StrokeRenderer {
                         } else {
                             &self.zeroes.aux
                         }),
-                        other => unreachable!("`ERASE_SLOTS` lists no binding {other}"),
-                    },
-                )
+                        other => unreachable!("the erase group holds no binding {other}"),
+                    })
             },
         );
 

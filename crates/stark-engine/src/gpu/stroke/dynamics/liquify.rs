@@ -38,12 +38,11 @@ use super::super::budget::{
 use super::super::region::{RegionRect, chunk_segments_within, cover, sweep_tiles};
 use super::super::segments::Segment;
 use super::super::{Painted, Progress, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene};
-use super::plan::{PlanCtx, SlotKind, groups_for, liquify_plan};
+use super::plan::{PlanCtx, SlotKind, dispatch_over, liquify_plan};
 use super::run::{
     LOOP_USAGE, RegionBox, RegionChannels, composite_tiles, region_selection, slice_region,
     upload_stamps,
 };
-use super::slots;
 use crate::document::liquify::LiquifyRun;
 use crate::gpu::channels::Targets;
 use crate::gpu::desc;
@@ -278,14 +277,12 @@ impl<'a> LiquifyDraw<'a> {
         run: LiquifyRun,
         warp_prefix: &wgpu::TextureView,
     ) -> Self {
-        let prefix_bg = desc::bind_group_for(
-            &r.ctx.device,
-            "stark liquify coverage prefix bg",
-            &r.dynamics.prefix_bgl,
-            super::kit::PREFIX_SLOTS,
-            false,
-            |_| wgpu::BindingResource::TextureView(warp_prefix),
-        );
+        let prefix_bg =
+            r.dynamics
+                .prefix_bgl
+                .group(&r.ctx.device, "stark liquify coverage prefix bg", |_| {
+                    wgpu::BindingResource::TextureView(warp_prefix)
+                });
         Self {
             r,
             scene,
@@ -472,94 +469,83 @@ impl<'a> LiquifyDraw<'a> {
         );
 
         // ---- The plan, the scratch it sizes, and the groups that name it.
-        let (plan, bind) = {
-            crate::timing::span!("stroke.plan");
-            let ctx = PlanCtx {
-                rec: self.rec,
-                tol: self.tol,
-                region_origin,
-                consts: self.consts,
-                substrate: self.scene.substrate,
+        let (plan, bind) =
+            {
+                crate::timing::span!("stroke.plan");
+                let ctx = PlanCtx {
+                    rec: self.rec,
+                    tol: self.tol,
+                    region_origin,
+                    consts: self.consts,
+                    substrate: self.scene.substrate,
+                };
+                let plan = liquify_plan(&ctx, segments, [margin as i32, margin as i32], (w, h));
+                let under_field = self
+                    .scope
+                    .take_piece(Key {
+                        size: (plan.dsize, plan.dsize),
+                        format: FIELD_FORMAT,
+                        usage: LOOP_USAGE,
+                        label: "stark liquify under field",
+                    })
+                    .1;
+                let stamp_buf = upload_stamps(&mut self.scope, &mut self.stamps, &plan.slots);
+                let params = wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &stamp_buf,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(super::plan::SLOT as u64),
+                });
+                fn view(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
+                    wgpu::BindingResource::TextureView(v)
+                }
+                let snapshot =
+                    kit.snapshot_field_bgl
+                        .group(device, "stark liquify snapshot field bg", |s| match s {
+                            sb::ST => params.clone(),
+                            lb::FIELD => view(&field),
+                            lb::UNDER_FIELD_W => view(&under_field),
+                            other => unreachable!("snapshot_field reads no binding {other}"),
+                        });
+                let warp = kit
+                    .warp_bgl
+                    .group(device, "stark liquify warp bg", |s| match s {
+                        sb::ST => params.clone(),
+                        lb::UNDER_FIELD => view(&under_field),
+                        lb::FIELD_W => view(&field),
+                        sb::SEL_MASK => view(&sel_mask),
+                        other => unreachable!("warp reads no binding {other}"),
+                    });
+                let apply = kit
+                    .warp_apply_bgl
+                    .group(device, "stark liquify warp apply bg", |s| match s {
+                        sb::ST => params.clone(),
+                        lb::FIELD => view(&field),
+                        lb::BASE_COLOR => view(&base_color),
+                        lb::BASE_AUX => view(&base_aux),
+                        lb::BASE_RESID => view(base_resid.as_ref().expect("a residual build")),
+                        sb::REGION_COLOR_W => view(&color),
+                        sb::REGION_AUX_W => view(&aux),
+                        sb::REGION_RESID_W => view(resid_view.as_ref().expect("a residual build")),
+                        other => unreachable!("warp_apply reads no binding {other}"),
+                    });
+                (
+                    plan,
+                    Bindings {
+                        snapshot,
+                        warp,
+                        apply,
+                    },
+                )
             };
-            let plan = liquify_plan(&ctx, segments, [margin as i32, margin as i32], (w, h));
-            let under_field = self
-                .scope
-                .take_piece(Key {
-                    size: (plan.dsize, plan.dsize),
-                    format: FIELD_FORMAT,
-                    usage: LOOP_USAGE,
-                    label: "stark liquify under field",
-                })
-                .1;
-            let stamp_buf = upload_stamps(&mut self.scope, &mut self.stamps, &plan.slots);
-            let params = wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: &stamp_buf,
-                offset: 0,
-                size: wgpu::BufferSize::new(super::plan::SLOT as u64),
-            });
-            fn view(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
-                wgpu::BindingResource::TextureView(v)
-            }
-            let snapshot = desc::bind_group_for(
-                device,
-                "stark liquify snapshot field bg",
-                &kit.snapshot_field_bgl,
-                slots::SNAPSHOT_FIELD,
-                resid,
-                |s| match s {
-                    sb::ST => params.clone(),
-                    lb::FIELD => view(&field),
-                    lb::UNDER_FIELD_W => view(&under_field),
-                    other => unreachable!("snapshot_field lists no binding {other}"),
-                },
-            );
-            let warp = desc::bind_group_for(
-                device,
-                "stark liquify warp bg",
-                &kit.warp_bgl,
-                slots::WARP,
-                resid,
-                |s| match s {
-                    sb::ST => params.clone(),
-                    lb::UNDER_FIELD => view(&under_field),
-                    lb::FIELD_W => view(&field),
-                    sb::SEL_MASK => view(&sel_mask),
-                    other => unreachable!("warp lists no binding {other}"),
-                },
-            );
-            let apply = desc::bind_group_for(
-                device,
-                "stark liquify warp apply bg",
-                &kit.warp_apply_bgl,
-                slots::WARP_APPLY,
-                resid,
-                |s| match s {
-                    sb::ST => params.clone(),
-                    lb::FIELD => view(&field),
-                    lb::BASE_COLOR => view(&base_color),
-                    lb::BASE_AUX => view(&base_aux),
-                    lb::BASE_RESID => view(base_resid.as_ref().expect("a residual build")),
-                    sb::REGION_COLOR_W => view(&color),
-                    sb::REGION_AUX_W => view(&aux),
-                    sb::REGION_RESID_W => view(resid_view.as_ref().expect("a residual build")),
-                    other => unreachable!("warp_apply lists no binding {other}"),
-                },
-            );
-            (
-                plan,
-                Bindings {
-                    snapshot,
-                    warp,
-                    apply,
-                },
-            )
-        };
 
         // ---- The kernels, in order: per segment, the field's snapshot then the
         // composition; then the one resample.
         {
             crate::timing::span!("stroke.loop");
-            let square = groups_for(plan.dsize);
+            // Every count below is the kernel's own (§6.10); the snapshot covers the
+            // whole square, since the gather pulls from upstream of any one texel.
+            let li = stark_shaders::liquify(r.color_space.resid());
+            let square = li.snapshot_field.groups((plan.dsize, plan.dsize));
             let mut cpass = self
                 .scope
                 .encoder()
@@ -574,16 +560,16 @@ impl<'a> LiquifyDraw<'a> {
                     SlotKind::Warp => {
                         cpass.set_pipeline(&kit.snapshot_field_pipeline);
                         cpass.set_bind_group(0, &bind.snapshot, &[off]);
-                        cpass.dispatch_workgroups(square, square, 1);
+                        dispatch_over(&mut cpass, square);
                         cpass.set_pipeline(&kit.warp_pipeline);
                         cpass.set_bind_group(0, &bind.warp, &[off]);
                         cpass.set_bind_group(1, &self.prefix_bg, &[]);
-                        cpass.dispatch_workgroups(dsp.groups.0, dsp.groups.1, 1);
+                        dispatch_over(&mut cpass, li.warp.groups(dsp.extent));
                     }
                     SlotKind::WarpApply => {
                         cpass.set_pipeline(&kit.warp_apply_pipeline);
                         cpass.set_bind_group(0, &bind.apply, &[off]);
-                        cpass.dispatch_workgroups(dsp.groups.0, dsp.groups.1, 1);
+                        dispatch_over(&mut cpass, li.warp_apply.groups(dsp.extent));
                     }
                     SlotKind::Segment | SlotKind::Bleed | SlotKind::Settle => {
                         unreachable!(

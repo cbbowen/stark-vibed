@@ -6,53 +6,14 @@
 use crate::colorspace::ColorSpace;
 use crate::gpu::channels::Targets;
 use crate::gpu::desc;
-use crate::gpu::desc::Slot;
 use stark_model::document::StrokeRecord;
 use stark_model::geom::{TILE_APRON, TILE_TEX, TileCoord, Vec2};
-use stark_shaders::Lane;
 use stark_shaders::mirror::integrate::binding as ib;
 use stark_shaders::mirror::integrate::decl as id;
 use stark_shaders::mirror::stamp_common::binding as sc;
 use stark_shaders::mirror::stamp_common::decl as sd;
+use stark_shaders::{EntryPoint, Lane, Stages};
 
-/// Group 0 of the stamp pass (§6.2, §6.10): one buffer for the whole stroke with a
-/// slot per tile, selected by a dynamic offset. Declared by `stamp_common.wesl`, where
-/// the swept-segment scaffolding lives, rather than by `stamp.wesl`.
-pub(crate) const XFORM_SLOTS: &[Slot] = &[Slot::dynamic(sd::XF)];
-
-/// The prefix-τ volume at group 1 — an Rg32Float 2-D array (x, y, + orientation
-/// layers; travel prefix in `r`, its lateral prefix in `g`, §6.2) read with
-/// `textureLoad`, since the shader does its own trilinear lookup (§6.6).
-pub(crate) const PREFIX_SLOTS: &[Slot] = &[Slot::at(sd::PREFIX_TEX)];
-
-/// Group 2: the color-dynamics noise field and its repeat sampler (§6.2), and the
-/// canvas substrate's map — height and the rise ahead — for the deposition tooth
-/// (§6.4). Both are tileable fields the deposit samples per fragment, resolved once
-/// per stroke, so they share a group.
-pub(crate) const NOISE_SLOTS: &[Slot] = &[
-    Slot::sampled(sd::NOISE_TEX),
-    Slot::at(sd::NOISE_SAMP),
-    // The substrate is read **nearest** (`substrate_texel`, §6.4), so it needs no
-    // filtering and has no sampler.
-    Slot::at(sd::SUBSTRATE_TEX),
-];
-
-/// The integrate pass (`integrate.wesl`, §6.2/§6.1): the layer's resident paint, the
-/// stroke's scratch parcel, the selection each is gated by, the paint effect's opacity
-/// — exactly 1 on the unscaled path, the shader's identity branch — and the ceiling
-/// lane, the parcel's fourth lane under a pen-driven opacity and the 1×1 zero
-/// everywhere else.
-pub(crate) const INTEGRATE_SLOTS: &[Slot] = &[
-    Slot::at(id::BASE_COLOR),
-    Slot::at(id::BASE_AUX),
-    Slot::at(id::SCRATCH_COLOR),
-    Slot::at(id::SCRATCH_AUX),
-    Slot::at(id::SELECTION),
-    Slot::at(id::IG),
-    Slot::at(id::BASE_RESID),
-    Slot::at(id::SCRATCH_RESID),
-    Slot::at(id::SCRATCH_CEILING),
-];
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap};
 
 use super::accum::{
@@ -126,15 +87,15 @@ pub(super) struct SweptKit {
     /// sweep's own sums (§6.2). Over the same three layouts, so the loop binds
     /// the brush exactly as the swept path does.
     pub(super) levels_pipeline: wgpu::RenderPipeline,
-    pub(super) uniform_bgl: wgpu::BindGroupLayout,
-    pub(super) prefix_bgl: wgpu::BindGroupLayout,
-    pub(super) noise_bgl: wgpu::BindGroupLayout,
+    pub(super) uniform_bgl: desc::Bindings,
+    pub(super) prefix_bgl: desc::Bindings,
+    pub(super) noise_bgl: desc::Bindings,
     /// The integrate (§6.2/§6.1): a fullscreen pass reading the base tile and the
     /// stroke's extent scratch and writing `new = f(base, scratch)` into a fresh CoW
     /// tile's color+aux MRT, through the shared law in `paint_common.wesl` that a fill
     /// and the stamp loop's `deposit` also land by.
     pub(super) integrate_pipeline: wgpu::RenderPipeline,
-    pub(super) integrate_bgl: wgpu::BindGroupLayout,
+    pub(super) integrate_bgl: desc::Bindings,
 }
 
 /// Compile `stamp.wesl` for `color_space` (§6.2, §6.7) — with or without the ceiling
@@ -173,6 +134,23 @@ pub(super) fn ceiling_target(color_space: &dyn ColorSpace) -> Option<wgpu::Color
     desc::blended_target(CEILING_FORMAT, Some(color_space.aux_blend()))
 }
 
+/// Every stage the sweep's three layouts serve: both stamp builds', over the five
+/// pipelines this kit and the erase kit compile between them (§6.12). One set of
+/// layouts, so one union — and the erase sweep is why `fs_erase` is in it.
+pub(super) fn sweep_stages(color_space: &dyn ColorSpace) -> [EntryPoint; 7] {
+    let plain = color_space.stamp_shader(Lane::Plain);
+    let ceiling = color_space.stamp_shader(Lane::Ceiling);
+    [
+        plain.vs_main,
+        plain.fs_main,
+        plain.fs_levels,
+        plain.fs_erase,
+        ceiling.vs_main,
+        ceiling.fs_main,
+        ceiling.fs_erase,
+    ]
+}
+
 /// Build the swept fast path's kit (§6.2): the sweep pipeline over its three bind
 /// group layouts — twice, with and without the ceiling lane — and the integrate
 /// that lands its scratch on the base.
@@ -182,32 +160,32 @@ pub(super) fn build_swept_kit(
     shader: &desc::Module,
     shader_ceiling: &desc::Module,
 ) -> SweptKit {
-    let frag = wgpu::ShaderStages::FRAGMENT;
-    // One slot per affected tile, selected by a dynamic offset
-    // ([`XFORM_STRIDE`]) — so a stroke crossing many tiles binds one buffer rather
-    // than building one per tile on every pointer move.
-    let uniform_bgl = desc::layout_for(
+    // All three off the stages above (§6.10). Group 0 is one buffer for the whole
+    // stroke with a slot per tile, selected by a dynamic offset ([`XFORM_STRIDE`]);
+    // group 1 the prefix-τ volume (§6.6); group 2 the noise field with its repeat
+    // sampler beside the canvas substrate's map (§6.2, §6.4).
+    let stages = sweep_stages(color_space);
+    let uniform_bgl = desc::Bindings::shared_by(
         device,
         "stark sweep uniform bgl",
-        XFORM_SLOTS,
-        wgpu::ShaderStages::VERTEX_FRAGMENT,
-        false,
+        &stages,
+        sd::XF,
+        &[sd::XF],
     );
+    let prefix_bgl = desc::Bindings::shared_by(
+        device,
+        "stark sweep prefix bgl",
+        &stages,
+        sd::PREFIX_TEX,
+        &[],
+    );
+    let noise_bgl =
+        desc::Bindings::shared_by(device, "stark sweep noise bgl", &stages, sd::NOISE_TEX, &[]);
 
-    // The prefix-τ texture is an Rg32Float 2D-array (x, y, + orientation layers),
-    // sampled via textureLoad (not filterable), so the shader does its own trilinear
-    // lookup.
-    let prefix_bgl = desc::layout_for(device, "stark sweep prefix bgl", PREFIX_SLOTS, frag, false);
-
-    // Group 2: the noise field (a tileable 3-D volume) and its repeat sampler (§6.2),
-    // beside the canvas substrate's map — the deposition tooth's height and the rise
-    // ahead of it (§6.4).
-    let noise_bgl = desc::layout_for(device, "stark sweep noise bgl", NOISE_SLOTS, frag, false);
-
-    let layout = desc::pipeline_layout(
+    let layout = desc::pipeline_layout_of(
         device,
         "stark sweep layout",
-        &[Some(&uniform_bgl), Some(&prefix_bgl), Some(&noise_bgl)],
+        &[&uniform_bgl, &prefix_bgl, &noise_bgl],
     );
     let targets = [
         desc::blended_target(color_space.color_format(), Some(color_space.color_blend())),
@@ -652,33 +630,27 @@ pub(super) fn sweep_binds(
     // and handed down rather than re-resolved here behind an `expect` naming that
     // gate, which is a claim about a caller where passing the value is a fact.
     let prefix_view = tip.prefix.clone();
-    let prefix_bg = desc::bind_group_for(
-        device,
-        "stark sweep prefix bg",
-        &r.swept.prefix_bgl,
-        PREFIX_SLOTS,
-        false,
-        |_| wgpu::BindingResource::TextureView(&prefix_view),
-    );
+    let prefix_bg = r
+        .swept
+        .prefix_bgl
+        .group(device, "stark sweep prefix bg", |_| {
+            wgpu::BindingResource::TextureView(&prefix_view)
+        });
     // Color dynamics (§6.2): the noise tile baked for this stroke, of the brush's
     // kind. An inactive brush binds the zero tile with zero amplitudes, so the deposit
     // is exactly the constant color. The canvas substrate beside it (§6.4): the
     // deposition tooth's height and the rise ahead of it.
     let noise = r.tips.noise(&rec.brush.color_dynamics(), k.noise_seed);
     scope.hold(noise.clone());
-    let noise_bg = desc::bind_group_for(
-        device,
-        "stark sweep noise bg",
-        &r.swept.noise_bgl,
-        NOISE_SLOTS,
-        false,
-        |b| match b {
+    let noise_bg = r
+        .swept
+        .noise_bgl
+        .group(device, "stark sweep noise bg", |b| match b {
             sc::NOISE_TEX => wgpu::BindingResource::TextureView(noise.view()),
             sc::NOISE_SAMP => wgpu::BindingResource::Sampler(&r.tips.noise_sampler),
             sc::SUBSTRATE_TEX => wgpu::BindingResource::TextureView(&substrate.view),
-            other => unreachable!("`NOISE_SLOTS` lists no binding {other}"),
-        },
-    );
+            other => unreachable!("the sweep's noise group holds no binding {other}"),
+        });
     (prefix_bg, noise_bg)
 }
 
@@ -823,20 +795,13 @@ pub(super) fn sweep_draws(
     // Through the slot list the layout was built from (§6.10). The window is the
     // uniform's size and the offset is the draw's, so the entry names a slot rather than
     // the whole buffer.
-    let xforms = desc::bind_group_for(
-        device,
-        "stark sweep bg",
-        &r.swept.uniform_bgl,
-        XFORM_SLOTS,
-        false,
-        |_| {
-            wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: &xform_buf,
-                offset: 0,
-                size: wgpu::BufferSize::new(XFORM_SLOT),
-            })
-        },
-    );
+    let xforms = r.swept.uniform_bgl.group(device, "stark sweep bg", |_| {
+        wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            buffer: &xform_buf,
+            offset: 0,
+            size: wgpu::BufferSize::new(XFORM_SLOT),
+        })
+    });
 
     SweepDraws {
         coords,
@@ -924,20 +889,15 @@ pub(super) fn xform_group(
         label: "stark sweep region xform",
     });
     scope.write_lease(&buf, bytemuck::bytes_of(xform));
-    desc::bind_group_for(
-        &r.ctx.device,
-        "stark sweep region bg",
-        &r.swept.uniform_bgl,
-        XFORM_SLOTS,
-        false,
-        |_| {
+    r.swept
+        .uniform_bgl
+        .group(&r.ctx.device, "stark sweep region bg", |_| {
             wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                 buffer: &buf,
                 offset: 0,
                 size: wgpu::BufferSize::new(XFORM_SLOT),
             })
-        },
-    )
+        })
 }
 
 /// Build the stroke integrate pipeline (`integrate` shader) — §6.2/§6.1. A
@@ -946,13 +906,20 @@ pub(super) fn xform_group(
 pub(super) fn build_integrate_pipeline(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
-) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
-    let resid = color_space.has_resid();
+) -> (wgpu::RenderPipeline, desc::Bindings) {
     let integrate = stark_shaders::integrate(color_space.resid());
     let shader = desc::Module::new(device, "stark integrate", integrate);
-    let frag = wgpu::ShaderStages::FRAGMENT;
-    let bgl = desc::layout_for(device, "stark integrate bgl", INTEGRATE_SLOTS, frag, resid);
-    let layout = desc::pipeline_layout(device, "stark integrate layout", &[Some(&bgl)]);
+    // The layer's resident paint, the stroke's scratch parcel, the selection each is
+    // gated by, the effect's opacity and the ceiling lane — whatever this build of
+    // `integrate.wesl` reads (§6.2/§6.1).
+    let bgl = desc::Bindings::of(
+        device,
+        "stark integrate bgl",
+        Stages::Render(integrate.vs_main, integrate.fs_main),
+        id::BASE_COLOR,
+        &[],
+    );
+    let layout = desc::pipeline_layout_of(device, "stark integrate layout", &[&bgl]);
     // No blend on any target: the shader does the combine and writes straight
     // through.
     let pipeline = desc::fullscreen_pipeline(
@@ -979,10 +946,9 @@ pub(super) fn build_integrate_pipeline(
 /// is left once they are asked for as trios is the one thing genuinely shared: what the
 /// integrate reads.
 ///
-/// The residual predicate is `base && parcel` because both must be bound for the
-/// `_resid` build to be legal. On the scaled path the two are the same question — the
+/// A residual build asks for both residual slots, and both callers have them: the
 /// base's residual, the zero standing in for it and the parcel's third lane are all
-/// present exactly when the space has one (§6.7) — so requiring both costs it nothing.
+/// present exactly when the space has one (§6.7).
 fn integrate_bind_group(
     r: &StrokeRenderer,
     base: Targets<'_>,
@@ -991,13 +957,9 @@ fn integrate_bind_group(
     opacity: &wgpu::Buffer,
     ceiling: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
-    desc::bind_group_for(
-        &r.ctx.device,
-        "stark integrate bg",
-        &r.swept.integrate_bgl,
-        INTEGRATE_SLOTS,
-        base.resid.is_some() && parcel.resid.is_some(),
-        |b| match b {
+    r.swept
+        .integrate_bgl
+        .group(&r.ctx.device, "stark integrate bg", |b| match b {
             ib::BASE_COLOR => wgpu::BindingResource::TextureView(base.color),
             ib::BASE_AUX => wgpu::BindingResource::TextureView(base.aux),
             ib::SCRATCH_COLOR => wgpu::BindingResource::TextureView(parcel.color),
@@ -1011,9 +973,8 @@ fn integrate_bind_group(
             ib::SCRATCH_RESID => {
                 wgpu::BindingResource::TextureView(parcel.resid.expect("a residual build has one"))
             }
-            other => unreachable!("`INTEGRATE_SLOTS` lists no binding {other}"),
-        },
-    )
+            other => unreachable!("the integrate's group holds no binding {other}"),
+        })
 }
 
 #[cfg(test)]

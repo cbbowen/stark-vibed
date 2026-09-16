@@ -170,12 +170,6 @@ impl Slot {
         }
     }
 
-    /// The slot's `@binding` index — what a bind-group entry is keyed on, once the
-    /// group is fixed.
-    pub(crate) const fn binding(&self) -> u32 {
-        self.decl.index
-    }
-
     /// The shader's declaration of this slot.
     pub(crate) const fn decl(&self) -> &stark_shaders::Binding {
         &self.decl
@@ -261,9 +255,9 @@ fn slot_entry(
 
 /// The most bindings one group may hold — [`bind_group_over`] fills its entries into
 /// an array of this size on the stack, since it runs once per tile per pass. Checked
-/// where the **layout** is built, both by [`slot_entries`] and by [`Bindings::of`], so
-/// a longer one fails where its renderer is built rather than at its first draw. The
-/// longest today is the dynamics' deposit at 17.
+/// where the **layout** is built, both by [`slot_entries`] and by [`Bindings::over`],
+/// so a longer one fails where its renderer is built rather than at its first draw.
+/// The wet loop's deposit is the longest today.
 const MAX_SLOTS: usize = 24;
 
 /// The layout entries for `slots`, in list order, with the residual gate applied.
@@ -301,45 +295,6 @@ fn slot_entries(
         .iter()
         .filter_map(|s| slot_entry(*s, vis, resid))
         .collect()
-}
-
-/// A bind group layout for the `slots` one entry point reads, typed from the shader's
-/// own declarations (§6.10).
-///
-/// The list of slots is the *only* thing written on the host, and it is written once:
-/// [`bind_group_for`] builds the matching group from the same list, so a layout and its
-/// group cannot disagree about which bindings are present, in what order, or of what
-/// type.
-pub(crate) fn layout_for(
-    device: &wgpu::Device,
-    label: &str,
-    slots: &[Slot],
-    vis: wgpu::ShaderStages,
-    resid: bool,
-) -> wgpu::BindGroupLayout {
-    bind_group_layout(device, label, &slot_entries(label, slots, vis, resid))
-}
-
-/// The bind group for the same `slots` [`layout_for`] built a layout from, with
-/// `resource` asked for each one that is present in this build.
-///
-/// `resource` is never asked about a slot the residual gate excluded, so a caller has
-/// nothing to say about the residual beyond supplying the views when it has them.
-pub(crate) fn bind_group_for<'a>(
-    device: &wgpu::Device,
-    label: &str,
-    layout: &wgpu::BindGroupLayout,
-    slots: &[Slot],
-    resid: bool,
-    resource: impl FnMut(u32) -> wgpu::BindingResource<'a>,
-) -> wgpu::BindGroup {
-    bind_group_over(
-        device,
-        label,
-        layout,
-        slots.iter().filter(|s| s.present(resid)).map(Slot::binding),
-        resource,
-    )
 }
 
 /// The bind group for the `entries` a layout was built from ([`Bindings`]), with

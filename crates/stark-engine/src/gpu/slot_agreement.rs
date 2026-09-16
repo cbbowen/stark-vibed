@@ -8,25 +8,22 @@
 //! **The unit is the list, not the pipeline** — several pipelines share one layout, so
 //! what a list is answerable for is the *union* of what they read. The table below is
 //! still the pipelines, because that is what a reader can check against `desc`'s call
-//! sites; the check folds them by list. `PREFIX_SLOTS` is one list behind **two**
-//! layout objects, the sweep's fragment-visible one and the wet loop's compute-visible
-//! one, and the union spans both.
+//! sites; the check folds them by list.
 //!
 //! A pipeline whose layouts are **derived** (`stark_shaders::layout_of`) names no list,
 //! and nothing here checks it: there is no second opinion to hold against the shader. It
 //! stays in the table for the other test, which asks that every entry point declared is
 //! built into something.
 //!
-//! [`KNOWN`] is the differences that stand today; the check is that the differences
-//! found **equal** it. Nothing here changes the engine.
+//! **No list differs from its shader today.** The three that did were the wet loop's,
+//! and deriving those layouts retired them by construction. Nothing here changes the
+//! engine.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use stark_shaders::{Binding, EntryPoint, Lane, Resid};
 
 use crate::gpu::desc::Slot;
-use crate::gpu::stroke::dynamics::{kit, slots as dyn_slots};
-use crate::gpu::stroke::{erase, swept};
 use crate::gpu::{fill, merge, selection, transform};
 
 /// One bind group layout a pipeline binds: the list it is built from, named as the
@@ -108,116 +105,6 @@ struct Where {
     decl: &'static str,
     diff: Diff,
 }
-
-/// The differences a waiver may name — [`Diff`] without [`Diff::Omitted`].
-///
-/// [`Known`] takes one of these rather than a `Diff`, so "never waived" is what the
-/// type says rather than what its doc asks for: a layout the device refuses has
-/// nothing to trade against, and a row claiming otherwise cannot be written.
-#[derive(Clone, Copy)]
-enum Waived {
-    /// [`Diff::Unread`].
-    Unread,
-    /// [`Diff::Sampling`].
-    Sampling,
-}
-
-impl From<Waived> for Diff {
-    fn from(w: Waived) -> Self {
-        match w {
-            Waived::Unread => Self::Unread,
-            Waived::Sampling => Self::Sampling,
-        }
-    }
-}
-
-/// One difference that stands today, and why it is not a fault.
-///
-/// Flat, and its [`Where`] built rather than nested, so no row can pair a list with
-/// another row's declaration.
-struct Known {
-    resid: bool,
-    list: &'static str,
-    module: &'static str,
-    decl: &'static str,
-    diff: Waived,
-    why: &'static str,
-}
-
-impl Known {
-    fn at(&self) -> Where {
-        Where {
-            resid: self.resid,
-            list: self.list,
-            module: self.module,
-            decl: self.decl,
-            diff: self.diff.into(),
-        }
-    }
-}
-
-/// The differences that stand today, one row per colour space each stands in.
-///
-/// **Two rows where one difference stands in both spaces**, because the space is part
-/// of what is being declared: two of the three below hold in Oklab and Mixbox alike,
-/// and one is the pigment space's alone. None of them is fixed here — the lists are
-/// another commit's business, and a check that quietly edits what it measures is not a
-/// check.
-const KNOWN: &[Known] = &[
-    // All three are the lists being wrong rather than a layout being shared. Left as
-    // they are and recorded here, since fixing a list changes a layout and a bind
-    // group, which is a pixel-affecting change.
-    //
-    // The first two are unconditional declarations, so they stand in both spaces.
-    Known {
-        resid: false,
-        list: "dynamics::DEPOSIT",
-        module: "dynamics",
-        decl: "SAMP",
-        diff: Waived::Unread,
-        why: "the bilinear sampler is `exchange`'s and `bake`'s; the deposit reads its \
-              noise through `dyn_noise_samp` and everything else with `textureLoad`",
-    },
-    Known {
-        resid: true,
-        list: "dynamics::DEPOSIT",
-        module: "dynamics",
-        decl: "SAMP",
-        diff: Waived::Unread,
-        why: "the same, in the pigment space",
-    },
-    Known {
-        resid: false,
-        list: "dynamics::SETTLE",
-        module: "dynamics",
-        decl: "REGION_LEVELS",
-        diff: Waived::Unread,
-        why: "the list says the settle lays through `lay_parcel`, which reads the lane \
-              — it does not: the pen-up builds its parcel in `settle` itself and stores \
-              through `stack_and_store`",
-    },
-    Known {
-        resid: true,
-        list: "dynamics::SETTLE",
-        module: "dynamics",
-        decl: "REGION_LEVELS",
-        diff: Waived::Unread,
-        why: "the same, in the pigment space",
-    },
-    // And the last is `@if(resid)`, so it is in no list at all without the residual —
-    // the pigment space alone. The allow-list this replaced was keyed without the space
-    // and declared it at `resid: false`, where it never fired.
-    Known {
-        resid: true,
-        list: "dynamics::EXCHANGE",
-        module: "dynamics",
-        decl: "BRUSH_SRC_RESID",
-        diff: Waived::Sampling,
-        why: "listed `sampled` beside its `at` partners `BRUSH_SRC_COLOR`/`_AUX`, which \
-              `exchange` loads exactly as it loads the residual — the filterable flag \
-              is `bake`'s, where all three really are sampled",
-    },
-];
 
 /// What the shader says: every binding these entry points reach in the list's group,
 /// and whether any of them samples it.
@@ -393,21 +280,6 @@ fn table(r: Resid) -> Table {
     let li = stark_shaders::liquify(r);
     let sc = stark_shaders::slice();
 
-    // The sweep's three, shared by five pipelines and built `false` throughout: nothing
-    // `stamp_common` declares is `@if(resid)`.
-    let sweep = || {
-        vec![
-            group("XFORM_SLOTS", swept::XFORM_SLOTS, false),
-            group("PREFIX_SLOTS", swept::PREFIX_SLOTS, false),
-            group("NOISE_SLOTS", swept::NOISE_SLOTS, false),
-        ]
-    };
-    // The prefix tap the wet loop's kernels take at group 1, likewise — a second
-    // layout object over the one list, compute-visible where the sweep's is the
-    // fragment stage's.
-    let prefix = || group("PREFIX_SLOTS", swept::PREFIX_SLOTS, false);
-    let dyn_group = |name, slots| group(name, slots, resid);
-
     let mut all = vec![
         // The compositing passes' layouts are all derived, so none of the nine below
         // names a list — they stand here for the entry-point coverage check alone.
@@ -545,41 +417,37 @@ fn table(r: Resid) -> Table {
         Case {
             what: "sweep",
             entries: vec![plain.vs_main, plain.fs_main],
-            groups: numbered(sweep()),
+            groups: Vec::new(),
         },
         Case {
             what: "sweep ceiling",
             entries: vec![ceiling.vs_main, ceiling.fs_main],
-            groups: numbered(sweep()),
+            groups: Vec::new(),
         },
         Case {
             what: "sweep levels",
             entries: vec![plain.vs_main, plain.fs_levels],
-            groups: numbered(sweep()),
+            groups: Vec::new(),
         },
         Case {
             what: "erase sweep",
             entries: vec![plain.vs_main, plain.fs_erase],
-            groups: numbered(sweep()),
+            groups: Vec::new(),
         },
         Case {
             what: "erase sweep ceiling",
             entries: vec![ceiling.vs_main, ceiling.fs_erase],
-            groups: numbered(sweep()),
+            groups: Vec::new(),
         },
         Case {
             what: "integrate",
             entries: vec![ig.vs_main, ig.fs_main],
-            groups: numbered(vec![group(
-                "INTEGRATE_SLOTS",
-                swept::INTEGRATE_SLOTS,
-                resid,
-            )]),
+            groups: Vec::new(),
         },
         Case {
             what: "erase",
             entries: vec![er.vs_main, er.fs_main],
-            groups: numbered(vec![group("ERASE_SLOTS", erase::ERASE_SLOTS, resid)]),
+            groups: Vec::new(),
         },
         Case {
             what: "dynamics composite",
@@ -589,83 +457,62 @@ fn table(r: Resid) -> Table {
         Case {
             what: "dynamics snapshot",
             entries: vec![dy.snapshot],
-            groups: numbered(vec![dyn_group("dynamics::SNAPSHOT", dyn_slots::SNAPSHOT)]),
+            groups: Vec::new(),
         },
         Case {
             what: "dynamics bleed weight",
             entries: vec![dy.bleed_weight],
-            groups: numbered(vec![
-                dyn_group("dynamics::BLEED_WEIGHT", dyn_slots::BLEED_WEIGHT),
-                prefix(),
-            ]),
+            groups: Vec::new(),
         },
         Case {
             what: "dynamics exchange",
             entries: vec![dy.exchange],
-            groups: numbered(vec![dyn_group("dynamics::EXCHANGE", dyn_slots::EXCHANGE)]),
+            groups: Vec::new(),
         },
         Case {
             what: "dynamics bake",
             entries: vec![dy.bake],
-            groups: numbered(vec![dyn_group("dynamics::BAKE", dyn_slots::BAKE), prefix()]),
+            groups: Vec::new(),
         },
         Case {
             what: "dynamics deposit",
             entries: vec![dy.deposit],
-            groups: numbered(vec![
-                dyn_group("dynamics::DEPOSIT", dyn_slots::DEPOSIT),
-                prefix(),
-            ]),
+            groups: Vec::new(),
         },
         Case {
             what: "dynamics cell hoist",
             entries: vec![dy.cell_hoist],
-            groups: numbered(vec![
-                dyn_group("dynamics::HOIST", dyn_slots::HOIST),
-                prefix(),
-            ]),
+            groups: Vec::new(),
         },
         Case {
             what: "dynamics deposit coarse",
             entries: vec![dy.deposit_coarse],
-            groups: numbered(vec![dyn_group(
-                "dynamics::DEPOSIT_COARSE",
-                dyn_slots::DEPOSIT_COARSE,
-            )]),
+            groups: Vec::new(),
         },
         Case {
             what: "dynamics settle",
             entries: vec![dy.settle],
-            groups: numbered(vec![
-                dyn_group("dynamics::SETTLE", dyn_slots::SETTLE),
-                prefix(),
-            ]),
+            groups: Vec::new(),
         },
         Case {
             what: "liquify snapshot field",
             entries: vec![li.snapshot_field],
-            groups: numbered(vec![dyn_group(
-                "liquify::SNAPSHOT_FIELD",
-                dyn_slots::SNAPSHOT_FIELD,
-            )]),
+            groups: Vec::new(),
         },
         Case {
             what: "liquify warp",
             entries: vec![li.warp],
-            groups: numbered(vec![dyn_group("liquify::WARP", dyn_slots::WARP), prefix()]),
+            groups: Vec::new(),
         },
         Case {
             what: "liquify warp apply",
             entries: vec![li.warp_apply],
-            groups: numbered(vec![dyn_group(
-                "liquify::WARP_APPLY",
-                dyn_slots::WARP_APPLY,
-            )]),
+            groups: Vec::new(),
         },
         Case {
             what: "dynamics slice",
             entries: vec![sc.vs_main, sc.fs_main],
-            groups: numbered(vec![group("SLICE_SLOTS", kit::SLICE_SLOTS, false)]),
+            groups: Vec::new(),
         },
     ];
     // One line per accessor, from the very values the cases above are built out of —
@@ -885,38 +732,15 @@ fn found() -> BTreeSet<Where> {
     out
 }
 
-/// The hand-written slot lists differ from the shaders in **exactly** the declared
-/// places (§6.10).
-///
-/// An exact set rather than an allow-list, so the two ways of being wrong fail the
-/// same way: a difference nobody triaged, and a waiver that has stopped excusing
-/// anything. The second is how an allow-list turns into a place the next mistake
-/// hides — the day `blend_oklab` declares a LUT of its own, those two rows should
-/// fail rather than quietly cover something else.
-///
-/// The declared set is narrowed to the spaces this build links: a row for the pigment
-/// space is unexercised, not stale, in a build without it.
+/// No hand-written slot list disagrees with its shader (§6.10).
 ///
 /// Needs no device: the declarations are `const`s and the uses are generated.
 #[test]
-fn the_slot_lists_differ_from_the_shaders_exactly_where_declared() {
-    let found = found();
-    let here = |w: &Where| spaces().iter().any(|r| r.on() == w.resid);
-    let declared: BTreeSet<Where> = KNOWN.iter().map(Known::at).filter(here).collect();
-    let mut bad: Vec<String> = found
-        .difference(&declared)
-        .map(|w| format!("new:   {}", describe(w)))
-        .collect();
-    bad.extend(
-        KNOWN
-            .iter()
-            .filter(|k| here(&k.at()) && !found.contains(&k.at()))
-            .map(|k| format!("stale: {} — declared as {}", describe(&k.at()), k.why)),
-    );
+fn no_slot_list_differs_from_its_shader() {
+    let bad: Vec<String> = found().iter().map(describe).collect();
     assert!(
         bad.is_empty(),
-        "a `new` line is a list and a shader disagreeing where `KNOWN` does not say \
-         so; a `stale` one is a waiver excusing nothing:\n{}",
+        "a list and the shaders bound through it disagree:\n{}",
         bad.join("\n"),
     );
 }
