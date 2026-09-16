@@ -793,3 +793,118 @@ fn a_heavy_hard_strokes_visible_edge_spans_a_px() {
          has gone soft beyond the pixel footprint"
     );
 }
+
+// --- the f16 scratch against the number of segments (§6.2) -------------------
+
+/// Total height and the per-column profile of the middle half of a straight **swept**
+/// run along `y = 0` spanning ±`half`, folded whole.
+///
+/// `step = None` delivers the two endpoints at the brush's own budget — a segment
+/// about a radius long; `Some(s)` reports the pen every `s` px at the finest fit
+/// tolerance, which cuts a segment about every px.
+fn swept_cut(b: BrushParams, half: f32, step: Option<f32>) -> Option<(f64, Vec<f64>)> {
+    use stark_engine::path::MIN_TOLERANCE;
+    use stark_model::document::LayerId;
+
+    let mut engine = engine_or_skip()?;
+    let (samples, tolerance): (Vec<Vec2>, f32) = match step {
+        Some(s) => {
+            let n = (2.0 * half / s) as usize;
+            let at = |i: usize| Vec2::new(-half + i as f32 * s, 0.0);
+            ((0..=n).map(at).collect(), MIN_TOLERANCE)
+        }
+        None => (
+            vec![Vec2::new(-half, 0.0), Vec2::new(half, 0.0)],
+            DEFAULT_TOLERANCE,
+        ),
+    };
+    engine.process(ViewCommand::set_brush(b));
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(samples[0]),
+        tolerance,
+        rope: 0.0,
+    });
+    for &p in &samples[1..] {
+        engine.process(GestureCommand::To {
+            sample: InputSample::at(p),
+        });
+    }
+    engine.process(GestureCommand::End);
+    // Folded whole, so the live preview's own head/tail cut is not what is measured.
+    engine.process(DocCommand::Undo);
+    engine.process(DocCommand::Redo);
+    let band = (half / 2.0) as i32;
+    Some((
+        total_height(&engine, LayerId::ROOT),
+        column_height(&engine, LayerId::ROOT, -band..band),
+    ))
+}
+
+/// **How far a swept stroke's weight may move with the number of segments** (§6.2).
+///
+/// The deposit is additive in τ, so the *same* run cut finely and coarsely must lay the
+/// same height. It does not, quite: the swept path accumulates into `Rgba16Float`
+/// scratch (`SCRATCH_AUX_FORMAT`), and an increment below half an ULP of the running
+/// total rounds away — so a finer cut lays *less*, and by more the wider the tip, since
+/// each segment's share of a texel's total is about `seg/2r`.
+///
+/// A known limitation, pinned rather than fixed. Measured deficits of the fine cut
+/// against the coarse one, total and worst mid-band column:
+///
+/// | radius | total | column |
+/// |---|---|---|
+/// | 40 | −0.06% | +0.04% |
+/// | 200 | −0.11% | −0.18% |
+/// | 500 | −0.62% | −0.94% |
+/// | 1000 | −3.88% | −5.37% |
+///
+/// The bounds below are those at 500 and 40 with room to spare. A regression that took
+/// the scratch narrower, or dropped the resolve that keeps the increments comparable,
+/// shows up here as the 1000-radius column figure at 500.
+#[test]
+fn a_swept_strokes_weight_holds_across_the_cut_to_the_f16_bound() {
+    // Radius, and what its cut may move the weight by. Wide is where the limitation
+    // lives; 40 px is an ordinary tip, where it is not measurable.
+    const CASES: [(f32, f64); 2] = [(500.0, 0.015), (40.0, 0.0025)];
+
+    for (radius, bound) in CASES {
+        let mut b = brush(RED, radius);
+        // Off, so nothing but the segment count varies along the run: `drain` runs the
+        // tip dry, which is a real taper the two cuts would integrate differently.
+        b.drain = 0.0;
+        let half = 2.0 * radius;
+        let Some((coarse, cols)) = swept_cut(b, half, None) else {
+            return;
+        };
+        assert!(
+            coarse > 0.0 && cols.iter().all(|c| *c > 0.0),
+            "radius {radius}: the coarse run left the mid-band bare, so there is \
+             nothing to compare a finer cut against"
+        );
+        // Two fine deliveries: the fit's own ~1 px cut, and the 0.39 px knots the
+        // limitation was quoted at. They do not agree with each other — where the knots
+        // fall decides which increments vanish — so the bound has to cover both.
+        for step in [1.0, 0.39] {
+            let (fine, fine_cols) = swept_cut(b, half, Some(step)).expect("the adapter answered");
+            let drift = (fine - coarse) / coarse;
+            let (col, worst) = cols
+                .iter()
+                .zip(&fine_cols)
+                .map(|(c, f)| (f - c) / c)
+                .enumerate()
+                .max_by(|a, b| a.1.abs().total_cmp(&b.1.abs()))
+                .expect("the band has columns");
+            assert!(
+                drift.abs() <= bound && worst.abs() <= bound,
+                "at radius {radius}, a run cut every {step} px laid {fine:.1} of height \
+                 where the coarse cut laid {coarse:.1} ({:+.3}%, worst column {col} \
+                 {:+.3}%, bound ±{:.2}%) — the f16 scratch is dropping more of each \
+                 segment's increment than it did",
+                drift * 100.0,
+                worst * 100.0,
+                bound * 100.0,
+            );
+        }
+    }
+}
