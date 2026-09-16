@@ -130,10 +130,7 @@ impl GuidePass {
         bgl: &Bindings,
     ) -> Self {
         let guides = stark_shaders::guides();
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stark guides"),
-            source: wgpu::ShaderSource::Wgsl(guides.wgsl.into()),
-        });
+        let shader = desc::Module::new(device, "stark guides", guides);
         let layout = desc::pipeline_layout(device, "stark guides layout", &[Some(bgl.layout())]);
         let pipeline = desc::fullscreen_pipeline(
             device,

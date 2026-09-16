@@ -92,6 +92,28 @@ struct Where {
     diff: Diff,
 }
 
+/// The differences a waiver may name — [`Diff`] without [`Diff::Omitted`].
+///
+/// [`Known`] takes one of these rather than a `Diff`, so "never waived" is what the
+/// type says rather than what its doc asks for: a layout the device refuses has
+/// nothing to trade against, and a row claiming otherwise cannot be written.
+#[derive(Clone, Copy)]
+enum Waived {
+    /// [`Diff::Unread`].
+    Unread,
+    /// [`Diff::Sampling`].
+    Sampling,
+}
+
+impl From<Waived> for Diff {
+    fn from(w: Waived) -> Self {
+        match w {
+            Waived::Unread => Self::Unread,
+            Waived::Sampling => Self::Sampling,
+        }
+    }
+}
+
 /// One difference that stands today, and why it is not a fault.
 ///
 /// Flat, and its [`Where`] built rather than nested, so no row can pair a list with
@@ -101,18 +123,18 @@ struct Known {
     list: &'static str,
     module: &'static str,
     decl: &'static str,
-    diff: Diff,
+    diff: Waived,
     why: &'static str,
 }
 
 impl Known {
-    const fn at(&self) -> Where {
+    fn at(&self) -> Where {
         Where {
             resid: self.resid,
             list: self.list,
             module: self.module,
             decl: self.decl,
-            diff: self.diff,
+            diff: self.diff.into(),
         }
     }
 }
@@ -135,7 +157,7 @@ const KNOWN: &[Known] = &[
         list: "dynamics::DEPOSIT",
         module: "dynamics",
         decl: "SAMP",
-        diff: Diff::Unread,
+        diff: Waived::Unread,
         why: "the bilinear sampler is `exchange`'s and `bake`'s; the deposit reads its \
               noise through `dyn_noise_samp` and everything else with `textureLoad`",
     },
@@ -144,7 +166,7 @@ const KNOWN: &[Known] = &[
         list: "dynamics::DEPOSIT",
         module: "dynamics",
         decl: "SAMP",
-        diff: Diff::Unread,
+        diff: Waived::Unread,
         why: "the same, in the pigment space",
     },
     Known {
@@ -152,7 +174,7 @@ const KNOWN: &[Known] = &[
         list: "dynamics::SETTLE",
         module: "dynamics",
         decl: "REGION_LEVELS",
-        diff: Diff::Unread,
+        diff: Waived::Unread,
         why: "the list says the settle lays through `lay_parcel`, which reads the lane \
               — it does not: the pen-up builds its parcel in `settle` itself and stores \
               through `stack_and_store`",
@@ -162,7 +184,7 @@ const KNOWN: &[Known] = &[
         list: "dynamics::SETTLE",
         module: "dynamics",
         decl: "REGION_LEVELS",
-        diff: Diff::Unread,
+        diff: Waived::Unread,
         why: "the same, in the pigment space",
     },
     // And the last is `@if(resid)`, so it is in no list at all without the residual —
@@ -173,7 +195,7 @@ const KNOWN: &[Known] = &[
         list: "dynamics::EXCHANGE",
         module: "dynamics",
         decl: "BRUSH_SRC_RESID",
-        diff: Diff::Sampling,
+        diff: Waived::Sampling,
         why: "listed `sampled` beside its `at` partners `BRUSH_SRC_COLOR`/`_AUX`, which \
               `exchange` loads exactly as it loads the residual — the filterable flag \
               is `bake`'s, where all three really are sampled",
@@ -656,11 +678,16 @@ fn table(r: Resid) -> Table {
             what: "mask_region",
             entries: mr.entries,
         },
-        // The plain build alone: the generator checks that every variant of a shader
-        // declares the same entry points, so the ceiling build adds no name.
+        // Both builds of the sweep. Not "the plain build alone, since the variants
+        // declare the same names": a name is not what is checked here, a *value* is,
+        // and the two builds' `fs_main` differ in the targets they write.
         Record {
             what: "stamp",
             entries: plain.entries,
+        },
+        Record {
+            what: "stamp ceiling",
+            entries: ceiling.entries,
         },
         Record {
             what: "integrate",
@@ -852,14 +879,66 @@ fn the_slot_lists_differ_from_the_shaders_exactly_where_declared() {
     );
 }
 
-/// Every entry point the shaders declare is built into some pipeline.
+/// One entry point an artifact declares that no pipeline here names, and why.
+///
+/// Keyed like [`Known`], on the colour space too: an artifact only one space links
+/// carries its dead entry point only there.
+struct Unbuilt {
+    resid: bool,
+    /// The record, as [`table`] names it.
+    what: &'static str,
+    entry: &'static str,
+    why: &'static str,
+}
+
+impl Unbuilt {
+    fn at(&self) -> (bool, &'static str, &'static str) {
+        (self.resid, self.what, self.entry)
+    }
+}
+
+/// The entry points compiled into an artifact and built into nothing.
+///
+/// The sweep is linked along the ceiling axis as well as the residual, and `fs_levels`
+/// is not `@if(ceiling)`-gated — it writes the lane and nothing else, so the same
+/// function is right in both builds and the gate would say nothing. The stamp loop's
+/// per-segment draw of the lane runs the **plain** module's (`swept::build_swept_kit`),
+/// so the ceiling build translates a second copy that no pipeline names.
+///
+/// Costs a translation per ceiling variant and nothing else; gating it in the WESL
+/// would retire these rows, which is what makes them worth stating.
+const UNBUILT: &[Unbuilt] = &[
+    Unbuilt {
+        resid: false,
+        what: "stamp ceiling",
+        entry: "fs_levels",
+        why: "not `@if(ceiling)`-gated, and the levels pipeline runs the plain build's",
+    },
+    Unbuilt {
+        resid: true,
+        what: "stamp ceiling",
+        entry: "fs_levels",
+        why: "the same, in the pigment space",
+    },
+];
+
+/// Every entry point the shaders declare is built into some pipeline, **except** the
+/// declared few.
 ///
 /// The class-level form of "the table covers every pipeline": a record's `entries` is
 /// the shaders' own answer about what it declares, so an entry point no [`Case`] names
 /// is one the engine compiles and never runs — and nothing else would say so.
+///
+/// An exact set against [`UNBUILT`], for [`KNOWN`]'s reason: a row that stops excusing
+/// anything fails as loudly as an entry point nobody triaged.
+///
+/// Every *build* of a shader is a record here, not one per shader. The comparison is
+/// over `EntryPoint` values and a variant's differ — the sweep's `fs_main` writes
+/// `[0, 1]` plain and `[0, 1, 3]` with the ceiling lane — so "the variants declare the
+/// same names" would have been an answer to a question nobody asked.
 #[test]
 fn every_entry_point_declared_is_built_into_some_pipeline() {
-    let mut missing: Vec<String> = Vec::new();
+    let mut found: BTreeSet<(bool, &'static str, &'static str)> = BTreeSet::new();
     for r in spaces() {
         let table = table(r);
         let bound: Vec<EntryPoint> = table
@@ -870,20 +949,34 @@ fn every_entry_point_declared_is_built_into_some_pipeline() {
         for record in &table.records {
             for ep in record.entries {
                 if !bound.contains(ep) {
-                    missing.push(format!(
-                        "resid={}: `{}`'s `{}`",
-                        r.on(),
-                        record.what,
-                        ep.name,
-                    ));
+                    found.insert((r.on(), record.what, ep.name));
                 }
             }
         }
     }
+    let here = |resid: bool| spaces().iter().any(|r| r.on() == resid);
+    let declared: BTreeSet<_> = UNBUILT
+        .iter()
+        .map(Unbuilt::at)
+        .filter(|(resid, ..)| here(*resid))
+        .collect();
+    let say =
+        |(resid, what, entry): &(bool, &str, &str)| format!("resid={resid}: `{what}`'s `{entry}`");
+    let mut bad: Vec<String> = found
+        .difference(&declared)
+        .map(|w| format!("new:   {}", say(w)))
+        .collect();
+    bad.extend(
+        UNBUILT
+            .iter()
+            .filter(|u| here(u.resid) && !found.contains(&u.at()))
+            .map(|u| format!("stale: {} — declared as {}", say(&u.at()), u.why)),
+    );
     assert!(
-        missing.is_empty(),
-        "these entry points are declared and built into no pipeline here — either the \
-         engine never runs them, or this table stopped following it:\n{}",
-        missing.join("\n"),
+        bad.is_empty(),
+        "a `new` line is an entry point this build compiles and no pipeline names — \
+         either the engine never runs it, or this table stopped following it; a \
+         `stale` one is a row excusing nothing:\n{}",
+        bad.join("\n"),
     );
 }

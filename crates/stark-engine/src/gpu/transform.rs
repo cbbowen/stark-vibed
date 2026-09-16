@@ -464,10 +464,7 @@ impl TransformRenderer {
         let resid = formats.has_resid();
 
         let xf = stark_shaders::transform(color_space.resid());
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stark transform"),
-            source: wgpu::ShaderSource::Wgsl(xf.wgsl.into()),
-        });
+        let shader = desc::Module::new(device, "stark transform", xf);
 
         let frag = wgpu::ShaderStages::FRAGMENT;
         let bindings = |label: &str, slots: &'static [Slot]| {

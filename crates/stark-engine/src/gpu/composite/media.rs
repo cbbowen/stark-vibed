@@ -101,10 +101,7 @@ impl MediaPass {
         target: &[Option<wgpu::ColorTargetState>],
     ) -> Self {
         let media = color_space.media_shader();
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stark media"),
-            source: wgpu::ShaderSource::Wgsl(media.wgsl.into()),
-        });
+        let shader = desc::Module::new(device, "stark media", &media);
         let layout = desc::pipeline_layout(device, "stark media layout", &[Some(bgl.layout())]);
         let pipeline = desc::fullscreen_pipeline(
             device,

@@ -56,10 +56,7 @@ impl TilePass {
     ) -> Self {
         let composite = stark_shaders::composite(color_space.resid());
         let matte = stark_shaders::matte(color_space.resid());
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stark composite"),
-            source: wgpu::ShaderSource::Wgsl(composite.wgsl.into()),
-        });
+        let shader = desc::Module::new(device, "stark composite", composite);
 
         // Both pipelines below bind this, so both shaders' stages are folded in.
         // `view.wesl`'s uniform comes out vertex-only — the fragment stage gets canvas
@@ -112,10 +109,7 @@ impl TilePass {
         );
 
         // ---- Matte layers, inside pass A (§15.4), on pass A's own view group.
-        let matte_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stark matte"),
-            source: wgpu::ShaderSource::Wgsl(matte.wgsl.into()),
-        });
+        let matte_shader = desc::Module::new(device, "stark matte", matte);
         // The ramp is per matte where the view is per pass (§22.4), so it is bound at a
         // dynamic offset — the one thing `var<uniform> ramp` does not say.
         let ramp_bgl = Bindings::of(

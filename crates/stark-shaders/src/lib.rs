@@ -37,6 +37,17 @@ pub use layout::{Reach, layout_entries, reached};
 pub struct EntryPoint {
     /// The function's name — what `wgpu` is handed as `entry_point`.
     pub name: &'static str,
+    /// The deposited artifact that declares it.
+    ///
+    /// A pipeline is a module plus entry points, and nothing in `wgpu` ties the two:
+    /// the plain stamp module built with the *ceiling* record's entry points would
+    /// attach location 3 and never write it — different pixels, no error. This is what
+    /// [`Artifact`] is checked against.
+    ///
+    /// It is also what tells two variants' entry points apart where every other field
+    /// agrees: `fs_levels` is not `@if(ceiling)`-gated, so the plain and ceiling builds
+    /// declare the same one, and only the artifact says which is which.
+    pub artifact: &'static str,
     /// Exactly one stage. A [`ShaderStages`](wgpu::ShaderStages) rather than a
     /// one-of-three enum because that is what a bind group layout's `visibility` wants,
     /// and combining two entry points' is then `|`.
@@ -61,15 +72,35 @@ impl EntryPoint {
     /// declaration is right here, so the division goes through it (§6.10).
     ///
     /// # Panics
-    /// On anything but a compute entry point, which declares `[0, 0, 0]`.
+    /// On anything but a compute entry point, which declares `[0, 0, 0]`, and on a
+    /// kernel whose `@workgroup_size` has a third dimension: a 2-D extent is not the
+    /// question such a kernel is asking, and covering `z` with one group would run its
+    /// depth once over.
     pub const fn groups(&self, extent: (u32, u32)) -> (u32, u32, u32) {
-        let [x, y, _] = self.workgroup_size;
+        let [x, y, z] = self.workgroup_size;
         assert!(
             x > 0 && y > 0,
             "`groups` asked of an entry point that declares no workgroup size",
         );
+        assert!(
+            z == 1,
+            "`groups` covers a 2-D extent, and this kernel's `@workgroup_size` is 3-D",
+        );
         (extent.0.div_ceil(x), extent.1.div_ceil(y), 1)
     }
+}
+
+/// One **linked artifact**: its WGSL and the name it was deposited under.
+///
+/// Every generated record implements it, and it is the one argument
+/// `desc::Module` takes — so a shader module and the entry points a pipeline builds
+/// over it come from one value rather than two arguments a call site could mix.
+pub trait Artifact {
+    /// The linked WGSL, for [`wgpu::ShaderSource::Wgsl`].
+    fn wgsl(&self) -> &'static str;
+    /// The deposited artifact's name — [`EntryPoint::artifact`] for every entry point
+    /// of it.
+    fn name(&self) -> &'static str;
 }
 
 /// One binding an entry point reaches, and how.

@@ -79,10 +79,7 @@ impl BlurPass {
     pub(crate) fn new(ctx: &GpuContext) -> Self {
         let device = &ctx.device;
         let blur = stark_shaders::blur();
-        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stark blur"),
-            source: wgpu::ShaderSource::Wgsl(blur.wgsl.into()),
-        });
+        let module = desc::Module::new(device, "stark blur", blur);
         // One layout for all four kernels (§21.12), a union because no group ever binds
         // one plane both as a read texture and as a storage destination — `build_binds`
         // is what arranges that, wgpu taking the whole group into a dispatch's usage

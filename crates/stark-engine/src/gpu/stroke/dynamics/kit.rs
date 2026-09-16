@@ -140,10 +140,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // ---- Region composite: the `composite` shader over region-sized targets
     // (color + the wide aux, so nothing is narrowed until the write-back).
     let composite = stark_shaders::composite(color_space.resid());
-    let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("stark dynamics composite"),
-        source: wgpu::ShaderSource::Wgsl(composite.wgsl.into()),
-    });
+    let composite_shader = desc::Module::new(device, "stark dynamics composite", composite);
     // Pass A's own tile layout, because the group this loop binds per tile is the one
     // the tile itself caches (`composite::tile_bind_group_layout`). The view group has
     // no such cache, so it is built here off the two stages this loop runs — which
@@ -209,15 +206,9 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // declaration from `dynamics_common.wesl`, so a pipeline's layout names the same
     // uniform whichever module it came from.
     let dynamics = stark_shaders::dynamics(color_space.resid());
-    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("stark dynamics loop"),
-        source: wgpu::ShaderSource::Wgsl(dynamics.wgsl.into()),
-    });
+    let module = desc::Module::new(device, "stark dynamics loop", dynamics);
     let liquify = stark_shaders::liquify(color_space.resid());
-    let liquify_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("stark liquify field"),
-        source: wgpu::ShaderSource::Wgsl(liquify.wgsl.into()),
-    });
+    let liquify_module = desc::Module::new(device, "stark liquify field", liquify);
     // Every layout below is compute-visible and opens with the dynamic-offset stamp
     // slot; the binding numbers partition the module's group(0), so a layout lists only
     // the bindings its own entry point reads.
@@ -248,17 +239,15 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         wgpu::ShaderStages::COMPUTE,
         false,
     );
-    let pipe_in = |module: &wgpu::ShaderModule,
-                   label: &str,
-                   entry,
-                   bgls: &[Option<&wgpu::BindGroupLayout>]| {
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some(label),
-            bind_group_layouts: bgls,
-            immediate_size: 0,
-        });
-        desc::compute_pipeline(device, label, &layout, module, entry)
-    };
+    let pipe_in =
+        |module: &desc::Module, label: &str, entry, bgls: &[Option<&wgpu::BindGroupLayout>]| {
+            let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(label),
+                bind_group_layouts: bgls,
+                immediate_size: 0,
+            });
+            desc::compute_pipeline(device, label, &layout, module, entry)
+        };
     let cpipe = |label: &str, entry, bgls: &[Option<&wgpu::BindGroupLayout>]| {
         pipe_in(&module, label, entry, bgls)
     };
@@ -348,10 +337,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // so this draws once over the whole region rather than once per tile, and needs
     // neither a per-tile uniform nor a residual variant.
     let slice = stark_shaders::slice();
-    let slice_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("stark dynamics slice"),
-        source: wgpu::ShaderSource::Wgsl(slice.wgsl.into()),
-    });
+    let slice_shader = desc::Module::new(device, "stark dynamics slice", slice);
     let slice_bgl = desc::layout_for(device, "stark dynamics slice bgl", SLICE_SLOTS, frag, false);
     let slice_layout =
         desc::pipeline_layout(device, "stark dynamics slice layout", &[Some(&slice_bgl)]);

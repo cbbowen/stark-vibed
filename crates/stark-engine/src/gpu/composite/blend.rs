@@ -63,10 +63,7 @@ impl BlendPass {
     pub(crate) fn new(ctx: &GpuContext, color_space: &dyn ColorSpace) -> Self {
         let device = &ctx.device;
         let blend = color_space.blend_shader();
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stark blend"),
-            source: wgpu::ShaderSource::Wgsl(blend.wgsl.into()),
-        });
+        let shader = desc::Module::new(device, "stark blend", &blend);
         // Three modules share this group — `blend_common.wesl`, `mixbox_lut.wesl` and
         // `blend_mixbox.wesl` — and which of them the space links is what decides the
         // layout's length (§6.7). Every texture here is `textureLoad`ed at the

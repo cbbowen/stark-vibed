@@ -149,10 +149,7 @@ impl SelectionRenderer {
         let device = &ctx.device;
 
         let selection = stark_shaders::selection();
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stark selection"),
-            source: wgpu::ShaderSource::Wgsl(selection.wgsl.into()),
-        });
+        let shader = desc::Module::new(device, "stark selection", selection);
         let frag = wgpu::ShaderStages::FRAGMENT;
         // The mask targets take no blend: the shader does the combine and writes
         // straight through.
@@ -175,10 +172,7 @@ impl SelectionRenderer {
 
         // ---- Region gather (for the brush-dynamics stamp loop, §6.2).
         let region = stark_shaders::mask_region();
-        let region_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stark selection region"),
-            source: wgpu::ShaderSource::Wgsl(region.wgsl.into()),
-        });
+        let region_shader = desc::Module::new(device, "stark selection region", region);
         let region_view_bindings = desc::Bindings::new(
             device,
             "stark selection region view bgl",

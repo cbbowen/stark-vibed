@@ -73,10 +73,7 @@ impl FilterPass {
         let device = &ctx.device;
         let formats = crate::gpu::channels::ChannelFormats::of(color_space);
         let filter = color_space.filter_shader();
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stark filter"),
-            source: wgpu::ShaderSource::Wgsl(filter.wgsl.into()),
-        });
+        let shader = desc::Module::new(device, "stark filter", &filter);
         // One layout for all three fragment entry points below, so the accumulator's
         // textures come out **filterable**: the chromatic gather (§21.10) reads them
         // through `back_samp` at fractional positions where the point filters

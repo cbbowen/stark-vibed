@@ -102,10 +102,7 @@ impl FillRenderer {
         let formats = ChannelFormats::of(color_space.as_ref());
 
         let fill = stark_shaders::fill(color_space.resid());
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stark fill"),
-            source: wgpu::ShaderSource::Wgsl(fill.wgsl.into()),
-        });
+        let shader = desc::Module::new(device, "stark fill", fill);
         let frag = wgpu::ShaderStages::FRAGMENT;
         let bindings = desc::Bindings::new(
             device,

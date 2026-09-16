@@ -190,8 +190,20 @@ pub trait ColorSpace {
 #[derive(Clone, Copy)]
 pub struct SpaceShader {
     pub wgsl: &'static str,
+    /// The record's own, so a module compiled here answers to the entry points beside
+    /// it (`desc::Module`).
+    pub artifact: &'static str,
     pub vs_main: stark_shaders::EntryPoint,
     pub fs_main: stark_shaders::EntryPoint,
+}
+
+impl stark_shaders::Artifact for SpaceShader {
+    fn wgsl(&self) -> &'static str {
+        self.wgsl
+    }
+    fn name(&self) -> &'static str {
+        self.artifact
+    }
 }
 
 /// [`SpaceShader`] for the filter pass, whose three fragment entry points share one
@@ -199,10 +211,21 @@ pub struct SpaceShader {
 #[derive(Clone, Copy)]
 pub struct FilterShader {
     pub wgsl: &'static str,
+    /// See [`SpaceShader::artifact`].
+    pub artifact: &'static str,
     pub vs_main: stark_shaders::EntryPoint,
     pub fs_main: stark_shaders::EntryPoint,
     pub fs_tile: stark_shaders::EntryPoint,
     pub fs_blur_decode: stark_shaders::EntryPoint,
+}
+
+impl stark_shaders::Artifact for FilterShader {
+    fn wgsl(&self) -> &'static str {
+        self.wgsl
+    }
+    fn name(&self) -> &'static str {
+        self.artifact
+    }
 }
 
 /// Premultiplied "over" — the standard alpha compositing blend.
@@ -256,12 +279,13 @@ impl ColorSpace for OkLabColorSpace {
     }
 
     fn stamp_shader(&self, lane: Lane) -> &'static stark_shaders::Stamp {
-        stark_shaders::stamp(Resid::Without, lane)
+        stark_shaders::stamp(self.resid(), lane)
     }
     fn media_shader(&self) -> SpaceShader {
         let s = stark_shaders::media_oklab();
         SpaceShader {
             wgsl: s.wgsl,
+            artifact: s.artifact,
             vs_main: s.vs_main,
             fs_main: s.fs_main,
         }
@@ -270,6 +294,7 @@ impl ColorSpace for OkLabColorSpace {
         let s = stark_shaders::blend_oklab();
         SpaceShader {
             wgsl: s.wgsl,
+            artifact: s.artifact,
             vs_main: s.vs_main,
             fs_main: s.fs_main,
         }
@@ -278,6 +303,7 @@ impl ColorSpace for OkLabColorSpace {
         let s = stark_shaders::filter_oklab();
         FilterShader {
             wgsl: s.wgsl,
+            artifact: s.artifact,
             vs_main: s.vs_main,
             fs_main: s.fs_main,
             fs_tile: s.fs_tile,
@@ -358,12 +384,13 @@ impl ColorSpace for MixboxColorSpace {
     fn stamp_shader(&self, lane: Lane) -> &'static stark_shaders::Stamp {
         // Deposit is premultiplied-over of the channels — the same law as Oklab's,
         // run over one more target.
-        stark_shaders::stamp(Resid::With, lane)
+        stark_shaders::stamp(self.resid(), lane)
     }
     fn media_shader(&self) -> SpaceShader {
         let s = stark_shaders::media_mixbox();
         SpaceShader {
             wgsl: s.wgsl,
+            artifact: s.artifact,
             vs_main: s.vs_main,
             fs_main: s.fs_main,
         }
@@ -372,6 +399,7 @@ impl ColorSpace for MixboxColorSpace {
         let s = stark_shaders::blend_mixbox();
         SpaceShader {
             wgsl: s.wgsl,
+            artifact: s.artifact,
             vs_main: s.vs_main,
             fs_main: s.fs_main,
         }
@@ -380,6 +408,7 @@ impl ColorSpace for MixboxColorSpace {
         let s = stark_shaders::filter_mixbox();
         FilterShader {
             wgsl: s.wgsl,
+            artifact: s.artifact,
             vs_main: s.vs_main,
             fs_main: s.fs_main,
             fs_tile: s.fs_tile,

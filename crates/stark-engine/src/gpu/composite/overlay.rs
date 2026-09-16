@@ -78,10 +78,7 @@ impl OverlayPass {
         layouts: &OverlayLayouts,
     ) -> Self {
         let overlay = stark_shaders::overlay();
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stark selection overlay"),
-            source: wgpu::ShaderSource::Wgsl(overlay.wgsl.into()),
-        });
+        let shader = desc::Module::new(device, "stark selection overlay", overlay);
         let layout = desc::pipeline_layout(
             device,
             "stark overlay layout",

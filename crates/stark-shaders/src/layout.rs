@@ -232,6 +232,24 @@ mod tests {
         assert!(has_resid(Resid::With), "a pigment space");
     }
 
+    /// Every entry point of a record names that record, which is what lets a host
+    /// refuse a module built from one shader under another's entry points.
+    #[test]
+    fn an_entry_point_names_the_artifact_that_declares_it() {
+        let c = composite(Resid::Without);
+        for ep in c.entries {
+            assert_eq!(ep.artifact, "composite", "`{}`", ep.name);
+        }
+        // The pair the sweep's two builds would confuse, were the name not carried:
+        // `fs_levels` is not `@if(ceiling)`-gated, so every other field agrees.
+        let (plain, lane) = (
+            crate::stamp(Resid::Without, crate::Lane::Plain).fs_levels,
+            crate::stamp(Resid::Without, crate::Lane::Ceiling).fs_levels,
+        );
+        assert_ne!(plain, lane, "the two builds' `fs_levels` are one value");
+        assert_eq!((plain.name, lane.name), ("fs_levels", "fs_levels"));
+    }
+
     /// An anchor naming a group nothing here reaches is a mistake in the call, not an
     /// empty layout.
     #[test]

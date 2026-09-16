@@ -188,7 +188,7 @@ fn record(entry: &Entry<'_>, reflections: &Reflections) -> TokenStream {
         // of either name would be one field declared twice, several hundred generated
         // lines from the `.wesl` that named it.
         assert!(
-            !["wgsl", "entries"].contains(&ep.name.as_str()),
+            !["wgsl", "entries", "artifact"].contains(&ep.name.as_str()),
             "`{module}.wesl`'s `{}` would take a field its record already has.",
             ep.name,
         );
@@ -205,10 +205,22 @@ fn record(entry: &Entry<'_>, reflections: &Reflections) -> TokenStream {
         pub struct #ident {
             /// The linked WGSL, for `wgpu::ShaderSource::Wgsl`.
             pub wgsl: &'static str,
+            /// The deposited artifact this is, which every [`EntryPoint`] below names
+            /// too — so a host that compiles a module from one record cannot build a
+            /// pipeline over another's entry points.
+            pub artifact: &'static str,
             /// Every entry point below, in one slice — for a consumer asking about the
             /// *set* rather than naming a field.
             pub entries: &'static [EntryPoint],
             #(#fields)*
+        }
+        impl crate::Artifact for #ident {
+            fn wgsl(&self) -> &'static str {
+                self.wgsl
+            }
+            fn name(&self) -> &'static str {
+                self.artifact
+            }
         }
     }
 }
@@ -251,7 +263,7 @@ fn at<'a>(reflections: &'a Reflections, artifact: &str) -> &'a [Reflected] {
 }
 
 /// One entry point's value.
-fn entry_point_value(ep: &Reflected) -> TokenStream {
+fn entry_point_value(artifact: &str, ep: &Reflected) -> TokenStream {
     let name = ep.name.as_str();
     let stage = stage_path(ep.stage);
     let [x, y, z] = ep.workgroup_size.map(proc_macro2::Literal::u32_unsuffixed);
@@ -269,6 +281,7 @@ fn entry_point_value(ep: &Reflected) -> TokenStream {
     quote! {
         EntryPoint {
             name: #name,
+            artifact: #artifact,
             stage: #stage,
             workgroup_size: [#x, #y, #z],
             targets: &[#(#targets),*],
@@ -287,7 +300,7 @@ fn record_value(ident: &proc_macro2::Ident, artifact: &str, eps: &[Reflected]) -
         .map(|ep| format_ident!("{}", ep.name.to_uppercase()))
         .collect();
     let consts = eps.iter().zip(&bound).map(|(ep, name)| {
-        let value = entry_point_value(ep);
+        let value = entry_point_value(artifact, ep);
         quote!(const #name: EntryPoint = #value;)
     });
     let fields = eps.iter().zip(&bound).map(|(ep, name)| {
@@ -299,6 +312,7 @@ fn record_value(ident: &proc_macro2::Ident, artifact: &str, eps: &[Reflected]) -
             #(#consts)*
             #ident {
                 wgsl: include_wesl!(#artifact),
+                artifact: #artifact,
                 entries: &[#(#bound),*],
                 #(#fields)*
             }
@@ -575,6 +589,7 @@ mod tests {
              \x20   static IT: Guides = {\n\
              \x20       const FS_MAIN: EntryPoint = EntryPoint {\n\
              \x20           name: \"fs_main\",\n\
+             \x20           artifact: \"guides\",\n\
              \x20           stage: wgpu::ShaderStages::FRAGMENT,\n\
              \x20           workgroup_size: [0, 0, 0],\n\
              \x20           targets: &[0],\n\
@@ -582,6 +597,7 @@ mod tests {
              \x20       };\n\
              \x20       Guides {\n\
              \x20           wgsl: include_wesl!(\"guides\"),\n\
+             \x20           artifact: \"guides\",\n\
              \x20           entries: &[FS_MAIN],\n\
              \x20           fs_main: FS_MAIN,\n\
              \x20       }\n\
@@ -611,6 +627,10 @@ mod tests {
             "pub struct MaskRegion {\n\
              \x20   /// The linked WGSL, for `wgpu::ShaderSource::Wgsl`.\n\
              \x20   pub wgsl: &'static str,\n\
+             \x20   /// The deposited artifact this is, which every [`EntryPoint`] below names\n\
+             \x20   /// too \u{2014} so a host that compiles a module from one record cannot build a\n\
+             \x20   /// pipeline over another's entry points.\n\
+             \x20   pub artifact: &'static str,\n\
              \x20   /// Every entry point below, in one slice \u{2014} for a consumer asking about the\n\
              \x20   /// *set* rather than naming a field.\n\
              \x20   pub entries: &'static [EntryPoint],\n\
@@ -619,6 +639,8 @@ mod tests {
              \x20   /// `@vertex fn vs_main`.\n\
              \x20   pub vs_main: EntryPoint,\n}\n",
         );
+        // Every record is an `Artifact`, which is what `desc::Module` takes.
+        assert!(out.contains("impl crate::Artifact for MaskRegion"), "{out}");
         // The declaration is named through the generated mirror, module and all.
         assert!(
             out.contains("decl: crate::mirror::mask_region::decl::MASK"),

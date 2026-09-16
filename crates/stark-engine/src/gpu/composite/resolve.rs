@@ -160,10 +160,7 @@ impl ResolvePass {
         // A fullscreen pass reading the supersampled target with `textureLoad` at an
         // integer block of its own choosing, so nothing here needs a sampler.
         let resolve = stark_shaders::resolve();
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stark resolve"),
-            source: wgpu::ShaderSource::Wgsl(resolve.wgsl.into()),
-        });
+        let shader = desc::Module::new(device, "stark resolve", resolve);
         let layout = desc::pipeline_layout(device, "stark resolve layout", &[Some(bgl.layout())]);
         // The pass covers every texel and carries the alpha it averaged, so there is
         // nothing for a fixed-function blend to do.

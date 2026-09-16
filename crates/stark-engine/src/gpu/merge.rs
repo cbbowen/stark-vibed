@@ -160,10 +160,7 @@ impl MergeRenderer {
         let targets = formats.targets();
 
         let merge = stark_shaders::merge(color_space.resid());
-        let merge_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stark merge"),
-            source: wgpu::ShaderSource::Wgsl(merge.wgsl.into()),
-        });
+        let merge_shader = desc::Module::new(device, "stark merge", merge);
         let direct_bindings =
             desc::Bindings::new(device, "stark merge bgl", MERGE_SLOTS, frag, resid);
         let direct = desc::fullscreen_pipeline(
@@ -182,10 +179,7 @@ impl MergeRenderer {
         // One layout for both slab directions: they take the same shapes in and put
         // the same shapes out, which is what makes them one module (`slab.wesl`).
         let slab_shader_src = stark_shaders::slab(color_space.resid());
-        let slab_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("stark slab"),
-            source: wgpu::ShaderSource::Wgsl(slab_shader_src.wgsl.into()),
-        });
+        let slab_shader = desc::Module::new(device, "stark slab", slab_shader_src);
         let slab_bindings = desc::Bindings::new(device, "stark slab bgl", SLAB_SLOTS, frag, resid);
         let slab_layout =
             desc::pipeline_layout(device, "stark slab layout", &[Some(slab_bindings.layout())]);

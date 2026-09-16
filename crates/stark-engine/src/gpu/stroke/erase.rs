@@ -121,8 +121,8 @@ pub(super) fn build_erase_kit(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
     swept: &SweptKit,
-    shader: &wgpu::ShaderModule,
-    shader_ceiling: &wgpu::ShaderModule,
+    shader: &desc::Module,
+    shader_ceiling: &desc::Module,
 ) -> EraseKit {
     let layout = desc::pipeline_layout(
         device,
@@ -180,10 +180,7 @@ pub(super) fn build_erase_kit(
 
     let resid = color_space.has_resid();
     let erase = stark_shaders::erase(color_space.resid());
-    let integrate_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("stark erase"),
-        source: wgpu::ShaderSource::Wgsl(erase.wgsl.into()),
-    });
+    let integrate_shader = desc::Module::new(device, "stark erase", erase);
     let frag = wgpu::ShaderStages::FRAGMENT;
     let integrate_bgl = desc::layout_for(device, "stark erase bgl", ERASE_SLOTS, frag, resid);
     let integrate_layout =

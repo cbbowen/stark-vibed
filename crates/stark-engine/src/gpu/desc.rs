@@ -511,6 +511,46 @@ pub(crate) fn attach(
 
 // ---- pipelines -----------------------------------------------------------------
 
+/// A compiled shader module **and the artifact it was compiled from** (§6.10).
+///
+/// `wgpu` ties a module to nothing: a pipeline is a module plus two entry-point names,
+/// and handing it one shader's module with another's entry points creates a pipeline
+/// that runs. The plain stamp module under the *ceiling* record's `fs_main` would pass
+/// [`targets_agree`] against `[0, 1, 3]`, attach location 3, and have the plain
+/// fragment write nothing to it — different pixels, and no error anywhere.
+///
+/// One argument, not two: the artifact is the record's own, so a call site cannot mix
+/// one shader's WGSL with another's name.
+pub(crate) struct Module {
+    module: wgpu::ShaderModule,
+    artifact: &'static str,
+}
+
+impl Module {
+    pub(crate) fn new(
+        device: &wgpu::Device,
+        label: &str,
+        of: &dyn stark_shaders::Artifact,
+    ) -> Self {
+        Self {
+            module: device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(label),
+                source: wgpu::ShaderSource::Wgsl(of.wgsl().into()),
+            }),
+            artifact: of.name(),
+        }
+    }
+
+    /// Fail unless `entry` is one this module declares.
+    fn declares(&self, label: &str, entry: EntryPoint) {
+        assert_eq!(
+            self.artifact, entry.artifact,
+            "`{label}` builds a stage from `{}`'s `{}`, over `{}`'s module",
+            entry.artifact, entry.name, self.artifact,
+        );
+    }
+}
+
 /// What a render pipeline in this subsystem actually varies. Everything absent from
 /// this struct is a default no pass here has ever wanted to change.
 ///
@@ -523,7 +563,7 @@ pub(crate) struct RenderPipe<'a> {
     pub layout: &'a wgpu::PipelineLayout,
     /// One module for both stages — every shader here declares its vertex and
     /// fragment entry points together.
-    pub module: &'a wgpu::ShaderModule,
+    pub module: &'a Module,
     pub vs: EntryPoint,
     pub fs: EntryPoint,
     pub primitive: wgpu::PrimitiveState,
@@ -534,9 +574,12 @@ pub(crate) struct RenderPipe<'a> {
 /// A render pipeline, with the five fields no pass here varies filled in.
 ///
 /// # Panics
-/// If a stage is handed the other stage's entry point, or if the color targets are
-/// not the ones the fragment entry point writes ([`targets_agree`]).
+/// If a stage is handed the other stage's entry point, if either entry point is not
+/// one `module` declares, or if the color targets are not the ones the fragment entry
+/// point writes ([`targets_agree`]).
 pub(crate) fn render_pipeline(device: &wgpu::Device, p: RenderPipe<'_>) -> wgpu::RenderPipeline {
+    p.module.declares(p.label, p.vs);
+    p.module.declares(p.label, p.fs);
     assert_eq!(
         p.vs.stage,
         wgpu::ShaderStages::VERTEX,
@@ -556,7 +599,7 @@ pub(crate) fn render_pipeline(device: &wgpu::Device, p: RenderPipe<'_>) -> wgpu:
         label: Some(p.label),
         layout: Some(p.layout),
         vertex: wgpu::VertexState {
-            module: p.module,
+            module: &p.module.module,
             entry_point: Some(p.vs.name),
             compilation_options: Default::default(),
             buffers: p.buffers,
@@ -565,7 +608,7 @@ pub(crate) fn render_pipeline(device: &wgpu::Device, p: RenderPipe<'_>) -> wgpu:
         depth_stencil: None,
         multisample: wgpu::MultisampleState::default(),
         fragment: Some(wgpu::FragmentState {
-            module: p.module,
+            module: &p.module.module,
             entry_point: Some(p.fs.name),
             compilation_options: Default::default(),
             targets: p.targets,
@@ -607,7 +650,7 @@ pub(crate) fn fullscreen_pipeline(
     device: &wgpu::Device,
     label: &str,
     layout: &wgpu::PipelineLayout,
-    module: &wgpu::ShaderModule,
+    module: &Module,
     entries: (EntryPoint, EntryPoint),
     targets: &[Option<wgpu::ColorTargetState>],
 ) -> wgpu::RenderPipeline {
@@ -630,14 +673,15 @@ pub(crate) fn fullscreen_pipeline(
 /// in.
 ///
 /// # Panics
-/// If `entry` is not a compute entry point.
+/// If `entry` is not a compute entry point, or not one `module` declares.
 pub(crate) fn compute_pipeline(
     device: &wgpu::Device,
     label: &str,
     layout: &wgpu::PipelineLayout,
-    module: &wgpu::ShaderModule,
+    module: &Module,
     entry: EntryPoint,
 ) -> wgpu::ComputePipeline {
+    module.declares(label, entry);
     assert_eq!(
         entry.stage,
         wgpu::ShaderStages::COMPUTE,
@@ -647,7 +691,7 @@ pub(crate) fn compute_pipeline(
     device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some(label),
         layout: Some(layout),
-        module,
+        module: &module.module,
         entry_point: Some(entry.name),
         compilation_options: Default::default(),
         cache: None,

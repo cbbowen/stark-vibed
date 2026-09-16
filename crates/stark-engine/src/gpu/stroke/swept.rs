@@ -148,14 +148,12 @@ pub(super) fn stamp_module(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
     lane: Lane,
-) -> wgpu::ShaderModule {
-    device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some(match lane {
-            Lane::Ceiling => "stark stamp ceiling",
-            Lane::Plain => "stark stamp",
-        }),
-        source: wgpu::ShaderSource::Wgsl(color_space.stamp_shader(lane).wgsl.into()),
-    })
+) -> desc::Module {
+    let label = match lane {
+        Lane::Ceiling => "stark stamp ceiling",
+        Lane::Plain => "stark stamp",
+    };
+    desc::Module::new(device, label, color_space.stamp_shader(lane))
 }
 
 /// The format of the ceiling lane (§6.2, `paint_common::level_sums`): the parcel's
@@ -181,8 +179,8 @@ pub(super) fn ceiling_target(color_space: &dyn ColorSpace) -> Option<wgpu::Color
 pub(super) fn build_swept_kit(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
-    shader: &wgpu::ShaderModule,
-    shader_ceiling: &wgpu::ShaderModule,
+    shader: &desc::Module,
+    shader_ceiling: &desc::Module,
 ) -> SweptKit {
     let frag = wgpu::ShaderStages::FRAGMENT;
     // One slot per affected tile, selected by a dynamic offset
@@ -951,10 +949,7 @@ pub(super) fn build_integrate_pipeline(
 ) -> (wgpu::RenderPipeline, wgpu::BindGroupLayout) {
     let resid = color_space.has_resid();
     let integrate = stark_shaders::integrate(color_space.resid());
-    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("stark integrate"),
-        source: wgpu::ShaderSource::Wgsl(integrate.wgsl.into()),
-    });
+    let shader = desc::Module::new(device, "stark integrate", integrate);
     let frag = wgpu::ShaderStages::FRAGMENT;
     let bgl = desc::layout_for(device, "stark integrate bgl", INTEGRATE_SLOTS, frag, resid);
     let layout = desc::pipeline_layout(device, "stark integrate layout", &[Some(&bgl)]);
