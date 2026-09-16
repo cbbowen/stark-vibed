@@ -1,11 +1,5 @@
 //! The host's handles on the deposited artifacts (§6.10).
 //!
-//! One `pub fn` per entry point returning the **record** of what the artifact is: the
-//! WGSL, and a named field per entry point carrying its stage, its workgroup size, the
-//! `@location`s it writes and the bindings it reaches. Plus one enum per axis whose
-//! `on` variant is generated only where this build linked that variant — so `composite`
-//! cannot be asked for a residual build that was never deposited.
-//!
 //! **A field rather than a lookup by name.** The entry points of an artifact are known
 //! here, so a caller naming one that does not exist is a compile error rather than a
 //! `None` at pipeline creation — and the variants of a shader are checked to agree
@@ -219,13 +213,8 @@ fn record(entry: &Entry<'_>, reflections: &Reflections) -> TokenStream {
     }
 }
 
-/// The entry points every build of `entry` agrees on.
-///
-/// # Panics
-/// If two builds of one module declare different entry points, or the same one at
-/// different stages. One record type answers for all of a shader's variants, so a `@if`
-/// that took an entry point away would otherwise be a `wgpu` panic in one colour space
-/// and nowhere else.
+/// The entry points every build of `entry` agrees on — one record type answers for all
+/// of a shader's variants, so a `@if` that took one away must be refused here.
 fn agree<'a>(entry: &Entry<'_>, reflections: &'a Reflections) -> &'a [Reflected] {
     let builds = entry.builds();
     let shape = |artifact: &str| -> Vec<(String, naga::ShaderStage)> {
@@ -317,11 +306,8 @@ fn record_value(ident: &proc_macro2::Ident, artifact: &str, eps: &[Reflected]) -
     }
 }
 
-/// One artifact as a `static`, and a reference to it.
-///
-/// Inside the accessor rather than beside it: an artifact's record is reached only
-/// through the accessor, and a `static` per build at module scope would be forty more
-/// names for nothing.
+/// One artifact as a `static` inside its accessor, and a reference to it — a `static`
+/// per build at module scope would be forty more names for nothing.
 fn held(ident: &proc_macro2::Ident, artifact: &str, eps: &[Reflected]) -> TokenStream {
     let value = record_value(ident, artifact, eps);
     quote! {
@@ -396,12 +382,8 @@ fn tuple(parts: impl Iterator<Item = TokenStream>) -> TokenStream {
     }
 }
 
-/// The `wgpu::ShaderStages` a naga stage is, as a path.
-///
-/// The three a render or compute pipeline can be built from. Everything else naga can
-/// name — mesh, task, ray tracing — is refused rather than mapped: `wgpu` has a flag
-/// for some of them, and a shader tree that grew one would want the host side thought
-/// about rather than guessed.
+/// The `wgpu::ShaderStages` a naga stage is, as a path. A stage a pipeline cannot be
+/// built from is refused rather than mapped ([`stage_word`]).
 fn stage_path(stage: naga::ShaderStage) -> TokenStream {
     let ident = format_ident!("{}", stage_word(stage).to_uppercase());
     quote!(wgpu::ShaderStages::#ident)
@@ -417,10 +399,7 @@ fn stage_word(stage: naga::ShaderStage) -> &'static str {
 }
 
 /// The accessor's documentation: the shader's own opening paragraph, then what each
-/// parameter picks.
-///
-/// The shader's words rather than a second summary beside them, for the reason every
-/// other mirror is generated (§6.10).
+/// parameter picks — the shader's words rather than a second summary (§6.10).
 fn doc(entry: &Entry<'_>, params: &[(proc_macro2::Ident, proc_macro2::Ident)]) -> Vec<String> {
     let module = entry.module.path.as_str();
     let summary = header_summary(&entry.module.src);

@@ -1,32 +1,19 @@
 //! Every hand-written slot list, against what the entry points bound through it
 //! actually read (§6.10).
 //!
-//! A `&[Slot]` list is a **membership claim**: these are the bindings, and these are the
-//! ones read through a sampler. Both halves are things the linked shader knows — naga
-//! works them out while type-checking, callees included, and the generated
-//! [`EntryPoint::uses`] carries the answer — and until now nothing compared the two. A
-//! list naming one slot too many is a layout entry and a bind-group entry no shader
+//! A list naming one slot too many is a layout entry and a bind-group entry no shader
 //! reads, which `wgpu` accepts in silence; one too few is a pipeline that will not
 //! create, on a GPU, in whichever colour space links that variant.
 //!
-//! **The unit is the list, not the pipeline.** Several pipelines share one layout — the
-//! blur's four kernels, the filter's three fragment entry points, the sweep's five —
-//! and a shared layout is necessarily the *union* of what its pipelines read, so a
-//! per-pipeline comparison would report every sharer's unused entries as a fault. The
-//! table below is still the pipelines, because that is what a reader can check against
-//! `desc`'s call sites; the check folds them by list.
+//! **The unit is the list, not the pipeline** — several pipelines share one layout, so
+//! what a list is answerable for is the *union* of what they read. The table below is
+//! still the pipelines, because that is what a reader can check against `desc`'s call
+//! sites; the check folds them by list. `PREFIX_SLOTS` is one list behind **two**
+//! layout objects, the sweep's fragment-visible one and the wet loop's compute-visible
+//! one, and the union spans both.
 //!
-//! `PREFIX_SLOTS` is the other shape and the union is weaker there: one list becomes
-//! **two** layout objects, the sweep's fragment-visible one and the wet loop's
-//! compute-visible one, so what is checked is the union over both.
-//!
-//! **It is not a `#[derive]` for the lists.** What a list still says, and the shader
-//! cannot, is which `@group` a pipeline binds it as, in what order, and at what
-//! visibility. The list stays written by hand; this says whether it is true.
-//!
-//! [`KNOWN`] is the differences that stand today, each with why — and the check is that
-//! the differences found **equal** it, so a waiver cannot outlive what it excuses.
-//! Nothing here changes the engine.
+//! [`KNOWN`] is the differences that stand today; the check is that the differences
+//! found **equal** it. Nothing here changes the engine.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -131,12 +118,9 @@ impl Known {
 /// are another commit's business, and a check that quietly edits what it measures is
 /// not a check.
 const KNOWN: &[Known] = &[
-    // One layout serves both colour spaces, because whether the pigment LUT is real is
-    // `ColorSpace::needs_pigment_lut`'s answer rather than the layout's: the
-    // colorimetric shaders do not import `mixbox_lut` at all, and the host binds a 1×1
-    // stand-in — the same "one shader, one layout" the zero masks buy elsewhere (§6.8).
-    // The pigment space reads the real table, so these four stand at `resid: false` and
-    // nowhere else.
+    // One layout serves both spaces because whether the pigment LUT is real is
+    // `ColorSpace::needs_pigment_lut`'s answer rather than the layout's — so Oklab binds
+    // a 1×1 stand-in (§6.8's pattern) and these four stand there alone.
     Known {
         resid: false,
         list: "BLEND_SLOTS",

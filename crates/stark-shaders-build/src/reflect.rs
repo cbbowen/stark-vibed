@@ -1,10 +1,5 @@
-//! What an entry point *is*, read off the validated artifact (§6.10).
-//!
-//! Three facts the host had been restating by hand, each of which naga works out while
-//! type-checking and used to discard: which stage an entry point is and how wide its
-//! workgroup, which `@location`s a fragment entry point writes, and which of the
-//! artifact's globals it actually reaches — through its callees, and whether it reads
-//! them through a sampler.
+//! What an entry point *is*, read off the validated artifact (§6.10) — facts the host
+//! had been restating by hand, which naga works out while type-checking.
 //!
 //! **Read on the linked side, reported on the unlinked one.** Only the linked artifact
 //! knows what a pipeline's entry point reaches, since half of it arrives by import; but
@@ -25,10 +20,7 @@ pub(crate) struct Used {
     /// The `decl::` constant's name: the WESL variable's, uppercased.
     pub(crate) decl: String,
     /// Whether this entry point reads it **through a sampler**, which is what makes a
-    /// texture's layout entry filterable.
-    ///
-    /// The image side of the pair only. A sampler's own layout entry is a filtering
-    /// sampler either way, so the flag would say nothing about it.
+    /// texture's layout entry filterable. The image side of the pair only.
     pub(crate) sampled: bool,
     /// `@group`/`@binding`, for the sort that keeps the generated record stable — the
     /// linker's declaration order is not.
@@ -56,11 +48,6 @@ pub(crate) struct Reflected {
 ///
 /// `root` is the module that was linked — the one whose own declarations the linker
 /// leaves unmangled, and so the one the sourcemap has nothing to say about.
-///
-/// # Panics
-/// On an entry point whose workgroup size is an override expression, a global the
-/// sourcemap attributes to a module outside the tree, or a fragment result this cannot
-/// read a location off.
 pub(crate) fn entry_points(
     naga: &naga::Module,
     info: &naga::valid::ModuleInfo,

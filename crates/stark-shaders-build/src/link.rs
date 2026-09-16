@@ -96,8 +96,6 @@ fn varies(entry: &Entry<'_>, builds: &[Build], linked: &[String]) {
             without[i] = false;
             let (base, base_wgsl) = at(&without);
             let feature = axis.feature;
-            // A plain `assert!`, not `assert_ne!`: the two are whole shaders, and what
-            // the reader needs is which pair, not several hundred lines of WGSL twice.
             assert!(
                 wgsl != base_wgsl,
                 "`{}` is byte-identical to `{base}`: linking `{}.wesl` with the \
