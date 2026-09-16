@@ -8,13 +8,14 @@
 //
 // Everything *not* in this list is a module reached only by import — the binding-free
 // leaves under `shaders/lib/`, and the binding-owning shared modules
-// (`blend_common`, `dynamics_common`, `media_common`, `stamp_common`, `mixbox_lut`).
+// (`blend_common`, `dynamics_common`, `media_common`, `stamp_common`, `mixbox_lut`,
+// `view`).
 // Those have no entry point of their own and would fail to link as a root.
 
 /// Every WESL module compiled to its own WGSL artifact, by module name.
 ///
 /// Kept sorted, which is not cosmetic: the pipeline this list drives is a `for` loop,
-/// so the order decides the order build errors substrate in, and an alphabetical list is
+/// so the order decides the order build errors surface in, and an alphabetical list is
 /// the one a reader can check for a missing entry at a glance.
 pub const ENTRY_POINTS: &[&str] = &[
     "blend_mixbox",

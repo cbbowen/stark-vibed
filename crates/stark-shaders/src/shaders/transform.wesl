@@ -48,7 +48,7 @@
 
 import package::lib::latent::{Latent, latent_blend, latent_of, latent_scale, latent_unpremult};
 import package::lib::paint_common::{PAINT_EPS};
-import package::lib::quad::{fullscreen_clip};
+import package::lib::quad::{fullscreen_clip, quad_corner};
 import package::lib::sample::{load1, box_coverage};
 
 struct Quad {
@@ -110,11 +110,10 @@ struct Quad {
 // only provides *coverage*; the fragment derives its own source tap.
 @vertex
 fn vs_quad(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
-    let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
     // The source interior corner in canvas px. Corner arithmetic is exact in f32,
     // so two quads sharing a source edge transform to bitwise-equal vertices and
     // rasterize watertight.
-    let p = q.u.xy + corner * q.u.z;
+    let p = q.u.xy + quad_corner(vi) * q.u.z;
     let c = vec2<f32>(
         q.m.x * p.x + q.m.y * p.y + q.t.x,
         q.m.z * p.x + q.m.w * p.y + q.t.y,

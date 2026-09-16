@@ -18,7 +18,7 @@ use stark_model::document::StrokeRecord;
 use stark_model::geom::{TileCoord, Vec2};
 
 /// The paint effect the loop is drawing — its own by construction:
-use stark_shaders::mirror::composite::binding as cb;
+use stark_shaders::mirror::view::binding as vb;
 
 use super::super::incremental::{Carried, LoopCarry, Reservoir};
 use super::super::region::{RegionRect, chunk_segments, cover};
@@ -1561,10 +1561,9 @@ pub(super) fn composite_tiles(
         w,
         h,
     } = rect;
-    // Composite pass: base tiles → region, 1:1 with canvas px. The compositor's
-    // own `ViewUniform` — this path binds its own buffer to the very same
-    // `composite.wesl`, so it wants that struct rather than a second declaration
-    // of it that a comment asks to be kept in step (§6.2).
+    // Composite pass: base tiles → region, 1:1 with canvas px. The compositor's own
+    // `ViewUniform` — this path binds its own buffer to the very same
+    // `composite.wesl` (§6.2).
     let (sx, sy) = (2.0 / w as f32, -2.0 / h as f32);
     let view = view_uniform(
         // Diagonal: the region is axis-aligned with the canvas whatever angle the
@@ -1590,8 +1589,8 @@ pub(super) fn composite_tiles(
         crate::gpu::composite::COMPOSITE_VIEW_SLOTS,
         false,
         |i| match i {
-            cb::VIEW => view_buf.as_entire_binding(),
-            cb::SAMP => wgpu::BindingResource::Sampler(&kit.composite_sampler),
+            vb::VIEW => view_buf.as_entire_binding(),
+            vb::SAMP => wgpu::BindingResource::Sampler(&kit.composite_sampler),
             other => unreachable!("the composite view group lists no binding {other}"),
         },
     );

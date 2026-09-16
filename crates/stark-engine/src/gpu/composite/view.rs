@@ -13,15 +13,15 @@ use crate::gpu::uniforms::UniformSlots;
 use crate::gpu::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE};
 use crate::view::ViewTransform;
 use stark_model::geom::TILE_SIZE;
-use stark_shaders::mirror::composite::binding as cb;
+use stark_shaders::mirror::view::binding as vb;
 
-// Generated from `composite.wesl`'s declaration of `View`, which `matte.wesl` and
-// `overlay.wesl` declare identically — the generator checks all three agree (§6.7).
+// Generated from `view.wesl`, the one module that declares the struct and the uniform
+// behind it — pass A, the matte and the outline all import that binding (§6.10).
 //
 // The one definition of that struct on the host side: every consumer, the
 // brush-dynamics loop included, builds one through `view_uniform` rather than
 // declaring a second copy.
-pub(crate) use stark_shaders::mirror::composite::View as ViewUniform;
+pub(crate) use stark_shaders::mirror::view::View as ViewUniform;
 
 /// The canvas px → NDC map `st` (column-major) with translation `xlate`, at `zoom`.
 ///
@@ -157,9 +157,9 @@ impl ViewBindings {
 
 /// The two group-0 bind groups over `slots` — pass A's and the outline's.
 ///
-/// The two hold the same pair against two layouts, so one closure answers for both —
-/// but each names its *own* shader's slot list (§6.10), rather than asserting by hand
-/// that `composite.wesl` and `overlay.wesl` number these alike.
+/// The two hold the same pair against two layouts, which differ only in the stages
+/// each slot is visible from; both lists are built from `view.wesl`'s declarations
+/// (§6.10), so the pair cannot be numbered two ways.
 fn groups(
     device: &wgpu::Device,
     slots: &UniformSlots<ViewUniform>,
@@ -167,8 +167,8 @@ fn groups(
 ) -> (wgpu::BindGroup, wgpu::BindGroup) {
     let group = |label, layout, list| {
         crate::gpu::desc::bind_group_for(device, label, layout, list, false, |i| match i {
-            cb::VIEW => slots.resource(),
-            cb::SAMP => wgpu::BindingResource::Sampler(parts.sampler),
+            vb::VIEW => slots.resource(),
+            vb::SAMP => wgpu::BindingResource::Sampler(parts.sampler),
             other => unreachable!("a view group lists no binding {other}"),
         })
     };

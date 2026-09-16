@@ -13,10 +13,8 @@ use super::refuse_imported_uniform;
 /// Emit a mirror for every struct a `var<uniform>` in `m` names — the boundary the
 /// host writes across, discovered rather than listed (§2).
 ///
-/// `aliased` holds the `(module, struct)` pairs a `shared` entry already generated
-/// under another module, so the two do not both emit one. The second return is what
-/// discovery reached and could not spell.
-pub(super) fn discover(m: &Module, aliased: &[(String, String)]) -> (TokenStream, Vec<String>) {
+/// The second return is what discovery reached and could not spell.
+pub(super) fn discover(m: &Module) -> (TokenStream, Vec<String>) {
     let mut ctx = module_context(&m.tu);
     let mut out = TokenStream::new();
     let mut skipped = Vec::new();
@@ -34,13 +32,8 @@ pub(super) fn discover(m: &Module, aliased: &[(String, String)]) -> (TokenStream
         let Some(ty) = decl.ty.as_ref() else { continue };
         let name = ty.ident.name();
         let name = name.as_str();
-        // The same struct can be named by two uniforms of one module; and a `shared`
-        // entry has already generated this one somewhere else.
-        if done.iter().any(|n| n == name)
-            || aliased
-                .iter()
-                .any(|(md, n)| md == &m.path && n.as_str() == name)
-        {
+        // The same struct can be named by two uniforms of one module.
+        if done.iter().any(|n| n == name) {
             continue;
         }
         let Some(s) = m.struct_named(name) else {
@@ -52,7 +45,7 @@ pub(super) fn discover(m: &Module, aliased: &[(String, String)]) -> (TokenStream
         };
         done.push(name.to_string());
         match lay_out(s, m) {
-            Ok(laid) => out.extend(emit(name, &[m.path.as_str()], &laid)),
+            Ok(laid) => out.extend(emit(name, &m.path, &laid)),
             // The reason discovery must not panic: it reaches every uniform in the
             // tree, and one that a host has never asked for being unmirrorable is not
             // a reason to stop. A caller that needed it fails at its own use site.
@@ -62,37 +55,12 @@ pub(super) fn discover(m: &Module, aliased: &[(String, String)]) -> (TokenStream
     (out, skipped)
 }
 
-/// Fail unless two shader modules lay `name` out identically.
-///
-/// Only the layout is compared, not the prose: three shaders documenting the same
-/// lanes in their own words is fine and is why the comments differ, but a member
-/// renamed, retyped or reordered in one of them is a divergence the host cannot see.
-pub(super) fn agrees(name: &str, canonical: &str, a: &Laid, other: &str, b: &Laid) {
-    let lanes = |l: &Laid| {
-        l.fields
-            .iter()
-            .filter(|f| f.real)
-            .map(|f| format!("{}: {} @{}", f.ident, f.ty, f.offset))
-            .collect::<Vec<_>>()
-    };
-    assert!(
-        (a.size, a.align) == (b.size, b.align) && lanes(a) == lanes(b),
-        "`{name}` is declared differently in `{canonical}.wesl` and `{other}.wesl`, \
-         which share one host mirror:\n  {canonical}: {:?} ({} bytes)\n  {other}: {:?} \
-         ({} bytes)",
-        lanes(a),
-        a.size,
-        lanes(b),
-        b.size,
-    );
-}
-
 /// Emit `name` as a `Pod` Rust struct at its WGSL offsets, documented from the WESL
 /// comments and asserted to have landed.
 ///
-/// `sources` is the module it was generated from, then any that declare it
-/// identically.
-pub(super) fn emit(name: &str, sources: &[&str], laid: &Laid) -> TokenStream {
+/// `source` is the module that declares it — the only one, since a host type several
+/// pipelines want is a shared module they import the binding from (`view.wesl`).
+fn emit(name: &str, source: &str, laid: &Laid) -> TokenStream {
     let Laid {
         fields,
         size,
@@ -127,19 +95,9 @@ pub(super) fn emit(name: &str, sources: &[&str], laid: &Laid) -> TokenStream {
         }
     });
 
-    let doc = match sources {
-        [one] => format!(
-            " `{name}`, generated from `{one}.wesl` — the shader's declaration is the only one.",
-        ),
-        [first, rest @ ..] => format!(
-            " `{name}`, generated from `{first}.wesl`, which {} declare identically.",
-            rest.iter()
-                .map(|m| format!("`{m}.wesl`"))
-                .collect::<Vec<_>>()
-                .join(" and "),
-        ),
-        [] => unreachable!("a mirror names a module"),
-    };
+    let doc = format!(
+        " `{name}`, generated from `{source}.wesl` — the shader's declaration is the only one.",
+    );
     let doc_size = format!(" WGSL size {size}, alignment {align}.");
     let msg_size = format!("`{name}` is not {size} bytes");
     let msg_align = format!("`{name}` is not {align}-byte aligned");

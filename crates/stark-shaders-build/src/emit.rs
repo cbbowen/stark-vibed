@@ -25,9 +25,8 @@ use std::path::Path;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use wesl::eval::{Context, Type, ty_eval_ty};
-use wesl::syntax::{Struct, TypeExpression};
+use wesl::syntax::TypeExpression;
 
-use crate::layout::lay_out;
 use crate::tree::{Module, read_tree};
 
 /// The WGSL type a `var<uniform>` names, resolved against the module that declares it.
@@ -36,15 +35,17 @@ use crate::tree::{Module, read_tree};
 /// that is refused.** Not resolved: an import path (`self::`, `super::`, `package::`,
 /// aliases, item collections) would be a second resolver written here, which is the
 /// transcription §6.10 is about — and the mirror it produced would land under the
-/// *importing* module, naming a file that does not declare the struct. `SHARED` is
-/// already the answer for one host type several modules name.
+/// *importing* module, naming a file that does not declare the struct. A host type
+/// several pipelines want is a shared module they import the *binding* from
+/// (`view.wesl`), which puts the declaration in one file and the mirror under it.
 fn uniform_type(ty: &TypeExpression, m: &Module, member: &str, ctx: &mut Context<'_>) -> Type {
     ty_eval_ty(ty, ctx).unwrap_or_else(|e| {
         panic!(
             "`{}.wesl`'s `var<uniform> {member}: {}` names a type the module does not \
              declare ({e}). A struct reached through an import has no mirror: the \
              generator reads the unlinked source, where the import is only a name. \
-             Declare it here, or name both modules in `SHARED`.",
+             Declare it here, or import the binding itself from the module that does \
+             (`view.wesl`).",
             m.path,
             ty.ident.name(),
         )
@@ -61,8 +62,8 @@ fn refuse_imported_uniform(ty: &TypeExpression, m: &Module, member: &str, ctx: &
 
 /// Generate the host mirrors of everything the shader tree at `shader_dir` declares,
 /// into `dest`.
-pub(crate) fn generate(shader_dir: &Path, dest: &Path, shared: &[(&[&str], &str)]) {
-    let text = mirrors(&read_tree(shader_dir), shared);
+pub(crate) fn generate(shader_dir: &Path, dest: &Path) {
+    let text = mirrors(&read_tree(shader_dir));
     std::fs::write(dest, text).unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
 }
 
@@ -76,22 +77,12 @@ pub(crate) fn generate(shader_dir: &Path, dest: &Path, shared: &[(&[&str], &str)
 /// filter's kind codes were generated while the blend's were transcribed, and the
 /// binding tables covered one module of twenty-one.
 ///
-/// `shared` is the one thing left that the shader does not say about itself; see
-/// [`crate::Config`].
-///
 /// Anything discovery cannot spell in Rust — a nested struct, a matrix const — is
 /// **skipped with a note in the generated file's header** rather than failing the
 /// build. It has to be: discovery reaches declarations no host has ever asked for, and
 /// one of them being unmirrorable is not a reason to stop. A caller that needed it
 /// still fails, at its own use site.
-fn mirrors(modules: &[Module], shared: &[(&[&str], &str)]) -> String {
-    let find_module = |path: &str| {
-        modules
-            .iter()
-            .find(|m| m.path == path)
-            .unwrap_or_else(|| panic!("`{path}.wesl` is not in the shader tree"))
-    };
-
+fn mirrors(modules: &[Module]) -> String {
     // Grouped by the module a declaration is emitted under, in first-seen order.
     // One struct name can be declared by two modules with *different* members
     // (`selection.wesl`'s `Params` and `slice.wesl`'s once were exactly that), so
@@ -100,34 +91,12 @@ fn mirrors(modules: &[Module], shared: &[(&[&str], &str)]) -> String {
     // What discovery could not spell, in the order it was reached.
     let mut skipped: Vec<String> = Vec::new();
 
-    // `(module path, struct name)` pairs discovery must not emit, because the loop
-    // below has already emitted them: every module of a `shared` entry, the canonical
-    // one included — it is generated here, with the doc naming the modules it answers
-    // for, and discovery reaching it again would be a second definition of one type.
-    let mut aliased: Vec<(String, String)> = Vec::new();
-    for (sources, name) in shared {
-        let (canonical, others) = sources.split_first().expect("a mirror names a module");
-        let cm = find_module(canonical);
-        let laid = lay_out(require(cm, name), cm).unwrap_or_else(|e| panic!("{e}"));
-        for other in others {
-            let om = find_module(other);
-            let o_laid = lay_out(require(om, name), om).unwrap_or_else(|e| panic!("{e}"));
-            structs::agrees(name, canonical, &laid, other, &o_laid);
-        }
-        aliased.extend(
-            sources
-                .iter()
-                .map(|s| ((*s).to_string(), (*name).to_string())),
-        );
-        push(&mut items, &cm.rust, structs::emit(name, sources, &laid));
-    }
-
     for m in modules {
         let (consts, skips) = consts::emit(m);
         skipped.extend(skips);
         push(&mut items, &m.rust, consts);
         push(&mut items, &m.rust, bindings::emit(m));
-        let (uniforms, skips) = structs::discover(m, &aliased);
+        let (uniforms, skips) = structs::discover(m);
         skipped.extend(skips);
         push(&mut items, &m.rust, uniforms);
         push(&mut items, &m.rust, vertex::emit(m));
@@ -178,12 +147,6 @@ fn mirrors(modules: &[Module], shared: &[(&[&str], &str)]) -> String {
     )
 }
 
-/// The `struct name` `m` declares, where the caller named it and a miss is its typo.
-fn require<'a>(m: &'a Module, name: &str) -> &'a Struct {
-    m.struct_named(name)
-        .unwrap_or_else(|| panic!("`{}.wesl` declares no `struct {name}`", m.path))
-}
-
 /// Add `item` to the Rust module `rust`'s bag, in first-seen order.
 fn push(items: &mut Vec<(String, TokenStream)>, rust: &str, item: TokenStream) {
     if item.is_empty() {
@@ -211,7 +174,7 @@ mod tests {
     /// test's business ([`a_const_derived_from_its_neighbours_mirrors_as_its_value`])
     /// rather than every test's.
     fn generated(src: &str) -> String {
-        past_header(&mirrors(&[Module::parse("probe", src)], &[]))
+        past_header(&mirrors(&[Module::parse("probe", src)]))
     }
 
     fn past_header(out: &str) -> String {
@@ -347,17 +310,14 @@ pub mod probe {
     /// until one could be spelled.
     #[test]
     fn a_const_derived_from_its_neighbours_mirrors_as_its_value() {
-        let out = mirrors(
-            &[Module::parse(
-                "probe",
-                r"
+        let out = mirrors(&[Module::parse(
+            "probe",
+            r"
 const RISE: f32 = 0.05;
 const DOUBLE: f32 = RISE * 2.0;
 const FLIP: mat2x2<f32> = mat2x2<f32>(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0));
 ",
-            )],
-            &[],
-        );
+        )]);
         let (header, body) = out.split_once("\n\n").expect("a header, then the body");
         assert_eq!(
             header,
@@ -736,35 +696,29 @@ struct Params { @size(16) feather: f32, @align(32) rect: vec4<f32> }
     #[test]
     #[should_panic(expected = "a module under `lib/` may not declare a binding")]
     fn a_binding_in_a_lib_module_fails_the_build() {
-        mirrors(
-            &[Module::parse(
-                "lib/store",
-                "@group(0) @binding(0) var st: texture_2d<f32>;\n",
-            )],
-            &[],
-        );
+        mirrors(&[Module::parse(
+            "lib/store",
+            "@group(0) @binding(0) var st: texture_2d<f32>;\n",
+        )]);
     }
 
     /// The rule is the directory at any depth, not the one level the walk used to reach.
     #[test]
     #[should_panic(expected = "a module under `lib/` may not declare a binding")]
     fn a_binding_below_lib_fails_the_build_too() {
-        mirrors(
-            &[Module::parse(
-                "lib/ramp/store",
-                "@group(0) @binding(0) var st: texture_2d<f32>;\n",
-            )],
-            &[],
-        );
+        mirrors(&[Module::parse(
+            "lib/ramp/store",
+            "@group(0) @binding(0) var st: texture_2d<f32>;\n",
+        )]);
     }
 
     /// And what a leaf is *for*: everything but a binding still mirrors.
     #[test]
     fn a_lib_module_mirrors_everything_else() {
-        let out = past_header(&mirrors(
-            &[Module::parse("lib/ramp", "const STOPS: u32 = 4u;\n")],
-            &[],
-        ));
+        let out = past_header(&mirrors(&[Module::parse(
+            "lib/ramp",
+            "const STOPS: u32 = 4u;\n",
+        )]));
         assert!(out.contains("pub mod ramp {"), "{out}");
         assert!(out.contains("pub const STOPS: u32 = 4;"), "{out}");
     }
@@ -877,71 +831,14 @@ fn vs_main(@location(0) at: vec2<f32>) -> @builtin(position) vec4<f32> {
         assert_eq!(out, "");
     }
 
-    /// `SHARED`'s reason to exist: `View` is written out by three shaders against one
-    /// host type, and generating from one while ignoring the rest would move the drift
-    /// rather than remove it.
-    #[test]
-    fn a_struct_two_modules_declare_identically_is_generated_once() {
-        let view = "struct View { origin: vec4<f32> }\nvar<uniform> view: View;\n";
-        let out = past_header(&mirrors(
-            &[Module::parse("one", view), Module::parse("two", view)],
-            &[(&["one", "two"], "View")],
-        ));
-        assert_eq!(
-            out,
-            r#"/// Host mirrors of what `one.wesl` declares.
-pub mod one {
-    /// `View`, generated from `one.wesl`, which `two.wesl` declare identically.
-    ///
-    /// WGSL size 16, alignment 16.
-    #[repr(C, align(16))]
-    #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-    pub struct View {
-        pub origin: [f32; 4],
-    }
-    impl Default for View {
-        fn default() -> Self {
-            bytemuck::Zeroable::zeroed()
-        }
-    }
-    const _: () = {
-        const SIZE: usize = core::mem::size_of::<View>();
-        const ALIGN: usize = core::mem::align_of::<View>();
-        assert!(SIZE == 16, "`View` is not 16 bytes");
-        assert!(ALIGN == 16, "`View` is not 16-byte aligned");
-        const OFFSET_OF_ORIGIN: usize = core::mem::offset_of!(View, origin);
-        assert!(OFFSET_OF_ORIGIN == 0, "`View.origin` is not at WGSL offset 0");
-    };
-}
-"#,
-        );
-    }
-
-    /// Only the layout is compared, not the prose: three shaders documenting the same
-    /// lanes in their own words is fine, a member retyped in one of them is not.
-    #[test]
-    #[should_panic(expected = "`View` is declared differently in `one.wesl` and `two.wesl`")]
-    fn a_shared_struct_the_two_disagree_about_fails_the_build() {
-        mirrors(
-            &[
-                Module::parse("one", "struct View { origin: vec4<f32> }\n"),
-                Module::parse("two", "struct View { origin: vec2<f32> }\n"),
-            ],
-            &[(&["one", "two"], "View")],
-        );
-    }
-
     /// A struct discovery reaches and cannot spell does not stop the build — it reaches
     /// declarations no host has ever asked for.
     #[test]
     fn a_struct_with_a_member_that_has_no_rust_spelling_is_skipped_with_a_note() {
-        let out = mirrors(
-            &[Module::parse(
-                "probe",
-                "struct Inner { a: f32 }\nstruct Outer { inner: Inner }\nvar<uniform> o: Outer;\n",
-            )],
-            &[],
-        );
+        let out = mirrors(&[Module::parse(
+            "probe",
+            "struct Inner { a: f32 }\nstruct Outer { inner: Inner }\nvar<uniform> o: Outer;\n",
+        )]);
         assert_eq!(
             out,
             "// @generated by `stark-shaders-build` from the WESL sources — do not edit.\n\

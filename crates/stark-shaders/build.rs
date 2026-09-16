@@ -9,13 +9,6 @@ use std::path::{Path, PathBuf};
 // The one list, shared with `lib.rs` (see there).
 include!("src/entry_points.rs");
 
-/// The structs **two or more modules declare identically** against one host type.
-///
-/// `View` is the reason this exists: three shaders write it out separately against one
-/// host type, and generating from one of them while ignoring the rest would move the
-/// drift rather than remove it. Every *other* uniform struct is discovered.
-const SHARED: &[(&[&str], &str)] = &[(&["composite", "matte", "overlay"], "View")];
-
 /// The vendored Mixbox shader (git submodule), source of the pigment-mixing
 /// polynomial. Licensed CC BY-NC 4.0 — see `vendor/mixbox/LICENSE`.
 const MIXBOX_GLSL: &str = "../../vendor/mixbox/shaders/mixbox.glsl";
@@ -45,7 +38,6 @@ fn main() {
         ceiling_entry_points: CEILING_ENTRY_POINTS,
         resid_feature: RESID_FEATURE,
         ceiling_feature: CEILING_FEATURE,
-        shared: SHARED,
     });
 
     // The tree, by directory: cargo scans a named directory recursively, so this

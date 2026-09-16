@@ -11,15 +11,16 @@ use crate::gpu::desc::Slot;
 use crate::gpu::desc::{self, RenderPipe};
 use stark_shaders::mirror::composite::decl as cd;
 use stark_shaders::mirror::matte::decl as md;
+use stark_shaders::mirror::view::decl as vd;
 
-/// Pass A's **view** group (§6.3) — the canvas→NDC map and the tile sampler, shared
-/// with the matte pass drawn inside it and with the overlay (§6.10).
+/// Pass A's **view** group (§6.3) — the canvas→NDC map and the tile sampler, from
+/// `view.wesl`, the module all three passes that draw in canvas space import (§6.10).
 ///
 /// The two slots differ in visibility: the vertex stage places the quad from `view`,
 /// the fragment stage samples through `samp`, and neither wants the other's.
 pub(crate) const VIEW_SLOTS: &[Slot] = &[
-    Slot::dynamic(cd::VIEW).in_stages(wgpu::ShaderStages::VERTEX),
-    Slot::at(cd::SAMP),
+    Slot::dynamic(vd::VIEW).in_stages(wgpu::ShaderStages::VERTEX),
+    Slot::at(vd::SAMP),
 ];
 
 /// The matte's gradient ramp at group 1, per matte where the view is per pass

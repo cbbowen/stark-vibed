@@ -25,24 +25,10 @@
 
 import package::lib::latent::{Latent, latent_of, latent_scale, latent_unpremult};
 import package::lib::paint_common::{OPACITY_K, PAINT_EPS};
+import package::lib::quad::{quad_corner};
+// The canvas → NDC frame and the tile sampler, group 0.
+import package::view::{view, samp, canvas_to_clip, interior_uv};
 
-struct View {
-    // The canvas px -> NDC linear map, column-major: `st.xy` is the first column and
-    // `st.zw` the second. A full 2x2 because the view can be turned and mirrored
-    // (§18.1.2); upright and unmirrored it is diagonal, and this is the
-    // scale pair it always was.
-    st: vec4<f32>,
-    // translate.xy; .z the display transfer (`overlay.wesl` alone reads it); .w unused.
-    xlate: vec4<f32>,
-    // misc.x = tile_size (interior, canvas px). The tile texture carries an apron
-    // around the interior, so we sample only the interior sub-rect and let the
-    // bilinear filter reach into the apron at the edges (kills tile seams):
-    //   uv = corner * misc.y + misc.z,  misc.y = TILE_SIZE/TILE_TEX, misc.z = APRON/TILE_TEX.
-    misc: vec4<f32>,
-}
-
-@group(0) @binding(0) var<uniform> view: View;
-@group(0) @binding(1) var samp: sampler;
 @group(1) @binding(0) var tile_color: texture_2d<f32>;
 @group(1) @binding(1) var tile_aux: texture_2d<f32>;
 // The tile's residual channel (§6.7) — bound only by a space that has one.
@@ -74,14 +60,10 @@ struct Instance {
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, inst: Instance) -> VsOut {
-    let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
-    let m = mat2x2<f32>(view.st.xy, view.st.zw);
-    let canvas_pos = inst.origin + corner * view.misc.x;
-    let ndc = m * canvas_pos + view.xlate.xy;
-
+    let corner = quad_corner(vi);
     var out: VsOut;
-    out.clip = vec4<f32>(ndc, 0.0, 1.0);
-    out.uv = corner * view.misc.y + view.misc.z; // interior sub-rect of the apron'd texture
+    out.clip = canvas_to_clip(inst.origin + corner * view.misc.x);
+    out.uv = interior_uv(corner);
     out.opacity = inst.opacity;
     return out;
 }

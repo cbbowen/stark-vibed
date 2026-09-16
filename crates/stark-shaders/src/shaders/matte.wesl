@@ -25,18 +25,11 @@
 import package::lib::latent::{Latent, latent_lerp, latent_of, latent_scale};
 import package::lib::paint_common::{OPACITY_K};
 import package::lib::ramp_common::{ramp_position};
-
-struct View {
-    // Canvas px -> NDC, column-major: `st.xy` is the first column, `st.zw` the
-    // second. A 2x2 because the view can be turned and mirrored; the matte is a
-    // canvas-space rect, so it turns with the canvas.
-    st: vec4<f32>,
-    // translate.xy; .z the display transfer (`overlay.wesl` alone reads it); .w unused.
-    xlate: vec4<f32>,
-    misc: vec4<f32>, // tile_size, interior uv scale, interior uv bias, zoom
-}
-
-@group(0) @binding(0) var<uniform> view: View;
+import package::lib::quad::{quad_corner};
+// The canvas → NDC frame, group 0 — the matte is a canvas-space rect, so it turns and
+// mirrors with the canvas. The sampler beside it in that module goes unnamed here and
+// the linker strips it: a matte samples no tile.
+import package::view::{view, view_map};
 
 // A gradient matte's ramp (§22.4) — per-matte where the view group is
 // per-pass, so it rides its own bind group. A solid matte binds a zeroed one:
@@ -118,15 +111,14 @@ struct MatteInstance {
 // corners is exact.
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, inst: MatteInstance) -> VsOut {
-    let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
-    let ndc = corner * 2.0 - 1.0;
+    let ndc = quad_corner(vi) * 2.0 - 1.0;
 
     var out: VsOut;
     out.clip = vec4<f32>(ndc, 0.0, 1.0);
     // Back through the view: the map is affine, so inverting it at the corners and
     // interpolating is exact. The 2x2 inverse is four vertices' worth of arithmetic
     // per matte, against carrying a second matrix in the uniform.
-    let m = mat2x2<f32>(view.st.xy, view.st.zw);
+    let m = view_map();
     let det = m[0][0] * m[1][1] - m[1][0] * m[0][1];
     let inv = mat2x2<f32>(
         vec2<f32>(m[1][1], -m[0][1]),

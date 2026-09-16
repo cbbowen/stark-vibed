@@ -1027,12 +1027,17 @@ build script's `#[cfg(test)]` is never compiled, so none of it was testable ther
 
 ### Adding a mirror
 
-1. Nothing, usually. Every struct a `var<uniform>` names is **discovered**; there is
-   no list to join. The one exception is a struct several shaders declare against one
-   host type — add `(&["<module>", …], "<Struct>")` to `SHARED` in
-   `stark-shaders/build.rs`, and the first named is generated from while the rest are
-   **checked to agree**, member for member and offset for offset. `View` is why —
-   `composite.wesl`, `matte.wesl` and `overlay.wesl` each write it out separately.
+1. Nothing. Every struct a `var<uniform>` names is **discovered**; there is no list
+   to join. A host type several pipelines want is a **shared, binding-owning module**
+   they import the binding from — `view.wesl` declares `View`, the uniform behind it
+   and the tile sampler beside it, and `composite.wesl`, `matte.wesl` and
+   `overlay.wesl` each import what they read. That is what retired `SHARED`, the list
+   of "structs two or more modules declare identically" and the check that they did:
+   the check was only ever needed because the declaration was written three times.
+   Such a module may **not** go under `lib/`, which declares no binding; it sits at
+   the tree root beside `blend_common` and `media_common`. What an importer does not
+   name, the linker strips — a matte samples no tile, so no sampler reaches its
+   artifact.
 2. Delete the hand-written struct and import the generated one in its place,
    aliasing it to the host's name (`use stark_shaders::mirror::fill::Fill as
    FillUniform;`). Namespacing by WESL module is not cosmetic: `selection.wesl` and

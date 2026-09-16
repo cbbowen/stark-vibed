@@ -9,16 +9,18 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc::Slot;
 use crate::gpu::desc::{self, RenderPipe};
 use stark_shaders::mirror::overlay::decl as od;
+use stark_shaders::mirror::view::decl as vd;
 
-/// The overlay's **view** group — the same two things pass A's view group holds, from
-/// `overlay.wesl`'s own declarations (§6.10).
+/// The overlay's **view** group — pass A's two slots, from the same `view.wesl`
+/// declarations (§6.10).
 ///
 /// Its uniform is `VERTEX_FRAGMENT` where pass A's is vertex-only: the fragment stage
 /// reads the view here too, to convert a canvas-space dash length into screen px with
-/// the zoom.
+/// the zoom. That visibility is the host's to say, and is why this list exists at all
+/// beside pass A's.
 pub(super) const VIEW_SLOTS: &[Slot] = &[
-    Slot::dynamic(od::VIEW).in_stages(wgpu::ShaderStages::VERTEX_FRAGMENT),
-    Slot::at(od::SAMP),
+    Slot::dynamic(vd::VIEW).in_stages(wgpu::ShaderStages::VERTEX_FRAGMENT),
+    Slot::at(vd::SAMP),
 ];
 
 /// One selection mask tile, sampled to find the contour.

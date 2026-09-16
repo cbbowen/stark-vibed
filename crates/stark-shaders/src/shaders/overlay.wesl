@@ -20,21 +20,11 @@
 // boundary, never how strongly anything is selected.
 
 import package::lib::display::{encode_from_srgb};
+import package::lib::quad::{quad_corner};
+// The canvas → NDC frame and the tile sampler, group 0 — the outline follows the
+// canvas, so it turns and mirrors with it.
+import package::view::{view, samp, canvas_to_clip, interior_uv};
 
-struct View {
-    // Canvas px → NDC, column-major: `st.xy` is the first column, `st.zw` the
-    // second. A 2x2 because the view can be turned and mirrored — the outline
-    // follows the canvas, so it turns with it.
-    st: vec4<f32>,
-    // translate.xy; .z the display transfer the frame's target is encoded in
-    // (`lib/display.wesl`'s selector, as a float), which this pass alone reads; .w
-    // unused.
-    xlate: vec4<f32>,
-    misc: vec4<f32>, // tile_size (interior, canvas px), uv_scale, uv_bias, zoom
-}
-
-@group(0) @binding(0) var<uniform> view: View;
-@group(0) @binding(1) var samp: sampler;
 @group(1) @binding(0) var mask: texture_2d<f32>;
 
 /// Half-width of the drawn outline, in screen px.
@@ -63,15 +53,13 @@ struct OverlayInstance {
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, inst: OverlayInstance) -> VsOut {
-    let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
-    let canvas_pos = inst.origin + corner * view.misc.x;
+    let corner = quad_corner(vi);
     var out: VsOut;
-    let m = mat2x2<f32>(view.st.xy, view.st.zw);
-    out.clip = vec4<f32>(m * canvas_pos + view.xlate.xy, 0.0, 1.0);
-    // Interior sub-rect of the apron'd mask texture, exactly as the compositor maps
-    // a color tile — so the taps below reach into the apron (the neighbour's real
-    // coverage) at the tile edge rather than clamping.
-    out.uv = corner * view.misc.y + view.misc.z;
+    out.clip = canvas_to_clip(inst.origin + corner * view.misc.x);
+    // The apron'd mask texture mapped exactly as the compositor maps a color tile —
+    // so the taps below reach into the apron (the neighbour's real coverage) at the
+    // tile edge rather than clamping.
+    out.uv = interior_uv(corner);
     out.tint = inst.tint;
     out.level = inst.level;
     return out;

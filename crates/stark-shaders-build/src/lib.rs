@@ -60,14 +60,6 @@ pub struct Config<'a> {
     pub resid_feature: &'a str,
     /// The WESL feature gating the sweep's ceiling lane.
     pub ceiling_feature: &'a str,
-    /// The structs **two or more modules declare identically** against one host type,
-    /// as `(modules, struct)`.
-    ///
-    /// The first module is generated from and names the Rust module; the rest are
-    /// checked to agree member for member and offset for offset, then skipped so
-    /// discovery does not emit a second copy. Every *other* uniform struct is
-    /// discovered — this is only about which declarations claim to be one declaration.
-    pub shared: &'a [(&'a [&'a str], &'a str)],
 }
 
 /// Generate the mirrors and deposit every artifact.
@@ -84,7 +76,7 @@ pub fn run(cfg: &Config<'_>) {
     // Read from the *unlinked* sources: the linker mangles `Stamp` to
     // `package__1dynamics_common_Stamp`, emits it once per artifact that reaches it,
     // and has already stripped whatever no entry point uses.
-    emit::generate(cfg.shader_dir, &cfg.out_dir.join("mirror.rs"), cfg.shared);
+    emit::generate(cfg.shader_dir, &cfg.out_dir.join("mirror.rs"));
 
     link::compile_all(cfg, gen_dir.as_deref());
 }
