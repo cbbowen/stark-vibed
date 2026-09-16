@@ -37,17 +37,17 @@
 //! that each `Compositor` notices.
 
 mod attachment;
-mod blend;
-mod blur;
+pub(crate) mod blend;
+pub(crate) mod blur;
 mod display;
-mod filter;
+pub(crate) mod filter;
 mod group;
-mod guides;
-mod media;
-mod overlay;
+pub(crate) mod guides;
+pub(crate) mod media;
+pub(crate) mod overlay;
 mod plan;
-mod resolve;
-mod tiles;
+pub(crate) mod resolve;
+pub(crate) mod tiles;
 mod view;
 
 use std::sync::Arc;

@@ -20,6 +20,10 @@ pub(crate) mod readback;
 pub(crate) mod registry;
 pub(crate) mod scratch;
 pub(crate) mod selection;
+// One check over every pipeline in this subsystem, so it lives above all of them
+// rather than in whichever module it happens to name first.
+#[cfg(test)]
+mod slot_agreement;
 pub(crate) mod stroke;
 pub(crate) mod submit;
 pub(crate) mod substrate;

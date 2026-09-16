@@ -15,7 +15,7 @@ use stark_shaders::mirror::resolve::decl as rd;
 
 /// The presentation resolve's bindings (§6.4): the box filter's extent, and the
 /// supersampled render it averages down.
-const RESOLVE_SLOTS: &[Slot] = &[Slot::at(rd::R), Slot::at(rd::SRC)];
+pub(crate) const RESOLVE_SLOTS: &[Slot] = &[Slot::at(rd::R), Slot::at(rd::SRC)];
 
 // Generated from `resolve.wesl`'s own declaration (§6.7).
 pub(super) use stark_shaders::mirror::resolve::Resolve as ResolveUniform;
@@ -166,7 +166,7 @@ impl ResolvePass {
         // integer block of its own choosing, so nothing here needs a sampler.
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark resolve"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::resolve().into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::resolve().wgsl.into()),
         });
         let layout = desc::pipeline_layout(device, "stark resolve layout", &[Some(bgl)]);
         // The pass covers every texel and carries the alpha it averaged, so there is

@@ -18,13 +18,13 @@ use stark_shaders::mirror::view::decl as vd;
 /// reads the view here too, to convert a canvas-space dash length into screen px with
 /// the zoom. That visibility is the host's to say, and is why this list exists at all
 /// beside pass A's.
-pub(super) const VIEW_SLOTS: &[Slot] = &[
+pub(crate) const VIEW_SLOTS: &[Slot] = &[
     Slot::dynamic(vd::VIEW).in_stages(wgpu::ShaderStages::VERTEX_FRAGMENT),
     Slot::at(vd::SAMP),
 ];
 
 /// One selection mask tile, sampled to find the contour.
-const MASK_SLOTS: &[Slot] = &[Slot::sampled(od::MASK)];
+pub(crate) const MASK_SLOTS: &[Slot] = &[Slot::sampled(od::MASK)];
 use crate::gpu::uniforms::InstanceStream;
 
 /// Per-mask-tile instance of the outline pass: where the tile is, and how to draw
@@ -80,7 +80,7 @@ impl OverlayPass {
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark selection overlay"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::overlay().into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::overlay().wgsl.into()),
         });
         let layout = desc::pipeline_layout(
             device,

@@ -49,7 +49,7 @@ use stark_shaders::mirror::slab::decl as sd;
 /// slots are present or of what type. The two residual entries sit beside the colors
 /// they ride with rather than in a countable tail, since the `@if(resid)` gate is on
 /// the declaration itself (§6.7).
-const MERGE_SLOTS: &[desc::Slot] = &[
+pub(crate) const MERGE_SLOTS: &[desc::Slot] = &[
     desc::Slot::at(md::M),
     desc::Slot::at(md::LOWER_COLOR),
     desc::Slot::at(md::LOWER_AUX),
@@ -61,7 +61,7 @@ const MERGE_SLOTS: &[desc::Slot] = &[
 
 /// Which bindings `slab.wesl` reads — one list for both directions, since they take
 /// the same shapes in and put the same shapes out, which is what makes them one module.
-const SLAB_SLOTS: &[desc::Slot] = &[
+pub(crate) const SLAB_SLOTS: &[desc::Slot] = &[
     desc::Slot::at(sd::S),
     desc::Slot::at(sd::IN_COLOR),
     desc::Slot::at(sd::IN_AUX),
@@ -161,7 +161,7 @@ impl MergeRenderer {
 
         let merge_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark merge"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::merge(color_space.resid()).into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::merge(color_space.resid()).wgsl.into()),
         });
         let direct_bindings =
             desc::Bindings::new(device, "stark merge bgl", MERGE_SLOTS, frag, resid);
@@ -182,7 +182,7 @@ impl MergeRenderer {
         // the same shapes out, which is what makes them one module (`slab.wesl`).
         let slab_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark slab"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::slab(color_space.resid()).into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::slab(color_space.resid()).wgsl.into()),
         });
         let slab_bindings = desc::Bindings::new(device, "stark slab bgl", SLAB_SLOTS, frag, resid);
         let slab_layout =

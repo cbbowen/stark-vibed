@@ -62,7 +62,7 @@ use stark_shaders::mirror::transform::{
 /// bound size at least what the shader reads — so one layout cannot cover both.
 /// `Quad`'s bound rejects the gated pipelines at creation, and `Gated`'s rejects the
 /// affine's buffer at bind time.
-const QUAD_SLOTS: &[Slot] = &[
+pub(crate) const QUAD_SLOTS: &[Slot] = &[
     // The vertex stage places the quad through the forward map; the fragment stage
     // taps the source through the inverse. One slot per draw of a whole `apply`
     // ([`Slots`]), so dynamic.
@@ -72,14 +72,14 @@ const QUAD_SLOTS: &[Slot] = &[
 
 /// The rect-scoped maps' group — the same two things [`QUAD_SLOTS`] holds, against
 /// `Gated` rather than `Quad`.
-const GATED_SLOTS: &[Slot] = &[
+pub(crate) const GATED_SLOTS: &[Slot] = &[
     Slot::dynamic(td::QG).in_stages(wgpu::ShaderStages::VERTEX_FRAGMENT),
     Slot::at(td::SAMP),
 ];
 
 /// The source tile being carried, at group 1 — its channels and the mask over it, all
 /// sampled, since the parcel resamples under the map (§16).
-const SRC_SLOTS: &[Slot] = &[
+pub(crate) const SRC_SLOTS: &[Slot] = &[
     Slot::sampled(td::SRC_COLOR),
     Slot::sampled(td::SRC_AUX),
     Slot::sampled(td::SRC_MASK),
@@ -89,11 +89,11 @@ const SRC_SLOTS: &[Slot] = &[
 ];
 
 /// The mask pass reads only the source mask — the same group 1, one slot of it.
-const MASK_SRC_SLOTS: &[Slot] = &[Slot::sampled(td::SRC_MASK)];
+pub(crate) const MASK_SRC_SLOTS: &[Slot] = &[Slot::sampled(td::SRC_MASK)];
 
 /// The combine's inputs, which claim group 0 from 2 up — the quad passes never see
 /// them, and no entry point reaches both sets (`transform.wesl`'s header).
-const COMBINE_SLOTS: &[Slot] = &[
+pub(crate) const COMBINE_SLOTS: &[Slot] = &[
     Slot::at(td::BASE_COLOR),
     Slot::at(td::BASE_AUX),
     Slot::at(td::BASE_MASK),
@@ -465,7 +465,9 @@ impl TransformRenderer {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark transform"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::transform(color_space.resid()).into()),
+            source: wgpu::ShaderSource::Wgsl(
+                stark_shaders::transform(color_space.resid()).wgsl.into(),
+            ),
         });
 
         let frag = wgpu::ShaderStages::FRAGMENT;

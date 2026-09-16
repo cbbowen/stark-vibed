@@ -70,7 +70,7 @@ use stark_shaders::mirror::selection::decl as sd;
 
 /// One op's rasterize into a mask tile (§6.8): the shape, the mask it combines with,
 /// and the lasso's edge list (a 1×1 stand-in for the analytic shapes).
-const RASTERIZE_SLOTS: &[Slot] = &[
+pub(crate) const RASTERIZE_SLOTS: &[Slot] = &[
     // Per tile, so a dynamic-offset slot rather than a buffer each.
     Slot::dynamic(sd::P),
     Slot::at(sd::PREV),
@@ -79,8 +79,8 @@ const RASTERIZE_SLOTS: &[Slot] = &[
 
 /// The region gather's two groups (`mask_region.wesl`, §6.8/§6.2) — where the region
 /// sits, and one mask tile drawn into it.
-const REGION_VIEW_SLOTS: &[Slot] = &[Slot::at(mrd::R)];
-const REGION_TILE_SLOTS: &[Slot] = &[Slot::at(mrd::MASK)];
+pub(crate) const REGION_VIEW_SLOTS: &[Slot] = &[Slot::at(mrd::R)];
+pub(crate) const REGION_TILE_SLOTS: &[Slot] = &[Slot::at(mrd::MASK)];
 use crate::gpu::scratch::{BufKey, Key, ScratchPool, SubmitScope};
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TilePool};
 use crate::gpu::uniforms::UniformSlots;
@@ -150,7 +150,7 @@ impl SelectionRenderer {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark selection"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::selection().into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::selection().wgsl.into()),
         });
         let frag = wgpu::ShaderStages::FRAGMENT;
         // The mask targets take no blend: the shader does the combine and writes
@@ -175,7 +175,7 @@ impl SelectionRenderer {
         // ---- Region gather (for the brush-dynamics stamp loop, §6.2).
         let region_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark selection region"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::mask_region().into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::mask_region().wgsl.into()),
         });
         let region_view_bindings = desc::Bindings::new(
             device,

@@ -18,18 +18,18 @@ use stark_shaders::mirror::stamp_common::decl as sd;
 /// Group 0 of the stamp pass (§6.2, §6.10): one buffer for the whole stroke with a
 /// slot per tile, selected by a dynamic offset. Declared by `stamp_common.wesl`, where
 /// the swept-segment scaffolding lives, rather than by `stamp.wesl`.
-const XFORM_SLOTS: &[Slot] = &[Slot::dynamic(sd::XF)];
+pub(crate) const XFORM_SLOTS: &[Slot] = &[Slot::dynamic(sd::XF)];
 
 /// The prefix-τ volume at group 1 — an Rg32Float 2-D array (x, y, + orientation
 /// layers; travel prefix in `r`, its lateral prefix in `g`, §6.2) read with
 /// `textureLoad`, since the shader does its own trilinear lookup (§6.6).
-pub(super) const PREFIX_SLOTS: &[Slot] = &[Slot::at(sd::PREFIX_TEX)];
+pub(crate) const PREFIX_SLOTS: &[Slot] = &[Slot::at(sd::PREFIX_TEX)];
 
 /// Group 2: the color-dynamics noise field and its repeat sampler (§6.2), and the
 /// canvas substrate's map — height and the rise ahead — for the deposition tooth
 /// (§6.4). Both are tileable fields the deposit samples per fragment, resolved once
 /// per stroke, so they share a group.
-pub(super) const NOISE_SLOTS: &[Slot] = &[
+pub(crate) const NOISE_SLOTS: &[Slot] = &[
     Slot::sampled(sd::NOISE_TEX),
     Slot::at(sd::NOISE_SAMP),
     // The substrate is read **nearest** (`substrate_texel`, §6.4), so it needs no
@@ -42,7 +42,7 @@ pub(super) const NOISE_SLOTS: &[Slot] = &[
 /// — exactly 1 on the unscaled path, the shader's identity branch — and the ceiling
 /// lane, the parcel's fourth lane under a pen-driven opacity and the 1×1 zero
 /// everywhere else.
-const INTEGRATE_SLOTS: &[Slot] = &[
+pub(crate) const INTEGRATE_SLOTS: &[Slot] = &[
     Slot::at(id::BASE_COLOR),
     Slot::at(id::BASE_AUX),
     Slot::at(id::SCRATCH_COLOR),
@@ -945,7 +945,7 @@ pub(super) fn build_integrate_pipeline(
     let resid = color_space.has_resid();
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark integrate"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::integrate(color_space.resid()).into()),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::integrate(color_space.resid()).wgsl.into()),
     });
     let frag = wgpu::ShaderStages::FRAGMENT;
     let bgl = desc::layout_for(device, "stark integrate bgl", INTEGRATE_SLOTS, frag, resid);

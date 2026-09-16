@@ -12,8 +12,9 @@
 //! **A layout is not written here at all**, it is read off the shader (§6.10).
 //! [`layout_for`] and [`bind_group_for`] take a list of [`Slot`]s naming the generated
 //! declarations, and the index, whether the slot is a uniform and how wide, a sampler,
-//! a texture, or a storage texture of a particular format, and whether the residual
-//! build has it, all come from the WESL. What a list still says is [`How`] the host
+//! a texture of a particular scalar, or a storage texture of a particular format and
+//! access mode, and whether the residual build has it, all come from the WESL. What a
+//! list still says is [`How`] the host
 //! binds: through a sampler, as a dynamic-offset slot, in which stages, and (once) that
 //! a slot exists only where the space has a residual. Each of those four is a fact
 //! about the *host*, and none can be read off the declaration. [`Bindings`] holds a
@@ -27,14 +28,14 @@ use crate::gpu::context::GpuContext;
 fn tex_entry(
     binding: u32,
     vis: wgpu::ShaderStages,
-    filterable: bool,
+    sample_type: wgpu::TextureSampleType,
     view_dimension: wgpu::TextureViewDimension,
 ) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: vis,
         ty: wgpu::BindingType::Texture {
-            sample_type: wgpu::TextureSampleType::Float { filterable },
+            sample_type,
             view_dimension,
             multisampled: false,
         },
@@ -191,6 +192,18 @@ impl Slot {
         &self.decl
     }
 
+    /// Whether this list says the entry point reads the slot **through a sampler** —
+    /// the half of [`How`] the shader also knows, and so the half a generated
+    /// [`Use`](stark_shaders::Use) can be checked against.
+    ///
+    /// The layout path reads [`How`] directly; this exists for
+    /// [`slot_agreement`](crate::gpu::slot_agreement), which is the only thing that has
+    /// a second opinion to compare it with.
+    #[cfg(test)]
+    pub(crate) const fn is_sampled(&self) -> bool {
+        matches!(self.how, How::Sampled)
+    }
+
     /// A slot the shader declares **unconditionally** but that only a residual build
     /// has, because the module declaring it is reached only by a space with a residual
     /// (§6.7).
@@ -223,7 +236,7 @@ impl Slot {
     /// Whether this build has the slot at all: a `@if(resid)` declaration, or one the
     /// host has gated with [`Self::only_with_resid`], exists only in a color space that
     /// carries a residual (§6.7).
-    const fn present(&self, resid: bool) -> bool {
+    pub(crate) const fn present(&self, resid: bool) -> bool {
         resid || !(self.decl.resid || self.resid_only)
     }
 }
@@ -254,14 +267,20 @@ fn slot_entry(
             _ => buffer_entry(decl.index, vis, false, wgpu::BufferSize::new(min_size)),
         },
         stark_shaders::BindKind::Sampler => sampler(decl.index, vis),
-        stark_shaders::BindKind::Texture { dim } => {
-            tex_entry(decl.index, vis, slot.how == How::Sampled, dim)
+        // Filterability is the only half of the sample type the declaration does not
+        // decide, and `Sample::of` is where the two meet (§6.10).
+        stark_shaders::BindKind::Texture { dim, sample } => {
+            tex_entry(decl.index, vis, sample.of(slot.how == How::Sampled), dim)
         }
-        stark_shaders::BindKind::Storage { dim, format } => wgpu::BindGroupLayoutEntry {
+        stark_shaders::BindKind::Storage {
+            dim,
+            format,
+            access,
+        } => wgpu::BindGroupLayoutEntry {
             binding: decl.index,
             visibility: vis,
             ty: wgpu::BindingType::StorageTexture {
-                access: wgpu::StorageTextureAccess::WriteOnly,
+                access,
                 format,
                 view_dimension: dim,
             },

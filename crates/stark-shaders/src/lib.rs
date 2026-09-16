@@ -14,11 +14,52 @@ macro_rules! include_wesl {
     };
 }
 
-// One accessor per module declaring an entry point, discovered from the tree, and the
-// types that choose between a shader's builds (§6.10). The `on` variant of an axis
-// (`Resid`, `Lane`) is generated only where the build linked that variant, so nothing
-// here is `cfg`-split and no combination a caller can write is unbuilt.
+// One record and one accessor per module declaring an entry point, discovered from the
+// tree, and the types that choose between a shader's builds (§6.10). The `on` variant
+// of an axis (`Resid`, `Lane`) is generated only where the build linked that variant,
+// so nothing here is `cfg`-split and no combination a caller can write is unbuilt.
 include!(concat!(env!("OUT_DIR"), "/accessors.rs"));
+
+/// One entry point of a linked artifact, as `naga` reports it (§6.10).
+///
+/// The generated record of a shader has a field per entry point, so a pipeline names
+/// one at compile time; this is what each of those fields carries.
+///
+/// **Everything here is read off the linked WGSL**, which is the only place some of it
+/// is knowable: half of a pipeline's bindings arrive by import, and which of them an
+/// entry point reaches is a fact about the whole call graph rather than about the
+/// module that declares them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EntryPoint {
+    /// The function's name — what `wgpu` is handed as `entry_point`.
+    pub name: &'static str,
+    /// Exactly one stage. A [`ShaderStages`](wgpu::ShaderStages) rather than a
+    /// one-of-three enum because that is what a bind group layout's `visibility` wants,
+    /// and combining two entry points' is then `|`.
+    pub stage: wgpu::ShaderStages,
+    /// `@workgroup_size`, the grid a compute dispatch is counted in — `[0, 0, 0]` for
+    /// every other stage, which declares none.
+    pub workgroup_size: [u32; 3],
+    /// The `@location`s a fragment entry point writes, ascending — its color
+    /// attachments. Empty for every other stage.
+    pub targets: &'static [u32],
+    /// The bindings this entry point **actually reaches**, ascending by slot, callees
+    /// included.
+    pub uses: &'static [Use],
+}
+
+/// One binding an entry point reaches, and how.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Use {
+    /// The shader's declaration of the slot.
+    pub decl: Binding,
+    /// Whether **this** entry point reads it through a sampler — the one thing about a
+    /// texture's layout entry the declaration cannot decide (see [`Binding`]).
+    ///
+    /// The image side of the pair only: a sampler's own entry is a filtering sampler
+    /// either way, so the flag would say nothing about it.
+    pub sampled: bool,
+}
 
 /// What one `@binding` declaration **is**, as the WESL says it (§6.10).
 ///
@@ -43,13 +84,47 @@ pub enum BindKind {
     /// it rather than of the declaration, so it is not here — see [`Binding`].
     Sampler,
     /// `texture_2d<f32>` and friends.
-    Texture { dim: wgpu::TextureViewDimension },
-    /// `texture_storage_2d<format, access>`. The access mode is not here: it is
-    /// implied by the layout entry the host builds.
+    Texture {
+        dim: wgpu::TextureViewDimension,
+        /// The template argument's scalar. Filterability is **not** part of it, which
+        /// is why this is not a `wgpu::TextureSampleType` — see [`Sample`].
+        sample: Sample,
+    },
+    /// `texture_storage_2d<format, access>`.
     Storage {
         dim: wgpu::TextureViewDimension,
         format: wgpu::TextureFormat,
+        access: wgpu::StorageTextureAccess,
     },
+}
+
+/// The scalar a sampled texture is declared over: the `T` of `texture_2d<T>` (§6.10).
+///
+/// **Not `wgpu::TextureSampleType`**, which folds filterability into its `Float`
+/// variant — and filterability is the host's to say, per entry point, since the same
+/// texture is `textureLoad`ed by one and `textureSample`d by the next. [`Self::of`]
+/// puts the two together, and is the only place that knows the flag means nothing to
+/// an integer texture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sample {
+    /// `texture_2d<f32>`.
+    Float,
+    /// `texture_2d<u32>`.
+    Uint,
+    /// `texture_2d<i32>`.
+    Sint,
+}
+
+impl Sample {
+    /// The `wgpu` sample type, given whether this entry point reads it through a
+    /// sampler.
+    pub const fn of(self, filterable: bool) -> wgpu::TextureSampleType {
+        match self {
+            Self::Float => wgpu::TextureSampleType::Float { filterable },
+            Self::Uint => wgpu::TextureSampleType::Uint,
+            Self::Sint => wgpu::TextureSampleType::Sint,
+        }
+    }
 }
 
 /// One `@binding` declaration, generated from the WESL (§6.10).
@@ -69,7 +144,7 @@ pub enum BindKind {
 /// `@group(1)` and `noise_tex` at `@group(2)`, all at index 0). Carrying the
 /// declaration instead removes the question rather than answering it — and takes a
 /// panicking lookup out of the layout path with it.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Binding {
     /// The `@group` this slot is in. A bind group layout is for exactly one group, so
     /// this is what lets the host check that a slot list names one.
@@ -80,6 +155,13 @@ pub struct Binding {
     /// The WESL variable's name, uppercased — the same spelling as the `binding::` and
     /// `decl::` constants, so a diagnostic can name the slot the shader names.
     pub name: &'static str,
+    /// The `.wesl` that declares it, as the tree holds it (`lib/` and all).
+    ///
+    /// A slot is identified by its module and its name together, not by either alone:
+    /// three modules partition one group between them in half the pipelines here
+    /// (`blend_common`, `mixbox_lut`, `blend_mixbox`), and two modules may declare the
+    /// same name.
+    pub module: &'static str,
     pub kind: BindKind,
     /// Whether the declaration is `@if(resid)`-gated, i.e. exists only in the
     /// residual build of the shader (§6.7).

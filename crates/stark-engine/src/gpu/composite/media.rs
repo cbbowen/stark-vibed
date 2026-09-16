@@ -21,7 +21,7 @@ use stark_shaders::mirror::media_mixbox::decl as mmd;
 pub(super) use stark_shaders::mirror::media_common::Media as MediaUniform;
 
 /// Which bindings the media pass reads, in layout order (§6.10).
-const MEDIA_SLOTS: &[Slot] = &[
+pub(crate) const MEDIA_SLOTS: &[Slot] = &[
     Slot::at(mcd::M),
     Slot::at(mcd::COMP_COLOR),
     Slot::at(mcd::COMP_AUX),

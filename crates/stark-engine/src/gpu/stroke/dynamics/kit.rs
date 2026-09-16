@@ -19,7 +19,7 @@ pub(super) use crate::gpu::stroke::swept::PREFIX_SLOTS;
 
 /// The write-back's aux narrowing (`slice.wesl`, §6.2/§6.4): the wide region aux in,
 /// the tile's one channel out.
-pub(super) const SLICE_SLOTS: &[Slot] = &[Slot::at(sld::REGION_AUX)];
+pub(crate) const SLICE_SLOTS: &[Slot] = &[Slot::at(sld::REGION_AUX)];
 use crate::gpu::tile::SCRATCH_AUX_FORMAT;
 
 use super::slots;
@@ -136,7 +136,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // (color + the wide aux, so nothing is narrowed until the write-back).
     let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark dynamics composite"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::composite(color_space.resid()).into()),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::composite(color_space.resid()).wgsl.into()),
     });
     // Pass A's own tile layout, because the group this loop binds per tile is the one
     // the tile itself caches (`composite::tile_bind_group_layout`). The view group has
@@ -199,11 +199,11 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // uniform whichever module it came from.
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark dynamics loop"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::dynamics(color_space.resid()).into()),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::dynamics(color_space.resid()).wgsl.into()),
     });
     let liquify_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark liquify field"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::liquify(color_space.resid()).into()),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::liquify(color_space.resid()).wgsl.into()),
     });
     // Every layout below is compute-visible and opens with the dynamic-offset stamp
     // slot; the binding numbers partition the module's group(0), so a layout lists only
@@ -343,7 +343,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // neither a per-tile uniform nor a residual variant.
     let slice_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark dynamics slice"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::slice().into()),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::slice().wgsl.into()),
     });
     let slice_bgl = desc::layout_for(device, "stark dynamics slice bgl", SLICE_SLOTS, frag, false);
     let slice_layout =

@@ -239,16 +239,16 @@ impl ColorSpace for OkLabColorSpace {
     }
 
     fn stamp_shader(&self, lane: Lane) -> &'static str {
-        stark_shaders::stamp(Resid::Without, lane)
+        stark_shaders::stamp(Resid::Without, lane).wgsl
     }
     fn media_shader(&self) -> &'static str {
-        stark_shaders::media_oklab()
+        stark_shaders::media_oklab().wgsl
     }
     fn blend_shader(&self) -> &'static str {
-        stark_shaders::blend_oklab()
+        stark_shaders::blend_oklab().wgsl
     }
     fn filter_shader(&self) -> &'static str {
-        stark_shaders::filter_oklab()
+        stark_shaders::filter_oklab().wgsl
     }
 }
 
@@ -324,16 +324,16 @@ impl ColorSpace for MixboxColorSpace {
     fn stamp_shader(&self, lane: Lane) -> &'static str {
         // Deposit is premultiplied-over of the channels — the same law as Oklab's,
         // run over one more target.
-        stark_shaders::stamp(Resid::With, lane)
+        stark_shaders::stamp(Resid::With, lane).wgsl
     }
     fn media_shader(&self) -> &'static str {
-        stark_shaders::media_mixbox()
+        stark_shaders::media_mixbox().wgsl
     }
     fn blend_shader(&self) -> &'static str {
-        stark_shaders::blend_mixbox()
+        stark_shaders::blend_mixbox().wgsl
     }
     fn filter_shader(&self) -> &'static str {
-        stark_shaders::filter_mixbox()
+        stark_shaders::filter_mixbox().wgsl
     }
     /// The one space that needs it: expressing combined or adjusted *light* back as
     /// a pigment mixture is Mixbox's LUT, the inverse of the polynomial the media

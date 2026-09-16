@@ -392,12 +392,13 @@ struct View { origin: vec4<f32> }
         );
         assert_eq!(
             module_body(&out, "decl"),
-            r#"        use super::{BindKind, Binding};
+            r#"        use super::{BindKind, Binding, Sample};
         /// `@group(0) @binding(0) var view` — see [`super::binding::VIEW`].
         pub const VIEW: Binding = Binding {
             group: 0,
             index: 0,
             name: "VIEW",
+            module: "probe",
             kind: BindKind::Uniform { min_size: 16 },
             resid: false,
         };
@@ -406,6 +407,7 @@ struct View { origin: vec4<f32> }
             group: 0,
             index: 1,
             name: "SAMP",
+            module: "probe",
             kind: BindKind::Sampler,
             resid: false,
         };
@@ -414,8 +416,10 @@ struct View { origin: vec4<f32> }
             group: 0,
             index: 2,
             name: "SRC",
+            module: "probe",
             kind: BindKind::Texture {
                 dim: wgpu::TextureViewDimension::D2,
+                sample: Sample::Float,
             },
             resid: false,
         };
@@ -424,9 +428,11 @@ struct View { origin: vec4<f32> }
             group: 1,
             index: 0,
             name: "DST",
+            module: "probe",
             kind: BindKind::Storage {
                 dim: wgpu::TextureViewDimension::D2,
                 format: wgpu::TextureFormat::Rgba16Float,
+                access: wgpu::StorageTextureAccess::WriteOnly,
             },
             resid: false,
         };
@@ -435,9 +441,11 @@ struct View { origin: vec4<f32> }
             group: 1,
             index: 1,
             name: "DST_RESID",
+            module: "probe",
             kind: BindKind::Storage {
                 dim: wgpu::TextureViewDimension::D2,
                 format: wgpu::TextureFormat::Rgba16Float,
+                access: wgpu::StorageTextureAccess::WriteOnly,
             },
             resid: true,
         };"#,

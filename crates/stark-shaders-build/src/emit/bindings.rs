@@ -43,6 +43,10 @@ pub(super) fn emit(m: &Module) -> TokenStream {
     let mut indices = Vec::new();
     let mut decls = Vec::new();
     let mut table = Vec::new();
+    // Only a sampled texture names `Sample`, and three modules of the tree declare
+    // nothing but uniforms, samplers and storage targets — where importing it would be
+    // an unused import in generated code, which nobody can silence at its use site.
+    let mut names_sample = false;
     for d in &tu.global_declarations {
         let GlobalDeclaration::Declaration(decl) = &**d else {
             continue;
@@ -82,7 +86,8 @@ pub(super) fn emit(m: &Module) -> TokenStream {
 
         // The rest of what the declaration decides: what kind of thing occupies the
         // slot, and whether it exists at all in a build without the residual.
-        let kind = bind_kind(decl, m, &member, &mut ctx);
+        let (kind, sample) = bind_kind(decl, m, &member, &mut ctx);
+        names_sample |= sample;
         // `@if(resid)` — the shader's own gate on the slot, carried through so a
         // layout never has to restate it as an element count (`[..12 + 4 *
         // usize::from(resid)]`).
@@ -101,6 +106,7 @@ pub(super) fn emit(m: &Module) -> TokenStream {
                 group: #group_lit,
                 index: #index_lit,
                 name: #name,
+                module: #module,
                 kind: #kind,
                 resid: #resid,
             };
@@ -129,11 +135,12 @@ pub(super) fn emit(m: &Module) -> TokenStream {
     );
     let table_doc = " Every declaration in [`decl`], in declaration order — for the checks that ask\n \
          about the set rather than about one slot.";
+    let sample_import = names_sample.then(|| quote!(, Sample));
     quote! {
         // The descriptor types are hand-written in `lib.rs` — they are the host's
         // vocabulary, not the shader's — and this generated module sits two levels
         // below the crate root, so it names them absolutely.
-        use crate::{BindKind, Binding};
+        use crate::{BindKind, Binding #sample_import};
 
         #[doc = #index_doc]
         pub mod binding {
@@ -142,7 +149,7 @@ pub(super) fn emit(m: &Module) -> TokenStream {
 
         #[doc = #decl_doc]
         pub mod decl {
-            use super::{BindKind, Binding};
+            use super::{BindKind, Binding #sample_import};
             #(#decls)*
         }
 
@@ -164,7 +171,15 @@ pub(super) fn emit(m: &Module) -> TokenStream {
 /// `&'static str` bought nothing but a pair of string matches on the host, each with a
 /// runtime panic for a fact known here. Now an unmapped format stops *this* build,
 /// naming the declaration.
-fn bind_kind(decl: &Declaration, m: &Module, member: &str, ctx: &mut Context<'_>) -> TokenStream {
+///
+/// The `bool` is whether the expression names `Sample`, which decides the generated
+/// module's imports.
+fn bind_kind(
+    decl: &Declaration,
+    m: &Module,
+    member: &str,
+    ctx: &mut Context<'_>,
+) -> (TokenStream, bool) {
     let module = m.path.as_str();
     let ty = decl
         .ty
@@ -181,30 +196,50 @@ fn bind_kind(decl: &Declaration, m: &Module, member: &str, ctx: &mut Context<'_>
     ) {
         let size = uniform_size(ty, m, member, ctx);
         let size = proc_macro2::Literal::u64_unsuffixed(size);
-        return quote!(BindKind::Uniform { min_size: #size });
+        return (quote!(BindKind::Uniform { min_size: #size }), false);
     }
     if name == "sampler" {
-        return quote!(BindKind::Sampler);
+        return (quote!(BindKind::Sampler), false);
     }
     let at = || format!("`{module}.wesl`'s `{member}`");
     if let Some(dim) = name.strip_prefix("texture_storage_") {
-        // `<format, access>`; only the format reaches the host's descriptor, the
-        // access mode being implied by the layout entry the host builds.
+        // `<format, access>` — both of them. The host used to write `WriteOnly` into
+        // every storage entry it built, which was right only because every declaration
+        // in the tree says `write`.
         let args = ty
             .template_args
             .as_ref()
             .unwrap_or_else(|| panic!("{} has no storage format", at()));
-        let format = expr_ident(&args[0].expression)
-            .unwrap_or_else(|| panic!("{} has a storage format that is not a name", at()));
+        let format = arg_ident(args.first(), "storage format", &at());
         let format = texture_format(&format, &at());
+        let access = arg_ident(args.get(1), "access mode", &at());
+        let access = storage_access(&access, &at());
         let dim = view_dimension(dim, &at());
-        return quote!(BindKind::Storage { dim: #dim, format: #format });
+        return (
+            quote!(BindKind::Storage { dim: #dim, format: #format, access: #access }),
+            false,
+        );
     }
     if let Some(dim) = name.strip_prefix("texture_") {
+        let scalar = arg_ident(
+            ty.template_args.as_ref().and_then(|a| a.first()),
+            "sample type",
+            &at(),
+        );
+        let sample = sample_type(&scalar, &at());
         let dim = view_dimension(dim, &at());
-        return quote!(BindKind::Texture { dim: #dim });
+        return (
+            quote!(BindKind::Texture { dim: #dim, sample: #sample }),
+            true,
+        );
     }
     panic!("{} has type `{name}`, which is not a binding kind", at());
+}
+
+/// One template argument as the name it is, or a refusal naming what was wanted.
+fn arg_ident(arg: Option<&wesl::syntax::TemplateArg>, what: &str, at: &str) -> String {
+    let arg = arg.unwrap_or_else(|| panic!("{at} has no {what}"));
+    expr_ident(&arg.expression).unwrap_or_else(|| panic!("{at} has a {what} that is not a name"))
 }
 
 /// A WGSL storage-format name as a `wgpu::TextureFormat` path.
@@ -228,6 +263,34 @@ fn texture_format(wgsl: &str, at: &str) -> TokenStream {
     };
     let ident = format_ident!("{ident}");
     quote!(wgpu::TextureFormat::#ident)
+}
+
+/// A WGSL storage access mode as a `wgpu::StorageTextureAccess` path.
+fn storage_access(wgsl: &str, at: &str) -> TokenStream {
+    let ident = match wgsl {
+        "write" => "WriteOnly",
+        "read" => "ReadOnly",
+        "read_write" => "ReadWrite",
+        other => panic!("{at} declares access mode `{other}`, which is no WGSL access mode"),
+    };
+    let ident = format_ident!("{ident}");
+    quote!(wgpu::StorageTextureAccess::#ident)
+}
+
+/// A sampled texture's scalar as a `Sample` path.
+///
+/// Every legal spelling, unlike [`texture_format`]'s declared subset: the three are a
+/// closed set in WGSL and the mapping is mechanical, so a tree that grew a `u32`
+/// texture should mirror rather than stop the build.
+fn sample_type(wgsl: &str, at: &str) -> TokenStream {
+    let ident = match wgsl {
+        "f32" => "Float",
+        "u32" => "Uint",
+        "i32" => "Sint",
+        other => panic!("{at} is a `texture_2d<{other}>`, which is no WGSL sample type"),
+    };
+    let ident = format_ident!("{ident}");
+    quote!(Sample::#ident)
 }
 
 /// A WGSL texture type's dimension suffix as a `wgpu::TextureViewDimension` path.

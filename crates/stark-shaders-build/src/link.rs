@@ -1,16 +1,29 @@
 //! Linking each entry point with its imports and depositing the WGSL.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::entries::{Build, Entry};
-use crate::{Config, check, collide};
+use crate::reflect::Reflected;
+use crate::tree::Module;
+use crate::{Config, check, collide, reflect};
 
-/// Link and deposit every artifact this configuration asks for.
+/// Every deposited artifact's entry points, by artifact name.
+pub(crate) type Reflections = BTreeMap<String, Vec<Reflected>>;
+
+/// Link and deposit every artifact this configuration asks for, and report what naga
+/// made of each.
 ///
 /// `gen_dir` is where [`crate::GEN_PREFIX`] resolves, when there is anything mounted
 /// under it. A `Router` with nothing there is exactly right: an import of it would be a
 /// resolve error, and without Mixbox there is none.
-pub(crate) fn compile_all(cfg: &Config<'_>, entries: &[Entry<'_>], gen_dir: Option<&Path>) {
+pub(crate) fn compile_all(
+    cfg: &Config<'_>,
+    modules: &[Module],
+    entries: &[Entry<'_>],
+    gen_dir: Option<&Path>,
+) -> Reflections {
+    let mut reflections = Reflections::new();
     let mut router = wesl::Router::new();
     if let Some(dir) = gen_dir {
         router.mount_resolver(
@@ -39,11 +52,20 @@ pub(crate) fn compile_all(cfg: &Config<'_>, entries: &[Entry<'_>], gen_dir: Opti
                         .is_some_and(|i| build.on[i]);
                     compiler.set_feature(axis.feature, on);
                 }
-                build_one(&compiler, cfg.out_dir, &entry.module.path, &build.artifact)
+                let (wgsl, reflected) = build_one(
+                    &compiler,
+                    cfg.out_dir,
+                    modules,
+                    &entry.module.path,
+                    &build.artifact,
+                );
+                reflections.insert(build.artifact.clone(), reflected);
+                wgsl
             })
             .collect();
         varies(entry, &builds, &linked);
     }
+    reflections
 }
 
 /// Fail unless every axis that is *on* in a build actually changed that build.
@@ -90,16 +112,17 @@ fn varies(entry: &Entry<'_>, builds: &[Build], linked: &[String]) {
 }
 
 /// Link `module` with its imports, check the result's bindings, and deposit the WGSL
-/// under `artifact`, returning what was written.
+/// under `artifact`, returning what was written and what its entry points are.
 ///
 /// The two names differ for every variant (`stamp` → `stamp_resid`): the module a
 /// variant links and the file it lands in are stated independently.
 fn build_one(
     compiler: &wesl::Wesl<impl wesl::Resolver>,
     out_dir: &Path,
+    modules: &[Module],
     module: &str,
     artifact: &str,
-) -> String {
+) -> (String, Vec<Reflected>) {
     let path = format!("package::{module}");
     let root = path
         .parse()
@@ -111,10 +134,12 @@ fn build_one(
     // Rendered once and deposited as it stands: `write_artifact` would render the
     // linked tree a second time to write the same bytes the type check just read.
     let wgsl = compiled.to_string();
-    check::typechecks(&wgsl, artifact);
+    let (naga, info) = check::typechecks(&wgsl, artifact);
+    let reflected =
+        reflect::entry_points(&naga, &info, &compiled.sourcemap, module, modules, artifact);
     let out = out_dir.join(format!("{artifact}.wgsl"));
     std::fs::write(&out, &wgsl).unwrap_or_else(|e| panic!("write {}: {e}", out.display()));
-    wgsl
+    (wgsl, reflected)
 }
 
 /// The difference check, over an entry point's builds without linking anything: the

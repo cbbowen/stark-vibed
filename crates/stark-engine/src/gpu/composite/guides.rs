@@ -22,7 +22,7 @@ use stark_shaders::mirror::guides::decl as gd;
 /// Bound to **both** stages: the vertex stage reads the display transfer out of it, to
 /// convert the pass's sRGB-coded hues once per triangle rather than once per texel of a
 /// fullscreen pass (`guides.wesl`'s `VsOut`).
-const GUIDE_SLOTS: &[Slot] =
+pub(crate) const GUIDE_SLOTS: &[Slot] =
     &[Slot::dynamic(gd::GUIDE).in_stages(wgpu::ShaderStages::VERTEX_FRAGMENT)];
 use crate::gpu::uniforms::UniformSlots;
 
@@ -137,7 +137,7 @@ impl GuidePass {
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark guides"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::guides().into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::guides().wgsl.into()),
         });
         let layout = desc::pipeline_layout(device, "stark guides layout", &[Some(bgl)]);
         let pipeline = desc::fullscreen_pipeline(

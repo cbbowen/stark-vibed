@@ -30,7 +30,7 @@ use stark_shaders::mirror::liquify::decl as ld;
 
 /// The extent copy that gives `deposit`/`settle` something to read while they
 /// storage-write the region.
-pub(super) const SNAPSHOT: &[Slot] = &[
+pub(crate) const SNAPSHOT: &[Slot] = &[
     Slot::dynamic(sd::ST),
     Slot::at(d::REGION_COLOR),
     Slot::at(d::REGION_AUX),
@@ -45,7 +45,7 @@ pub(super) const SNAPSHOT: &[Slot] = &[
 /// The extent `snapshot`'s targets are here too: a painting segment's snapshot runs
 /// from the tail of the `exchange` grid rather than from a dispatch of its own
 /// (`dynamics.wesl::exchange`), so its writes belong to this layout.
-pub(super) const EXCHANGE: &[Slot] = &[
+pub(crate) const EXCHANGE: &[Slot] = &[
     Slot::dynamic(sd::ST),
     // Bilinear, unlike `snapshot`'s load of the same two slots — the reservoir texel
     // asking sits over an arbitrary sub-pixel spot on the region.
@@ -70,7 +70,7 @@ pub(super) const EXCHANGE: &[Slot] = &[
 
 /// Integrates the reservoir along the segment's travel axis so the deposit can read
 /// the whole pass instead of one mid-pass sample.
-pub(super) const BAKE: &[Slot] = &[
+pub(crate) const BAKE: &[Slot] = &[
     Slot::dynamic(sd::ST),
     Slot::at(d::SAMP),
     Slot::sampled(d::BRUSH_SRC_COLOR),
@@ -82,7 +82,7 @@ pub(super) const BAKE: &[Slot] = &[
 ];
 
 /// The canvas's half of the transfer, exact per texel.
-pub(super) const DEPOSIT: &[Slot] = &[
+pub(crate) const DEPOSIT: &[Slot] = &[
     Slot::dynamic(sd::ST),
     Slot::at(d::SAMP),
     Slot::at(d::BAKE_LOAD),
@@ -116,11 +116,11 @@ pub(super) const DEPOSIT: &[Slot] = &[
 
 /// `bleed_weight`: one thread per snapshot texel, writing the mobility the ladder reads
 /// back thirty-six times (§6.2). Its own uniform and its own target, and nothing else.
-pub(super) const BLEED_WEIGHT: &[Slot] = &[Slot::dynamic(sd::ST), Slot::at(d::BLEED_W_W)];
+pub(crate) const BLEED_WEIGHT: &[Slot] = &[Slot::dynamic(sd::ST), Slot::at(d::BLEED_W_W)];
 
 /// `cell_hoist`: the exact deposit's front half — the baked prefixes in, the per-cell
 /// means out — plus the prefix-τ volume at group 1 (§6.2).
-pub(super) const HOIST: &[Slot] = &[
+pub(crate) const HOIST: &[Slot] = &[
     Slot::dynamic(sd::ST),
     Slot::at(d::BAKE_LOAD),
     Slot::at(d::BAKE_LATM),
@@ -133,7 +133,7 @@ pub(super) const HOIST: &[Slot] = &[
 /// `deposit_coarse`: the deposit list with the baked prefixes swapped for the cell
 /// means. It takes no prefix-τ tap and no bake tap of its own, which is the whole
 /// point, so neither appears here (nor does group 1).
-pub(super) const DEPOSIT_COARSE: &[Slot] = &[
+pub(crate) const DEPOSIT_COARSE: &[Slot] = &[
     Slot::dynamic(sd::ST),
     Slot::at(d::UNDER_COLOR),
     Slot::at(d::UNDER_AUX),
@@ -153,7 +153,7 @@ pub(super) const DEPOSIT_COARSE: &[Slot] = &[
 
 /// `snapshot_field`: the liquify field under a warp slot's square, copied so the
 /// composition can gather it while storage-writing it (§6.13).
-pub(super) const SNAPSHOT_FIELD: &[Slot] = &[
+pub(crate) const SNAPSHOT_FIELD: &[Slot] = &[
     Slot::dynamic(sd::ST),
     Slot::at(ld::FIELD),
     Slot::at(ld::UNDER_FIELD_W),
@@ -164,7 +164,7 @@ pub(super) const SNAPSHOT_FIELD: &[Slot] = &[
 /// follow. Nothing of the picture: the field is all this kernel evolves. The tip it
 /// reads is at group 1, [`PREFIX_SLOTS`](super::kit::PREFIX_SLOTS) — bound to the
 /// **coverage** prefix rather than the prefix-τ every other pass reads there.
-pub(super) const WARP: &[Slot] = &[
+pub(crate) const WARP: &[Slot] = &[
     Slot::dynamic(sd::ST),
     Slot::at(ld::UNDER_FIELD),
     Slot::at(ld::FIELD_W),
@@ -174,7 +174,7 @@ pub(super) const WARP: &[Slot] = &[
 /// `warp_apply`: the one resample of a liquify piece (§6.13) — the field and the
 /// base composite in, the region's channels out, which the write-back then slices
 /// exactly as it slices the wet loop's.
-pub(super) const WARP_APPLY: &[Slot] = &[
+pub(crate) const WARP_APPLY: &[Slot] = &[
     Slot::dynamic(sd::ST),
     Slot::at(ld::FIELD),
     Slot::at(ld::BASE_COLOR),
@@ -188,7 +188,7 @@ pub(super) const WARP_APPLY: &[Slot] = &[
 /// The pen-up: the deposit's targets and snapshot, and its *baked* reservoir reads too
 /// — the settle's parcel is the delivery integral of the remaining pass, which the
 /// settle slot's own `bake` dispatch stores (`dynamics.wesl::settle`).
-pub(super) const SETTLE: &[Slot] = &[
+pub(crate) const SETTLE: &[Slot] = &[
     Slot::dynamic(sd::ST),
     Slot::at(d::BAKE_LOAD),
     Slot::at(d::BAKE_LATM),

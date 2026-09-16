@@ -50,7 +50,7 @@ use stark_shaders::mirror::fill::decl as fd;
 /// are both `var<uniform>` in the WESL, and the difference is that the first is one
 /// buffer for the whole fill while the second is a per-tile slot of one
 /// (`UniformSlots`). That is what [`desc::Slot::dynamic`] says.
-const FILL_SLOTS: &[desc::Slot] = &[
+pub(crate) const FILL_SLOTS: &[desc::Slot] = &[
     desc::Slot::at(fd::F),
     desc::Slot::at(fd::BASE_COLOR),
     desc::Slot::at(fd::BASE_AUX),
@@ -103,7 +103,7 @@ impl FillRenderer {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark fill"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::fill(color_space.resid()).into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::fill(color_space.resid()).wgsl.into()),
         });
         let frag = wgpu::ShaderStages::FRAGMENT;
         let bindings = desc::Bindings::new(

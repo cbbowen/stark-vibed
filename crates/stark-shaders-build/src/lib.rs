@@ -6,7 +6,8 @@
 //! * The **mirrors** — the Rust structs, constants, binding tables and vertex layouts
 //!   the tree's own declarations describe (`emit`).
 //! * The **accessors** — one Rust function per artifact, taking a typed parameter per
-//!   axis the shader is linked along (`entries`, `accessors`).
+//!   axis the shader is linked along, returning the record of what naga made of it:
+//!   the WGSL, and a field per entry point (`entries`, `reflect`, `accessors`).
 //!
 //! It is a library because a build script's `#[cfg(test)]` is never compiled, so none
 //! of this could be tested where it used to live. Failures are still reported by
@@ -22,6 +23,7 @@ mod eval;
 mod layout;
 mod link;
 mod mixbox_poly;
+mod reflect;
 mod tree;
 
 use std::path::Path;
@@ -80,11 +82,15 @@ pub fn run(cfg: &Config<'_>) {
     let entries = entries::discover(&modules, cfg.axes, pigment);
 
     emit::generate(&modules, &cfg.out_dir.join("mirror.rs"));
+    // Linked *before* the accessors: what an entry point's stage is, which targets it
+    // writes and which globals it reaches are all answers only the linked artifact
+    // holds, and the accessor is where they are reported.
+    let reflections = link::compile_all(cfg, &modules, &entries, gen_dir.as_deref());
     accessors::generate(
         &entries,
         cfg.axes,
         pigment,
+        &reflections,
         &cfg.out_dir.join("accessors.rs"),
     );
-    link::compile_all(cfg, &entries, gen_dir.as_deref());
 }

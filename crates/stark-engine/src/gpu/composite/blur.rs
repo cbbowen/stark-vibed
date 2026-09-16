@@ -68,7 +68,7 @@ use super::group::FilterDraw;
 /// The FFT group's bindings, in layout order (§6.10): the per-dispatch plan, the
 /// half of the ping-pong being read, the kernel's transform, and the half being
 /// written.
-const BLUR_SLOTS: &[Slot] = &[
+pub(crate) const BLUR_SLOTS: &[Slot] = &[
     Slot::dynamic(bd::F),
     Slot::at(bd::SRC_LIGHT),
     Slot::at(bd::SRC_AUX),
@@ -92,7 +92,7 @@ impl BlurPass {
         let device = &ctx.device;
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark blur"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::blur().into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::blur().wgsl.into()),
         });
         let bgl = desc::layout_for(
             device,
@@ -132,7 +132,9 @@ impl BlurPass {
     /// (`ScratchLevel::filter_bg`) and the caller must invalidate them. A moved uniform
     /// buffer is *not* part of that answer: the only groups naming it are this module's
     /// own, rebuilt here.
-    pub(crate) fn prepare(
+    // `pub(super)`: both callers are `composite`'s, and `Aperture` — this module's
+    // own — is in the signature, so a wider one would leak it.
+    pub(super) fn prepare(
         &self,
         ctx: &GpuContext,
         frame: &mut Option<BlurFrame>,

@@ -37,7 +37,7 @@ use crate::gpu::scratch::{BufKey, Key};
 /// The integrate's one group (`erase.wesl`): the pristine tile, the stroke's
 /// accumulated mass, the selection, the opacity uniform, and the ceiling lane —
 /// the parcel's second lane under a pen-driven opacity, the 1×1 zero otherwise.
-const ERASE_SLOTS: &[Slot] = &[
+pub(crate) const ERASE_SLOTS: &[Slot] = &[
     Slot::at(ed::BASE_COLOR),
     Slot::at(ed::BASE_AUX),
     Slot::at(ed::ACCUM),
@@ -168,7 +168,7 @@ pub(super) fn build_erase_kit(
     let resid = color_space.has_resid();
     let integrate_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("stark erase"),
-        source: wgpu::ShaderSource::Wgsl(stark_shaders::erase(color_space.resid()).into()),
+        source: wgpu::ShaderSource::Wgsl(stark_shaders::erase(color_space.resid()).wgsl.into()),
     });
     let frag = wgpu::ShaderStages::FRAGMENT;
     let integrate_bgl = desc::layout_for(device, "stark erase bgl", ERASE_SLOTS, frag, resid);

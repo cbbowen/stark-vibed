@@ -35,7 +35,7 @@ pub(crate) use stark_shaders::mirror::blend_common::Blend as BlendUniform;
 /// `mixbox_lut.wesl`'s, 7–8 `blend_mixbox.wesl`'s. Naming the declarations rather than
 /// the indices is what keeps the host from disagreeing with any of the three, and
 /// `build.rs` checks the linked artifact for a collision between them.
-const BLEND_SLOTS: &[Slot] = &[
+pub(crate) const BLEND_SLOTS: &[Slot] = &[
     // One slot per blend group in the frame; see [`UniformSlots`].
     Slot::dynamic(bcd::B),
     Slot::at(bcd::BACK_COLOR),

@@ -28,7 +28,7 @@ pub(crate) const VIEW_SLOTS: &[Slot] = &[
 ///
 /// Visible outside this module because the layout is built here and the group beside
 /// the ramps' upload; one list keeps the two from disagreeing about the binding.
-pub(super) const RAMP_SLOTS: &[Slot] = &[Slot::dynamic(md::RAMP)];
+pub(crate) const RAMP_SLOTS: &[Slot] = &[Slot::dynamic(md::RAMP)];
 
 /// Pass A's **tile** group: one layer tile's channels, sampled through the view's
 /// sampler so the bilinear filter reaches into the apron at the edges (§6.4).
@@ -85,7 +85,9 @@ impl TilePass {
         let resid = formats.has_resid();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark composite"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::composite(color_space.resid()).into()),
+            source: wgpu::ShaderSource::Wgsl(
+                stark_shaders::composite(color_space.resid()).wgsl.into(),
+            ),
         });
 
         // Vertex-only: the fragment stage gets canvas position as a varying, and the
@@ -127,7 +129,7 @@ impl TilePass {
         // ---- Matte layers, inside pass A (§15.4), on pass A's own view group.
         let matte_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark matte"),
-            source: wgpu::ShaderSource::Wgsl(stark_shaders::matte(color_space.resid()).into()),
+            source: wgpu::ShaderSource::Wgsl(stark_shaders::matte(color_space.resid()).wgsl.into()),
         });
         let ramp_bgl = desc::layout_for(device, "stark matte ramp bgl", RAMP_SLOTS, frag, resid);
         let matte_layout = desc::pipeline_layout(

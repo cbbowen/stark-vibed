@@ -41,12 +41,12 @@ use stark_shaders::Lane;
 
 mod accum;
 mod budget;
-mod dynamics;
-mod erase;
+pub(crate) mod dynamics;
+pub(crate) mod erase;
 mod incremental;
 mod region;
 mod segments;
-mod swept;
+pub(crate) mod swept;
 mod tips;
 
 use crate::gpu::scratch::ScratchPool;
