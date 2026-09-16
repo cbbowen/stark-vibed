@@ -398,6 +398,89 @@ const SEAM_MEDIA: MediaParams = MediaParams {
     dither: false,
 };
 
+/// **The apron rule survives a long way from the origin** (§6.4) — and the mark does
+/// not quite.
+///
+/// The swept fast path works in **absolute** f32 canvas px (`stamp_common.wesl`'s
+/// `in.canvas`), where the dynamics loop works region-local; at 2²⁰ px out the frame's
+/// own ULP is ⅛ px. Every other test in this file paints about the origin, so this is
+/// the one that asks the apron-vs-neighbour-interior question at a distance.
+///
+/// **The seam holds.** Worst apron-to-interior height step against a ~4.05 peak, swept
+/// then loop: 0/0 at the origin, one f16 ULP (0.0039) / 0 at every shift from 2⁸ to
+/// 2²², with no shift in between where it grows. The region path is exactly zero
+/// throughout, which is what working region-local buys it.
+///
+/// What drifts instead is the **mark itself**: the same stroke lays +0.06% of height at
+/// 2¹⁶, +1.2% at 2²⁰ and +5.7% at 2²², because the tip's coverage is evaluated at a
+/// position the frame can no longer resolve. A real limitation of the infinite canvas,
+/// but not a seam — it moves a tile and its neighbour together, which is why the two
+/// bounds below are so far apart.
+#[test]
+fn a_stroke_far_from_the_origin_keeps_its_aprons() {
+    use stark_model::document::{BrushEffect, LayerId};
+    use stark_model::geom::{TILE_SIZE, TileCoord};
+
+    // Shift from the origin, and what it may add to the stroke's weight.
+    const CASES: [(f32, f64); 3] = [(0.0, 0.0), (1_048_576.0, 0.02), (4_194_304.0, 0.08)];
+
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    for (what, effect) in [
+        ("swept", BrushEffect::painted(RED)),
+        ("loop", BrushEffect::wet_with(RED, BrushDynamics::default())),
+    ] {
+        let mut at_origin = 0.0;
+        for (shift, drift_bound) in CASES {
+            let mut b = flat_brush(RED, 40.0);
+            b.effect = effect;
+            b.drain = 0.0;
+            let o = Vec2::splat(shift);
+            stroke_with(
+                &mut engine,
+                b,
+                &[o + Vec2::new(-70.0, -60.0), o + Vec2::new(70.0, 80.0)],
+            );
+            let (worst, peak) = apron_mismatch(&engine);
+            let total = total_height(&engine, LayerId::ROOT);
+            // The mark is where it was asked for, not back at the origin — without this
+            // a stroke the engine had declined would compare an empty layer with itself.
+            let out_there = (shift / TILE_SIZE as f32) as i32;
+            let landed = engine
+                .tile_channels(LayerId::ROOT, TileCoord::new(out_there, out_there))
+                .is_some();
+            engine.process(DocCommand::Undo);
+            assert!(
+                peak > 0.0 && landed,
+                "{what}: the stroke at {shift} left no tile at ({out_there}, {out_there})"
+            );
+            // One f16 ULP at this peak is 0.00098 of it, so this is four of them — a
+            // hundredth of what the toothed case above allows, and what says the two
+            // sides of a boundary are still the same number rather than merely close.
+            assert!(
+                worst <= 0.004 * peak,
+                "{what}: at {shift} px out, an apron differs from the interior it \
+                 duplicates by {worst} of a {peak} peak — the absolute canvas frame has \
+                 stopped resolving a tile boundary the same way from both sides"
+            );
+            if shift == 0.0 {
+                at_origin = total;
+                continue;
+            }
+            let drift = (total - at_origin) / at_origin;
+            assert!(
+                drift.abs() <= drift_bound,
+                "{what}: at {shift} px out the same stroke laid {total:.1} of height \
+                 against {at_origin:.1} at the origin ({:+.2}%, bound ±{:.0}%) — the \
+                 f32 canvas frame is losing the tip faster than it did",
+                drift * 100.0,
+                drift_bound * 100.0,
+            );
+        }
+    }
+}
+
 /// A brush whose mark is a pure function of canvas position: no deposit jitter, whose
 /// gate is keyed to the canvas texel (§6.2), and no tooth, which reads the substrate.
 fn flat_brush(color: [f32; 3], radius: f32) -> stark_model::document::BrushParams {
