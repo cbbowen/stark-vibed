@@ -2,11 +2,12 @@
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use wesl::eval::{Convert, Eval, Instance, LiteralInstance, Type, ty_eval_ty};
+use wesl::eval::{Convert, Eval, Instance, LiteralInstance, Ty, ty_eval_ty};
 use wesl::syntax::GlobalDeclaration;
 
 use crate::docs::doc_lines;
 use crate::eval::module_context;
+use crate::layout::lit;
 use crate::tree::Module;
 
 /// Emit every `const` of `m` that has a Rust spelling, with what was skipped.
@@ -19,6 +20,10 @@ use crate::tree::Module;
 ///
 /// A constant naming another evaluates too, in [`module_context`]'s scope. No `const` in
 /// the tree names another today.
+///
+/// Vectors and arrays come through as Rust arrays ([`spell`]), which is what lets a
+/// shader state a colour or a table of coefficients once. Only a shape with no Rust
+/// spelling at all — a matrix, a struct — keeps its note.
 pub(super) fn emit(m: &Module) -> (TokenStream, Vec<String>) {
     let (tu, src, module) = (&m.tu, m.src.as_str(), m.path.as_str());
     let mut ctx = module_context(tu);
@@ -66,35 +71,13 @@ pub(super) fn emit(m: &Module) -> (TokenStream, Vec<String>) {
             skipped.push(format!("{} is a `{value}`, which is not a `{ty}`", at()));
             continue;
         };
-        let Instance::Literal(lit) = &value else {
-            // A *typed* array, matrix or struct: a real declaration that a host constant
-            // cannot be. The tree has none — its stencil tables are untyped and exit
-            // above — so this branch is reached only by the test that pins it.
-            skipped.push(format!("{} is not a scalar", at()));
-            continue;
-        };
-        let (rust, literal) = match (&ty, lit) {
-            (Type::F32, LiteralInstance::F32(v)) => {
-                assert!(
-                    v.is_finite(),
-                    "{} is {v}, which no Rust literal spells",
-                    at()
-                );
-                // `{:?}` on an `f32` prints the shortest decimal that reads back to the
-                // same bits, so the generated literal *is* this value — which is the whole
-                // difficulty the check this replaces documented, having compared the
-                // host's rounded `0.06f32` against the source's exact decimal as `f64`.
-                (quote!(f32), format!("{v:?}"))
-            }
-            (Type::U32, LiteralInstance::U32(v)) => (quote!(u32), format!("{v}")),
-            (Type::I32, LiteralInstance::I32(v)) => (quote!(i32), format!("{v}")),
-            (Type::Bool, LiteralInstance::Bool(v)) => (quote!(bool), format!("{v}")),
-            _ => {
-                skipped.push(format!("{} is a `{ty}`, which has no host constant", at()));
+        let (rust, literal) = match spell(&value) {
+            Ok(pair) => pair,
+            Err(why) => {
+                skipped.push(format!("{} {why}", at()));
                 continue;
             }
         };
-        let literal: TokenStream = literal.parse().expect("a scalar literal is one token");
 
         let ident = format_ident!("{name}");
         let mut docs = doc_lines(&src[..d.span().range().start]);
@@ -109,4 +92,53 @@ pub(super) fn emit(m: &Module) -> (TokenStream, Vec<String>) {
         });
     }
     (out, skipped)
+}
+
+/// The Rust type and the literal occupying it, or why the value has neither.
+///
+/// The error reads as a predicate — the caller puts the declaration in front of it.
+///
+/// **A value's own shape, not a buffer's.** A `vec3<f32>` is `[f32; 3]` here, where
+/// [`crate::layout::rust_ty`] widens it to the `[f32; 4]` a uniform member's 16-byte
+/// stride occupies: nobody reads a constant out of a buffer, so there is no stride to
+/// meet. Composites recurse, which is what gives `array<vec4<f32>, N>` a spelling
+/// without a second case for it.
+fn spell(value: &Instance) -> Result<(TokenStream, TokenStream), String> {
+    let scalar = |ty: TokenStream, text: String| {
+        Ok((ty, text.parse().expect("a scalar literal is one token")))
+    };
+    match value {
+        // `{:?}` on an `f32` prints the shortest decimal that reads back to the same
+        // bits, so the generated literal *is* this value — which is the whole difficulty
+        // the check this replaces documented, having compared the host's rounded
+        // `0.06f32` against the source's exact decimal as `f64`.
+        Instance::Literal(LiteralInstance::F32(v)) if v.is_finite() => {
+            scalar(quote!(f32), format!("{v:?}"))
+        }
+        Instance::Literal(LiteralInstance::F32(v)) => {
+            Err(format!("is {v}, which no Rust literal spells"))
+        }
+        Instance::Literal(LiteralInstance::U32(v)) => scalar(quote!(u32), format!("{v}")),
+        Instance::Literal(LiteralInstance::I32(v)) => scalar(quote!(i32), format!("{v}")),
+        Instance::Literal(LiteralInstance::Bool(v)) => scalar(quote!(bool), format!("{v}")),
+        Instance::Vec(v) => compose(v.iter(), v.n()),
+        Instance::Array(a) => compose(a.iter(), a.n()),
+        other => Err(format!("is a `{}`, which has no host constant", other.ty())),
+    }
+}
+
+/// [`spell`] for a vector's components or an array's elements — a Rust array of
+/// whatever the elements spell as.
+///
+/// Every element has the same type (both instances enforce it on construction), so the
+/// first one's spelling is the array's.
+fn compose<'a>(
+    elements: impl Iterator<Item = &'a Instance>,
+    n: usize,
+) -> Result<(TokenStream, TokenStream), String> {
+    let spelled = elements.map(spell).collect::<Result<Vec<_>, _>>()?;
+    let (elem, _) = spelled.first().ok_or("has no elements")?;
+    let n = lit(u32::try_from(n).map_err(|_| "has more elements than a Rust array holds")?);
+    let values = spelled.iter().map(|(_, v)| v);
+    Ok((quote!([#elem; #n]), quote!([#(#values),*])))
 }

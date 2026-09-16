@@ -383,11 +383,25 @@ fn ca_lambda(s: f32) -> f32 {
     return CA_LAMBDA_RED * inverseSqrt(1.0 + s * CA_CAUCHY_SPAN);
 }
 
-// One lobe of the CIE fit below: a piecewise Gaussian, its two flanks falling at
-// their own rates — the shape of the measured response curves.
-fn ca_lobe(x: f32, mu: f32, s1: f32, s2: f32) -> f32 {
-    let t = (x - mu) / select(s2, s1, x < mu);
-    return exp(-0.5 * t * t);
+// The lobes of the CIE 1931 fit below, as `(weight, μ, σ_low, σ_high)` — three for
+// `x̄`, two each for `ȳ` and `z̄`. Constants rather than literals inside `ca_weight`
+// because the frontend draws the very spectrum this pass integrates and reads these
+// through the mirror (§6.10, §21.6); a literal has no mirror.
+const CA_LOBE_X1: vec4<f32> = vec4<f32>(1.056, 599.8, 37.9, 31.0);
+const CA_LOBE_X2: vec4<f32> = vec4<f32>(0.362, 442.0, 16.0, 26.7);
+const CA_LOBE_X3: vec4<f32> = vec4<f32>(-0.065, 501.1, 20.4, 26.2);
+const CA_LOBE_Y1: vec4<f32> = vec4<f32>(0.821, 568.8, 46.9, 40.5);
+const CA_LOBE_Y2: vec4<f32> = vec4<f32>(0.286, 530.9, 16.3, 31.1);
+const CA_LOBE_Z1: vec4<f32> = vec4<f32>(1.217, 437.0, 11.8, 36.0);
+const CA_LOBE_Z2: vec4<f32> = vec4<f32>(0.681, 459.0, 26.0, 13.8);
+// The D65 white the light space is stated against, as the `x̄ ȳ z̄` sums to divide by.
+const CA_WHITE: vec3<f32> = vec3<f32>(0.9505, 1.0, 1.089);
+
+// One weighted lobe of the CIE fit below: a piecewise Gaussian, its two flanks falling
+// at their own rates — the shape of the measured response curves.
+fn ca_lobe(x: f32, lobe: vec4<f32>) -> f32 {
+    let t = (x - lobe.y) / select(lobe.w, lobe.z, x < lobe.y);
+    return lobe.x * exp(-0.5 * t * t);
 }
 
 // The eye's response to wavelength `ca_lambda(s)`, as linear sRGB: the CIE 1931
@@ -399,14 +413,10 @@ fn ca_lobe(x: f32, mu: f32, s1: f32, s2: f32) -> f32 {
 // gather is what absorbs that without a constant to tune.
 fn ca_weight(s: f32) -> vec3<f32> {
     let l = ca_lambda(s);
-    let x = 1.056 * ca_lobe(l, 599.8, 37.9, 31.0)
-        + 0.362 * ca_lobe(l, 442.0, 16.0, 26.7)
-        - 0.065 * ca_lobe(l, 501.1, 20.4, 26.2);
-    let y = 0.821 * ca_lobe(l, 568.8, 46.9, 40.5)
-        + 0.286 * ca_lobe(l, 530.9, 16.3, 31.1);
-    let z = 1.217 * ca_lobe(l, 437.0, 11.8, 36.0)
-        + 0.681 * ca_lobe(l, 459.0, 26.0, 13.8);
-    let light = vec3<f32>(x, y, z) / vec3<f32>(0.9505, 1.0, 1.089);
+    let x = ca_lobe(l, CA_LOBE_X1) + ca_lobe(l, CA_LOBE_X2) + ca_lobe(l, CA_LOBE_X3);
+    let y = ca_lobe(l, CA_LOBE_Y1) + ca_lobe(l, CA_LOBE_Y2);
+    let z = ca_lobe(l, CA_LOBE_Z1) + ca_lobe(l, CA_LOBE_Z2);
+    let light = vec3<f32>(x, y, z) / CA_WHITE;
     return max(light_to_linear(light), vec3<f32>(0.0));
 }
 

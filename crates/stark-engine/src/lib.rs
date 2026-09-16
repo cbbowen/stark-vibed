@@ -67,6 +67,7 @@ pub(crate) mod engine;
 pub(crate) mod error;
 pub mod filters;
 pub(crate) mod gpu;
+pub mod guides;
 pub(crate) mod image;
 pub(crate) mod noise;
 pub mod path;

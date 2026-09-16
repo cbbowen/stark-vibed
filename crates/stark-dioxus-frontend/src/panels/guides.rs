@@ -874,14 +874,16 @@ mod tests {
     /// controls stop looking like they belong to what they control.
     ///
     /// The two declarations cannot be merged: `guides.wesl` needs its colors as
-    /// shader constants and cannot read a stylesheet, and the mirror carries
-    /// scalars only (a `vec3` has no host constant). So they are two statements
+    /// shader constants and cannot read a stylesheet. So they are two statements
     /// of one fact, and this is the thing that notices when they part — which
     /// matters more than it did, now that one reads
     /// `oklab(0.667 0.1675 0.0664)` and the other
     /// `vec3(0.9349, 0.3629, 0.3803)`. `#e8575c` beside
     /// `vec3(0.91, 0.34, 0.36)` could be checked by a reader who cared to;
     /// these cannot be checked by anyone.
+    ///
+    /// The shader's side arrives through the build-time mirror (§6.10), so what
+    /// this compares the stylesheet against is the declaration that runs.
     ///
     /// The tolerance is a **quantization step**, not a fudge: what has to
     /// survive both roundings is the 8-bit color the screen shows, and
@@ -890,13 +892,8 @@ mod tests {
     /// lightness misses by more than that.
     #[test]
     fn the_chips_are_painted_in_the_shader_s_own_axis_hues() {
-        // `guides.wesl`'s AXIS_X / AXIS_Y / AXIS_Z, display sRGB.
-        const SHADER: [[f32; 3]; 3] = [
-            [0.9349, 0.3629, 0.3803],
-            [0.2932, 0.6746, 0.3667],
-            [0.3922, 0.5631, 0.9544],
-        ];
-        for (i, (lab, want)) in declared_hues().iter().zip(&SHADER).enumerate() {
+        let shader = stark_engine::guides::AXIS_HUES;
+        for (i, (lab, want)) in declared_hues().iter().zip(&shader).enumerate() {
             // The bar wears the variable rather than a value, so the name has to
             // be the declared one — a typo'd `var()` is simply no color.
             let name = format!("var(--axis-{})", ["x", "y", "z"][i]);

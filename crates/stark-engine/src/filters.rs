@@ -15,8 +15,9 @@
 //! ask for — the dispersion pad's spectrum bar (§21.6) is painted with these very
 //! colors, which makes it a statement about the render rather than a rainbow.
 //!
-//! The two ends and the Cauchy span come through the mirror, so the range this
-//! samples and the range the pass integrates cannot drift.
+//! The two ends, the Cauchy span and the seven CIE lobes all come through the mirror,
+//! so what this samples and what the pass integrates cannot drift. Only the *shape* of
+//! the fit is written twice, and the two are one expression each.
 
 /// Oklab `L` of mid-grey — sRGB `0.5` — which is what `ColorAdjust::contrast`
 /// pivots about.
@@ -44,11 +45,11 @@ pub fn dispersion_lambda(s: f32) -> f32 {
     LAMBDA_RED / (1.0 + s * stark_shaders::mirror::filter_common::CA_CAUCHY_SPAN).sqrt()
 }
 
-/// One lobe of the CIE fit below: a piecewise Gaussian, its two flanks falling at
-/// their own rates.
-fn lobe(x: f32, mu: f32, s1: f32, s2: f32) -> f32 {
+/// One weighted lobe of the CIE fit below, from the `(weight, μ, σ_low, σ_high)` the
+/// shader declares — a piecewise Gaussian, its two flanks falling at their own rates.
+fn lobe(x: f32, [w, mu, s1, s2]: [f32; 4]) -> f32 {
     let t = (x - mu) / if x < mu { s1 } else { s2 };
-    (-0.5 * t * t).exp()
+    w * (-0.5 * t * t).exp()
 }
 
 /// The eye's response to the wavelength at dispersion parameter `s`, as **linear
@@ -58,12 +59,13 @@ fn lobe(x: f32, mu: f32, s1: f32, s2: f32) -> f32 {
 /// A *response*, not a color — its absolute scale means nothing, only its shape
 /// along `s`, so a caller drawing the spectrum normalizes as the pass's gather does.
 pub fn dispersion_weight(s: f32) -> [f32; 3] {
+    use stark_shaders::mirror::filter_common as m;
     let l = dispersion_lambda(s);
-    let x = 1.056 * lobe(l, 599.8, 37.9, 31.0) + 0.362 * lobe(l, 442.0, 16.0, 26.7)
-        - 0.065 * lobe(l, 501.1, 20.4, 26.2);
-    let y = 0.821 * lobe(l, 568.8, 46.9, 40.5) + 0.286 * lobe(l, 530.9, 16.3, 31.1);
-    let z = 1.217 * lobe(l, 437.0, 11.8, 36.0) + 0.681 * lobe(l, 459.0, 26.0, 13.8);
-    let lin = light_to_linear([x / 0.9505, y, z / 1.089]);
+    let x = lobe(l, m::CA_LOBE_X1) + lobe(l, m::CA_LOBE_X2) + lobe(l, m::CA_LOBE_X3);
+    let y = lobe(l, m::CA_LOBE_Y1) + lobe(l, m::CA_LOBE_Y2);
+    let z = lobe(l, m::CA_LOBE_Z1) + lobe(l, m::CA_LOBE_Z2);
+    let w = m::CA_WHITE;
+    let lin = light_to_linear([x / w[0], y / w[1], z / w[2]]);
     [lin[0].max(0.0), lin[1].max(0.0), lin[2].max(0.0)]
 }
 
