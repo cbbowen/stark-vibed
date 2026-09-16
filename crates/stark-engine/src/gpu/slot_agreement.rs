@@ -16,14 +16,19 @@
 //! table below is still the pipelines, because that is what a reader can check against
 //! `desc`'s call sites; the check folds them by list.
 //!
+//! `PREFIX_SLOTS` is the other shape and the union is weaker there: one list becomes
+//! **two** layout objects, the sweep's fragment-visible one and the wet loop's
+//! compute-visible one, so what is checked is the union over both.
+//!
 //! **It is not a `#[derive]` for the lists.** What a list still says, and the shader
 //! cannot, is which `@group` a pipeline binds it as, in what order, and at what
 //! visibility. The list stays written by hand; this says whether it is true.
 //!
-//! [`KNOWN`] holds the differences that stand today, each with why. Nothing here
-//! changes the engine.
+//! [`KNOWN`] is the differences that stand today, each with why — and the check is that
+//! the differences found **equal** it, so a waiver cannot outlive what it excuses.
+//! Nothing here changes the engine.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use stark_shaders::{EntryPoint, Lane, Resid};
 
@@ -66,83 +71,157 @@ struct Case {
 type Key = (&'static str, &'static str);
 
 /// Which way a list and its shader disagree.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Diff {
     /// The list names a slot no entry point bound through it reads.
     Unread,
     /// The list and the shader disagree about whether it is read through a sampler.
     Sampling,
+    /// The list lacks a slot an entry point bound through it reads — the pipeline
+    /// cannot be created. Never waived: there is nothing to trade against a layout the
+    /// device refuses.
+    Omitted,
 }
 
-/// The differences that stand today: `(list, module, declaration, which, why)`.
+/// One difference, as both sides can name it — and the key the found set and the
+/// declared one are compared on.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Where {
+    /// Whether it stands in the space that carries a residual (§6.7). **Part of the
+    /// key**, because a difference is a fact about one space: the pigment LUT is a
+    /// placeholder in Oklab and the real table in Mixbox, so a waiver keyed without
+    /// this would cover a genuine fault in the other.
+    resid: bool,
+    list: &'static str,
+    module: &'static str,
+    decl: &'static str,
+    diff: Diff,
+}
+
+/// One difference that stands today, and why it is not a fault.
 ///
-/// Every one is checked to still be a difference ([`every_known_difference_still_stands`]),
-/// so a waiver cannot outlive what it excuses. None of them is fixed here: the lists
-/// are the next commit's business, and a check that quietly edits what it measures is
+/// Flat, and its [`Where`] built rather than nested, so no row can pair a list with
+/// another row's declaration.
+struct Known {
+    resid: bool,
+    list: &'static str,
+    module: &'static str,
+    decl: &'static str,
+    diff: Diff,
+    why: &'static str,
+}
+
+impl Known {
+    const fn at(&self) -> Where {
+        Where {
+            resid: self.resid,
+            list: self.list,
+            module: self.module,
+            decl: self.decl,
+            diff: self.diff,
+        }
+    }
+}
+
+/// The differences that stand today, one row per colour space each stands in.
+///
+/// **Two rows where one difference stands in both spaces**, because the space is part
+/// of what is being declared: three of the seven below hold in Oklab and Mixbox alike,
+/// and four are the colorimetric space's alone. None of them is fixed here — the lists
+/// are another commit's business, and a check that quietly edits what it measures is
 /// not a check.
-const KNOWN: &[(&str, &str, &str, Diff, &str)] = &[
+const KNOWN: &[Known] = &[
     // One layout serves both colour spaces, because whether the pigment LUT is real is
     // `ColorSpace::needs_pigment_lut`'s answer rather than the layout's: the
     // colorimetric shaders do not import `mixbox_lut` at all, and the host binds a 1×1
     // stand-in — the same "one shader, one layout" the zero masks buy elsewhere (§6.8).
-    // So in an Oklab document these two entries describe a placeholder.
-    (
-        "BLEND_SLOTS",
-        "mixbox_lut",
-        "PIGMENT_LUT",
-        Diff::Unread,
-        "a placeholder in the colorimetric space, which declares no LUT",
-    ),
-    (
-        "BLEND_SLOTS",
-        "mixbox_lut",
-        "PIGMENT_SAMP",
-        Diff::Unread,
-        "the placeholder LUT's sampler",
-    ),
-    (
-        "FILTER_SLOTS",
-        "mixbox_lut",
-        "PIGMENT_LUT",
-        Diff::Unread,
-        "a placeholder in the colorimetric space, which declares no LUT",
-    ),
-    (
-        "FILTER_SLOTS",
-        "mixbox_lut",
-        "PIGMENT_SAMP",
-        Diff::Unread,
-        "the placeholder LUT's sampler",
-    ),
-    // The three below are the lists being wrong, not the layout being shared. Left as
-    // they are and recorded here, since fixing a list changes a layout and a bind
-    // group, which is a pixel-affecting change this commit does not make.
-    (
-        "dynamics::DEPOSIT",
-        "dynamics",
-        "SAMP",
-        Diff::Unread,
-        "the bilinear sampler is `exchange`'s and `bake`'s; the deposit reads its noise \
-         through `dyn_noise_samp` and everything else with `textureLoad`",
-    ),
-    (
-        "dynamics::SETTLE",
-        "dynamics",
-        "REGION_LEVELS",
-        Diff::Unread,
-        "the list says the settle lays through `lay_parcel`, which reads the lane — it \
-         does not: the pen-up builds its parcel in `settle` itself and stores through \
-         `stack_and_store`",
-    ),
-    (
-        "dynamics::EXCHANGE",
-        "dynamics",
-        "BRUSH_SRC_RESID",
-        Diff::Sampling,
-        "listed `sampled` beside its `at` partners `BRUSH_SRC_COLOR`/`_AUX`, which \
-         `exchange` loads exactly as it loads the residual — the filterable flag is \
-         `bake`'s, where all three really are sampled",
-    ),
+    // The pigment space reads the real table, so these four stand at `resid: false` and
+    // nowhere else.
+    Known {
+        resid: false,
+        list: "BLEND_SLOTS",
+        module: "mixbox_lut",
+        decl: "PIGMENT_LUT",
+        diff: Diff::Unread,
+        why: "a placeholder in the colorimetric space, which declares no LUT",
+    },
+    Known {
+        resid: false,
+        list: "BLEND_SLOTS",
+        module: "mixbox_lut",
+        decl: "PIGMENT_SAMP",
+        diff: Diff::Unread,
+        why: "the placeholder LUT's sampler",
+    },
+    Known {
+        resid: false,
+        list: "FILTER_SLOTS",
+        module: "mixbox_lut",
+        decl: "PIGMENT_LUT",
+        diff: Diff::Unread,
+        why: "a placeholder in the colorimetric space, which declares no LUT",
+    },
+    Known {
+        resid: false,
+        list: "FILTER_SLOTS",
+        module: "mixbox_lut",
+        decl: "PIGMENT_SAMP",
+        diff: Diff::Unread,
+        why: "the placeholder LUT's sampler",
+    },
+    // The three below are the lists being wrong rather than a layout being shared.
+    // Left as they are and recorded here, since fixing a list changes a layout and a
+    // bind group, which is a pixel-affecting change.
+    //
+    // The first two are unconditional declarations, so they stand in both spaces.
+    Known {
+        resid: false,
+        list: "dynamics::DEPOSIT",
+        module: "dynamics",
+        decl: "SAMP",
+        diff: Diff::Unread,
+        why: "the bilinear sampler is `exchange`'s and `bake`'s; the deposit reads its \
+              noise through `dyn_noise_samp` and everything else with `textureLoad`",
+    },
+    Known {
+        resid: true,
+        list: "dynamics::DEPOSIT",
+        module: "dynamics",
+        decl: "SAMP",
+        diff: Diff::Unread,
+        why: "the same, in the pigment space",
+    },
+    Known {
+        resid: false,
+        list: "dynamics::SETTLE",
+        module: "dynamics",
+        decl: "REGION_LEVELS",
+        diff: Diff::Unread,
+        why: "the list says the settle lays through `lay_parcel`, which reads the lane \
+              — it does not: the pen-up builds its parcel in `settle` itself and stores \
+              through `stack_and_store`",
+    },
+    Known {
+        resid: true,
+        list: "dynamics::SETTLE",
+        module: "dynamics",
+        decl: "REGION_LEVELS",
+        diff: Diff::Unread,
+        why: "the same, in the pigment space",
+    },
+    // And the third is `@if(resid)`, so it is in no list at all without the residual —
+    // the pigment space alone. The allow-list this replaced was keyed without the space
+    // and declared it at `resid: false`, where it never fired.
+    Known {
+        resid: true,
+        list: "dynamics::EXCHANGE",
+        module: "dynamics",
+        decl: "BRUSH_SRC_RESID",
+        diff: Diff::Sampling,
+        why: "listed `sampled` beside its `at` partners `BRUSH_SRC_COLOR`/`_AUX`, which \
+              `exchange` loads exactly as it loads the residual — the filterable flag \
+              is `bake`'s, where all three really are sampled",
+    },
 ];
 
 /// What the shader says: every binding these entry points reach **in `@group(group)`**,
@@ -186,12 +265,30 @@ fn list_group(g: Group) -> u32 {
         .group
 }
 
+/// One shader record a pipeline here is built from: what the engine calls it, and
+/// every entry point it declares.
+///
+/// The half of the table that makes the pipeline list *checkable*: a record's entry
+/// points are the shaders' own answer, so an entry point no [`Case`] names is one the
+/// engine declares and never builds.
+struct Record {
+    what: &'static str,
+    entries: &'static [EntryPoint],
+}
+
+/// Every pipeline the engine creates in one colour space, and every record they are
+/// built from.
+struct Table {
+    cases: Vec<Case>,
+    records: Vec<Record>,
+}
+
 /// The colour-space-specific passes: a document runs the pigment media, blend and
 /// filter shaders or the colorimetric ones, never both.
 ///
 /// Shaped like [`ColorSpace::resid`](crate::colorspace::ColorSpace::resid) for the same
 /// reason — without the `mixbox` feature the pigment half does not exist to be named.
-fn space_cases(resid: bool) -> Vec<Case> {
+fn space_table(resid: bool) -> Table {
     #[cfg(feature = "mixbox")]
     if resid {
         let (m, b, f) = (
@@ -201,9 +298,13 @@ fn space_cases(resid: bool) -> Vec<Case> {
         );
         return space_shaped(
             resid,
-            [m.vs_main, m.fs_main],
-            [b.vs_main, b.fs_main],
-            [f.vs_main, f.fs_main, f.fs_tile, f.fs_blur_decode],
+            ("media_mixbox", m.entries, [m.vs_main, m.fs_main]),
+            ("blend_mixbox", b.entries, [b.vs_main, b.fs_main]),
+            (
+                "filter_mixbox",
+                f.entries,
+                [f.vs_main, f.fs_main, f.fs_tile, f.fs_blur_decode],
+            ),
         );
     }
     let (m, b, f) = (
@@ -213,50 +314,69 @@ fn space_cases(resid: bool) -> Vec<Case> {
     );
     space_shaped(
         resid,
-        [m.vs_main, m.fs_main],
-        [b.vs_main, b.fs_main],
-        [f.vs_main, f.fs_main, f.fs_tile, f.fs_blur_decode],
+        ("media_oklab", m.entries, [m.vs_main, m.fs_main]),
+        ("blend_oklab", b.entries, [b.vs_main, b.fs_main]),
+        (
+            "filter_oklab",
+            f.entries,
+            [f.vs_main, f.fs_main, f.fs_tile, f.fs_blur_decode],
+        ),
     )
 }
 
+/// One space's record, as [`space_shaped`] takes it: its name, everything it declares,
+/// and the entry points the pipelines below name.
+type Shader<const N: usize> = (&'static str, &'static [EntryPoint], [EntryPoint; N]);
+
 /// The five pipelines the two spaces have the same shape of — one media pass, one
 /// blend, and the filter's three fragment entry points over one layout.
-fn space_shaped(
-    resid: bool,
-    media_eps: [EntryPoint; 2],
-    blend_eps: [EntryPoint; 2],
-    filter_eps: [EntryPoint; 4],
-) -> Vec<Case> {
-    let [vs, fs_main, fs_tile, fs_blur_decode] = filter_eps;
-    let filter = |what, fs| Case {
+fn space_shaped(resid: bool, media: Shader<2>, blend: Shader<2>, filter: Shader<4>) -> Table {
+    let [vs, fs_main, fs_tile, fs_blur_decode] = filter.2;
+    let one = |what, fs| Case {
         what,
         entries: vec![vs, fs],
         groups: vec![group("FILTER_SLOTS", filter::FILTER_SLOTS, resid)],
     };
-    vec![
-        Case {
-            what: "media",
-            entries: media_eps.to_vec(),
-            groups: vec![group("MEDIA_SLOTS", media::MEDIA_SLOTS, resid)],
-        },
-        Case {
-            what: "blend",
-            entries: blend_eps.to_vec(),
-            groups: vec![group("BLEND_SLOTS", blend::BLEND_SLOTS, resid)],
-        },
-        filter("filter", fs_main),
-        filter("filter tile", fs_tile),
-        filter("filter blur decode", fs_blur_decode),
-    ]
+    Table {
+        cases: vec![
+            Case {
+                what: "media",
+                entries: media.2.to_vec(),
+                groups: vec![group("MEDIA_SLOTS", media::MEDIA_SLOTS, resid)],
+            },
+            Case {
+                what: "blend",
+                entries: blend.2.to_vec(),
+                groups: vec![group("BLEND_SLOTS", blend::BLEND_SLOTS, resid)],
+            },
+            one("filter", fs_main),
+            one("filter tile", fs_tile),
+            one("filter blur decode", fs_blur_decode),
+        ],
+        records: vec![
+            Record {
+                what: media.0,
+                entries: media.1,
+            },
+            Record {
+                what: blend.0,
+                entries: blend.1,
+            },
+            Record {
+                what: filter.0,
+                entries: filter.1,
+            },
+        ],
+    }
 }
 
-/// Every pipeline the engine creates, for a colour space with (`r`/`resid`) or without
-/// a residual.
+/// Every pipeline the engine creates, for the colour space `r`.
 #[expect(
     clippy::too_many_lines,
     reason = "one entry per pipeline, which is the point"
 )]
-fn cases(r: Resid, resid: bool) -> Vec<Case> {
+fn table(r: Resid) -> Table {
+    let resid = r.on();
     let composite = stark_shaders::composite(r);
     let matte = stark_shaders::matte(r);
     let ov = stark_shaders::overlay();
@@ -533,18 +653,127 @@ fn cases(r: Resid, resid: bool) -> Vec<Case> {
             groups: vec![group("SLICE_SLOTS", kit::SLICE_SLOTS, false)],
         },
     ];
-    all.extend(space_cases(resid));
-    all
+    // One line per accessor, from the very values the cases above are built out of —
+    // so the set an entry point has to appear in is the shaders' own.
+    let mut records = vec![
+        Record {
+            what: "composite",
+            entries: composite.entries,
+        },
+        Record {
+            what: "matte",
+            entries: matte.entries,
+        },
+        Record {
+            what: "overlay",
+            entries: ov.entries,
+        },
+        Record {
+            what: "guides",
+            entries: gu.entries,
+        },
+        Record {
+            what: "resolve",
+            entries: re.entries,
+        },
+        Record {
+            what: "blur",
+            entries: bl.entries,
+        },
+        Record {
+            what: "fill",
+            entries: fi.entries,
+        },
+        Record {
+            what: "merge",
+            entries: me.entries,
+        },
+        Record {
+            what: "slab",
+            entries: sl.entries,
+        },
+        Record {
+            what: "transform",
+            entries: tr.entries,
+        },
+        Record {
+            what: "selection",
+            entries: se.entries,
+        },
+        Record {
+            what: "mask_region",
+            entries: mr.entries,
+        },
+        // The plain build alone: the generator checks that every variant of a shader
+        // declares the same entry points, so the ceiling build adds no name.
+        Record {
+            what: "stamp",
+            entries: plain.entries,
+        },
+        Record {
+            what: "integrate",
+            entries: ig.entries,
+        },
+        Record {
+            what: "erase",
+            entries: er.entries,
+        },
+        Record {
+            what: "dynamics",
+            entries: dy.entries,
+        },
+        Record {
+            what: "liquify",
+            entries: li.entries,
+        },
+        Record {
+            what: "slice",
+            entries: sc.entries,
+        },
+    ];
+    let space = space_table(resid);
+    all.extend(space.cases);
+    records.extend(space.records);
+    Table {
+        cases: all,
+        records,
+    }
 }
 
 /// The table folded by list: each one, and every entry point bound through it.
 ///
 /// # Panics
-/// If one name stands for two lists, or for one list at two residuals — either would
-/// make the union below a comparison against something no layout is.
+/// On a case that claims nothing — no entry point, or no group — on a group vector
+/// whose order is not the `@group` numbering the shader declares, or if one name
+/// stands for two lists or for one list at two residuals. Each would make the union
+/// below a comparison against something no pipeline is.
 fn by_list(cases: &[Case]) -> BTreeMap<&'static str, (Group, Vec<EntryPoint>)> {
     let mut out: BTreeMap<&'static str, (Group, Vec<EntryPoint>)> = BTreeMap::new();
     for case in cases {
+        assert!(
+            !case.entries.is_empty(),
+            "`{}` names no entry point, so it says nothing about any list it holds",
+            case.what,
+        );
+        assert!(
+            !case.groups.is_empty(),
+            "`{}` names no group, so nothing of it is checked",
+            case.what,
+        );
+        for (i, g) in case.groups.iter().enumerate() {
+            // A pipeline layout is positional: the i-th layout *is* `@group(i)`. The
+            // declaration says which group a list is, so the two are compared here —
+            // a swapped pair is otherwise a device-only failure.
+            assert_eq!(
+                list_group(*g),
+                i as u32,
+                "`{}` binds `{}` at position {i} of its pipeline layout, where the \
+                 shader declares that list `@group({})`",
+                case.what,
+                g.name,
+                list_group(*g),
+            );
+        }
         for g in &case.groups {
             let (seen, entries) = out.entry(g.name).or_insert_with(|| (*g, Vec::new()));
             // By content, not by address: a `const` reference is re-evaluated at every
@@ -568,136 +797,146 @@ fn by_list(cases: &[Case]) -> BTreeMap<&'static str, (Group, Vec<EntryPoint>)> {
     out
 }
 
-/// Every difference between one list and what is bound through it, as lines.
-fn differences(name: &str, g: Group, entries: &[EntryPoint]) -> Vec<String> {
+/// Every way one list and what is bound through it disagree, in the space `resid`.
+///
+/// Unfiltered: the waivers are applied by comparing this whole set against [`KNOWN`],
+/// not by excusing rows one at a time as they are found.
+fn differences(resid: bool, list: &'static str, g: Group, entries: &[EntryPoint]) -> Vec<Where> {
     let used = shader_uses(entries, list_group(g));
     let listed = host_list(g);
-    let waived = |key: Key, which: Diff| {
-        KNOWN
-            .iter()
-            .any(|(l, m, n, w, _)| *l == name && (*m, *n) == key && *w == which)
-    };
     let mut out = Vec::new();
+    let mut at = |key: Key, diff| {
+        out.push(Where {
+            resid,
+            list,
+            module: key.0,
+            decl: key.1,
+            diff,
+        });
+    };
     for (key, sampled) in &listed {
         match used.get(key) {
-            None if !waived(*key, Diff::Unread) => out.push(format!(
-                "`{name}` lists `{}.wesl`'s `{}`, which nothing bound through it reads",
-                key.0, key.1,
-            )),
-            Some(is) if is != sampled && !waived(*key, Diff::Sampling) => out.push(format!(
-                "`{name}` lists `{}.wesl`'s `{}` as {}, where the shader {} it",
-                key.0,
-                key.1,
-                if *sampled { "sampled" } else { "loaded" },
-                if *is { "samples" } else { "loads" },
-            )),
-            _ => {}
+            None => at(*key, Diff::Unread),
+            Some(is) if is != sampled => at(*key, Diff::Sampling),
+            Some(_) => {}
         }
     }
     for key in used.keys() {
         if !listed.contains_key(key) {
-            out.push(format!(
-                "`{name}` omits `{}.wesl`'s `{}`, which is bound through it — the \
-                 pipeline cannot be created",
-                key.0, key.1,
-            ));
+            at(*key, Diff::Omitted);
         }
     }
     out
 }
 
+/// One difference in words.
+fn describe(w: &Where) -> String {
+    let (verb, tail) = match w.diff {
+        Diff::Unread => ("lists", "which nothing bound through it reads"),
+        Diff::Sampling => (
+            "lists",
+            "which it and the shader disagree about reading through a sampler",
+        ),
+        Diff::Omitted => (
+            "omits",
+            "which is bound through it — the pipeline cannot be created",
+        ),
+    };
+    format!(
+        "resid={}: `{}` {verb} `{}.wesl`'s `{}`, {tail}",
+        w.resid, w.list, w.module, w.decl,
+    )
+}
+
 /// The colour spaces this build has, which every check here runs over.
-fn spaces() -> Vec<(Resid, bool)> {
+fn spaces() -> Vec<Resid> {
     #[cfg(feature = "mixbox")]
-    let spaces = vec![(Resid::Without, false), (Resid::With, true)];
+    let spaces = vec![Resid::Without, Resid::With];
     #[cfg(not(feature = "mixbox"))]
-    let spaces = vec![(Resid::Without, false)];
+    let spaces = vec![Resid::Without];
     spaces
 }
 
-/// Every list, against what is bound through it, in every colour space this build has.
+/// Every list against what is bound through it, in every colour space this build has.
+fn found() -> BTreeSet<Where> {
+    let mut out = BTreeSet::new();
+    for r in spaces() {
+        let table = table(r);
+        for (list, (g, entries)) in by_list(&table.cases) {
+            out.extend(differences(r.on(), list, g, &entries));
+        }
+    }
+    out
+}
+
+/// The hand-written slot lists differ from the shaders in **exactly** the declared
+/// places (§6.10).
+///
+/// An exact set rather than an allow-list, so the two ways of being wrong fail the
+/// same way: a difference nobody triaged, and a waiver that has stopped excusing
+/// anything. The second is how an allow-list turns into a place the next mistake
+/// hides — the day `blend_oklab` declares a LUT of its own, those two rows should
+/// fail rather than quietly cover something else.
+///
+/// The declared set is narrowed to the spaces this build links: a row for the pigment
+/// space is unexercised, not stale, in a build without it.
 ///
 /// Needs no device: the declarations are `const`s and the uses are generated.
 #[test]
-fn every_slot_list_is_what_its_entry_points_bind() {
-    let mut bad: Vec<String> = Vec::new();
-    for (r, resid) in spaces() {
-        for (name, (g, entries)) in by_list(&cases(r, resid)) {
-            bad.extend(
-                differences(name, g, &entries)
-                    .into_iter()
-                    .map(|line| format!("resid={resid}: {line}")),
-            );
-        }
-    }
+fn the_slot_lists_differ_from_the_shaders_exactly_where_declared() {
+    let found = found();
+    let here = |w: &Where| spaces().iter().any(|r| r.on() == w.resid);
+    let declared: BTreeSet<Where> = KNOWN.iter().map(Known::at).filter(here).collect();
+    let mut bad: Vec<String> = found
+        .difference(&declared)
+        .map(|w| format!("new:   {}", describe(w)))
+        .collect();
+    bad.extend(
+        KNOWN
+            .iter()
+            .filter(|k| here(&k.at()) && !found.contains(&k.at()))
+            .map(|k| format!("stale: {} — declared as {}", describe(&k.at()), k.why)),
+    );
     assert!(
         bad.is_empty(),
-        "the hand-written slot lists and the shaders disagree:\n{}",
+        "a `new` line is a list and a shader disagreeing where `KNOWN` does not say \
+         so; a `stale` one is a waiver excusing nothing:\n{}",
         bad.join("\n"),
     );
 }
 
-/// Every [`KNOWN`] waiver still names a difference, wherever its slot is reached.
+/// Every entry point the shaders declare is built into some pipeline.
 ///
-/// A waiver that has stopped applying is how an allow-list turns into a place the next
-/// mistake hides: the day `blend_oklab` declares a LUT of its own, those two should
-/// fail rather than quietly cover something else.
-///
-/// "Wherever it is reached", because a `@if(resid)` slot is in no list at all in a
-/// build without the pigment space — unexercised rather than stale. The list *name* is
-/// checked outright, so a waiver naming nothing cannot hide behind that.
+/// The class-level form of "the table covers every pipeline": a record's `entries` is
+/// the shaders' own answer about what it declares, so an entry point no [`Case`] names
+/// is one the engine compiles and never runs — and nothing else would say so.
 #[test]
-fn every_known_difference_still_stands() {
-    let mut seen = vec![false; KNOWN.len()];
-    let mut live = vec![false; KNOWN.len()];
-    let mut lists: Vec<&'static str> = Vec::new();
-    for (r, resid) in spaces() {
-        for (name, (g, entries)) in by_list(&cases(r, resid)) {
-            lists.push(name);
-            let used = shader_uses(&entries, list_group(g));
-            let listed = host_list(g);
-            for (i, (list, module, decl, which, _)) in KNOWN.iter().enumerate() {
-                if *list != name {
-                    continue;
+fn every_entry_point_declared_is_built_into_some_pipeline() {
+    let mut missing: Vec<String> = Vec::new();
+    for r in spaces() {
+        let table = table(r);
+        let bound: Vec<EntryPoint> = table
+            .cases
+            .iter()
+            .flat_map(|c| c.entries.iter().copied())
+            .collect();
+        for record in &table.records {
+            for ep in record.entries {
+                if !bound.contains(ep) {
+                    missing.push(format!(
+                        "resid={}: `{}`'s `{}`",
+                        r.on(),
+                        record.what,
+                        ep.name,
+                    ));
                 }
-                let key = (*module, *decl);
-                let Some(sampled) = listed.get(&key) else {
-                    continue;
-                };
-                seen[i] = true;
-                live[i] |= match which {
-                    Diff::Unread => !used.contains_key(&key),
-                    Diff::Sampling => used.get(&key).is_some_and(|is| is != sampled),
-                };
             }
         }
     }
-    let named: Vec<&str> = KNOWN
-        .iter()
-        .filter(|(list, ..)| !lists.contains(list))
-        .map(|(list, ..)| *list)
-        .collect();
-    assert!(named.is_empty(), "these waivers name no list: {named:?}");
-
-    let stale: Vec<String> = KNOWN
-        .iter()
-        .zip(seen.iter().zip(&live))
-        .filter(|(_, (seen, live))| **seen && !**live)
-        .map(|((list, module, decl, ..), _)| format!("{list}'s `{module}.wesl`'s `{decl}`"))
-        .collect();
     assert!(
-        stale.is_empty(),
-        "these waivers name no difference where their slot is listed: {stale:?}",
-    );
-}
-
-/// The table covers every pipeline the engine creates — the one number a reader can
-/// check against `desc`'s call sites.
-#[test]
-fn the_table_names_every_pipeline() {
-    assert_eq!(
-        cases(Resid::Without, false).len(),
-        46,
-        "a pipeline was added or removed without this table following it",
+        missing.is_empty(),
+        "these entry points are declared and built into no pipeline here — either the \
+         engine never runs them, or this table stopped following it:\n{}",
+        missing.join("\n"),
     );
 }

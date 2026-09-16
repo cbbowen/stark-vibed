@@ -125,6 +125,11 @@ fn axis_type(axis: &Axis<'_>, pigment: bool) -> TokenStream {
             #on,
         }
     });
+    let on_arm = axis.live(pigment).then(|| quote!(Self::#on => true,));
+    let on_fn_doc = format!(
+        " Whether this is the `{}` build, as the flag a host branches on.",
+        axis.on,
+    );
     quote! {
         #[doc = #doc]
         #[doc = ""]
@@ -134,6 +139,19 @@ fn axis_type(axis: &Axis<'_>, pigment: bool) -> TokenStream {
             #[doc = #off_doc]
             #off,
             #on_variant
+        }
+
+        impl #ident {
+            #[doc = #on_fn_doc]
+            #[doc = ""]
+            #[doc = " Derived rather than carried beside the variant, so a caller cannot hold"]
+            #[doc = " two spellings of one choice."]
+            pub const fn on(self) -> bool {
+                match self {
+                    Self::#off => false,
+                    #on_arm
+                }
+            }
         }
     }
 }
@@ -540,8 +558,27 @@ mod tests {
             body(&out, "pub enum Resid"),
             "pub enum Resid {\n    /// Linked with the `resid` feature off.\n    Without,\n}\n",
         );
+        // And `on` answers for the one variant there is, rather than naming the other.
+        assert_eq!(
+            body(&out, "pub const fn on(self) -> bool"),
+            "pub const fn on(self) -> bool {\n\
+             \x20       match self {\n\
+             \x20           Self::Without => false,\n\
+             \x20       }\n\
+             \x20   }\n}\n",
+        );
         assert!(out.contains("include_wesl!(\"stamp_ceiling\")"), "{out}");
         assert!(!out.contains("stamp_resid"), "{out}");
+    }
+
+    /// Both variants, so the host's flag is the enum's own answer (§6.7).
+    #[test]
+    fn a_linked_axis_answers_for_both_of_its_variants() {
+        let out = generated(&[Module::parse("stamp", &frag(""))], &[RESID], true);
+        assert!(
+            out.contains("Self::Without => false,\n            Self::With => true,"),
+            "{out}"
+        );
     }
 
     /// A module the declared axes do not name takes no parameter and needs no match —
