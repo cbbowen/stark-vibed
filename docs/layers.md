@@ -1017,10 +1017,10 @@ agreement with the compositor, and the compositor is what a render runs.
 6. A filter that **resamples** is never offered one, and the same row with a point
    filter on it is — so the refusal is pinned to `Filter::resamples` rather than to
    anything about the arrangement.
-5. Undo restores both layers — record, place, and the destination's own opacity,
+7. Undo restores both layers — record, place, and the destination's own opacity,
    which the fold had set to 1 — by handle, so it is exact; redo reproduces the
    merge exactly.
-7. A hard height step, viewed **off the texel grid**, moves by up to 85 levels and
+8. A hard height step, viewed **off the texel grid**, moves by up to 85 levels and
    on the grid by one — the limitation §14.11.1 ends on, held from both sides so
    that a regression cannot widen it and a fix cannot go unnoticed.
 
