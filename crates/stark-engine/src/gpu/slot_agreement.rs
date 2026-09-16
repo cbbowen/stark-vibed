@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use stark_shaders::{EntryPoint, Lane, Resid};
+use stark_shaders::{Binding, EntryPoint, Lane, Resid};
 
 use crate::gpu::composite::{blend, blur, filter, guides, media, overlay, resolve, tiles};
 use crate::gpu::desc::Slot;
@@ -208,25 +208,17 @@ const KNOWN: &[Known] = &[
     },
 ];
 
-/// What the shader says: every binding these entry points reach **in `@group(group)`**,
+/// What the shader says: every binding these entry points reach in the list's group,
 /// and whether any of them samples it.
 ///
-/// Restricted to the one group, because a bind group layout describes exactly one — so
-/// what a list is answerable for is its group's share of what the entry point reads,
-/// and nothing else the pipeline binds beside it.
-///
-/// `|`, not the last one's answer: a layout entry is one entry for every stage and
-/// every sharer, so a texture one of them samples has to be declared filterable even
-/// where the rest load it.
-fn shader_uses(entries: &[EntryPoint], group: u32) -> BTreeMap<Key, bool> {
-    let mut out = BTreeMap::new();
-    for ep in entries {
-        for used in ep.uses.iter().filter(|u| u.decl.group == group) {
-            *out.entry((used.decl.module, used.decl.name))
-                .or_insert(false) |= used.sampled;
-        }
-    }
-    out
+/// **The fold the layout itself is built from** ([`stark_shaders::reached`]), not a
+/// second one shaped like it — otherwise this test and `layout_entries` could agree
+/// with each other while both being wrong about the same thing.
+fn shader_uses(entries: &[EntryPoint], anchor: Binding) -> BTreeMap<Key, bool> {
+    stark_shaders::reached(entries, anchor)
+        .into_iter()
+        .map(|r| ((r.decl.module, r.decl.name), r.sampled))
+        .collect()
 }
 
 /// What one list claims, with the residual gate it is built under applied.
@@ -239,14 +231,18 @@ fn host_list(g: Group) -> BTreeMap<Key, bool> {
     out
 }
 
-/// The `@group` a list describes. `desc::layout_for` refuses a list spanning two, and
-/// `slots.rs` states it for the wet loop's eleven without a device.
-fn list_group(g: Group) -> u32 {
-    g.slots
+/// The declaration a list's group is read off — its first, which is as good as any:
+/// `desc::layout_for` refuses a list spanning two.
+fn anchor(g: Group) -> Binding {
+    *g.slots
         .first()
         .expect("a slot list names at least one binding")
         .decl()
-        .group
+}
+
+/// The `@group` a list describes.
+fn list_group(g: Group) -> u32 {
+    anchor(g).group
 }
 
 /// One shader record a pipeline here is built from: what the engine calls it, and
@@ -786,7 +782,7 @@ fn by_list(cases: &[Case]) -> BTreeMap<&'static str, (Group, Vec<EntryPoint>)> {
 /// Unfiltered: the waivers are applied by comparing this whole set against [`KNOWN`],
 /// not by excusing rows one at a time as they are found.
 fn differences(resid: bool, list: &'static str, g: Group, entries: &[EntryPoint]) -> Vec<Where> {
-    let used = shader_uses(entries, list_group(g));
+    let used = shader_uses(entries, anchor(g));
     let listed = host_list(g);
     let mut out = Vec::new();
     let mut at = |key: Key, diff| {

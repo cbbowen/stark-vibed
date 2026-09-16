@@ -20,6 +20,10 @@ macro_rules! include_wesl {
 // so nothing here is `cfg`-split and no combination a caller can write is unbuilt.
 include!(concat!(env!("OUT_DIR"), "/accessors.rs"));
 
+mod layout;
+
+pub use layout::{Reach, layout_entries, reached};
+
 /// One entry point of a linked artifact, as `naga` reports it (§6.10).
 ///
 /// The generated record of a shader has a field per entry point, so a pipeline names
