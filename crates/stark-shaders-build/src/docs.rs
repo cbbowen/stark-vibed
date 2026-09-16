@@ -63,3 +63,90 @@ fn fence_indented(docs: Vec<String>) -> Vec<String> {
     }
     out
 }
+
+/// The argument throughout is what `lay_out` hands this: everything between the
+/// previous member and this one.
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_comment_run_abutting_a_member_is_its_documentation() {
+        assert_eq!(
+            doc_lines("    // How far the edge falls off.\n    // In canvas px.\n    "),
+            [" How far the edge falls off.", " In canvas px."]
+        );
+    }
+
+    #[test]
+    fn a_blank_line_ends_the_run() {
+        assert_eq!(
+            doc_lines("    // A note about the struct.\n\n    // This member's own.\n    "),
+            [" This member's own."]
+        );
+    }
+
+    #[test]
+    fn a_member_with_nothing_before_it_has_no_documentation() {
+        assert!(doc_lines("    ").is_empty());
+        assert!(doc_lines("").is_empty());
+    }
+
+    /// Markdown would take the indent for a code block and `rustdoc` for a doctest, so
+    /// it is fenced as `text`. Shader prose is never Rust.
+    ///
+    /// A blank line does not close the fence — only the next unindented line does, so
+    /// the blank ends up inside it.
+    #[test]
+    fn an_indented_block_after_a_blank_line_is_fenced_as_text() {
+        assert_eq!(
+            doc_lines(
+                "    // The owed mass:\n    //\n    //     owed = prefix(l)\n    //\n    // and the rest.\n    "
+            ),
+            [
+                " The owed mass:",
+                "",
+                " ```text",
+                "     owed = prefix(l)",
+                "",
+                " ```",
+                " and the rest.",
+            ]
+        );
+    }
+
+    #[test]
+    fn an_indented_block_running_to_the_end_is_closed() {
+        assert_eq!(
+            doc_lines("    // The owed mass:\n    //\n    //     owed = prefix(l)\n    "),
+            [
+                " The owed mass:",
+                "",
+                " ```text",
+                "     owed = prefix(l)",
+                " ```"
+            ]
+        );
+    }
+
+    /// An indent that continues a paragraph is not a code block, so it is left alone.
+    #[test]
+    fn an_indent_with_no_blank_line_before_it_is_left_alone() {
+        assert_eq!(
+            doc_lines("    // A sentence that wraps\n    //     onto an indented line.\n    "),
+            [" A sentence that wraps", "     onto an indented line."]
+        );
+    }
+
+    /// **A run that opens indented is not fenced**, because a fence opens only after a
+    /// blank line and there is none to open after. `rustdoc` strips the one
+    /// conventional leading space and reads the remaining four as a doctest — the very
+    /// failure this function exists to prevent. No comment in the tree opens that way.
+    #[test]
+    fn a_run_whose_first_line_is_indented_is_not_fenced() {
+        assert_eq!(
+            doc_lines("    //     owed = prefix(l)\n    // and the rest.\n    "),
+            ["     owed = prefix(l)", " and the rest."]
+        );
+    }
+}

@@ -11,11 +11,17 @@ use crate::tree::Module;
 /// Emit every `const` of `m` that has a Rust spelling, with what was skipped.
 ///
 /// **Evaluated, not read.** The value is whatever `wesl`'s const evaluator makes of
-/// the initializer, so a constant derived from its neighbours comes out as the
-/// number the shader will actually compute with. The check this replaces parsed a
-/// decimal literal out of the *linked* source and could do neither: a derived
-/// constant is not a literal, and the linker had already stripped anything no entry
-/// point reached.
+/// the initializer, so `7.0 / 64.0` comes out as the number the shader will actually
+/// compute with. The check this replaces parsed a decimal literal out of the *linked*
+/// source and could do neither: a derived constant is not a literal, and the linker had
+/// already stripped anything no entry point reached.
+///
+/// **But a constant naming another is still skipped**, because [`Context::new`] opens a
+/// function scope and the evaluator looks a name up in the module's declarations only
+/// from a module scope. `const X: f32 = TAU / 4.0;` gets a note in the generated
+/// header and no mirror at all — see
+/// `emit::tests::a_const_derived_from_its_neighbours_is_skipped`. No `const` in the
+/// tree names another today.
 pub(super) fn emit(m: &Module) -> (TokenStream, Vec<String>) {
     let (tu, src, module) = (&m.tu, m.src.as_str(), m.path.as_str());
     let mut out = TokenStream::new();
@@ -64,9 +70,9 @@ pub(super) fn emit(m: &Module) -> (TokenStream, Vec<String>) {
             continue;
         };
         let Instance::Literal(lit) = &value else {
-            // An array, a matrix, a struct: real declarations that a host constant
-            // cannot be. `BLEED_OFFS`'s stencil offsets are the case, and the host
-            // derives its own from `BLEED_LADDER_TAPS` beside it.
+            // A *typed* array, matrix or struct: a real declaration that a host constant
+            // cannot be. The tree has none — its stencil tables are untyped and exit
+            // above — so this branch is reached only by the test that pins it.
             skipped.push(format!("{} is not a scalar", at()));
             continue;
         };

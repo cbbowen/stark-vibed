@@ -70,3 +70,79 @@ fn strip_unary_plus(s: &str) -> String {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_plus_abutting_a_literal_is_dropped() {
+        assert_eq!(strip_unary_plus("c.x*+0.5"), "c.x*0.5");
+    }
+
+    #[test]
+    fn a_term_separator_survives() {
+        assert_eq!(strip_unary_plus("a + 1.0 + b"), "a + 1.0 + b");
+        assert_eq!(strip_unary_plus("a + +1.0"), "a + 1.0");
+    }
+
+    /// A `+` before anything that is not a digit is left alone, `+.5` included — which
+    /// is legal GLSL this would carry through as a WGSL parse error.
+    #[test]
+    fn a_plus_before_a_leading_point_survives() {
+        assert_eq!(strip_unary_plus("a*+.5"), "a*+.5");
+    }
+
+    #[test]
+    fn the_polynomial_transliterates_to_wesl() {
+        let glsl = "\
+// preamble the extraction skips
+vec3 mixbox_eval_polynomial(vec3 c)
+{
+  float c0 = c[0];
+  float c2 = c[2];
+  return (c0*c0) * vec3(+0.07717053, -0.5, c2) +
+         (c[1]) * vec3(+0.95912302, +0.80256528, +0.03561839);
+}
+// trailing text the extraction stops before
+";
+        assert_eq!(
+            transliterate(glsl, "vendor/mixbox/shaders/mixbox.glsl"),
+            "\
+// GENERATED at build time from vendor/mixbox/shaders/mixbox.glsl — do not edit.
+// Mixbox 2.0 (c) 2022 Secret Weapons, authors Sarka Sochorova and Ondrej
+// Jamriska. Licensed CC BY-NC 4.0; see vendor/mixbox/LICENSE.
+
+fn mixbox_eval_polynomial(c: vec3<f32>) -> vec3<f32>
+{
+  let c0 = c.x;
+  let c2 = c.z;
+  return (c0*c0) * vec3<f32>(0.07717053, -0.5, c2) +
+         (c.y) * vec3<f32>(0.95912302, 0.80256528, 0.03561839);
+}
+"
+        );
+    }
+
+    /// Only a `float` local's declaration is rewritten, so a `vec3 s = …` keeps its
+    /// GLSL head and is deposited as WGSL that will not parse. A bound on the
+    /// transliteration rather than a live fault: the vendored polynomial declares
+    /// nothing but `float` locals.
+    #[test]
+    fn a_local_that_is_not_a_float_keeps_its_glsl_declaration() {
+        let glsl =
+            "vec3 mixbox_eval_polynomial(vec3 c)\n{\n  vec3 s = vec3(c[0]);\n  return s;\n}\n";
+        let (_, wesl) = transliterate(glsl, "x")
+            .split_once("\n\n")
+            .map(|(h, b)| (h.to_string(), b.to_string()))
+            .expect("a header, then the function");
+        assert_eq!(
+            wesl,
+            "fn mixbox_eval_polynomial(c: vec3<f32>) -> vec3<f32>\n\
+             {\n\
+             \x20 vec3 s = vec3<f32>(c.x);\n\
+             \x20 return s;\n\
+             }\n"
+        );
+    }
+}

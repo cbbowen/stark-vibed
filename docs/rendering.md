@@ -1049,6 +1049,12 @@ under `lib/` (`lib/paint_common.wesl`'s `TOOTH_RISE` is
 `mirror::paint_common::TOOTH_RISE`), since `lib` is a placement rule — binding-free
 leaves — rather than a namespace.
 
+One shape is **not** mirrored today and should be: a constant that names another
+(`const X: f32 = TAU / 4.0;`). It is skipped with a note in the generated file's
+header rather than refused, so a host reaching for it fails at its own use site. No
+constant in the tree does this;
+`emit::tests::a_const_derived_from_its_neighbours_is_skipped` pins it.
+
 A constant that disagrees is worse-behaved than a struct that does. A struct
 usually surfaces as a wgpu validation error; a constant leaves both sides rendering
 perfectly plausible pixels that no longer add up. The tooth's two are the sharpest
