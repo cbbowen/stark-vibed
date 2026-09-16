@@ -582,6 +582,120 @@ pub mod probe {
         );
     }
 
+    /// `@size` pads a member out and `@align` moves it; `wgsl-types` honours both when
+    /// it sizes a struct, and `lay_out` walking the members did not — so a member
+    /// carrying one gave a Rust struct that disagreed with the shader from that member
+    /// on. The padding is explicit, and the member keeps its type's own spelling: the
+    /// lane the shader reads is the type's, and widening it would claim lanes nothing
+    /// writes.
+    #[test]
+    fn a_member_size_and_align_move_the_lanes_after_it() {
+        let out = generated(
+            r"
+struct Params {
+    @size(16) feather: f32,
+    @align(32) rect: vec4<f32>,
+}
+
+var<uniform> params: Params;
+",
+        );
+        assert!(out.contains("pub feather: f32,"), "{out}");
+        assert!(
+            out.contains(
+                "/// Padding to the `@size(16)` the member declares.\n        pub _pad_1: [u8; 12],"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("/// Padding to the 32-byte WGSL alignment that follows.\n        pub _pad_2: [u8; 16],"),
+            "{out}"
+        );
+        assert!(out.contains("pub rect: [f32; 4],"), "{out}");
+        // 32 for `rect`, 16 of it, rounded up to the struct's 32-byte alignment.
+        assert!(
+            out.contains("assert!(SIZE == 64, \"`Params` is not 64 bytes\");"),
+            "{out}"
+        );
+        assert!(
+            out.contains("assert!(ALIGN == 32, \"`Params` is not 32-byte aligned\");"),
+            "{out}"
+        );
+        assert!(
+            out.contains(
+                "assert!(OFFSET_OF_RECT == 32, \"`Params.rect` is not at WGSL offset 32\");"
+            ),
+            "{out}"
+        );
+    }
+
+    /// And `min_binding_size`, reached by `wgsl-types`' own tables over the resolved
+    /// type, says the same 64 — which is the assertion `emit::bindings` now makes for
+    /// every uniform struct rather than leaving the two answers uncompared.
+    #[test]
+    fn the_laid_out_size_and_the_min_binding_size_agree() {
+        let out = generated(
+            r"
+struct Params { @size(16) feather: f32, @align(32) rect: vec4<f32> }
+
+@group(0) @binding(0) var<uniform> params: Params;
+",
+        );
+        assert!(out.contains("BindKind::Uniform { min_size: 64 }"), "{out}");
+        assert!(out.contains("/// WGSL size 64, alignment 32."), "{out}");
+    }
+
+    /// `@size` may pad a member out; it cannot make one smaller than its type.
+    #[test]
+    #[should_panic(expected = "`@size(8)` for a 16-byte `vec4<f32>`")]
+    fn a_size_smaller_than_the_type_is_refused() {
+        generated("struct P { @size(8) a: vec4<f32> }\nvar<uniform> p: P;\n");
+    }
+
+    /// WGSL requires a power of two, and `round_up` divides by it.
+    #[test]
+    #[should_panic(expected = "`@align(12)`, which is not a power of two")]
+    fn an_alignment_that_is_not_a_power_of_two_is_refused() {
+        generated("struct P { @align(12) a: f32 }\nvar<uniform> p: P;\n");
+    }
+
+    /// A mirror is generated from the unlinked source, which has no feature set — so one
+    /// Rust struct would have to be the layout of both artifacts and could match at most
+    /// one. `matte.wesl` keeps its residual attribute unconditional for this reason;
+    /// here it is a build failure rather than prose.
+    #[test]
+    #[should_panic(expected = "is `@if`-gated")]
+    fn an_if_gated_uniform_member_is_refused() {
+        generated("struct P { a: vec4<f32>, @if(resid) r: vec4<f32> }\nvar<uniform> p: P;\n");
+    }
+
+    /// The same rule on the other half of the boundary.
+    #[test]
+    #[should_panic(expected = "is an `@if`-gated `@location` parameter")]
+    fn an_if_gated_vertex_parameter_is_refused() {
+        mirrors(
+            &[Module::parse(
+                "probe",
+                "@vertex\nfn vs_main(\n\
+                 \x20   @location(0) at: vec2<f32>,\n\
+                 \x20   @if(resid) @location(1) resid: vec4<f32>,\n\
+                 ) -> @builtin(position) vec4<f32> { return vec4<f32>(at, 0.0, 1.0); }\n",
+            )],
+            &[],
+            &[("probe", "vs_main", "CornerInstance")],
+        );
+    }
+
+    /// A gated *binding* is the case that must keep working: the declaration is whole
+    /// either way, and the flag is what the host reads to know the residual build has it.
+    #[test]
+    fn an_if_gated_binding_is_still_carried_through() {
+        let out = generated(
+            "@if(resid) @group(0) @binding(0) var dst: texture_storage_2d<rgba16float, write>;\n",
+        );
+        assert!(out.contains("resid: true"), "{out}");
+    }
+
     /// `lib/` holds the binding-free leaves (§2). A binding there lands in every
     /// artifact that imports the leaf, at a slot no importer chose — and this is the loop
     /// that sees every binding in the tree, so the rule stops being prose.

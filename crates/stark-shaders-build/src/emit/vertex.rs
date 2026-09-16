@@ -6,7 +6,7 @@ use wesl::eval::{Type, ty_eval_ty};
 use wesl::syntax::{Attribute, GlobalDeclaration};
 
 use crate::docs::doc_lines;
-use crate::eval::{const_u32, module_context};
+use crate::eval::{const_u32, is_gated, module_context};
 use crate::layout::{Field, ident, lit, rust_ty};
 use crate::tree::Module;
 
@@ -95,6 +95,18 @@ pub(super) fn emit(m: &Module, entry: &str, name: &str) -> TokenStream {
         });
 
         let member = p.ident.name();
+        // Refused for the same reason a uniform struct's `@if` member is: this is read
+        // from the unlinked source, which has no feature set, so one record would have
+        // to be the layout of two. `matte.wesl` declares its residual attribute
+        // unconditionally — sixteen bytes per matte — rather than let `MatteInstance`
+        // have two layouts, and says so where the attribute is.
+        assert!(
+            !is_gated(&p.attributes),
+            "`{module}.wesl`'s `{entry}.{member}` is an `@if`-gated `@location` \
+             parameter. The record is mirrored from the unlinked source, which has no \
+             feature set to evaluate, so one Rust struct would have to answer for every \
+             build of it. Declare the attribute unconditionally (§6.10)."
+        );
         let ty = ty_eval_ty(&p.ty, &mut ctx)
             .unwrap_or_else(|e| panic!("`{module}.wesl`'s `{entry}.{member}` has no type: {e}"));
         let (format, size) = vertex_format(&ty).unwrap_or_else(|| {

@@ -10,7 +10,7 @@ use wesl::syntax::{
 
 use crate::docs::doc_lines;
 use crate::eval::{group_binding, module_context};
-use crate::layout::lit;
+use crate::layout::{lay_out, lit};
 use crate::tree::Module;
 
 use super::uniform_type;
@@ -257,9 +257,40 @@ fn expr_ident(expr: &ExpressionNode) -> Option<String> {
 }
 
 /// The WGSL size of a uniform binding's declared type — its `min_binding_size`.
+///
+/// **Two paths reach one number, and this is where they are made to agree.** The size is
+/// `wgsl-types`' own, over the resolved type; the generated struct's `size_of` assertion
+/// comes from [`lay_out`] walking the members itself. Nothing compared them, so a member
+/// attribute one honoured and the other did not left a host struct and the
+/// `min_binding_size` guarding it quietly out of step — a buffer the right size for a
+/// struct of the wrong one.
 fn uniform_size(ty: &TypeExpression, m: &Module, member: &str, ctx: &mut Context<'_>) -> u64 {
-    uniform_type(ty, m, member, ctx)
+    let resolved = uniform_type(ty, m, member, ctx);
+    let at = || format!("`{}.wesl`'s `{member}`", m.path);
+    let size = resolved
         .size_of()
-        .unwrap_or_else(|| panic!("`{}.wesl`'s `{member}` has an unsized uniform type", m.path))
-        as u64
+        .unwrap_or_else(|| panic!("{} has an unsized uniform type", at()));
+
+    // Only a struct this module declares and `lay_out` can spell: anything else has no
+    // second answer to compare against.
+    if let Some(laid) = m
+        .struct_named(ty.ident.name().as_str())
+        .and_then(|s| lay_out(s, m).ok())
+    {
+        let align = resolved
+            .align_of()
+            .expect("a type with a size has an alignment");
+        assert_eq!(
+            (laid.size, laid.align),
+            (size, align),
+            "{} is laid out at {} bytes / {}-byte alignment by `layout::lay_out`, where \
+             `wgsl-types` sizes the same type at {size} / {align}. The two read the \
+             declaration differently, and `min_binding_size` is the one the host binds \
+             against.",
+            at(),
+            laid.size,
+            laid.align,
+        );
+    }
+    size as u64
 }

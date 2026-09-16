@@ -7,20 +7,23 @@
 //! general — it agrees only when every member is a `vec4`, which is a coincidence to be
 //! generated past, not relied on.
 //!
-//! None of those rules are implemented here. `wesl` resolves a type expression
+//! None of those *type* rules are implemented here. `wesl` resolves a type expression
 //! ([`ty_eval_ty`]) and `wgsl-types` gives that type its WGSL [`Type::size_of`] and
-//! [`Type::align_of`] — the spec's own tables, including the `@size`/`@align` member
-//! attributes and `f16`. What is left is where the *host* has a choice: which Rust
-//! spelling occupies a given stride, and the padding that gets the real members onto
-//! their offsets.
+//! [`Type::align_of`] — the spec's own tables, `f16` and nested structs included. The
+//! member's own `@size`/`@align` overrides are read with `wgsl-types`' own accessors
+//! ([`EvalAttrs`]), which is the reading [`Type::size_of`] uses when it sizes a whole
+//! struct — and so the one `min_binding_size` is computed from, two paths that
+//! `emit::bindings` now asserts agree. What is left is where the *host* has a choice:
+//! which Rust spelling occupies a given stride, and the padding that gets the real
+//! members onto their offsets.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use wesl::eval::{Type, ty_eval_ty};
+use wesl::eval::{EvalAttrs, Type, ty_eval_ty};
 use wesl::syntax::Struct;
 
 use crate::docs::doc_lines;
-use crate::eval::module_context;
+use crate::eval::{is_gated, module_context};
 use crate::tree::Module;
 
 /// One field of the generated struct: a member, or the padding WGSL puts before one.
@@ -65,6 +68,7 @@ pub(crate) fn lay_out(s: &Struct, module: &Module) -> Result<Laid, String> {
 
     for m in &s.members {
         let member = m.ident.name();
+        let at_member = || format!("`{path}::{name}.{member}`");
         let fail = |what: &str| -> String {
             format!(
                 "`{path}::{name}.{member}` is a `{}`, which {what}, so `{name}` is not \
@@ -72,21 +76,61 @@ pub(crate) fn lay_out(s: &Struct, module: &Module) -> Result<Laid, String> {
                 m.ty,
             )
         };
+
+        // **`@if` is refused, never evaluated.** A mirror is generated from the
+        // *unlinked* source, which carries no feature set — so one Rust struct would
+        // have to answer for both the plain and the residual artifact, and could match
+        // at most one. `matte.wesl` states the rule in prose beside the attribute it
+        // cost; this is it made structural.
+        assert!(
+            !is_gated(&m.attributes),
+            "{} is `@if`-gated. A uniform struct is mirrored from the unlinked source, \
+             which has no feature set to evaluate, so one Rust struct would have to \
+             answer for every build of it. Declare the member unconditionally (§6.10).",
+            at_member(),
+        );
+
         let ty = match ty_eval_ty(&m.ty, &mut ctx) {
             Ok(ty) => ty,
             Err(e) => return Err(fail(&format!("did not resolve: {e}"))),
         };
-        let (Some(m_size), Some(m_align)) = (ty.size_of(), ty.align_of()) else {
+        let (Some(ty_size), Some(ty_align)) = (ty.size_of(), ty.align_of()) else {
             return Err(fail("is not host-shareable"));
         };
-        let Some(spelling) = rust_ty(&ty, m_size) else {
+        let Some(spelling) = rust_ty(&ty, ty_size) else {
             return Err(fail("has no Rust spelling"));
         };
+
+        // What the *member* says about its own stride, over what its type says. Read
+        // with `wgsl-types`' accessors, so this and `Type::size_of` — which is where
+        // `min_binding_size` comes from — cannot read one attribute two ways.
+        let attr = |what: &str, got: Result<Option<u32>, wesl::eval::EvalError>| {
+            got.unwrap_or_else(|e| {
+                panic!(
+                    "{} has an `@{what}` that does not evaluate: {e}",
+                    at_member()
+                )
+            })
+        };
+        let m_align = attr("align", m.attr_align(&mut ctx)).unwrap_or(ty_align);
+        assert!(
+            m_align.is_power_of_two(),
+            "{} declares `@align({m_align})`, which is not a power of two",
+            at_member(),
+        );
+        let m_size = attr("size", m.attr_size(&mut ctx)).unwrap_or(ty_size);
+        assert!(
+            m_size >= ty_size,
+            "{} declares `@size({m_size})` for a {ty_size}-byte `{}`. `@size` pads a \
+             member out; it cannot truncate one.",
+            at_member(),
+            m.ty,
+        );
 
         // WGSL places a member at the next offset meeting its alignment.
         let at = round_up(m_align, offset);
         if at != offset {
-            fields.push(pad(fields.len(), offset, at - offset, m_align));
+            fields.push(pad(fields.len(), offset, at - offset, to_align(m_align)));
         }
 
         let span = m.span().range();
@@ -98,6 +142,18 @@ pub(crate) fn lay_out(s: &Struct, module: &Module) -> Result<Laid, String> {
             real: true,
         });
 
+        // An `@size` past the type's own is the member's trailing padding. The lane the
+        // shader reads is still the type's, so the Rust spelling stays the type's too —
+        // widening it would tell the host there are lanes the shader never wrote.
+        if m_size > ty_size {
+            fields.push(pad(
+                fields.len(),
+                at + ty_size,
+                m_size - ty_size,
+                format!(" Padding to the `@size({m_size})` the member declares."),
+            ));
+        }
+
         offset = at + m_size;
         align = align.max(m_align);
         prev_end = span.end;
@@ -108,7 +164,7 @@ pub(crate) fn lay_out(s: &Struct, module: &Module) -> Result<Laid, String> {
     // padding, which is what `Pod` requires.
     let size = round_up(align, offset);
     if size != offset {
-        fields.push(pad(fields.len(), offset, size - offset, align));
+        fields.push(pad(fields.len(), offset, size - offset, to_align(align)));
     }
     Ok(Laid {
         fields,
@@ -117,17 +173,19 @@ pub(crate) fn lay_out(s: &Struct, module: &Module) -> Result<Laid, String> {
     })
 }
 
-fn pad(index: usize, offset: u32, width: u32, align: u32) -> Field {
+fn pad(index: usize, offset: u32, width: u32, why: String) -> Field {
     let n = lit(width);
     Field {
-        docs: vec![format!(
-            " Padding to the {align}-byte WGSL alignment that follows."
-        )],
+        docs: vec![why],
         ident: format_ident!("_pad_{index}"),
         ty: quote!([u8; #n]),
         offset,
         real: false,
     }
+}
+
+fn to_align(align: u32) -> String {
+    format!(" Padding to the {align}-byte WGSL alignment that follows.")
 }
 
 /// The Rust spelling of `ty` occupying exactly `stride` bytes.

@@ -78,6 +78,16 @@ fn read(e: &ExpressionNode, what: &str, ctx: &mut Context<'_>, at: &str) -> u32 
     const_u32(e, ctx).unwrap_or_else(|why| panic!("{at} has a `@{what}` that {why}"))
 }
 
+/// Whether an `@if` gates this declaration.
+///
+/// The one place that names `Attribute::If`, which WESL's conditional translation puts
+/// behind a cargo feature. What a mirror does about one is its caller's business: a
+/// `@binding` carries the flag through, a struct member and a vertex parameter are
+/// refused (§6.10).
+pub(crate) fn is_gated(attributes: &[wesl::syntax::AttributeNode]) -> bool {
+    attributes.iter().any(|a| matches!(**a, Attribute::If(_)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
