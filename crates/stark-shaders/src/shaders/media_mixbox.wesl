@@ -15,13 +15,13 @@
 // many-to-one (70 sRGB colors share one quantized triple, spanning 0.38 of the
 // cube), so no function of `c` could ever have stood in for the stored value.
 //
-// `mixbox_eval_polynomial` is generated at build time from the vendored Mixbox
-// GLSL (vendor/mixbox, CC BY-NC 4.0).
+// The decode itself is `lib/mixbox.wesl`'s, shared with the blend and filter passes:
+// `poly(c) + r`, clamped, linearized. The polynomial is generated at build time from
+// the vendored Mixbox GLSL (vendor/mixbox, CC BY-NC 4.0).
 
-import package::lib::color::{srgb_to_linear};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::paint_common::{COVERAGE_EPS};
-import package::gen::mixbox_poly::{mixbox_eval_polynomial};
+import package::lib::mixbox::{Pigment, mixbox_to_linear};
 import package::media_common::{
     comp_color, comp_aux, m, is_transparent, over_substrate, paint_vis_at, finish,
 };
@@ -65,11 +65,13 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let over = over_substrate(conc, vis);      // substrate, or a transparent cut-out
     let over_res = over_substrate_resid(res, vis);
 
-    // Evaluate Mixbox's pigment polynomial and add the residual back — `poly(c) + r`
-    // is Mixbox's `latent_to_rgb`, and the clamp is its clamp. Then linearize for
-    // lighting.
-    let srgb = clamp(mixbox_eval_polynomial(over.rgb) + over_res, vec3<f32>(0.0), vec3<f32>(1.0));
     // `vis` doubles as the gloss ramp: the paint film is uniformly specular, so how
     // much sheen a fragment shows is just how much of it is paint (media_common).
-    return finish(srgb_to_linear(srgb), vis, over.a, frag.xy, dim);
+    return finish(
+        mixbox_to_linear(Pigment(over.rgb, over_res)),
+        vis,
+        over.a,
+        frag.xy,
+        dim,
+    );
 }

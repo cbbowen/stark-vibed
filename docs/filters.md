@@ -456,7 +456,7 @@ right shape.
   its own by whatever kind next needs a table.
 - **Bind group.** The blend pass's numbering with the source's two slots simply not
   declared: `filter_common` owns 0–2 where `blend_common` owns 0–4, and the pigment LUT
-  keeps 5–6 because `mixbox_lut.wesl` hard-codes them for whoever imports it. The LUT
+  keeps 5–6 because `filter_mixbox.wesl` declares them there. The LUT
   itself is the blend pass's, decoded once — both passes ask it the same question.
 
 ### 21.8 Invariants worth a test (`tests/filter.rs`)

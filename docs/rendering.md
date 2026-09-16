@@ -203,7 +203,7 @@ compositor.
 
 The neutral element is where the family splits and where the tests split with it.
 Each color space supplies only its channels ↔ light conversion, which for Mixbox
-is the pigment polynomial and its inverse LUT (`mixbox_lut.wesl`) — the one place
+is the pigment polynomial and its inverse LUT (`lib/mixbox.wesl`) — the one place
 the engine inverts Mixbox on the GPU. In a pigment document the emissive path is
 also *simpler* than it was: the whole color falls out of one sum, so the latent's
 residual is decoded from that answer rather than merged separately. The rest of

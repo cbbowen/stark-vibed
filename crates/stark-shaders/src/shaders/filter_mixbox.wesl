@@ -1,10 +1,10 @@
 // Filter layers for the **Mixbox** pigment color space (§21, §6.7). Same
 // adjustment as every other space; what differs is that a channel triple here is a
-// mixture of pigments rather than a color, so the trip out to Oklab is Mixbox's
-// polynomial and the trip back is its LUT — exactly as `blend_mixbox.wesl` reaches
-// light, and for the same reason. The chromatic gather (§21.10) pays the same
-// bracket per *tap*: each band of the dispersed spectrum is decoded `poly(c) + r`
-// to light before it is summed, and the summed light re-enters as a mixture once.
+// mixture of pigments rather than a color, so the trip out to Oklab and back is
+// `lib/mixbox.wesl`'s round trip — exactly as `blend_mixbox.wesl` reaches light, and
+// for the same reason. The chromatic gather (§21.10) pays the same bracket per *tap*:
+// each band of the dispersed spectrum is decoded to light before it is summed, and the
+// summed light re-enters as a mixture once.
 //
 // One consequence worth naming, because it is the same one the blend pass carries:
 // pigment cannot be brighter than the light falling on it, and the LUT is defined on
@@ -14,11 +14,9 @@
 // what a pigment can be, and paint does not glow.
 
 import package::lib::color::{
-    srgb_to_linear, linear_to_srgb, linear_srgb_to_oklab, oklab_to_linear_srgb,
-    linear_to_light,
+    linear_srgb_to_oklab, oklab_to_linear_srgb, linear_to_light,
 };
-import package::gen::mixbox_poly::{mixbox_eval_polynomial};
-import package::mixbox_lut::{mixbox_srgb_to_concentrations};
+import package::lib::mixbox::{Pigment, mixbox_to_linear, mixbox_from_linear};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::paint_common::{COVERAGE_EPS, PAINT_EPS};
 import package::filter_common::{
@@ -27,11 +25,16 @@ import package::filter_common::{
     BlurOut, blur_pad, blur_read, blur_src,
 };
 
-// The backdrop's residual half (§6.7). **Binding 7 of group 0** — `filter_common`
-// owns 0–3 and `mixbox_lut` 5–6, the same partition `blend_mixbox.wesl` works
-// under, and as that file says nothing but this comment holds the three apart.
-// Unconditional, with no `@if`: this module is reached only by the space that has a
-// residual.
+// Mixbox's inverse LUT and the sampler that reads it, on the same terms
+// `blend_mixbox.wesl` binds them: an adjustment is a statement about light, so a
+// pigment document has to ask which mixture the adjusted light would have been.
+// **Bindings 5 and 6 of group 0**, past where `filter_common` stops (0–4, and 8).
+@group(0) @binding(5) var pigment_lut: texture_2d<f32>;
+@group(0) @binding(6) var pigment_samp: sampler;
+
+// The backdrop's residual half (§6.7). **Binding 7 of group 0** — and nothing but
+// this comment holds the two modules apart. Unconditional, with no `@if`: this module
+// is reached only by the space that has a residual.
 @group(0) @binding(7) var back_resid: texture_2d<f32>;
 
 // The three targets a pigment document's filter writes. `filter_common::FsOut` is
@@ -43,53 +46,15 @@ struct FsOut {
     @location(2) resid: vec4<f32>,
 }
 
-// A latent (concentrations + residual) → Oklab, `filter_common`'s interface.
-// Mixbox's `latent_to_rgb` is `poly(c) + r`, and taking the polynomial alone is
-// what makes a black backdrop go out as mid-grey (§6.7).
-fn latent_to_lab(conc: vec3<f32>, res: vec3<f32>) -> vec3<f32> {
-    let srgb = clamp(mixbox_eval_polynomial(conc) + res, vec3<f32>(0.0), vec3<f32>(1.0));
-    return linear_srgb_to_oklab(srgb_to_linear(srgb));
+// A pigment mixture → Oklab, `filter_common`'s interface.
+fn latent_to_lab(p: Pigment) -> vec3<f32> {
+    return linear_srgb_to_oklab(mixbox_to_linear(p));
 }
 
-// The two halves of a pigment color (§6.7), as one value — what `latent_to_lab`
-// undoes, and what every arm here has to produce before it can write a target.
-struct Latent {
-    conc: vec3<f32>,
-    res: vec3<f32>,
-}
-
-// Linear light → a latent: `mixbox_rgb_to_latent`, spelled out. The LUT is indexed
-// by sRGB on `[0,1]`, so the clamp precedes it — `max(…, 0)` because an adjustment
-// can step outside the gamut and a summed spectrum can dip below zero. The residual
-// is then what the polynomial cannot say about the color that arrived (§6.7);
-// without that second half a filter landing on black would store a mixture the media
-// pass renders `#383838`, and every filtered texel would be pulled toward the
-// polynomial's reachable set.
-//
-// **Light** rather than Oklab is the interface because the gather arrives in light
-// and the point filters arrive in Oklab, and only one of those trips is free to be
-// undone. One definition, three callers — the point path, the gather and the merge.
-fn linear_to_latent(lin: vec3<f32>) -> Latent {
-    let srgb = clamp(
-        linear_to_srgb(max(lin, vec3<f32>(0.0))),
-        vec3<f32>(0.0), vec3<f32>(1.0),
-    );
-    let conc = mixbox_srgb_to_concentrations(srgb);
-    return Latent(conc, srgb - mixbox_eval_polynomial(conc));
-}
-
-// [`linear_to_latent`] for a color that arrives in the space the point filters work
+// [`mixbox_from_linear`] for a color that arrives in the space the point filters work
 // in — `latent_to_lab`'s inverse, and the leg the merge takes too.
-fn lab_to_latent(lab: vec3<f32>) -> Latent {
-    return linear_to_latent(oklab_to_linear_srgb(lab));
-}
-
-// A latent (concentrations + residual) → **linear light**, the space the chromatic
-// integral sums in (§21.10): the same `poly(c) + r` as above, stopping at linear
-// sRGB because a sum over wavelengths is a sum of light, not of lightness.
-fn latent_to_linear(conc: vec3<f32>, res: vec3<f32>) -> vec3<f32> {
-    let srgb = clamp(mixbox_eval_polynomial(conc) + res, vec3<f32>(0.0), vec3<f32>(1.0));
-    return srgb_to_linear(srgb);
+fn lab_to_latent(lab: vec3<f32>) -> Pigment {
+    return mixbox_from_linear(pigment_lut, pigment_samp, oklab_to_linear_srgb(lab));
 }
 
 // `filter_common::resolve` with the residual beside it — the whole tail of a filter
@@ -101,15 +66,12 @@ fn latent_to_linear(conc: vec3<f32>, res: vec3<f32>) -> vec3<f32> {
 // the same argument `filter_common::resolve` makes for being shared between the two
 // spaces. The residual's own target alpha is `cb.a` too — duplicated only because
 // the fixed-function "over" that filled these targets reads each one's.
-fn resolve_latent(
-    cb: vec4<f32>, chan: vec3<f32>, res: vec3<f32>,
-    out_chan: vec3<f32>, out_res: vec3<f32>, h: f32,
-) -> FsOut {
-    let base = resolve(cb, chan, out_chan, h);
+fn resolve_latent(cb: vec4<f32>, was: Pigment, now: Pigment, h: f32) -> FsOut {
+    let base = resolve(cb, was.conc, now.conc, h);
     var out: FsOut;
     out.color = base.color;
     out.aux = base.aux;
-    out.resid = vec4<f32>(weigh(res, out_res) * cb.a, cb.a);
+    out.resid = vec4<f32>(weigh(was.res, now.res) * cb.a, cb.a);
     return out;
 }
 
@@ -147,7 +109,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
             let y = ca_lum(w);
             let conc = cs.rgb / max(cs.a, COVERAGE_EPS);
             let res = rs.rgb / max(cs.a, COVERAGE_EPS);
-            lin_acc += w * latent_to_linear(conc, res) * cs.a;
+            lin_acc += w * mixbox_to_linear(Pigment(conc, res)) * cs.a;
             w_acc += w;
             cov_acc += y * cs.a;
             h_acc += y * hs;
@@ -155,22 +117,22 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         }
         let a = cov_acc / y_acc;
         // Out of light and back into pigment, once, for the summed spectrum.
-        let gathered = linear_to_latent(lin_acc / w_acc / max(a, COVERAGE_EPS));
-        let out_conc = gathered.conc;
-        let out_res = gathered.res;
+        let gathered = mixbox_from_linear(
+            pigment_lut, pigment_samp, lin_acc / w_acc / max(a, COVERAGE_EPS),
+        );
         // **Clipped**: the fringe's color lands, its displaced coverage does not
         // (§21.4) — `filter_oklab.wesl`'s branch, with the residual carried through
         // the same tail the point path takes.
         if is_clipped() {
             let cov = max(cb.a, COVERAGE_EPS);
-            return resolve_latent(cb, cb.rgb / cov, rb.rgb / cov, out_conc, out_res, h);
+            return resolve_latent(cb, Pigment(cb.rgb / cov, rb.rgb / cov), gathered, h);
         }
         // The strength mix on the raw premultiplied lanes — both halves of the
         // color, the coverage and the height together, so strength 0 is the
         // backdrop bit for bit (§21.4).
         var out: FsOut;
-        out.color = mix(cb, vec4<f32>(out_conc * a, a), f.strength);
-        out.resid = mix(rb, vec4<f32>(out_res * a, a), f.strength);
+        out.color = mix(cb, vec4<f32>(gathered.conc * a, a), f.strength);
+        out.resid = mix(rb, vec4<f32>(gathered.res * a, a), f.strength);
         out.aux = vec4<f32>(mix(h, h_acc / y_acc, f.strength), 0.0, 0.0, 0.0);
         return out;
     }
@@ -179,28 +141,26 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         // The convolution already ran in light (§21.12, `blur.wesl`); what is
         // pigment's alone is the one re-entry — the inverse LUT with the residual
         // recomputed for the arrived-at color, exactly the gather's ending (§6.7).
-        let b = blur_read(frag.xy);
-        let l = linear_to_latent(b.lin);
+        let blurred = blur_read(frag.xy);
+        let l = mixbox_from_linear(pigment_lut, pigment_samp, blurred.lin);
         if is_clipped() {
             let cov = max(cb.a, COVERAGE_EPS);
-            return resolve_latent(cb, cb.rgb / cov, rb.rgb / cov, l.conc, l.res, h);
+            return resolve_latent(cb, Pigment(cb.rgb / cov, rb.rgb / cov), l, h);
         }
         var out: FsOut;
-        out.color = mix(cb, vec4<f32>(l.conc * b.cov, b.cov), f.strength);
-        out.resid = mix(rb, vec4<f32>(l.res * b.cov, b.cov), f.strength);
-        out.aux = vec4<f32>(mix(h, b.h, f.strength), 0.0, 0.0, 0.0);
+        out.color = mix(cb, vec4<f32>(l.conc * blurred.cov, blurred.cov), f.strength);
+        out.resid = mix(rb, vec4<f32>(l.res * blurred.cov, blurred.cov), f.strength);
+        out.aux = vec4<f32>(mix(h, blurred.h, f.strength), 0.0, 0.0, 0.0);
         return out;
     }
 
     // Both halves un-premultiply by the *color's* coverage — the residual target's
     // own alpha is the same number, duplicated only because the fixed-function
     // "over" that filled these targets reads each one's alpha.
-    let chan = cb.rgb / max(cb.a, COVERAGE_EPS);
-    let res = rb.rgb / max(cb.a, COVERAGE_EPS);
+    let cov = max(cb.a, COVERAGE_EPS);
+    let was = Pigment(cb.rgb / cov, rb.rgb / cov);
 
-    let adjusted = lab_to_latent(filtered(latent_to_lab(chan, res)));
-
-    return resolve_latent(cb, chan, res, adjusted.conc, adjusted.res, h);
+    return resolve_latent(cb, was, lab_to_latent(filtered(latent_to_lab(was))), h);
 }
 
 // The focal blur's decode (§21.12): `filter_oklab.wesl`'s, with the one
@@ -227,7 +187,7 @@ fn fs_blur_decode(@builtin(position) frag: vec4<f32>) -> BlurOut {
     }
     let conc = cb.rgb / max(cb.a, COVERAGE_EPS);
     let res = rb.rgb / max(cb.a, COVERAGE_EPS);
-    let light = linear_to_light(latent_to_linear(conc, res));
+    let light = linear_to_light(mixbox_to_linear(Pigment(conc, res)));
     return BlurOut(
         vec4<f32>(light * cb.a, cb.a),
         vec4<f32>(h, 1.0, 0.0, 0.0),
@@ -251,8 +211,6 @@ fn fs_tile(@builtin(position) frag: vec4<f32>) -> FsOut {
     let r = textureLoad(back_resid, p, 0); // (residual · opacity, opacity)
     let h = textureLoad(back_aux, p, 0).x;
     let opacity = max(c.a, PAINT_EPS);
-    let chan = c.rgb / opacity;
-    let res = r.rgb / opacity;
-    let adjusted = lab_to_latent(filtered(latent_to_lab(chan, res)));
-    return resolve_latent(c, chan, res, adjusted.conc, adjusted.res, h);
+    let was = Pigment(c.rgb / opacity, r.rgb / opacity);
+    return resolve_latent(c, was, lab_to_latent(filtered(latent_to_lab(was))), h);
 }

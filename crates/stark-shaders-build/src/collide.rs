@@ -8,15 +8,14 @@ use crate::eval::{group_binding, module_context};
 /// Fail unless the modules a pipeline links agree about where each one's share of a
 /// group's index space stops.
 ///
-/// A pipeline's bindings come from several files — `blend_mixbox` takes 0–4 from
-/// `blend_common`, 5–6 from `mixbox_lut` and 7–8 from itself — and that partition is
-/// held by nothing but a comment in each. `mixbox_lut.wesl` says so on its face: *"If
-/// `blend_common` ever grows a sixth binding, it collides here, and the error will name
-/// a mangled identifier rather than any of the files."* This is that check, taken where
-/// the answer is: the linked artifact holds exactly the declarations one pipeline
-/// compiles, post-`@if`, imports resolved — so the collision is arithmetic here, in
-/// terms of the two *files*, rather than a `naga` error naming
-/// `package__1mixbox_lut_pigment_lut` at pipeline creation.
+/// A pipeline's bindings come from two files — `filter_mixbox` takes 0–4 and 8 from
+/// `filter_common` and 5–7 from itself — and that partition is held by nothing but a
+/// comment in each. If `filter_common` ever grows a fifth texture it collides there,
+/// and without this the error would name a mangled identifier rather than either file.
+/// Taken where the answer is: the linked artifact holds exactly the declarations one
+/// pipeline compiles, post-`@if`, imports resolved — so the collision is arithmetic
+/// here, in terms of the two *files*, rather than a `naga` error naming
+/// `package__1filter_mixbox_pigment_lut` at pipeline creation.
 ///
 /// **Only collisions between two different modules are a fault**, and that is the
 /// distinction the hazard is actually about rather than a tolerance. A module may
@@ -60,7 +59,7 @@ pub(crate) fn bindings_do_not_collide(
             panic!(
                 "`{artifact}` links `{other_from}`'s `{other}` and `{from}`'s `{name}` \
                  at the same `@group({g}) @binding({b})`. The modules a pipeline links \
-                 partition a group's index space between them (see `mixbox_lut.wesl`), \
+                 partition a group's index space between them, \
                  and two of them have claimed one slot."
             );
         }
@@ -76,7 +75,7 @@ mod tests {
     use super::*;
     use wesl::{BasicSourceMap, NoSourceMap};
 
-    /// The linker's own mangling, as `mixbox_lut`'s `pigment_lut` reaches an artifact.
+    /// The linker's own mangling, as `filter_mixbox`'s `pigment_lut` reaches an artifact.
     fn sourcemap(decls: &[(&str, &str, &str)]) -> BasicSourceMap {
         let mut map = BasicSourceMap::new();
         for (mangled, module, item) in decls {
@@ -98,18 +97,18 @@ mod tests {
     #[test]
     #[should_panic(
         expected = "`package::blend_common`'s `package__1blend_common_src` and \
-                               `package::mixbox_lut`'s `package__1mixbox_lut_pigment_lut` at \
+                               `package::filter_mixbox`'s `package__1filter_mixbox_pigment_lut` at \
                                the same `@group(0) @binding(5)`"
     )]
     fn two_modules_at_one_slot_are_named_by_the_sourcemap() {
         check(
             "@group(0) @binding(5) var package__1blend_common_src: texture_2d<f32>;\n\
-             @group(0) @binding(5) var package__1mixbox_lut_pigment_lut: texture_2d<f32>;\n",
+             @group(0) @binding(5) var package__1filter_mixbox_pigment_lut: texture_2d<f32>;\n",
             &sourcemap(&[
                 ("package__1blend_common_src", "package::blend_common", "src"),
                 (
-                    "package__1mixbox_lut_pigment_lut",
-                    "package::mixbox_lut",
+                    "package__1filter_mixbox_pigment_lut",
+                    "package::filter_mixbox",
                     "pigment_lut",
                 ),
             ]),
@@ -153,12 +152,12 @@ mod tests {
         check(
             "const BASE: u32 = 4u;\n\
              @group(0) @binding(5) var package__1blend_common_src: texture_2d<f32>;\n\
-             @group(0) @binding(BASE + 1u) var package__1mixbox_lut_pigment_lut: texture_2d<f32>;\n",
+             @group(0) @binding(BASE + 1u) var package__1filter_mixbox_pigment_lut: texture_2d<f32>;\n",
             &sourcemap(&[
                 ("package__1blend_common_src", "package::blend_common", "src"),
                 (
-                    "package__1mixbox_lut_pigment_lut",
-                    "package::mixbox_lut",
+                    "package__1filter_mixbox_pigment_lut",
+                    "package::filter_mixbox",
                     "pigment_lut",
                 ),
             ]),

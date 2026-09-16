@@ -3,8 +3,8 @@
 //! **Discovered, not listed.** A module declaring an `@vertex`, `@fragment` or
 //! `@compute` function links as its own artifact; every other module in the tree is
 //! reached only by import and would fail to link as a root. So is the pigment set: a
-//! module importing the transpiled polynomial ([`GEN_PREFIX`](crate::GEN_PREFIX)) is
-//! one the `mixbox` cargo feature builds.
+//! module *reaching* the transpiled polynomial ([`GEN_PREFIX`](crate::GEN_PREFIX)),
+//! through any depth of import, is one the `mixbox` cargo feature builds.
 //!
 //! What stays declared is what a shader cannot say about itself: which *host* choice
 //! an `@if(feature)` gate is.
@@ -168,8 +168,9 @@ pub(crate) fn discover<'a>(
     }
 
     entries
-        .into_iter()
-        .filter(|m| pigment || !imports_under(m, &generated))
+        .iter()
+        .copied()
+        .filter(|m| pigment || !reaches_generated(m, modules, &generated))
         .map(|module| {
             let axes: Vec<&Axis<'_>> = axes
                 .iter()
@@ -192,15 +193,68 @@ fn has_entry_point(m: &Module) -> bool {
     })
 }
 
-/// Whether `m` imports anything under `prefix`.
+/// Whether `m` reaches anything under `prefix`, through any depth of import.
 ///
-/// The module's **own** imports, not its imports' imports. Factoring the polynomial
-/// behind a helper would leave all three pigment shaders looking colorimetric — but a
-/// build without the pigment space would then fail to resolve `package::gen` while
-/// linking them, which is loud and names the module. The quiet failure is the one
-/// worth ruling out, and this rules it out.
-fn imports_under(m: &Module, prefix: &ModulePath) -> bool {
-    m.tu.imports.iter().any(|st| reaches(st, prefix))
+/// **Transitive, because the polynomial is behind a helper.** `lib/mixbox.wesl` holds
+/// the pigment round trip and imports the transpiled polynomial; its three importers
+/// name neither. Asking only about a module's own imports would leave all three looking
+/// colorimetric, and a build without the pigment space would keep them and then fail to
+/// resolve `package::gen` while linking them.
+///
+/// The walk is over the tree's own modules, so a path naming nothing in it — the
+/// generated prefix itself — simply ends the branch after [`reaches`] has answered for
+/// it.
+fn reaches_generated(m: &Module, modules: &[Module], prefix: &ModulePath) -> bool {
+    let mut seen: Vec<&str> = vec![m.path.as_str()];
+    let mut stack: Vec<&Module> = vec![m];
+    while let Some(at) = stack.pop() {
+        if at.tu.imports.iter().any(|st| reaches(st, prefix)) {
+            return true;
+        }
+        for path in imported_modules(at) {
+            let Some(next) = modules.iter().find(|m| m.path == path) else {
+                continue;
+            };
+            if !seen.contains(&next.path.as_str()) {
+                seen.push(next.path.as_str());
+                stack.push(next);
+            }
+        }
+    }
+    false
+}
+
+/// Every module path `m`'s imports name, as the tree spells them (`lib/color`).
+///
+/// A candidate list rather than a resolution: an import ends in an *item*, and
+/// `import package::lib::color;` would name the module itself, so both readings are
+/// offered and [`reaches_generated`] keeps whichever the tree holds.
+fn imported_modules(m: &Module) -> Vec<String> {
+    let mut out = Vec::new();
+    for st in &m.tu.imports {
+        if let Some(path) = &st.path {
+            walk_content(&path.components, &st.content, &mut out);
+        }
+    }
+    out
+}
+
+fn walk_content(base: &[String], content: &ImportContent, out: &mut Vec<String>) {
+    match content {
+        ImportContent::Item(item) => {
+            out.push(base.join("/"));
+            let mut full = base.to_vec();
+            full.push(item.ident.name().to_string());
+            out.push(full.join("/"));
+        }
+        ImportContent::Collection(items) => {
+            for i in items {
+                let mut full = base.to_vec();
+                full.extend(i.path.iter().cloned());
+                walk_content(&full, &i.content, out);
+            }
+        }
+    }
 }
 
 /// Whether one import statement names anything under `prefix`.
@@ -292,6 +346,36 @@ mod tests {
     fn a_shader_importing_the_polynomial_is_left_out_without_the_pigment_space() {
         let tree = tree();
         assert_eq!(named(&discover(&tree, &[], false)), ["stamp"]);
+    }
+
+    /// The shape the tree actually has: the polynomial is behind `lib/mixbox`, and its
+    /// importers name only that. One level of indirection was enough to keep every
+    /// pigment shader in a build that cannot resolve `package::gen`.
+    #[test]
+    fn a_shader_reaching_the_polynomial_through_a_leaf_is_left_out_too() {
+        let tree = [
+            Module::parse(
+                "lib/mixbox",
+                "import package::gen::mixbox_poly::{mixbox_eval_polynomial};\n\
+                 fn to_linear(c: vec3<f32>) -> vec3<f32> {\n\
+                 \x20   return mixbox_eval_polynomial(c);\n}\n",
+            ),
+            Module::parse(
+                "media_mixbox",
+                "import package::lib::mixbox::{to_linear};\n\
+                 @fragment\nfn fs_main() -> @location(0) vec4<f32> {\n\
+                 \x20   return vec4<f32>(to_linear(vec3<f32>(0.0)), 1.0);\n}\n",
+            ),
+            Module::parse(
+                "media_oklab",
+                "@fragment\nfn fs_main() -> @location(0) vec4<f32> { return vec4<f32>(0.0); }\n",
+            ),
+        ];
+        assert_eq!(named(&discover(&tree, &[], false)), ["media_oklab"]);
+        assert_eq!(
+            named(&discover(&tree, &[], true)),
+            ["media_mixbox", "media_oklab"]
+        );
     }
 
     /// The collection spelling of the same import. Nothing in the tree writes it this

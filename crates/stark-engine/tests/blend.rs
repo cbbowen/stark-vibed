@@ -432,7 +432,7 @@ fn a_combining_layer_weighs_its_coverage_in_light() {
 /// with a backdrop present the color genuinely makes the trip out to normalized XYZ
 /// and back, and now out to *emission* and back on top of that. That makes it the
 /// check on the conversions themselves — and in a Mixbox document, on
-/// `mixbox_lut.wesl`, the one place the engine inverts the pigment polynomial on the
+/// `lib/mixbox.wesl`, the one place the engine inverts the pigment polynomial on the
 /// GPU. A LUT with its axes or its rows the wrong way round would still be "brighter
 /// at the overlap"; it would not survive this.
 ///
@@ -693,7 +693,7 @@ fn a_layers_bend_moves_the_overlap() {
 // ---------------------------------------------------------------------------
 
 /// The Mixbox path runs the same algebra, but the trip back from light is a LUT
-/// lookup rather than a matrix (`mixbox_lut.wesl`) — a different shader, a different
+/// lookup rather than a matrix (`lib/mixbox.wesl`) — a different shader, a different
 /// binding, and the only place in the engine that inverts the pigment polynomial on
 /// the GPU. Same two claims: identity over nothing, brighter at the overlap.
 /// Mixbox-only, so it exists only in a build carrying the `mixbox` feature.

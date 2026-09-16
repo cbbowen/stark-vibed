@@ -164,7 +164,7 @@ struct Filter {
 // blurred height and, in `.y`, the blurred border weight `blur_read` divides by.
 // Padded larger than the accumulator, image at the origin, so the fragment's own
 // texel is the right load. Binding 4 takes the blend pass's other source slot;
-// 8 sits past `mixbox_lut`'s 5–6 and `filter_mixbox`'s 7.
+// 8 sits past `filter_mixbox`'s 5–7.
 @group(0) @binding(4) var blur_light: texture_2d<f32>;
 @group(0) @binding(8) var blur_aux: texture_2d<f32>;
 

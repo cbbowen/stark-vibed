@@ -4,7 +4,7 @@
 //! One owner, the blend pass — which combines *light* and then has to say which
 //! mixture of pigments would have produced it — and the filter pass borrows it for the
 //! same question (§21). Every other GPU path runs Mixbox forwards
-//! (`mixbox_poly.wesl`) and the CPU handles the rare reverse; a per-texel inverse is
+//! (`lib/mixbox.wesl`) and the CPU handles the rare reverse; a per-texel inverse is
 //! what forces the table onto the GPU.
 //!
 //! The bytes are the vendored submodule's own `mixbox_lut.png` — the 64³ cube unrolled
@@ -15,8 +15,7 @@
 //! Mixbox 2.0 (c) 2022 Secret Weapons, authors Sarka Sochorova and Ondrej Jamriska.
 //! Licensed CC BY-NC 4.0; see `vendor/mixbox/LICENSE`.
 
-use stark_shaders::EntryPoint;
-use stark_shaders::mirror::mixbox_lut::decl as mld;
+use stark_shaders::{Binding, EntryPoint};
 
 use crate::gpu::context::GpuContext;
 
@@ -40,20 +39,22 @@ pub struct PigmentLut {
     pub sampler: wgpu::Sampler,
 }
 
-/// Whether `fs` reads Mixbox's LUT, which is what puts it in that pass's layout.
+/// Whether `fs` reads `lut`, the LUT slot its own module declares — which is what puts
+/// it in that pass's layout.
 ///
-/// **The shader's answer, not the space's.** `mixbox_lut.wesl` is reached only from
-/// `blend_mixbox.wesl` and `filter_mixbox.wesl`, so a colorimetric space's layout has
-/// no slot for it — there is nothing to stand in for, and no `needs_pigment_lut` for a
-/// space to answer twice. The blend and filter passes each ask it of their own shader.
-pub fn read_by(fs: EntryPoint) -> bool {
-    fs.uses.iter().any(|u| u.decl == mld::PIGMENT_LUT)
+/// **The shader's answer, not the space's.** Only `blend_mixbox.wesl` and
+/// `filter_mixbox.wesl` declare a LUT, so a colorimetric space's layout has no slot for
+/// it — there is nothing to stand in for, and no `needs_pigment_lut` for a space to
+/// answer twice. Each pass asks it of its own shader, and passes its own declaration
+/// because the two are different slots of different modules (§6.10).
+pub fn read_by(fs: EntryPoint, lut: Binding) -> bool {
+    fs.uses.iter().any(|u| u.decl == lut)
 }
 
 impl PigmentLut {
     /// The LUT `fs` reads, or `None` where it declares none ([`read_by`]).
-    pub fn of(ctx: &GpuContext, fs: EntryPoint) -> Option<Self> {
-        read_by(fs).then(|| Self::load(ctx))
+    pub fn of(ctx: &GpuContext, fs: EntryPoint, lut: Binding) -> Option<Self> {
+        read_by(fs, lut).then(|| Self::load(ctx))
     }
 
     /// Decode and upload the vendored LUT.
@@ -133,9 +134,9 @@ impl PigmentLut {
         }
     }
 
-    /// Unreachable without the feature, and structurally so: `mixbox_lut.wesl` is
-    /// reached only from the two Mixbox shaders, which a build without it does not
-    /// link — so [`read_by`] is false for every entry point there is.
+    /// Unreachable without the feature, and structurally so: the LUT is declared only
+    /// by the two Mixbox shaders, which a build without it does not link — so
+    /// [`read_by`] is false for every entry point there is.
     #[cfg(not(feature = "mixbox"))]
     fn load(_ctx: &GpuContext) -> Self {
         unreachable!("no shader in a build without Mixbox declares the pigment LUT")

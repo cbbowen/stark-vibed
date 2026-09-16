@@ -21,7 +21,7 @@ use stark_shaders::Stages;
 use stark_shaders::mirror::filter_common::binding as fc;
 use stark_shaders::mirror::filter_common::decl as fcd;
 use stark_shaders::mirror::filter_mixbox::binding as fm;
-use stark_shaders::mirror::mixbox_lut::binding as ml;
+use stark_shaders::mirror::filter_mixbox::decl as fmd;
 
 use super::blend::Bounce;
 use super::group::FilterDraw;
@@ -154,7 +154,7 @@ impl FilterPass {
             bgl,
             sampler,
             blur_zero,
-            wants_lut: crate::gpu::pigment::read_by(filter.fs_main),
+            wants_lut: crate::gpu::pigment::read_by(filter.fs_main, fmd::PIGMENT_LUT),
         }
     }
 
@@ -190,8 +190,8 @@ impl FilterPass {
             fc::BACK_SAMP => wgpu::BindingResource::Sampler(&self.sampler),
             fc::BLUR_LIGHT => wgpu::BindingResource::TextureView(blur_light),
             fc::BLUR_AUX => wgpu::BindingResource::TextureView(blur_aux),
-            ml::PIGMENT_LUT => wgpu::BindingResource::TextureView(&lut().view),
-            ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&lut().sampler),
+            fm::PIGMENT_LUT => wgpu::BindingResource::TextureView(&lut().view),
+            fm::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&lut().sampler),
             fm::BACK_RESID => {
                 wgpu::BindingResource::TextureView(back.resid.expect("a residual build has one"))
             }

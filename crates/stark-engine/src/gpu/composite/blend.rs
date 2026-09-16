@@ -21,7 +21,7 @@ use stark_shaders::Stages;
 use stark_shaders::mirror::blend_common::binding as bc;
 use stark_shaders::mirror::blend_common::decl as bcd;
 use stark_shaders::mirror::blend_mixbox::binding as bm;
-use stark_shaders::mirror::mixbox_lut::binding as ml;
+use stark_shaders::mirror::blend_mixbox::decl as bmd;
 
 use super::plan::Phase;
 
@@ -65,11 +65,11 @@ impl BlendPass {
         let device = &ctx.device;
         let blend = color_space.blend_shader();
         let shader = desc::Module::new(device, "stark blend", &blend);
-        // Three modules share this group — `blend_common.wesl`, `mixbox_lut.wesl` and
-        // `blend_mixbox.wesl` — and which of them the space links is what decides the
-        // layout's length (§6.7). Every texture here is `textureLoad`ed at the
-        // fragment's own coordinate except the LUT, which Mixbox interpolates in
-        // hardware, so it alone comes out filterable.
+        // Two modules share this group — `blend_common.wesl` and `blend_mixbox.wesl` —
+        // and whether the space links the second is what decides the layout's length
+        // (§6.7). Every texture here is `textureLoad`ed at the fragment's own
+        // coordinate except the LUT, which Mixbox interpolates in hardware, so it alone
+        // comes out filterable.
         let formats = ChannelFormats::of(color_space);
         let bgl = Bindings::of(
             device,
@@ -91,7 +91,7 @@ impl BlendPass {
             (blend.vs_main, blend.fs_main),
             &targets,
         );
-        let pigment = PigmentLut::of(ctx, blend.fs_main);
+        let pigment = PigmentLut::of(ctx, blend.fs_main, bmd::PIGMENT_LUT);
         Self {
             pipeline,
             bgl,
@@ -127,8 +127,8 @@ impl BlendPass {
             bc::BACK_AUX => wgpu::BindingResource::TextureView(back.aux),
             bc::SRC_COLOR => wgpu::BindingResource::TextureView(src.color),
             bc::SRC_AUX => wgpu::BindingResource::TextureView(src.aux),
-            ml::PIGMENT_LUT => wgpu::BindingResource::TextureView(&lut().view),
-            ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&lut().sampler),
+            bm::PIGMENT_LUT => wgpu::BindingResource::TextureView(&lut().view),
+            bm::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&lut().sampler),
             bm::BACK_RESID => {
                 wgpu::BindingResource::TextureView(back.resid.expect("a residual build has one"))
             }

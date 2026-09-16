@@ -1,9 +1,10 @@
 // Layer blending for the **Mixbox** pigment color space (§18.0.4,
 // §6.7). Same light algebra as every other space; what differs is that a
 // channel triple here is a mixture of pigments rather than a color, so the trip out
-// to light is Mixbox's polynomial and the trip back is its LUT.
+// to light and back is `lib/mixbox.wesl`'s round trip — the polynomial one way, the
+// LUT the other.
 //
-// That round trip is the reason `mixbox_lut.wesl` exists. Combining light is not a
+// That round trip is why the LUT is bound here at all. Combining light is not a
 // pigment operation — there is no mixture of Cadmium Red and Ultramarine that *is*
 // two lamps added together — so the only way to say what a glow layer did in a
 // pigment document is to work out the resulting light and ask which mixture would
@@ -23,11 +24,8 @@
 // attenuate the light passing through them, which is a statement about light, so it
 // is settled in light and the LUT is asked which mixture ended up that color.
 
-import package::lib::color::{
-    srgb_to_linear, linear_to_srgb, linear_to_light, light_to_linear,
-};
-import package::gen::mixbox_poly::{mixbox_eval_polynomial};
-import package::mixbox_lut::{mixbox_srgb_to_concentrations};
+import package::lib::color::{linear_to_light, light_to_linear};
+import package::lib::mixbox::{Pigment, mixbox_to_linear, mixbox_from_linear};
 import package::lib::quad::{fullscreen_clip};
 import package::lib::paint_common::{COVERAGE_EPS};
 import package::blend_common::{
@@ -35,10 +33,15 @@ import package::blend_common::{
     combined_light, is_normal, merge, merge_added, merge_triple,
 };
 
+// Mixbox's inverse LUT and the sampler that reads it — bound here because this is one
+// of the two passes that has to express a combination of *light* back as a mixture of
+// pigment. **Bindings 5 and 6 of group 0**, past where `blend_common` stops (0–4).
+@group(0) @binding(5) var pigment_lut: texture_2d<f32>;
+@group(0) @binding(6) var pigment_samp: sampler;
+
 // The residual halves of the two colors (§6.7). **Bindings 7 and 8 of
-// group 0** — `blend_common` owns 0–4 and `mixbox_lut` 5–6, and as that file says,
-// nothing but this comment holds the three apart. Unconditional, with no `@if`: this
-// module is reached only by the space that has a residual.
+// group 0**, and nothing but this comment holds the two modules apart. Unconditional,
+// with no `@if`: this module is reached only by the space that has a residual.
 @group(0) @binding(7) var back_resid: texture_2d<f32>;
 @group(0) @binding(8) var src_resid: texture_2d<f32>;
 
@@ -49,14 +52,6 @@ struct FsOut {
     @location(0) color: vec4<f32>,
     @location(1) aux: vec4<f32>,
     @location(2) resid: vec4<f32>,
-}
-
-// A latent (concentrations + residual) → normalized XYZ. Mixbox's `latent_to_rgb` is
-// `poly(c) + r`, and taking the polynomial alone here is what made a black layer go
-// out to light as mid-grey (§6.7).
-fn latent_to_light(conc: vec3<f32>, res: vec3<f32>) -> vec3<f32> {
-    let srgb = clamp(mixbox_eval_polynomial(conc) + res, vec3<f32>(0.0), vec3<f32>(1.0));
-    return linear_to_light(srgb_to_linear(srgb));
 }
 
 @vertex
@@ -108,29 +103,20 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // simplification the one-expansion law buys: the two halves are one color, and
     // here they are decoded from one.
     //
-    // `max(..., 0)` before the sRGB encode: the combination is componentwise in XYZ,
-    // which can step just outside the gamut on very saturated pairs, and the LUT is
-    // indexed by sRGB. `mixbox_srgb_to_concentrations` clamps the top end itself. The
-    // rest of `mixbox_rgb_to_latent` is the residual: what the polynomial could not say
-    // about the color the light works out to. **The residual is what makes the trip
-    // back from light exact** — the LUT's concentrations alone cannot reach every
-    // color, and a blend landing on black would store a mixture the media pass renders
-    // `#383838`.
+    // **The residual is what makes the trip back from light exact** — the LUT's
+    // concentrations alone cannot reach every color, and a blend landing on black would
+    // store a mixture the media pass renders `#383838`.
     let x = combined_light(
-        latent_to_light(chan_b, res_b),
+        linear_to_light(mixbox_to_linear(Pigment(chan_b, res_b))),
         cb.a,
-        latent_to_light(chan_s, res_s),
+        linear_to_light(mixbox_to_linear(Pigment(chan_s, res_s))),
         cs.a,
     );
-    let srgb = clamp(
-        linear_to_srgb(max(light_to_linear(x), vec3<f32>(0.0))),
-        vec3<f32>(0.0), vec3<f32>(1.0),
-    );
-    let conc = mixbox_srgb_to_concentrations(srgb);
-    let base = merge_added(cb, cs, conc, hb, hs);
+    let out_p = mixbox_from_linear(pigment_lut, pigment_samp, light_to_linear(x));
+    let base = merge_added(cb, cs, out_p.conc, hb, hs);
     out.color = base.color;
     out.aux = base.aux;
-    out.resid = vec4<f32>((srgb - mixbox_eval_polynomial(conc)) * base.color.a, base.color.a);
+    out.resid = vec4<f32>(out_p.res * base.color.a, base.color.a);
     return out;
 
 }
