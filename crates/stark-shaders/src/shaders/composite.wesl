@@ -63,9 +63,8 @@ struct FsOut {
     @if(resid) @location(2) resid: vec4<f32>,
 }
 
-// One tile of the layer being drawn. Its name is the Rust record's (§6.10). Generated
-// once and used twice: pass A draws the layer stack with it and the brush-dynamics loop
-// composites its working region through this very shader (§6.3).
+// One tile of the layer being drawn — by pass A, and by the dynamics loop's own
+// composite of its working region (see the header).
 struct Instance {
     // Per-tile instance: the tile interior's top-left in canvas px.
     @location(0) origin: vec2<f32>,

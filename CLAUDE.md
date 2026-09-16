@@ -74,7 +74,9 @@ crates/
   stark-engine/    the derived view — no UI, no windowing; compiles to wasm
     document/      DocState, the timeline, and the fold that fills them
     gpu/           tile pool, stroke renderer, compositor, readback
-    filters.rs     the host's reads of the generated shader mirror (§6.10)
+    filters.rs     what a frontend needs in order to predict or draw what a filter
+    guides.rs      pass or the guide overlay will do, read off the generated shader
+                   mirror rather than transcribed (§6.10)
   stark-shaders/   WESL sources, the build step that links them, and the host
                    mirrors generated from them (§6.10)
     src/shaders/   the WESL tree; `lib/` under it holds the binding-free leaves
@@ -294,7 +296,8 @@ per-test tolerance hides exactly that drift. Deleting a golden re-blesses it.
 - **Anything reading the generated shader mirror belongs with the shaders**
   (§6.10). `stark-model` compiles without `stark-shaders` at all, so a constant it
   wants from a `.wesl` declaration is a signal the item is the engine's —
-  `filters.rs` is where those collected.
+  `filters.rs` and `guides.rs` are where those collected, one per pass that owes
+  the chrome a number.
 - **Never transcribe onto the host what a `.wesl` file already states** (§6.10).
   Uniform lanes, constants, vertex formats, binding indices and binding *types*
   are all generated from the shader's own declaration — and **discovered, not

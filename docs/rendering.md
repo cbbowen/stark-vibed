@@ -1049,11 +1049,14 @@ under `lib/` (`lib/paint_common.wesl`'s `TOOTH_RISE` is
 `mirror::paint_common::TOOTH_RISE`), since `lib` is a placement rule — binding-free
 leaves — rather than a namespace.
 
-One shape is **not** mirrored today and should be: a constant that names another
-(`const X: f32 = TAU / 4.0;`). It is skipped with a note in the generated file's
-header rather than refused, so a host reaching for it fails at its own use site. No
-constant in the tree does this;
-`emit::tests::a_const_derived_from_its_neighbours_is_skipped` pins it.
+A vector or a small array comes through as a Rust array — `vec3<f32>` as `[f32; 3]`,
+`array<vec4<f32>, 3>` as `[[f32; 4]; 3]` — so a colour or a table of coefficients is
+stated once, in the shader. That is the value's **own lanes**, not the padded stride
+the same type occupies as a uniform member — the two spellings of one WGSL type in
+one generated file, which is why the file's header says which is which. What is left
+with no Rust spelling at all — a matrix, a struct — is skipped with a note in
+the generated file's header rather than refused, so a host reaching for it fails at
+its own use site.
 
 A constant that disagrees is worse-behaved than a struct that does. A struct
 usually surfaces as a wgpu validation error; a constant leaves both sides rendering
@@ -1138,9 +1141,9 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: SegmentInstance) -> VsOut { …
 The struct's name is the Rust record's. That used to be the one thing the shader
 could not supply — a parameter list has no name of its own — so the build script
 kept a `VERTEX` table naming each one; the struct says it instead, and the table is
-gone. A `@vertex` entry point taking bare `@location` parameters is refused, with the
-same message. Then delete the host struct *and* its `vertex_attr_array!`, and build
-the buffer from the generated layout:
+gone. A `@vertex` entry point taking bare `@location` parameters is refused for that
+reason, in those words. Then delete the host struct *and* its `vertex_attr_array!`,
+and build the buffer from the generated layout:
 
 ```rust
 buffers: &[Some(stark_shaders::mirror::stamp::segment_instance_layout(

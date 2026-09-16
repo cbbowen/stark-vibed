@@ -1,24 +1,29 @@
-//! The per-instance records a `@vertex` entry point reads.
+//! The per-instance records a `@vertex` entry point takes.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use wesl::eval::{Type, ty_eval_ty};
-use wesl::syntax::{Attribute, Function, GlobalDeclaration, Struct};
+use wesl::syntax::{Attribute, ExpressionNode, Function, GlobalDeclaration, Struct, StructMember};
 
 use crate::docs::doc_lines;
 use crate::eval::{const_u32, is_gated, module_context};
 use crate::layout::{Field, ident, lit, rust_ty};
 use crate::tree::Module;
 
-/// Emit the record every `@vertex` entry point of `m` reads, where it reads one.
+/// Emit the record every `@vertex` entry point of `m` takes, where it takes one.
 ///
 /// **The shader names it.** A vertex input is declared as a named struct the entry
 /// point takes whole, so the Rust record's name is the struct's — the one thing a
 /// bare parameter list cannot supply, and the last thing the build script had to be
 /// told (§6.10). An entry point taking `@location` parameters directly is refused
-/// here rather than listed somewhere.
+/// here rather than listed somewhere, and so is a gate on the parameter that names
+/// the struct.
 pub(super) fn emit(m: &Module) -> TokenStream {
     let mut out = TokenStream::new();
+    // One record per struct, however many entry points take it: two `@vertex`
+    // functions over one instance buffer is a shape nothing forbids, and the second
+    // emission would be a duplicate definition in the generated file.
+    let mut done: Vec<String> = Vec::new();
     for f in m.tu.global_declarations.iter().filter_map(|d| match &**d {
         GlobalDeclaration::Function(f)
             if f.attributes
@@ -29,41 +34,61 @@ pub(super) fn emit(m: &Module) -> TokenStream {
         }
         _ => None,
     }) {
-        out.extend(record(m, f));
+        out.extend(record(m, f, &mut done));
     }
     out
 }
 
-/// The record `f` reads, if it reads one.
+/// The record `f` takes, if it takes one this module has not already emitted.
 ///
 /// A vertex-stage parameter carries `@builtin` or `@location`, directly or through the
 /// members of a struct — so a parameter with no attribute at all *is* the record, and
 /// there is nothing else it could be.
-fn record(m: &Module, f: &Function) -> TokenStream {
+fn record(m: &Module, f: &Function, done: &mut Vec<String>) -> TokenStream {
     let (module, entry) = (m.path.as_str(), f.ident.name());
     let mut out = TokenStream::new();
     for p in &f.parameters {
         let member = p.ident.name();
+        let at = || format!("`{module}.wesl`'s `{entry}.{member}`");
+        // `@builtin(vertex_index)` and friends come from the pipeline, not the buffer.
+        if p.attributes
+            .iter()
+            .any(|a| matches!(**a, Attribute::Builtin(_)))
+        {
+            continue;
+        }
         assert!(
             !p.attributes
                 .iter()
                 .any(|a| matches!(**a, Attribute::Location(_))),
-            "`{module}.wesl`'s `{entry}.{member}` is a `@location` parameter. A parameter \
-             list has no name, so nothing can name the Rust record the host fills from it. \
-             Declare the attributes as the members of a named struct and take one of those \
-             (§6.10)."
+            "{} is a `@location` parameter. A parameter list has no name, so nothing can \
+             name the Rust record the host fills from it. Declare the attributes as the \
+             members of a named struct and take one of those (§6.10).",
+            at(),
         );
-        if !p.attributes.is_empty() {
-            continue; // `@builtin(vertex_index)` and friends come from the pipeline
-        }
+        // Whatever is left is the record, and an attribute on it cannot be passed over
+        // the way a `@builtin` is: an `@if` here decides whether the host has the struct
+        // at all, out of a source with no feature set to evaluate.
+        assert!(
+            p.attributes.is_empty(),
+            "{} is the record `{entry}` takes, and it carries an attribute. Take it \
+             unattributed — an `@if` above all (§6.10).",
+            at(),
+        );
         let name = p.ty.ident.name();
-        let s = m.struct_named(name.as_str()).unwrap_or_else(|| {
+        let name = name.as_str();
+        let s = m.struct_named(name).unwrap_or_else(|| {
             panic!(
-                "`{module}.wesl`'s `{entry}.{member}` is a `{name}`, which this module \
-                 declares no `struct` for. A record is mirrored from the unlinked source, \
-                 where an import is only a name — declare the struct here (§6.10)."
+                "{} is a `{name}`, which this module declares no `struct` for. A record is \
+                 mirrored from the unlinked source, where an import is only a name — \
+                 declare the struct here (§6.10).",
+                at(),
             )
         });
+        if done.iter().any(|d| d == name) {
+            continue;
+        }
+        done.push(name.to_string());
         out.extend(from_struct(m, &entry, s));
     }
     out
@@ -89,6 +114,11 @@ fn from_struct(m: &Module, entry: &str, s: &Struct) -> TokenStream {
     let (src, module) = (m.src.as_str(), m.path.as_str());
     let name = s.ident.name();
     let name = name.as_str();
+    // A struct of `@builtin`s alone describes no buffer, and is the same shape as an
+    // entry point taking its builtins loose — answered the same way, with no record.
+    if !s.members.iter().any(|p| location_of(p).is_some()) {
+        return TokenStream::new();
+    }
     let mut ctx = module_context(&m.tu);
     let (mut fields, mut attrs, mut offset) = (Vec::new(), Vec::new(), 0u32);
     // Documentation for the first member runs from the opening brace, exactly as
@@ -106,10 +136,7 @@ fn from_struct(m: &Module, entry: &str, s: &Struct) -> TokenStream {
         prev_end = span.end;
 
         // `@builtin(vertex_index)` and friends come from the pipeline, not the buffer.
-        let Some(location) = p.attributes.iter().find_map(|a| match &**a {
-            Attribute::Location(e) => Some(e),
-            _ => None,
-        }) else {
+        let Some(location) = location_of(p) else {
             continue;
         };
         let location = const_u32(location, &mut ctx).unwrap_or_else(|why| {
@@ -149,11 +176,6 @@ fn from_struct(m: &Module, entry: &str, s: &Struct) -> TokenStream {
         });
         offset += size;
     }
-    assert!(
-        !fields.is_empty(),
-        "`{module}.wesl`'s `{entry}` takes a `{name}`, which declares no `@location` \
-         member, so there is no per-instance record to generate"
-    );
 
     let ident = format_ident!("{name}");
     let members = fields.iter().map(|f| {
@@ -232,6 +254,14 @@ fn from_struct(m: &Module, entry: &str, s: &Struct) -> TokenStream {
             #(#checks)*
         };
     }
+}
+
+/// The `@location` a struct member declares, when it declares one.
+fn location_of(m: &StructMember) -> Option<&ExpressionNode> {
+    m.attributes.iter().find_map(|a| match &**a {
+        Attribute::Location(e) => Some(e),
+        _ => None,
+    })
 }
 
 /// The `wgpu::VertexFormat` for `ty`, and the bytes it occupies.

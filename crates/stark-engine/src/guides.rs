@@ -4,8 +4,12 @@
 //! the generated shader mirror (§6.10) rather than transcribed — `filters.rs`'s reason,
 //! on the other pass.
 
-/// The three world-axis hues the guide pass draws with (§20.3), as **display sRGB**,
+/// The three world-axis hues the guide pass draws with (§20.4), as **display sRGB**,
 /// in X, Y, Z order.
+///
+/// Public for one consumer, the frontend test that holds these and the stylesheet's
+/// `--axis-*` to each other. There is no other way round: a frontend may not name
+/// `stark-shaders` (§2).
 ///
 /// **Generated from `guides.wesl`'s own declaration**, which is the copy that actually
 /// runs. The stylesheet's `--axis-x/y/z` are the statement of them, in Oklab; the

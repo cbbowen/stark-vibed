@@ -91,7 +91,7 @@ struct FsOut {
     @if(resid) @location(2) resid: vec4<f32>,
 }
 
-// One matte region. Its name is the Rust record's (§6.10).
+// One matte region.
 struct MatteInstance {
     // Per-matte instance: min.xy, max.xy in canvas px.
     @location(0) rect: vec4<f32>,

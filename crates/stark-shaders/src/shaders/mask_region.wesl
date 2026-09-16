@@ -28,7 +28,7 @@ struct VsOut {
     @location(0) @interpolate(flat) origin: vec2<f32>,
 }
 
-// One mask tile. Its name is the Rust record's (§6.10).
+// One mask tile.
 struct MaskInstance {
     // The tile texture's top-left in region px.
     @location(0) origin: vec2<f32>,

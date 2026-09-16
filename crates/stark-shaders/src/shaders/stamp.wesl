@@ -54,7 +54,7 @@ import package::stamp_common::{
 };
 import package::lib::paint_common::{OPACITY_K, level_sums};
 
-// One swept segment. Its name is the Rust record's (§6.10).
+// One swept segment.
 struct SegmentInstance {
     // Per-segment instance data: what actually varies from segment to segment.
     // `drain` is the one rate that does not, and rides the `TileXform` uniform

@@ -1,13 +1,12 @@
 //! The constants both sides compute with.
 
-use proc_macro2::TokenStream;
+use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 use wesl::eval::{Convert, Eval, Instance, LiteralInstance, Ty, ty_eval_ty};
 use wesl::syntax::GlobalDeclaration;
 
 use crate::docs::doc_lines;
 use crate::eval::module_context;
-use crate::layout::lit;
 use crate::tree::Module;
 
 /// Emit every `const` of `m` that has a Rust spelling, with what was skipped.
@@ -104,9 +103,10 @@ pub(super) fn emit(m: &Module) -> (TokenStream, Vec<String>) {
 /// meet. Composites recurse, which is what gives `array<vec4<f32>, N>` a spelling
 /// without a second case for it.
 fn spell(value: &Instance) -> Result<(TokenStream, TokenStream), String> {
-    let scalar = |ty: TokenStream, text: String| {
-        Ok((ty, text.parse().expect("a scalar literal is one token")))
-    };
+    // Parsed rather than built: a negative is a `-` and a literal, which is two tokens
+    // in an expression position and no `proc_macro2::Literal` at all.
+    let scalar =
+        |ty: TokenStream, text: String| Ok((ty, text.parse().expect("a scalar literal parses")));
     match value {
         // `{:?}` on an `f32` prints the shortest decimal that reads back to the same
         // bits, so the generated literal *is* this value — which is the whole difficulty
@@ -121,8 +121,8 @@ fn spell(value: &Instance) -> Result<(TokenStream, TokenStream), String> {
         Instance::Literal(LiteralInstance::U32(v)) => scalar(quote!(u32), format!("{v}")),
         Instance::Literal(LiteralInstance::I32(v)) => scalar(quote!(i32), format!("{v}")),
         Instance::Literal(LiteralInstance::Bool(v)) => scalar(quote!(bool), format!("{v}")),
-        Instance::Vec(v) => compose(v.iter(), v.n()),
-        Instance::Array(a) => compose(a.iter(), a.n()),
+        Instance::Vec(v) => compose(v.iter()),
+        Instance::Array(a) => compose(a.iter()),
         other => Err(format!("is a `{}`, which has no host constant", other.ty())),
     }
 }
@@ -134,11 +134,13 @@ fn spell(value: &Instance) -> Result<(TokenStream, TokenStream), String> {
 /// first one's spelling is the array's.
 fn compose<'a>(
     elements: impl Iterator<Item = &'a Instance>,
-    n: usize,
 ) -> Result<(TokenStream, TokenStream), String> {
-    let spelled = elements.map(spell).collect::<Result<Vec<_>, _>>()?;
+    let spelled = elements
+        .map(spell)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|why| format!("has an element that {why}"))?;
     let (elem, _) = spelled.first().ok_or("has no elements")?;
-    let n = lit(u32::try_from(n).map_err(|_| "has more elements than a Rust array holds")?);
+    let n = Literal::usize_unsuffixed(spelled.len());
     let values = spelled.iter().map(|(_, v)| v);
     Ok((quote!([#elem; #n]), quote!([#(#values),*])))
 }

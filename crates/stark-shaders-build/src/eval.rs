@@ -109,8 +109,8 @@ fn read(e: &ExpressionNode, what: &str, ctx: &mut Context<'_>, at: &impl Fn() ->
 
 /// Whether an `@if` gates this declaration.
 ///
-/// Refused where a mirror would otherwise have to be the layout of two artifacts — a
-/// struct member, a `@location` parameter (§6.10).
+/// Refused on a struct member, where a mirror would otherwise have to be the layout of
+/// two artifacts (§6.10) — of a uniform, or of a vertex record.
 pub(crate) fn is_gated(attributes: &[AttributeNode]) -> bool {
     attributes.iter().any(|a| matches!(**a, Attribute::If(_)))
 }

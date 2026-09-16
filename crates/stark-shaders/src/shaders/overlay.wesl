@@ -50,7 +50,7 @@ struct VsOut {
     @location(2) @interpolate(flat) level: f32,
 }
 
-// One mask tile of the outline being traced. Its name is the Rust record's (§6.10).
+// One mask tile of the outline being traced.
 struct OverlayInstance {
     // Per-tile instance: the mask tile interior's top-left in canvas px.
     @location(0) origin: vec2<f32>,
