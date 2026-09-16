@@ -56,7 +56,10 @@ pub(crate) struct FilterPass {
     ///
     /// [`BlurPass`]: super::blur::BlurPass
     pub(super) blur_decode: wgpu::RenderPipeline,
-    bgl: Bindings,
+    /// `filter_common`'s whole `@group(0)`, then the space's own `@group(1)` — the
+    /// LUT and the backdrop's residual, or nothing at all in a colorimetric space
+    /// (§6.7).
+    bgls: [Bindings; 2],
     /// How the chromatic gather (§21.10) reads the accumulator *between* texels:
     /// bilinear, clamped to the edge — a tap displaced past the viewport reads the
     /// rim rather than wrapping the far side of the picture into a fringe. The point
@@ -85,18 +88,18 @@ impl FilterPass {
         // `textureLoad` them, and one filterable declaration serves both. The blur's
         // convolved planes stay unfilterable — their `f32` formats are not filterable
         // everywhere this runs, and nothing samples them (§21.12).
-        let bgl = Bindings::shared_by(
-            device,
-            "stark filter bgl",
-            &[
-                Stages::Render(filter.vs_main, filter.fs_main),
-                Stages::Render(filter.vs_main, filter.fs_tile),
-                Stages::Render(filter.vs_main, filter.fs_blur_decode),
-            ],
-            fcd::F,
-            &[fcd::F],
-        );
-        let layout = desc::pipeline_layout_of(device, "stark filter layout", &[&bgl]);
+        let stages = [
+            Stages::Render(filter.vs_main, filter.fs_main),
+            Stages::Render(filter.vs_main, filter.fs_tile),
+            Stages::Render(filter.vs_main, filter.fs_blur_decode),
+        ];
+        // A group per module (§6.10): `filter_common`'s, then the space's own, which is
+        // empty in a colorimetric one.
+        let bgls = [
+            Bindings::shared_by(device, "stark filter bgl", &stages, fcd::F, &[fcd::F]),
+            Bindings::if_reached(device, "stark filter space bgl", &stages, fmd::PIGMENT_LUT),
+        ];
+        let layout = desc::pipeline_layout_of(device, "stark filter layout", &[&bgls[0], &bgls[1]]);
         // No fixed-function blend: the pass computes the whole texel — including the
         // height it copies straight across — and *replaces* what it writes. That is
         // what the ping-pong is for.
@@ -151,10 +154,16 @@ impl FilterPass {
             pipeline,
             tile,
             blur_decode,
-            bgl,
+            bgls,
             sampler,
             blur_zero,
-            wants_lut: crate::gpu::pigment::read_by(filter.fs_main, fmd::PIGMENT_LUT),
+            // Every entry point the layout was built over, not `fs_main` alone: the
+            // bind group has to answer for the whole layout, so a LUT only one of them
+            // reached would be a slot nothing filled.
+            wants_lut: stages.iter().any(|s| match *s {
+                Stages::Render(vs, fs) => vs.reads(fmd::PIGMENT_LUT) || fs.reads(fmd::PIGMENT_LUT),
+                Stages::Compute(k) => k.reads(fmd::PIGMENT_LUT),
+            }),
         }
     }
 
@@ -180,23 +189,29 @@ impl FilterPass {
         back: Targets<'_>,
         pigment: Option<&crate::gpu::pigment::PigmentLut>,
         blur: Option<(&wgpu::TextureView, &wgpu::TextureView)>,
-    ) -> wgpu::BindGroup {
+    ) -> [wgpu::BindGroup; 2] {
         let (blur_light, blur_aux) = blur.unwrap_or((&self.blur_zero.0, &self.blur_zero.1));
         let lut = || pigment.expect("the layout holds the LUT only where the shader reads it");
-        self.bgl.group(device, "stark filter bg", |i| match i {
-            fc::F => uniform.clone(),
-            fc::BACK_COLOR => wgpu::BindingResource::TextureView(back.color),
-            fc::BACK_AUX => wgpu::BindingResource::TextureView(back.aux),
-            fc::BACK_SAMP => wgpu::BindingResource::Sampler(&self.sampler),
-            fc::BLUR_LIGHT => wgpu::BindingResource::TextureView(blur_light),
-            fc::BLUR_AUX => wgpu::BindingResource::TextureView(blur_aux),
-            fm::PIGMENT_LUT => wgpu::BindingResource::TextureView(&lut().view),
-            fm::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&lut().sampler),
-            fm::BACK_RESID => {
-                wgpu::BindingResource::TextureView(back.resid.expect("a residual build has one"))
-            }
-            other => unreachable!("the filter group has no binding {other}"),
-        })
+        [
+            self.bgls[0].group(device, "stark filter bg", |i| match i {
+                fc::F => uniform.clone(),
+                fc::BACK_COLOR => wgpu::BindingResource::TextureView(back.color),
+                fc::BACK_AUX => wgpu::BindingResource::TextureView(back.aux),
+                fc::BACK_SAMP => wgpu::BindingResource::Sampler(&self.sampler),
+                fc::BLUR_LIGHT => wgpu::BindingResource::TextureView(blur_light),
+                fc::BLUR_AUX => wgpu::BindingResource::TextureView(blur_aux),
+                other => unreachable!("`filter_common`'s group has no binding {other}"),
+            }),
+            // Empty in a colorimetric space, where the closure is asked for nothing.
+            self.bgls[1].group(device, "stark filter space bg", |i| match i {
+                fm::PIGMENT_LUT => wgpu::BindingResource::TextureView(&lut().view),
+                fm::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&lut().sampler),
+                fm::BACK_RESID => wgpu::BindingResource::TextureView(
+                    back.resid.expect("a residual build has one"),
+                ),
+                other => unreachable!("`filter_mixbox`'s group has no binding {other}"),
+            }),
+        ]
     }
 
     /// Encode one filter layer: the accumulator `b.back` read and written back
@@ -229,14 +244,15 @@ impl FilterPass {
                 blur.map(|f| f.planes()),
             )
         });
-        let offset = UniformSlots::<FilterUniform>::offset(b.slot);
+        let offsets = [UniformSlots::<FilterUniform>::offset(b.slot)];
+        let bound = desc::Bound::new(bg, &offsets);
         if let Some(pass) = convolve {
             // `b.slot` is this layer's dense filter slot (§14.7's one walk), which
             // is also how the frame's jobs are keyed — one index, two lists.
             blur.expect("a focal blur's frame is prepared before anything encodes")
-                .encode(pass, self, encoder, bg, offset, b.slot);
+                .encode(pass, self, encoder, bound, b.slot);
         }
-        b.pass(encoder, "stark filter pass", &self.pipeline, bg, offset);
+        b.pass(encoder, "stark filter pass", &self.pipeline, bound);
     }
 }
 

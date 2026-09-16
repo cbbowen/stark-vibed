@@ -163,10 +163,10 @@ struct Filter {
 // premultiplied XYZ light with the blurred coverage in `.w`; `blur_aux` is the
 // blurred height and, in `.y`, the blurred border weight `blur_read` divides by.
 // Padded larger than the accumulator, image at the origin, so the fragment's own
-// texel is the right load. Binding 4 takes the blend pass's other source slot;
-// 8 sits past `filter_mixbox`'s 5–7.
+// texel is the right load. Bindings 4 and 5 take the blend pass's two source slots;
+// this module owns group 0 entire, so there is nothing to sit past (§6.10).
 @group(0) @binding(4) var blur_light: texture_2d<f32>;
-@group(0) @binding(8) var blur_aux: texture_2d<f32>;
+@group(0) @binding(5) var blur_aux: texture_2d<f32>;
 
 struct FsOut {
     @location(0) color: vec4<f32>,

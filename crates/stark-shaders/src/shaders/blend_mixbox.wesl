@@ -33,17 +33,18 @@ import package::blend_common::{
     combined_light, is_normal, merge, merge_added, merge_triple,
 };
 
-// Mixbox's inverse LUT and the sampler that reads it — bound here because this is one
-// of the two passes that has to express a combination of *light* back as a mixture of
-// pigment. **Bindings 5 and 6 of group 0**, past where `blend_common` stops (0–4).
-@group(0) @binding(5) var pigment_lut: texture_2d<f32>;
-@group(0) @binding(6) var pigment_samp: sampler;
-
-// The residual halves of the two colors (§6.7). **Bindings 7 and 8 of
-// group 0**, and nothing but this comment holds the two modules apart. Unconditional,
-// with no `@if`: this module is reached only by the space that has a residual.
-@group(0) @binding(7) var back_resid: texture_2d<f32>;
-@group(0) @binding(8) var src_resid: texture_2d<f32>;
+// **Group 1, whole**: `blend_common` owns group 0 entire and this module owns this one
+// entire, so neither has to know where the other stops (§6.10). A colorimetric blend
+// declares nothing here and binds an empty layout in its place.
+//
+// The inverse LUT and its sampler, because this is one of the two passes that has to
+// express a combination of *light* back as a mixture of pigment; then the residual
+// halves of the two colors (§6.7). Unconditional, with no `@if`: this module is
+// reached only by the space that has a residual.
+@group(1) @binding(0) var pigment_lut: texture_2d<f32>;
+@group(1) @binding(1) var pigment_samp: sampler;
+@group(1) @binding(2) var back_resid: texture_2d<f32>;
+@group(1) @binding(3) var src_resid: texture_2d<f32>;
 
 // The three targets a pigment document's blend writes. `blend_common::FsOut` is the
 // two an Oklab one writes; this is that plus the residual, and `fs_main` fills the

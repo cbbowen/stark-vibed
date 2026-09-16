@@ -25,17 +25,17 @@ import package::filter_common::{
     BlurOut, blur_pad, blur_read, blur_src,
 };
 
-// Mixbox's inverse LUT and the sampler that reads it, on the same terms
-// `blend_mixbox.wesl` binds them: an adjustment is a statement about light, so a
-// pigment document has to ask which mixture the adjusted light would have been.
-// **Bindings 5 and 6 of group 0**, past where `filter_common` stops (0–4, and 8).
-@group(0) @binding(5) var pigment_lut: texture_2d<f32>;
-@group(0) @binding(6) var pigment_samp: sampler;
-
-// The backdrop's residual half (§6.7). **Binding 7 of group 0** — and nothing but
-// this comment holds the two modules apart. Unconditional, with no `@if`: this module
-// is reached only by the space that has a residual.
-@group(0) @binding(7) var back_resid: texture_2d<f32>;
+// **Group 1, whole**, on `blend_mixbox.wesl`'s terms: `filter_common` owns group 0
+// entire and this module owns this one entire (§6.10). A colorimetric filter declares
+// nothing here and binds an empty layout in its place.
+//
+// The inverse LUT and its sampler — an adjustment is a statement about light, so a
+// pigment document has to ask which mixture the adjusted light would have been — then
+// the backdrop's residual half (§6.7). Unconditional, with no `@if`: this module is
+// reached only by the space that has a residual.
+@group(1) @binding(0) var pigment_lut: texture_2d<f32>;
+@group(1) @binding(1) var pigment_samp: sampler;
+@group(1) @binding(2) var back_resid: texture_2d<f32>;
 
 // The three targets a pigment document's filter writes. `filter_common::FsOut` is
 // the two an Oklab one writes; this is that plus the residual, and `fs_main` fills
@@ -47,13 +47,13 @@ struct FsOut {
 }
 
 // A pigment mixture → Oklab, `filter_common`'s interface.
-fn latent_to_lab(p: Pigment) -> vec3<f32> {
+fn pigment_to_lab(p: Pigment) -> vec3<f32> {
     return linear_srgb_to_oklab(mixbox_to_linear(p));
 }
 
 // [`mixbox_from_linear`] for a color that arrives in the space the point filters work
-// in — `latent_to_lab`'s inverse, and the leg the merge takes too.
-fn lab_to_latent(lab: vec3<f32>) -> Pigment {
+// in — `pigment_to_lab`'s inverse, and the leg the merge takes too.
+fn lab_to_pigment(lab: vec3<f32>) -> Pigment {
     return mixbox_from_linear(pigment_lut, pigment_samp, oklab_to_linear_srgb(lab));
 }
 
@@ -66,7 +66,7 @@ fn lab_to_latent(lab: vec3<f32>) -> Pigment {
 // the same argument `filter_common::resolve` makes for being shared between the two
 // spaces. The residual's own target alpha is `cb.a` too — duplicated only because
 // the fixed-function "over" that filled these targets reads each one's.
-fn resolve_latent(cb: vec4<f32>, was: Pigment, now: Pigment, h: f32) -> FsOut {
+fn resolve_pigment(cb: vec4<f32>, was: Pigment, now: Pigment, h: f32) -> FsOut {
     let base = resolve(cb, was.conc, now.conc, h);
     var out: FsOut;
     out.color = base.color;
@@ -125,7 +125,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         // the same tail the point path takes.
         if is_clipped() {
             let cov = max(cb.a, COVERAGE_EPS);
-            return resolve_latent(cb, Pigment(cb.rgb / cov, rb.rgb / cov), gathered, h);
+            return resolve_pigment(cb, Pigment(cb.rgb / cov, rb.rgb / cov), gathered, h);
         }
         // The strength mix on the raw premultiplied lanes — both halves of the
         // color, the coverage and the height together, so strength 0 is the
@@ -145,7 +145,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         let l = mixbox_from_linear(pigment_lut, pigment_samp, blurred.lin);
         if is_clipped() {
             let cov = max(cb.a, COVERAGE_EPS);
-            return resolve_latent(cb, Pigment(cb.rgb / cov, rb.rgb / cov), l, h);
+            return resolve_pigment(cb, Pigment(cb.rgb / cov, rb.rgb / cov), l, h);
         }
         var out: FsOut;
         out.color = mix(cb, vec4<f32>(l.conc * blurred.cov, blurred.cov), f.strength);
@@ -160,7 +160,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let cov = max(cb.a, COVERAGE_EPS);
     let was = Pigment(cb.rgb / cov, rb.rgb / cov);
 
-    return resolve_latent(cb, was, lab_to_latent(filtered(latent_to_lab(was))), h);
+    return resolve_pigment(cb, was, lab_to_pigment(filtered(pigment_to_lab(was))), h);
 }
 
 // The focal blur's decode (§21.12): `filter_oklab.wesl`'s, with the one
@@ -203,7 +203,7 @@ fn fs_blur_decode(@builtin(position) frag: vec4<f32>) -> BlurOut {
 //
 // The one thing this adds is the one thing pigment always adds: the color has two
 // halves, so both un-premultiply by the tile's own opacity and both come back through
-// `resolve_latent` (§6.7).
+// `resolve_pigment` (§6.7).
 @fragment
 fn fs_tile(@builtin(position) frag: vec4<f32>) -> FsOut {
     let p = vec2<i32>(floor(frag.xy));
@@ -212,5 +212,5 @@ fn fs_tile(@builtin(position) frag: vec4<f32>) -> FsOut {
     let h = textureLoad(back_aux, p, 0).x;
     let opacity = max(c.a, PAINT_EPS);
     let was = Pigment(c.rgb / opacity, r.rgb / opacity);
-    return resolve_latent(c, was, lab_to_latent(filtered(latent_to_lab(was))), h);
+    return resolve_pigment(c, was, lab_to_pigment(filtered(pigment_to_lab(was))), h);
 }

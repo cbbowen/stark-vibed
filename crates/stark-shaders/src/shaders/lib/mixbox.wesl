@@ -1,19 +1,9 @@
 // Mixbox's round trip (§6.7, §18.0.4): a pigment mixture out to light, and light back
-// into a mixture.
+// into a mixture. The three pigment shaders share it.
 //
-// A binding-free leaf, like every module under `lib/` (§2). The LUT texture and its
-// sampler arrive as **arguments**, the way `lib/sample.wesl` takes the texture it
-// reads — which is what lets the three pigment shaders own the slots they declare
-// while sharing the arithmetic. Each of them wrote both directions out in full before
-// this module existed: the decode four times, the encode twice.
-//
-// The reverse direction is the reason the LUT is on the GPU at all. Combining *light*
-// is not a pigment operation — there is no mixture of Cadmium Red and Ultramarine that
-// *is* two lamps added together — so the only way to say what a glow layer or an
-// exposure did in a pigment document is to work out the resulting light and ask which
-// mixture would have produced it (§18.0.4). Everywhere else the direction is one-way:
-// the CPU converts a picked color with the `mixbox` crate and the GPU only evaluates
-// the polynomial forward.
+// A binding-free leaf, like every module under `lib/` (§2), and it stays one because
+// the LUT texture and its sampler arrive as **arguments**, the way `lib/sample.wesl`
+// takes the texture it reads — so each importer owns the slot it declares.
 //
 // Mixbox 2.0 (c) 2022 Secret Weapons, authors Sarka Sochorova and Ondrej Jamriska;
 // licensed CC BY-NC 4.0, see vendor/mixbox/LICENSE. `mixbox_eval_polynomial` is
@@ -24,12 +14,8 @@ import package::gen::mixbox_poly::{mixbox_eval_polynomial};
 import package::lib::color::{srgb_to_linear, linear_to_srgb};
 
 // The two halves of a Mixbox color: three of the four trained pigments' concentrations
-// (`c3 = 1 − (c0+c1+c2)` is derived), and the residual the polynomial cannot express.
-//
-// **The residual is what makes the round trip reproduce a color at all** (§6.7). Four
-// pigments do not span sRGB: the polynomial alone renders pure black `#383838` and
-// misses the saturated corners by as much as 0.39, and `rgb → c` is many-to-one, so no
-// function of `c` could stand in for the stored value.
+// (`c3 = 1 − (c0+c1+c2)` is derived), and the residual the polynomial cannot express
+// (§6.7).
 struct Pigment {
     conc: vec3<f32>,
     res: vec3<f32>,
@@ -40,8 +26,7 @@ struct Pigment {
 //
 // Linear rather than sRGB because that is where every caller goes next — the media pass
 // lights it, the blend pass carries it out to XYZ, the filter pass to Oklab or straight
-// into the spectral sum. Taking the polynomial alone is what made a black layer go out
-// to light as mid-grey.
+// into the spectral sum.
 fn mixbox_to_linear(p: Pigment) -> vec3<f32> {
     let srgb = clamp(mixbox_eval_polynomial(p.conc) + p.res, vec3<f32>(0.0), vec3<f32>(1.0));
     return srgb_to_linear(srgb);
@@ -62,9 +47,8 @@ fn mixbox_from_linear(lut: texture_2d<f32>, samp: sampler, lin: vec3<f32>) -> Pi
 }
 
 // sRGB → pigment concentrations, ported from `mixbox_rgb_to_latent` in the vendored
-// GLSL. The inverse of `mixbox_eval_polynomial`, and the concentrations alone: the
-// residual is [`mixbox_from_linear`]'s to compute, since it is a difference against the
-// polynomial rather than anything the table holds.
+// GLSL. The concentrations alone: the residual is `mixbox_from_linear`'s to compute,
+// being a difference against the polynomial rather than anything the table holds.
 //
 // The LUT is a 64³ RGB cube unrolled into an 8×8 grid of 64×64 slices. `x` and `y`
 // interpolate in hardware (the sampler is Linear, and a slice's samples span

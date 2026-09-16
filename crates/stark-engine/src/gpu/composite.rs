@@ -283,7 +283,7 @@ pub struct CompositorPasses {
 /// that does not depend on the target format, so there is one set of these and one
 /// set of pipelines per format.
 struct TargetLayouts {
-    media: desc::Bindings,
+    media: [desc::Bindings; 2],
     overlay: OverlayLayouts,
     guides: desc::Bindings,
     resolve: desc::Bindings,

@@ -1284,8 +1284,7 @@ impl TransformRenderer {
         scope.fullscreen_pass(
             "stark transform combine",
             &self.combine_pipeline,
-            &bg,
-            &[offset],
+            desc::Bound::new(std::slice::from_ref(&bg), &[offset]),
             dst.targets(),
             desc::CLEAR,
         );

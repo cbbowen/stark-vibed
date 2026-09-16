@@ -8,13 +8,19 @@ use crate::eval::{group_binding, module_context};
 /// Fail unless the modules a pipeline links agree about where each one's share of a
 /// group's index space stops.
 ///
-/// A pipeline's bindings come from two files — `filter_mixbox` takes 0–4 and 8 from
-/// `filter_common` and 5–7 from itself — and that partition is held by nothing but a
-/// comment in each. If `filter_common` ever grows a fifth texture it collides there,
-/// and without this the error would name a mangled identifier rather than either file.
-/// Taken where the answer is: the linked artifact holds exactly the declarations one
-/// pipeline compiles, post-`@if`, imports resolved — so the collision is arithmetic
-/// here, in terms of the two *files*, rather than a `naga` error naming
+/// **The arrangement this guards is now "a group each".** `blend_common`,
+/// `filter_common` and `media_common` own `@group(0)` entire and the pigment module
+/// beside each owns `@group(1)` entire, so neither has to know where the other's slots
+/// stop. That leaves one family sharing a group: the wet loop's, where `dynamics` and
+/// `liquify` interleave ~40 slots of `@group(0)` with the five `dynamics_common`
+/// declares, and the two cannot be parted without an exact second bind group per kernel
+/// on the hottest path in the app. So the rule the generator can assert is still the
+/// weaker one — **two modules may not claim one slot** — rather than "one module per
+/// group".
+///
+/// Taken on the *linked* artifact, which holds exactly the declarations one pipeline
+/// compiles, post-`@if`, imports resolved. So a collision is arithmetic here, in terms
+/// of the two **files**, rather than a `naga` error naming
 /// `package__1filter_mixbox_pigment_lut` at pipeline creation.
 ///
 /// **Only collisions between two different modules are a fault**, and that is the
@@ -22,9 +28,8 @@ use crate::eval::{group_binding, module_context};
 /// deliberately declare two things at one slot when no entry point reaches both:
 /// `transform.wesl` puts `Quad` and `Gated` at `@group(0) @binding(0)` because the
 /// affine and the rect-scoped maps are different pipelines, and its header carries the
-/// rule that keeps it sound ("if a fourth map is added, give it its own module rather
-/// than a fourth struct here"). One file can state that about itself; two files
-/// splitting a group cannot, which is why one is checked and the other is not.
+/// rule that keeps it sound. One file can state that about itself; two files splitting a
+/// group cannot, which is why one is checked and the other is not.
 ///
 /// `sourcemap` is the compiler's own record of which module a mangled name came from,
 /// so this does not have to agree with whichever mangler the compiler was configured
@@ -59,8 +64,8 @@ pub(crate) fn bindings_do_not_collide(
             panic!(
                 "`{artifact}` links `{other_from}`'s `{other}` and `{from}`'s `{name}` \
                  at the same `@group({g}) @binding({b})`. The modules a pipeline links \
-                 partition a group's index space between them, \
-                 and two of them have claimed one slot."
+                 partition a group's index space between them, and two of them have \
+                 claimed one slot."
             );
         }
         seen.push((g, b, name, from));
@@ -75,7 +80,7 @@ mod tests {
     use super::*;
     use wesl::{BasicSourceMap, NoSourceMap};
 
-    /// The linker's own mangling, as `filter_mixbox`'s `pigment_lut` reaches an artifact.
+    /// The linker's own mangling, as `dynamics_common`'s `st` reaches an artifact.
     fn sourcemap(decls: &[(&str, &str, &str)]) -> BasicSourceMap {
         let mut map = BasicSourceMap::new();
         for (mangled, module, item) in decls {
@@ -90,28 +95,37 @@ mod tests {
 
     fn check(src: &str, map: &BasicSourceMap) {
         let tu: TranslationUnit = src.parse().expect("the probe parses");
-        bindings_do_not_collide(&tu, map, "blend_mixbox");
+        bindings_do_not_collide(&tu, map, "dynamics");
     }
 
     /// The message names the two *files*, which is the whole point of checking here.
     #[test]
     #[should_panic(
-        expected = "`package::blend_common`'s `package__1blend_common_src` and \
-                               `package::filter_mixbox`'s `package__1filter_mixbox_pigment_lut` at \
-                               the same `@group(0) @binding(5)`"
+        expected = "`package::dynamics_common`'s `package__1dynamics_common_st` and \
+                    `dynamics`'s `region_color` at the same `@group(0) @binding(0)`"
     )]
     fn two_modules_at_one_slot_are_named_by_the_sourcemap() {
         check(
-            "@group(0) @binding(5) var package__1blend_common_src: texture_2d<f32>;\n\
-             @group(0) @binding(5) var package__1filter_mixbox_pigment_lut: texture_2d<f32>;\n",
-            &sourcemap(&[
-                ("package__1blend_common_src", "package::blend_common", "src"),
-                (
-                    "package__1filter_mixbox_pigment_lut",
-                    "package::filter_mixbox",
-                    "pigment_lut",
-                ),
-            ]),
+            "@group(0) @binding(0) var<uniform> package__1dynamics_common_st: Stamp;\n\
+             @group(0) @binding(0) var region_color: texture_2d<f32>;\n\
+             struct Stamp { a: vec4<f32> }\n",
+            &sourcemap(&[(
+                "package__1dynamics_common_st",
+                "package::dynamics_common",
+                "st",
+            )]),
+        );
+    }
+
+    /// The arrangement the colour-space passes now have: a group each, so neither
+    /// module's indices say anything about the other's.
+    #[test]
+    fn a_group_per_module_is_the_shape_that_passes() {
+        check(
+            "@group(0) @binding(0) var package__1blend_common_src: texture_2d<f32>;\n\
+             @group(1) @binding(0) var pigment_lut: texture_2d<f32>;\n\
+             @group(1) @binding(1) var back_resid: texture_2d<f32>;\n",
+            &sourcemap(&[("package__1blend_common_src", "package::blend_common", "src")]),
         );
     }
 
@@ -152,15 +166,8 @@ mod tests {
         check(
             "const BASE: u32 = 4u;\n\
              @group(0) @binding(5) var package__1blend_common_src: texture_2d<f32>;\n\
-             @group(0) @binding(BASE + 1u) var package__1filter_mixbox_pigment_lut: texture_2d<f32>;\n",
-            &sourcemap(&[
-                ("package__1blend_common_src", "package::blend_common", "src"),
-                (
-                    "package__1filter_mixbox_pigment_lut",
-                    "package::filter_mixbox",
-                    "pigment_lut",
-                ),
-            ]),
+             @group(0) @binding(BASE + 1u) var pigment_lut: texture_2d<f32>;\n",
+            &sourcemap(&[("package__1blend_common_src", "package::blend_common", "src")]),
         );
     }
 
@@ -171,6 +178,6 @@ mod tests {
         let tu: TranslationUnit = "@group(0) @binding(NOWHERE) var x: texture_2d<f32>;\n"
             .parse()
             .expect("the probe parses");
-        bindings_do_not_collide(&tu, &NoSourceMap, "blend_mixbox");
+        bindings_do_not_collide(&tu, &NoSourceMap, "dynamics");
     }
 }

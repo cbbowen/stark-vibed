@@ -53,7 +53,9 @@ pub(super) fn blend_code(mode: BlendMode) -> u32 {
 /// Mixbox LUT, which is not a thing to do twice per document.
 pub(crate) struct BlendPass {
     pub(crate) pipeline: wgpu::RenderPipeline,
-    bgl: Bindings,
+    /// `blend_common`'s whole `@group(0)`, then the space's own `@group(1)` — the LUT
+    /// and the two residuals, or nothing at all in a colorimetric space (§6.7).
+    bgls: [Bindings; 2],
     /// Mixbox's LUT, `None` in a space whose blend shader declares none — which is
     /// every colorimetric one (§6.7). Shared with the filter pass, which asks the same
     /// question of the same space.
@@ -65,20 +67,17 @@ impl BlendPass {
         let device = &ctx.device;
         let blend = color_space.blend_shader();
         let shader = desc::Module::new(device, "stark blend", &blend);
-        // Two modules share this group — `blend_common.wesl` and `blend_mixbox.wesl` —
-        // and whether the space links the second is what decides the layout's length
-        // (§6.7). Every texture here is `textureLoad`ed at the fragment's own
-        // coordinate except the LUT, which Mixbox interpolates in hardware, so it alone
-        // comes out filterable.
+        // A group per module (§6.10): `blend_common`'s, then the space's own, which is
+        // empty in a colorimetric one. Every texture here is `textureLoad`ed at the
+        // fragment's own coordinate except the LUT, which Mixbox interpolates in
+        // hardware, so it alone comes out filterable.
         let formats = ChannelFormats::of(color_space);
-        let bgl = Bindings::of(
-            device,
-            "stark blend bgl",
-            Stages::Render(blend.vs_main, blend.fs_main),
-            bcd::B,
-            &[bcd::B],
-        );
-        let layout = desc::pipeline_layout_of(device, "stark blend layout", &[&bgl]);
+        let stages = Stages::Render(blend.vs_main, blend.fs_main);
+        let bgls = [
+            Bindings::of(device, "stark blend bgl", stages, bcd::B, &[bcd::B]),
+            Bindings::if_reached(device, "stark blend space bgl", &[stages], bmd::PIGMENT_LUT),
+        ];
+        let layout = desc::pipeline_layout_of(device, "stark blend layout", &[&bgls[0], &bgls[1]]);
         // No fixed-function blend on either target: the pass computes the whole
         // merge — backdrop included — and *replaces* what it writes. That is the
         // point of the ping-pong.
@@ -94,7 +93,7 @@ impl BlendPass {
         let pigment = PigmentLut::of(ctx, blend.fs_main, bmd::PIGMENT_LUT);
         Self {
             pipeline,
-            bgl,
+            bgls,
             pigment,
         }
     }
@@ -113,7 +112,7 @@ impl BlendPass {
         uniform: wgpu::BindingResource<'_>,
         back: Targets<'_>,
         src: Targets<'_>,
-    ) -> wgpu::BindGroup {
+    ) -> [wgpu::BindGroup; 2] {
         // The two residual `expect`s hold together: `back` and `src` are targets of one
         // document, so the space that gave either a residual gave both one.
         let lut = || {
@@ -121,22 +120,28 @@ impl BlendPass {
                 .as_ref()
                 .expect("the layout holds the LUT only where the shader reads it")
         };
-        self.bgl.group(device, "stark blend bg", |i| match i {
-            bc::B => uniform.clone(),
-            bc::BACK_COLOR => wgpu::BindingResource::TextureView(back.color),
-            bc::BACK_AUX => wgpu::BindingResource::TextureView(back.aux),
-            bc::SRC_COLOR => wgpu::BindingResource::TextureView(src.color),
-            bc::SRC_AUX => wgpu::BindingResource::TextureView(src.aux),
-            bm::PIGMENT_LUT => wgpu::BindingResource::TextureView(&lut().view),
-            bm::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&lut().sampler),
-            bm::BACK_RESID => {
-                wgpu::BindingResource::TextureView(back.resid.expect("a residual build has one"))
-            }
-            bm::SRC_RESID => {
-                wgpu::BindingResource::TextureView(src.resid.expect("a residual build has one"))
-            }
-            other => unreachable!("the blend group has no binding {other}"),
-        })
+        [
+            self.bgls[0].group(device, "stark blend bg", |i| match i {
+                bc::B => uniform.clone(),
+                bc::BACK_COLOR => wgpu::BindingResource::TextureView(back.color),
+                bc::BACK_AUX => wgpu::BindingResource::TextureView(back.aux),
+                bc::SRC_COLOR => wgpu::BindingResource::TextureView(src.color),
+                bc::SRC_AUX => wgpu::BindingResource::TextureView(src.aux),
+                other => unreachable!("`blend_common`'s group has no binding {other}"),
+            }),
+            // Empty in a colorimetric space, where the closure is asked for nothing.
+            self.bgls[1].group(device, "stark blend space bg", |i| match i {
+                bm::PIGMENT_LUT => wgpu::BindingResource::TextureView(&lut().view),
+                bm::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&lut().sampler),
+                bm::BACK_RESID => wgpu::BindingResource::TextureView(
+                    back.resid.expect("a residual build has one"),
+                ),
+                bm::SRC_RESID => {
+                    wgpu::BindingResource::TextureView(src.resid.expect("a residual build has one"))
+                }
+                other => unreachable!("`blend_mixbox`'s group has no binding {other}"),
+            }),
+        ]
     }
 
     pub(super) fn encode(
@@ -153,12 +158,12 @@ impl BlendPass {
         let bg = b.here.blend_bg(b.phase.back_is_swap, || {
             self.bind_group(&ctx.device, slots.resource(), b.back, src)
         });
+        let offsets = [UniformSlots::<BlendUniform>::offset(b.slot)];
         b.pass(
             encoder,
             "stark blend pass",
             &self.pipeline,
-            bg,
-            UniformSlots::<BlendUniform>::offset(b.slot),
+            desc::Bound::new(bg, &offsets),
         );
     }
 }
@@ -193,8 +198,7 @@ impl Bounce<'_> {
         encoder: &mut wgpu::CommandEncoder,
         label: &str,
         pipeline: &wgpu::RenderPipeline,
-        bg: &wgpu::BindGroup,
-        offset: u32,
+        bound: desc::Bound<'_>,
     ) {
         let attachments = self.out.attachments(desc::CLEAR);
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -206,7 +210,7 @@ impl Bounce<'_> {
             ..Default::default()
         });
         pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, bg, &[offset]);
+        bound.set(&mut pass);
         pass.draw(0..3, 0..1);
     }
 }
@@ -239,8 +243,8 @@ pub(super) struct ScratchLevel {
     /// [`ScratchTargets::invalidate_bind_groups`] when the buffer moves.
     ///
     /// [`Compositor::upload_streams`]: super::Compositor
-    blend_bg: [OnceLock<wgpu::BindGroup>; 2],
-    filter_bg: [OnceLock<wgpu::BindGroup>; 2],
+    blend_bg: [OnceLock<[wgpu::BindGroup; 2]>; 2],
+    filter_bg: [OnceLock<[wgpu::BindGroup; 2]>; 2],
 }
 
 impl ScratchLevel {
@@ -269,8 +273,8 @@ impl ScratchLevel {
     pub(super) fn blend_bg(
         &self,
         back_is_swap: bool,
-        make: impl FnOnce() -> wgpu::BindGroup,
-    ) -> &wgpu::BindGroup {
+        make: impl FnOnce() -> [wgpu::BindGroup; 2],
+    ) -> &[wgpu::BindGroup; 2] {
         self.blend_bg[usize::from(back_is_swap)].get_or_init(make)
     }
 
@@ -279,8 +283,8 @@ impl ScratchLevel {
     pub(super) fn filter_bg(
         &self,
         back_is_swap: bool,
-        make: impl FnOnce() -> wgpu::BindGroup,
-    ) -> &wgpu::BindGroup {
+        make: impl FnOnce() -> [wgpu::BindGroup; 2],
+    ) -> &[wgpu::BindGroup; 2] {
         self.filter_bg[usize::from(back_is_swap)].get_or_init(make)
     }
 

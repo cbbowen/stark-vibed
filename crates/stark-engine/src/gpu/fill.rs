@@ -229,11 +229,11 @@ impl FillRenderer {
                 f::TILE => tile_slots.resource(),
                 other => unreachable!("`FILL_SLOTS` lists no binding {other}"),
             });
+            let offsets = [UniformSlots::<TileUniform>::offset(i as u32)];
             scope.fullscreen_pass(
                 "stark fill tile",
                 &self.pipeline,
-                &bg,
-                &[UniformSlots::<TileUniform>::offset(i as u32)],
+                desc::Bound::new(std::slice::from_ref(&bg), &offsets),
                 dst.targets(),
                 desc::CLEAR,
             );

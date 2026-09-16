@@ -26,10 +26,10 @@ import package::media_common::{
     comp_color, comp_aux, m, is_transparent, over_substrate, paint_vis_at, finish,
 };
 
-// **Binding 7 of group 0, past where `media_common` stops** (0–6). Declared here
-// rather than there so an Oklab document's media layout does not carry a texture it
-// has no residual to put in — the same reason `blend_mixbox` owns its own 7 and 8.
-@group(0) @binding(7) var comp_resid: texture_2d<f32>;
+// **Group 1, whole**: `media_common` owns group 0 entire and this module owns this one
+// (§6.10). Declared here rather than there so an Oklab document's media layout does not
+// carry a texture it has no residual to put in — it binds an empty layout in its place.
+@group(1) @binding(0) var comp_resid: texture_2d<f32>;
 
 // The residual half of the paint-over-substrate composite, on the same `vis` the
 // concentrations take (§6.7). A separate function rather than a wider

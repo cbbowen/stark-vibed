@@ -335,8 +335,7 @@ impl MergeRenderer {
             scope,
             "stark merge filter",
             &self.filter.tile,
-            &bg,
-            &[0],
+            desc::Bound::new(&bg, &[0]),
             out,
         );
     }
@@ -387,7 +386,13 @@ impl MergeRenderer {
                 m::UPPER_RESID => view(resid(upper)),
                 other => unreachable!("the merge's group holds no binding {other}"),
             });
-        pass(scope, "stark merge tile", &self.direct, &bg, &[], out);
+        pass(
+            scope,
+            "stark merge tile",
+            &self.direct,
+            desc::Bound::one(&bg),
+            out,
+        );
     }
 
     /// The general law: expand both sides into what they composite to, run the
@@ -434,7 +439,13 @@ impl MergeRenderer {
                 sl::IN_RESID => view(input.resid.expect("a residual build has one")),
                 other => unreachable!("the slab's group holds no binding {other}"),
             });
-        pass(scope, "stark slab tile", pipeline, &bg, &[], out);
+        pass(
+            scope,
+            "stark slab tile",
+            pipeline,
+            desc::Bound::one(&bg),
+            out,
+        );
     }
 
     /// The compositor's blend pass, on tile-sized targets.
@@ -464,8 +475,7 @@ impl MergeRenderer {
             scope,
             "stark merge blend",
             &self.blend.pipeline,
-            &bg,
-            &[0],
+            desc::Bound::new(&bg, &[0]),
             out,
         );
     }
@@ -571,11 +581,10 @@ fn pass(
     scope: &mut SubmitScope,
     label: &str,
     pipeline: &wgpu::RenderPipeline,
-    bg: &wgpu::BindGroup,
-    offsets: &[u32],
+    bound: desc::Bound<'_>,
     out: &Channels,
 ) {
-    scope.fullscreen_pass(label, pipeline, bg, offsets, out.targets(), desc::CLEAR);
+    scope.fullscreen_pass(label, pipeline, bound, out.targets(), desc::CLEAR);
 }
 
 /// The four uniform slots one blended merge binds, so `encode_blended` takes one

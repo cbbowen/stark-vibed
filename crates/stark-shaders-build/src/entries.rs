@@ -201,9 +201,6 @@ fn has_entry_point(m: &Module) -> bool {
 /// colorimetric, and a build without the pigment space would keep them and then fail to
 /// resolve `package::gen` while linking them.
 ///
-/// The walk is over the tree's own modules, so a path naming nothing in it — the
-/// generated prefix itself — simply ends the branch after [`reaches`] has answered for
-/// it.
 fn reaches_generated(m: &Module, modules: &[Module], prefix: &ModulePath) -> bool {
     let mut seen: Vec<&str> = vec![m.path.as_str()];
     let mut stack: Vec<&Module> = vec![m];
@@ -211,8 +208,8 @@ fn reaches_generated(m: &Module, modules: &[Module], prefix: &ModulePath) -> boo
         if at.tu.imports.iter().any(|st| reaches(st, prefix)) {
             return true;
         }
-        for path in imported_modules(at) {
-            let Some(next) = modules.iter().find(|m| m.path == path) else {
+        for path in imported_modules(at, prefix) {
+            let Some(next) = modules.iter().find(|other| other.path == path) else {
                 continue;
             };
             if !seen.contains(&next.path.as_str()) {
@@ -229,16 +226,24 @@ fn reaches_generated(m: &Module, modules: &[Module], prefix: &ModulePath) -> boo
 /// A candidate list rather than a resolution: an import ends in an *item*, and
 /// `import package::lib::color;` would name the module itself, so both readings are
 /// offered and [`reaches_generated`] keeps whichever the tree holds.
-fn imported_modules(m: &Module) -> Vec<String> {
+///
+/// Only imports rooted the way `origin` is, because that is what makes the components
+/// a tree path: `super::stamp::{x}` from a `lib/` module would otherwise offer `stamp`,
+/// which *is* a module here, and the walk would follow an edge that does not exist.
+fn imported_modules(m: &Module, origin: &ModulePath) -> Vec<String> {
     let mut out = Vec::new();
     for st in &m.tu.imports {
-        if let Some(path) = &st.path {
+        if let Some(path) = &st.path
+            && path.origin == origin.origin
+        {
             walk_content(&path.components, &st.content, &mut out);
         }
     }
     out
 }
 
+/// One import's own module paths, appended — an item's module and the item read as a
+/// module, and a collection's every branch.
 fn walk_content(base: &[String], content: &ImportContent, out: &mut Vec<String>) {
     match content {
         ImportContent::Item(item) => {

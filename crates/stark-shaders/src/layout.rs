@@ -134,6 +134,28 @@ pub fn layout_shared_by(
     entries(&eps, anchor, dynamic)
 }
 
+/// [`layout_shared_by`] for a group these pipelines may reach nothing of: the entries,
+/// or **none**.
+///
+/// The colour-space split is what wants it (§6.7). A pigment document's blend, filter
+/// and media passes each own a `@group(1)` — the inverse LUT and the residual — and a
+/// colorimetric one declares nothing there. An empty answer is a real layout rather
+/// than a missing one: a pipeline layout is positional, so the alternative is a hole
+/// in it, and a hole is what the web backend is least happy with.
+///
+/// No `dynamic`: a group that may be empty is no place for a uniform bound at an
+/// offset, and the check that would name one has nothing to check against.
+pub fn layout_if_reached(pipelines: &[Stages], anchor: Binding) -> Vec<wgpu::BindGroupLayoutEntry> {
+    let mut eps = Vec::with_capacity(2 * pipelines.len());
+    for p in pipelines {
+        p.push_to(&mut eps);
+    }
+    reached(&eps, anchor)
+        .iter()
+        .map(|r| entry(r, &[]))
+        .collect()
+}
+
 /// The entries themselves, over the stages both spellings above flatten to.
 fn entries(
     eps: &[EntryPoint],

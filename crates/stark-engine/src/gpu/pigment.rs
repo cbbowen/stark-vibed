@@ -39,22 +39,16 @@ pub struct PigmentLut {
     pub sampler: wgpu::Sampler,
 }
 
-/// Whether `fs` reads `lut`, the LUT slot its own module declares — which is what puts
-/// it in that pass's layout.
-///
-/// **The shader's answer, not the space's.** Only `blend_mixbox.wesl` and
-/// `filter_mixbox.wesl` declare a LUT, so a colorimetric space's layout has no slot for
-/// it — there is nothing to stand in for, and no `needs_pigment_lut` for a space to
-/// answer twice. Each pass asks it of its own shader, and passes its own declaration
-/// because the two are different slots of different modules (§6.10).
-pub fn read_by(fs: EntryPoint, lut: Binding) -> bool {
-    fs.uses.iter().any(|u| u.decl == lut)
-}
-
 impl PigmentLut {
-    /// The LUT `fs` reads, or `None` where it declares none ([`read_by`]).
+    /// The LUT `fs` reads, or `None` where it reaches none.
+    ///
+    /// **The shader's answer, not the space's.** Only `blend_mixbox.wesl` and
+    /// `filter_mixbox.wesl` declare a LUT, so a colorimetric space's layout has no slot
+    /// for it — there is nothing to stand in for, and no `needs_pigment_lut` for a space
+    /// to answer twice. `lut` is the caller's own module's declaration, the two being
+    /// different slots of different modules (§6.10).
     pub fn of(ctx: &GpuContext, fs: EntryPoint, lut: Binding) -> Option<Self> {
-        read_by(fs, lut).then(|| Self::load(ctx))
+        fs.reads(lut).then(|| Self::load(ctx))
     }
 
     /// Decode and upload the vendored LUT.
@@ -135,8 +129,8 @@ impl PigmentLut {
     }
 
     /// Unreachable without the feature, and structurally so: the LUT is declared only
-    /// by the two Mixbox shaders, which a build without it does not link — so
-    /// [`read_by`] is false for every entry point there is.
+    /// by the two Mixbox shaders, which a build without it does not link — so no entry
+    /// point there reaches one.
     #[cfg(not(feature = "mixbox"))]
     fn load(_ctx: &GpuContext) -> Self {
         unreachable!("no shader in a build without Mixbox declares the pigment LUT")

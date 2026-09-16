@@ -532,8 +532,7 @@ impl SubmitScope {
         &mut self,
         label: &str,
         pipeline: &wgpu::RenderPipeline,
-        bg: &wgpu::BindGroup,
-        offsets: &[u32],
+        bound: crate::gpu::desc::Bound<'_>,
         into: Targets<'_>,
         ops: wgpu::Operations<wgpu::Color>,
     ) {
@@ -546,7 +545,7 @@ impl SubmitScope {
                 ..Default::default()
             });
         pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, bg, offsets);
+        bound.set(&mut pass);
         pass.draw(0..3, 0..1);
     }
 

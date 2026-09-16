@@ -454,10 +454,13 @@ right shape.
   either way.) The gradient map added a third kind of lane on the same terms: a
   sixteen-stop table for its ramp (§21.11), zeroed for every other kind, and read as
   its own by whatever kind next needs a table.
-- **Bind group.** The blend pass's numbering with the source's two slots simply not
-  declared: `filter_common` owns 0–2 where `blend_common` owns 0–4, and the pigment LUT
-  keeps 5–6 because `filter_mixbox.wesl` declares them there. The LUT
-  itself is the blend pass's, decoded once — both passes ask it the same question.
+- **Bind groups, one per module.** `filter_common` owns `@group(0)` entire — the blend
+  pass's numbering with the source's two slots not declared, so the blur's planes take
+  4 and 5 — and `filter_mixbox` owns `@group(1)` entire: the LUT, its sampler, the
+  backdrop's residual. A colorimetric filter declares nothing there and binds an empty
+  layout in its place, which keeps the pipeline layout the same shape in both spaces.
+  The LUT itself is the blend pass's, decoded once — both passes ask it the same
+  question.
 
 ### 21.8 Invariants worth a test (`tests/filter.rs`)
 

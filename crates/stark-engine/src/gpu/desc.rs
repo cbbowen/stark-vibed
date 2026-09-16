@@ -112,6 +112,23 @@ impl Bindings {
         )
     }
 
+    /// [`Self::of`] for a group a pipeline may reach nothing of
+    /// ([`stark_shaders::layout_if_reached`]): the colour space's own `@group(1)`,
+    /// which a colorimetric space declares nothing in and binds empty (§6.7).
+    pub(crate) fn if_reached(
+        device: &wgpu::Device,
+        label: &str,
+        pipelines: &[Stages],
+        anchor: stark_shaders::Binding,
+    ) -> Self {
+        Self::over(
+            device,
+            label,
+            stark_shaders::layout_if_reached(pipelines, anchor),
+            anchor.group,
+        )
+    }
+
     /// [`Self::of`] for a layout several pipelines **share**
     /// ([`stark_shaders::layout_shared_by`], which states what sharing costs).
     pub(crate) fn shared_by(
@@ -162,6 +179,38 @@ impl Bindings {
         resource: impl FnMut(u32) -> wgpu::BindingResource<'a>,
     ) -> wgpu::BindGroup {
         bind_group_of(device, label, &self.layout, &self.entries, resource)
+    }
+}
+
+/// The bind groups one pass sets, in `@group` order, with the dynamic offsets
+/// `@group(0)` takes.
+///
+/// A pass over a colour-space-split shader binds two — the shared module's whole group
+/// 0 and the space's own group 1, empty where the space declares nothing (§6.7) — and
+/// every other pass here binds one. Both go through [`Self::set`], so a pipeline layout
+/// of two and a pass that set one is a shape no call site can write.
+#[derive(Clone, Copy)]
+pub(crate) struct Bound<'a> {
+    groups: &'a [wgpu::BindGroup],
+    offsets: &'a [u32],
+}
+
+impl<'a> Bound<'a> {
+    /// `groups` in `@group` order; `offsets` are `@group(0)`'s.
+    pub(crate) fn new(groups: &'a [wgpu::BindGroup], offsets: &'a [u32]) -> Self {
+        Self { groups, offsets }
+    }
+
+    /// One group, no dynamic offset.
+    pub(crate) fn one(group: &'a wgpu::BindGroup) -> Self {
+        Self::new(std::slice::from_ref(group), &[])
+    }
+
+    pub(crate) fn set(self, pass: &mut wgpu::RenderPass<'_>) {
+        for (i, group) in self.groups.iter().enumerate() {
+            let offsets = if i == 0 { self.offsets } else { &[][..] };
+            pass.set_bind_group(i as u32, group, offsets);
+        }
     }
 }
 

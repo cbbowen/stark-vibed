@@ -504,8 +504,7 @@ impl BlurFrame {
         pass: &BlurPass,
         filter: &FilterPass,
         encoder: &mut wgpu::CommandEncoder,
-        bg: &wgpu::BindGroup,
-        offset: u32,
+        bound: desc::Bound<'_>,
         slot: u32,
     ) {
         let job = self
@@ -517,7 +516,7 @@ impl BlurFrame {
             self.dispatch(pass, encoder, "stark blur kernel", job.kernel.clone());
         }
         // The decode: the accumulator into set B, zeros in the padding. Set A —
-        // which `bg` binds — is not attached, so nothing is both read and
+        // which `bound` binds — is not attached, so nothing is both read and
         // written; the pass covers the whole padded extent, so the clear is a
         // don't-care stated as one.
         {
@@ -531,7 +530,7 @@ impl BlurFrame {
                 ..Default::default()
             });
             rp.set_pipeline(&filter.blur_decode);
-            rp.set_bind_group(0, bg, &[offset]);
+            bound.set(&mut rp);
             rp.draw(0..3, 0..1);
         }
         self.dispatch(pass, encoder, "stark blur fft", job.image.clone());

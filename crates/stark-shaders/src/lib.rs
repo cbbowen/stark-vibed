@@ -22,7 +22,7 @@ include!(concat!(env!("OUT_DIR"), "/accessors.rs"));
 
 mod layout;
 
-pub use layout::{Stages, layout_of, layout_shared_by};
+pub use layout::{Stages, layout_if_reached, layout_of, layout_shared_by};
 
 /// One entry point of a linked artifact, as `naga` reports it (§6.10).
 ///
@@ -64,6 +64,12 @@ pub struct EntryPoint {
 }
 
 impl EntryPoint {
+    /// Whether this entry point reaches `decl` — the declaration itself, module and
+    /// all, since two modules may declare one name (see [`Binding`]).
+    pub fn reads(&self, decl: Binding) -> bool {
+        self.uses.iter().any(|u| u.decl == decl)
+    }
+
     /// The workgroup counts covering `extent`, at this kernel's own
     /// `@workgroup_size`.
     ///
