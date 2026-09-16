@@ -108,7 +108,7 @@ these should appear in code again.
 | Term | What it is instead | Defined in |
 |---|---|---|
 | **binding** | Unqualified, the shader's own `@binding` — one slot in one `@group`. The generated mirror splits it two ways: `mirror::<module>::binding::*` is the bare index, and `mirror::<module>::decl::*` the whole declaration (group, index, kind, `@if(resid)` gate), which is what a host names a slot by. `BINDINGS` is that same set in declaration order, for a check that asks about the set. | [`stark-shaders-build/src/emit/bindings.rs`](../crates/stark-shaders-build/src/emit/bindings.rs) |
-| **`Bindings`** (engine) | Not a plural of the above: a *bind group layout* plus the slot list and residual gate it was built from, so a group built from it cannot disagree with it (§6.10). | [`stark-engine/src/gpu/desc.rs`](../crates/stark-engine/src/gpu/desc.rs) |
+| **`Bindings`** (engine) | Not a plural of the above: a *bind group layout* plus the entries it was derived from, so a group built from it cannot disagree with it (§6.10). | [`stark-engine/src/gpu/desc.rs`](../crates/stark-engine/src/gpu/desc.rs) |
 | **binding** (chrome) | A chord reaching a command, or a drag reaching a gesture — the §25 registries. Always a *key* or *drag* binding in prose, never bare. | [`stark-ui/src/drags.rs`](../crates/stark-ui/src/drags.rs) |
 
 ## The document and the log

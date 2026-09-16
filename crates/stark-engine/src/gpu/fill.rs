@@ -35,30 +35,11 @@ use stark_model::document::{FillOp, GradientAxis, Parcel};
 use stark_model::document::{SelectionMode, SelectionOp, SelectionShape};
 
 // Generated from `fill.wesl`'s own declarations (§6.7).
+use stark_shaders::Stages;
 use stark_shaders::mirror::fill::Fill as FillUniform;
 use stark_shaders::mirror::fill::Tile as TileUniform;
 use stark_shaders::mirror::fill::binding as f;
 use stark_shaders::mirror::fill::decl as fd;
-
-/// Which bindings `fill.wesl` reads, in layout order (§6.10).
-///
-/// One list, read by both sides — the layout and the group are built from it, so
-/// neither can disagree with the other. The residual sits beside the base color it
-/// rides with, carrying its `@if(resid)` gate on the declaration.
-///
-/// `TILE` is the one slot whose *binding* the shader does not decide: `f` and `tile`
-/// are both `var<uniform>` in the WESL, and the difference is that the first is one
-/// buffer for the whole fill while the second is a per-tile slot of one
-/// (`UniformSlots`). That is what [`desc::Slot::dynamic`] says.
-pub(crate) const FILL_SLOTS: &[desc::Slot] = &[
-    desc::Slot::at(fd::F),
-    desc::Slot::at(fd::BASE_COLOR),
-    desc::Slot::at(fd::BASE_AUX),
-    desc::Slot::at(fd::REGION),
-    desc::Slot::at(fd::GATE),
-    desc::Slot::at(fd::BASE_RESID),
-    desc::Slot::dynamic(fd::TILE),
-];
 
 // The shader's stop capacity is the ramp's own bound (§22.1) — asserted rather than
 // commented, since the two are declared in different crates and nothing else would
@@ -103,13 +84,15 @@ impl FillRenderer {
 
         let fill = stark_shaders::fill(color_space.resid());
         let shader = desc::Module::new(device, "stark fill", fill);
-        let frag = wgpu::ShaderStages::FRAGMENT;
-        let bindings = desc::Bindings::new(
+        // `TILE` is the one thing the shader does not decide: `f` and `tile` are both
+        // `var<uniform>`, and the difference is that the first is one buffer for the
+        // whole fill while the second is a per-tile slot of one (`UniformSlots`).
+        let bindings = desc::Bindings::of(
             device,
             "stark fill bgl",
-            FILL_SLOTS,
-            frag,
-            formats.has_resid(),
+            Stages::Render(fill.vs_main, fill.fs_main),
+            fd::F,
+            &[fd::TILE],
         );
         let layout = desc::pipeline_layout_of(device, "stark fill layout", &[&bindings]);
         let targets = formats.targets();

@@ -483,8 +483,12 @@ impl Rect {
 
 /// One dispatch over the grid its own kernel declares (§6.10) — the form every
 /// `dispatch_workgroups` in the loop and the liquify field takes.
-pub(super) fn dispatch_over(pass: &mut wgpu::ComputePass<'_>, groups: (u32, u32, u32)) {
-    pass.dispatch_workgroups(groups.0, groups.1, groups.2);
+///
+/// The `z` count is this module's, not a kernel's: every grid here is 2-D, which is
+/// what [`EntryPoint::groups`](stark_shaders::EntryPoint::groups) asserts of the
+/// declaration it divides by.
+pub(super) fn dispatch_over(pass: &mut wgpu::ComputePass<'_>, groups: (u32, u32)) {
+    pass.dispatch_workgroups(groups.0, groups.1, 1);
 }
 
 /// The snapshot scratch's square for a piece: **the largest rect the piece will

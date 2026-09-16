@@ -1274,7 +1274,7 @@ impl<'a> DynamicsRun<'a> {
                     cpass.set_pipeline(&kit.exchange_pipeline);
                     cpass.set_bind_group(0, bind.exchange(cur), &[off]);
                     let tail = dy.exchange.groups(d.extent);
-                    cpass.dispatch_workgroups(reservoir.0 + tail.0, reservoir.1.max(tail.1), 1);
+                    dispatch_over(&mut cpass, (reservoir.0 + tail.0, reservoir.1.max(tail.1)));
                     // The canvas's half: exact per texel, or — where the tip's
                     // shoulder allows (`extent_cell`) — hoisted once per cell and
                     // applied over the same texel grid. The hoist reads the bake this

@@ -66,10 +66,8 @@ impl TilePass {
             device,
             "stark composite view bgl",
             &[
-                composite.vs_main,
-                composite.fs_main,
-                matte.vs_main,
-                matte.fs_main,
+                Stages::Render(composite.vs_main, composite.fs_main),
+                Stages::Render(matte.vs_main, matte.fs_main),
             ],
             vd::VIEW,
             &[vd::VIEW],

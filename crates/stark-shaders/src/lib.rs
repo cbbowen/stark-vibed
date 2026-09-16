@@ -22,7 +22,7 @@ include!(concat!(env!("OUT_DIR"), "/accessors.rs"));
 
 mod layout;
 
-pub use layout::{Reach, Stages, layout_of, layout_shared_by, reached};
+pub use layout::{Stages, layout_of, layout_shared_by};
 
 /// One entry point of a linked artifact, as `naga` reports it (§6.10).
 ///
@@ -76,7 +76,7 @@ impl EntryPoint {
     /// kernel whose `@workgroup_size` has a third dimension: a 2-D extent is not the
     /// question such a kernel is asking, and covering `z` with one group would run its
     /// depth once over.
-    pub const fn groups(&self, extent: (u32, u32)) -> (u32, u32, u32) {
+    pub const fn groups(&self, extent: (u32, u32)) -> (u32, u32) {
         let [x, y, z] = self.workgroup_size;
         assert!(
             x > 0 && y > 0,
@@ -86,7 +86,7 @@ impl EntryPoint {
             z == 1,
             "`groups` covers a 2-D extent, and this kernel's `@workgroup_size` is 3-D",
         );
-        (extent.0.div_ceil(x), extent.1.div_ceil(y), 1)
+        (extent.0.div_ceil(x), extent.1.div_ceil(y))
     }
 }
 
@@ -188,8 +188,8 @@ impl Sample {
 /// filterability, and its absence is a statement rather than an omission: the same
 /// texture is `textureLoad`ed by one entry point of `dynamics.wesl` and
 /// `textureSample`d by another (`region_color`, between `snapshot` and `exchange`), so
-/// it is a property of the pair and not of the slot. The host says it, once, in the
-/// list that names the entry point's bindings.
+/// it is a property of the pair and not of the slot. [`Use::sampled`] is where it is
+/// reported, per entry point, and the layout folds it over the ones that share one.
 ///
 /// **A host names a slot by taking the whole declaration**, from the generated `decl`
 /// module, rather than by looking one up by index. There was a `lookup(table, index)`
@@ -202,7 +202,7 @@ impl Sample {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Binding {
     /// The `@group` this slot is in. A bind group layout is for exactly one group, so
-    /// this is what lets the host check that a slot list names one.
+    /// this is what an anchor declaration names it by ([`layout_of`]).
     pub group: u32,
     /// The `@binding` index — unique within [`group`](Self::group), and what a
     /// bind-group entry is keyed on.
@@ -218,13 +218,12 @@ pub struct Binding {
     /// same name.
     pub module: &'static str,
     pub kind: BindKind,
-    /// Whether the declaration is `@if(resid)`-gated, i.e. exists only in the
-    /// residual build of the shader (§6.7).
+    /// Whether the declaration is `@if(resid)`-gated, i.e. exists only in the residual
+    /// build of the shader (§6.7).
     ///
-    /// This is what retired the `[..12 + 4 * usize::from(resid)]` slices: a layout
-    /// listed its residual entries at the end of an array and then counted them by
-    /// hand, per entry point, seven times over. The gate is in the declaration; now it
-    /// is in the table.
+    /// No layout reads it: a gated slot is simply absent from the entry points of a
+    /// build that does not declare it. It is here because the mirror carries what the
+    /// declaration says, and it is what a test names to say a fixture really is gated.
     pub resid: bool,
 }
 

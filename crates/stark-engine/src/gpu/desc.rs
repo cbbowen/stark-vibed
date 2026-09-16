@@ -9,79 +9,20 @@
 //! That is the whole argument for the module: a shared descriptor makes the meant
 //! differences the only ones written down.
 //!
-//! **A layout is not written here at all**, it is read off the shader (§6.10).
-//! [`stark_shaders::layout_of`] derives a whole group's entries from the pipeline that
-//! binds it — [`stark_shaders::layout_shared_by`] where several do — and [`Bindings`]
-//! keeps them beside the layout so every group over it is built from the same ones.
-//!
-//! [`Slot`] is what is left of the hand-written form, for the layouts not yet derived:
-//! a list naming the generated declarations, saying only [`How`] the host binds —
-//! through a sampler, as a dynamic-offset slot, in which stages.
+//! **No layout is written here at all**, every one is read off the shader
+//! ([`stark_shaders::layout_of`], §6.10). What [`Bindings`] adds is that the entries
+//! stay beside the layout, so every group over it is built from the same ones.
+
+use std::sync::Arc;
 
 use stark_shaders::{EntryPoint, Stages};
 
 use crate::gpu::context::GpuContext;
 
-// ---- bind group layout entries -------------------------------------------------
-
-fn tex_entry(
-    binding: u32,
-    vis: wgpu::ShaderStages,
-    sample_type: wgpu::TextureSampleType,
-    view_dimension: wgpu::TextureViewDimension,
-) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: vis,
-        ty: wgpu::BindingType::Texture {
-            sample_type,
-            view_dimension,
-            multisampled: false,
-        },
-        count: None,
-    }
-}
-
-/// A filtering sampler.
-fn sampler(binding: u32, vis: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: vis,
-        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-        count: None,
-    }
-}
-
-/// One **dynamic-offset slot** of a uniform buffer, `slot` bytes wide — how both
-/// render paths vary a uniform across the draws or dispatches of a single pass
-/// without a buffer per draw (`gpu::uniforms`).
-///
-/// `slot` is the struct's own size, and declaring it as `min_binding_size` is free
-/// validation against a truncated write: the layouts that pass `None` here get none.
-fn uniform_slot(binding: u32, vis: wgpu::ShaderStages, slot: u64) -> wgpu::BindGroupLayoutEntry {
-    buffer_entry(binding, vis, true, wgpu::BufferSize::new(slot))
-}
-
-fn buffer_entry(
-    binding: u32,
-    vis: wgpu::ShaderStages,
-    has_dynamic_offset: bool,
-    min_binding_size: Option<wgpu::BufferSize>,
-) -> wgpu::BindGroupLayoutEntry {
-    wgpu::BindGroupLayoutEntry {
-        binding,
-        visibility: vis,
-        ty: wgpu::BindingType::Buffer {
-            ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset,
-            min_binding_size,
-        },
-        count: None,
-    }
-}
+// ---- bind group layouts ---------------------------------------------------------
 
 /// A bind group layout of `entries`.
-pub(crate) fn bind_group_layout(
+fn bind_group_layout(
     device: &wgpu::Device,
     label: &str,
     entries: &[wgpu::BindGroupLayoutEntry],
@@ -92,213 +33,15 @@ pub(crate) fn bind_group_layout(
     })
 }
 
-// ---- shader-declared binding lists (§6.10) --------------------------------------
-
-/// The **two** things a `@binding` declaration does not decide, so that a slot list
-/// says only these and reads everything else off the shader.
-///
-/// Both are properties of how the host *binds*, not of what the shader declares, and
-/// each has a case in this codebase that proves it:
-///
-/// * **Filterability.** `dynamics.wesl`'s `region_color` is `textureLoad`ed by
-///   `snapshot` and `textureSample`d by `exchange` — the same slot, non-filterable in
-///   one layout and filterable in the next.
-/// * **Dynamic offset.** `fill.wesl` declares `f` and `tile` both `var<uniform>`; the
-///   first is one buffer for the whole fill and the second is a per-tile slot of one
-///   (`UniformSlots`). The WGSL is identical either way.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum How {
-    /// `textureLoad`ed, or a uniform bound whole — the common case.
-    Plain,
-    /// Read through a sampler, which makes its texture required to be filterable and
-    /// its sampler a filtering one.
-    Sampled,
-    /// A uniform bound as one **dynamic-offset slot** of a larger buffer, which is how
-    /// both render paths vary a uniform across the draws or dispatches of a pass.
-    Dynamic,
-}
-
-/// One binding an entry point reads, as the **host** has to name it: the shader's own
-/// declaration, plus [`How`] the host binds it.
-///
-/// Everything else about a slot — whether it is a uniform and how wide, a sampler, a
-/// texture, or a storage texture of a particular format, and whether it exists at all
-/// in a build without the residual — rides in the generated
-/// [`Binding`](stark_shaders::Binding).
-///
-/// **The declaration is carried, not looked up.** A slot list names
-/// `decl::REGION_COLOR`, so there is no index to resolve against a table — which is
-/// what makes a multi-group module safe to describe at all: `@binding(0)` means a
-/// different slot in each of a module's groups, and an index alone cannot tell them
-/// apart.
-#[derive(Clone, Copy)]
-pub(crate) struct Slot {
-    decl: stark_shaders::Binding,
-    how: How,
-    /// This slot's own visibility, where it differs from the layout's — see
-    /// [`Slot::in_stages`].
-    vis: Option<wgpu::ShaderStages>,
-}
-
-impl Slot {
-    /// A slot this entry point reads with `textureLoad`, or a whole-buffer uniform —
-    /// anything with no filterability and no dynamic offset to speak of.
-    pub(crate) const fn at(decl: stark_shaders::Binding) -> Self {
-        Self {
-            decl,
-            how: How::Plain,
-            vis: None,
-        }
-    }
-
-    /// A slot this entry point reads **through a sampler**, which makes its texture
-    /// required to be filterable and its sampler a filtering one.
-    pub(crate) const fn sampled(decl: stark_shaders::Binding) -> Self {
-        Self {
-            decl,
-            how: How::Sampled,
-            vis: None,
-        }
-    }
-
-    /// A uniform bound as one **dynamic-offset slot** ([`uniform_slot`]).
-    pub(crate) const fn dynamic(decl: stark_shaders::Binding) -> Self {
-        Self {
-            decl,
-            how: How::Dynamic,
-            vis: None,
-        }
-    }
-
-    /// The shader's declaration of this slot.
-    pub(crate) const fn decl(&self) -> &stark_shaders::Binding {
-        &self.decl
-    }
-
-    /// Whether this list says the entry point reads the slot **through a sampler** —
-    /// the half of [`How`] the shader also knows, and so the half a generated
-    /// [`Use`](stark_shaders::Use) can be checked against.
-    ///
-    /// The layout path reads [`How`] directly; this exists for
-    /// [`slot_agreement`](crate::gpu::slot_agreement), which is the only thing that has
-    /// a second opinion to compare it with.
-    #[cfg(test)]
-    pub(crate) const fn is_sampled(&self) -> bool {
-        matches!(self.how, How::Sampled)
-    }
-
-    /// The stages that read **this** slot, where they are not the whole layout's.
-    ///
-    /// Most layouts are one stage's and pass it once. Pass A's view group and the
-    /// overlay's are not: a `View` uniform is the vertex stage's while the sampler
-    /// beside it is the fragment's, and declaring the pair `VERTEX_FRAGMENT` would ask
-    /// for a visibility neither binding uses.
-    pub(crate) const fn in_stages(mut self, vis: wgpu::ShaderStages) -> Self {
-        self.vis = Some(vis);
-        self
-    }
-
-    /// Whether this build has the slot at all: an `@if(resid)` declaration exists only
-    /// in a color space that carries a residual (§6.7).
-    pub(crate) const fn present(&self, resid: bool) -> bool {
-        resid || !self.decl.resid
-    }
-}
-
-/// The layout entry for one slot, from the shader's own declaration.
-///
-/// Returns `None` for a slot the shader declares `@if(resid)` when this build has no
-/// residual, so a layout never restates that gate as an element count
-/// (`[..12 + 4 * usize::from(resid)]`).
-fn slot_entry(
-    slot: Slot,
-    vis: wgpu::ShaderStages,
-    resid: bool,
-) -> Option<wgpu::BindGroupLayoutEntry> {
-    if !slot.present(resid) {
-        return None;
-    }
-    let decl = slot.decl();
-    let vis = match slot.vis {
-        Some(v) => v,
-        None => vis,
-    };
-    Some(match decl.kind {
-        // `min_binding_size` is the declared struct's own WGSL size either way — free
-        // validation against a truncated write, against the size the shader reads.
-        stark_shaders::BindKind::Uniform { min_size } => match slot.how {
-            How::Dynamic => uniform_slot(decl.index, vis, min_size),
-            _ => buffer_entry(decl.index, vis, false, wgpu::BufferSize::new(min_size)),
-        },
-        stark_shaders::BindKind::Sampler => sampler(decl.index, vis),
-        // Filterability is the only half of the sample type the declaration does not
-        // decide, and `Sample::of` is where the two meet (§6.10).
-        stark_shaders::BindKind::Texture { dim, sample } => {
-            tex_entry(decl.index, vis, sample.of(slot.how == How::Sampled), dim)
-        }
-        stark_shaders::BindKind::Storage {
-            dim,
-            format,
-            access,
-        } => wgpu::BindGroupLayoutEntry {
-            binding: decl.index,
-            visibility: vis,
-            ty: wgpu::BindingType::StorageTexture {
-                access,
-                format,
-                view_dimension: dim,
-            },
-            count: None,
-        },
-    })
-}
-
-/// The most bindings one group may hold — [`bind_group_over`] fills its entries into
-/// an array of this size on the stack, since it runs once per tile per pass. Checked
-/// where the **layout** is built, both by [`slot_entries`] and by [`Bindings::over`],
-/// so a longer one fails where its renderer is built rather than at its first draw.
-/// The wet loop's deposit is the longest today.
+/// The most bindings one group may hold — [`bind_group_of`] fills its entries into an
+/// array of this size on the stack, since it runs once per tile per pass. Checked where
+/// the **layout** is built ([`Bindings::over`]), so a longer one fails where its
+/// renderer is built rather than at its first draw. The wet loop's deposit is the
+/// longest today.
 const MAX_SLOTS: usize = 24;
 
-/// The layout entries for `slots`, in list order, with the residual gate applied.
-///
-/// A bind group layout describes exactly one `@group`, so a list spanning two is a
-/// mistake in the list rather than a layout with a meaning — which is only sayable
-/// because the declaration carries its group. Panics if it does, or if the list is
-/// longer than [`MAX_SLOTS`].
-fn slot_entries(
-    label: &str,
-    slots: &[Slot],
-    vis: wgpu::ShaderStages,
-    resid: bool,
-) -> Vec<wgpu::BindGroupLayoutEntry> {
-    assert!(
-        slots.len() <= MAX_SLOTS,
-        "`{label}` lists {} slots; a bind group holds at most {MAX_SLOTS}",
-        slots.len()
-    );
-    if let Some(first) = slots.first() {
-        for s in slots {
-            assert_eq!(
-                s.decl().group,
-                first.decl().group,
-                "`{label}` lists `{}` from @group({}) beside `{}` from @group({}); one \
-                 layout describes one group",
-                s.decl().name,
-                s.decl().group,
-                first.decl().name,
-                first.decl().group,
-            );
-        }
-    }
-    slots
-        .iter()
-        .filter_map(|s| slot_entry(*s, vis, resid))
-        .collect()
-}
-
-/// The bind group for the `entries` a layout was built from ([`Bindings`]), with
-/// `resource` asked for each.
+/// The bind group for the `declared` entries a layout was built from ([`Bindings`]),
+/// with `resource` asked for each.
 ///
 /// Private, and reached only through [`Bindings`]: the entry list *is* the description
 /// of the group, so a caller that could name a different one is the whole disagreement
@@ -307,52 +50,26 @@ fn bind_group_of<'a>(
     device: &wgpu::Device,
     label: &str,
     layout: &wgpu::BindGroupLayout,
-    entries: &[wgpu::BindGroupLayoutEntry],
-    resource: impl FnMut(u32) -> wgpu::BindingResource<'a>,
-) -> wgpu::BindGroup {
-    bind_group_over(
-        device,
-        label,
-        layout,
-        entries.iter().map(|e| e.binding),
-        resource,
-    )
-}
-
-/// One bind group over the `@binding` indices its layout declares, `resource` asked
-/// for each.
-fn bind_group_over<'a>(
-    device: &wgpu::Device,
-    label: &str,
-    layout: &wgpu::BindGroupLayout,
-    mut bindings: impl Iterator<Item = u32>,
+    declared: &[wgpu::BindGroupLayoutEntry],
     mut resource: impl FnMut(u32) -> wgpu::BindingResource<'a>,
 ) -> wgpu::BindGroup {
-    // On the stack, filled in slot order; the tail past `count` names no resource and
-    // is never handed to wgpu — the descriptor takes `[..count]`.
-    let mut count = 0;
-    let entries: [wgpu::BindGroupEntry<'a>; MAX_SLOTS] =
-        std::array::from_fn(|_| match bindings.next() {
-            Some(binding) => {
-                count += 1;
-                wgpu::BindGroupEntry {
-                    binding,
-                    resource: resource(binding),
-                }
-            }
-            None => wgpu::BindGroupEntry {
-                binding: u32::MAX,
-                resource: wgpu::BindingResource::BufferArray(&[]),
-            },
-        });
-    assert!(
-        bindings.next().is_none(),
-        "`{label}` binds more than {MAX_SLOTS} slots, which is all this array holds",
-    );
+    // On the stack, filled in layout order; the tail past `declared.len()` names no
+    // resource and is never handed to wgpu — the descriptor takes that prefix.
+    let mut it = declared.iter();
+    let entries: [wgpu::BindGroupEntry<'a>; MAX_SLOTS] = std::array::from_fn(|_| match it.next() {
+        Some(e) => wgpu::BindGroupEntry {
+            binding: e.binding,
+            resource: resource(e.binding),
+        },
+        None => wgpu::BindGroupEntry {
+            binding: u32::MAX,
+            resource: wgpu::BindingResource::BufferArray(&[]),
+        },
+    });
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(label),
         layout,
-        entries: &entries[..count],
+        entries: &entries[..declared.len()],
     })
 }
 
@@ -366,7 +83,9 @@ fn bind_group_over<'a>(
 #[derive(Clone)]
 pub(crate) struct Bindings {
     layout: wgpu::BindGroupLayout,
-    entries: Vec<wgpu::BindGroupLayoutEntry>,
+    /// `Arc`-backed like the layout beside it: a renderer holding one is cloned per
+    /// `Action::Context`, which on the live-paint path is once per pointer move.
+    entries: Arc<[wgpu::BindGroupLayoutEntry]>,
     /// The `@group` this describes, for [`pipeline_layout_of`].
     group: u32,
 }
@@ -376,9 +95,8 @@ impl Bindings {
     /// ([`stark_shaders::layout_of`]), keeping its entries for [`Self::group`] and its
     /// group number for [`pipeline_layout_of`].
     ///
-    /// The anchor is taken rather than the finished entries, so a [`Bindings`] cannot
-    /// be built over a list that came from nowhere — and so the `@group` it stands at
-    /// is the shader's answer rather than a position a call site counted.
+    /// The `@group` it stands at is then the shader's answer rather than a position a
+    /// call site counted.
     pub(crate) fn of(
         device: &wgpu::Device,
         label: &str,
@@ -399,14 +117,14 @@ impl Bindings {
     pub(crate) fn shared_by(
         device: &wgpu::Device,
         label: &str,
-        eps: &[EntryPoint],
+        pipelines: &[Stages],
         anchor: stark_shaders::Binding,
         dynamic: &[stark_shaders::Binding],
     ) -> Self {
         Self::over(
             device,
             label,
-            stark_shaders::layout_shared_by(eps, anchor, dynamic),
+            stark_shaders::layout_shared_by(pipelines, anchor, dynamic),
             anchor.group,
         )
     }
@@ -425,26 +143,9 @@ impl Bindings {
         );
         Self {
             layout: bind_group_layout(device, label, &entries),
-            entries,
+            entries: entries.into(),
             group,
         }
-    }
-
-    /// [`Self::of`] over a hand-written slot list, whose group is its first slot's
-    /// declaration ([`slot_entries`] refuses a list spanning two).
-    pub(crate) fn new(
-        device: &wgpu::Device,
-        label: &str,
-        slots: &'static [Slot],
-        vis: wgpu::ShaderStages,
-        resid: bool,
-    ) -> Self {
-        let group = slots
-            .first()
-            .expect("a slot list names at least one binding")
-            .decl()
-            .group;
-        Self::over(device, label, slot_entries(label, slots, vis, resid), group)
     }
 
     /// The layout, for a [`pipeline_layout`].
@@ -465,7 +166,7 @@ impl Bindings {
 }
 
 /// A pipeline layout over `bgls`.
-pub(crate) fn pipeline_layout(
+fn pipeline_layout(
     device: &wgpu::Device,
     label: &str,
     bgls: &[Option<&wgpu::BindGroupLayout>],
@@ -858,28 +559,5 @@ mod tests {
             },
             "QUAD_STRIP culls a face the transform needs drawn",
         );
-    }
-
-    /// The residual gate a hand-written list applies is [`Slot::present`]: an
-    /// `@if(resid)` declaration exists only with the residual, a plain one always.
-    /// Device-free, so it can run where the pigment build's bind groups themselves
-    /// cannot be built.
-    #[test]
-    fn a_gated_slot_is_present_only_with_the_residual() {
-        use stark_shaders::mirror::fill::decl as fd;
-        const _: () = assert!(
-            fd::BASE_RESID.resid && !fd::BASE_COLOR.resid,
-            "the fixtures no longer stand for a gated and an ungated declaration",
-        );
-        let declared = Slot::at(fd::BASE_RESID);
-        let plain = Slot::at(fd::BASE_COLOR);
-        for resid in [false, true] {
-            assert_eq!(
-                declared.present(resid),
-                resid,
-                "@if(resid) at resid={resid}"
-            );
-            assert!(plain.present(resid), "a plain slot at resid={resid}");
-        }
     }
 }

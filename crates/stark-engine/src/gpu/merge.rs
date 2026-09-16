@@ -35,38 +35,13 @@ use crate::view::ViewTransform;
 use stark_model::document::BlendMode;
 
 // Generated from the shaders' own declarations (§6.10).
+use stark_shaders::Stages;
 use stark_shaders::mirror::merge::Merge as MergeUniform;
 use stark_shaders::mirror::merge::binding as m;
 use stark_shaders::mirror::merge::decl as md;
 use stark_shaders::mirror::slab::Slab as SlabUniform;
 use stark_shaders::mirror::slab::binding as sl;
 use stark_shaders::mirror::slab::decl as sd;
-
-/// Which bindings `merge.wesl` reads, in layout order (§6.10).
-///
-/// One list, read by both sides: a [`Bindings`](desc::Bindings) builds the layout
-/// from it and every group after, so neither can disagree with the other about which
-/// slots are present or of what type. The two residual entries sit beside the colors
-/// they ride with rather than in a countable tail, since the `@if(resid)` gate is on
-/// the declaration itself (§6.7).
-pub(crate) const MERGE_SLOTS: &[desc::Slot] = &[
-    desc::Slot::at(md::M),
-    desc::Slot::at(md::LOWER_COLOR),
-    desc::Slot::at(md::LOWER_AUX),
-    desc::Slot::at(md::UPPER_COLOR),
-    desc::Slot::at(md::UPPER_AUX),
-    desc::Slot::at(md::LOWER_RESID),
-    desc::Slot::at(md::UPPER_RESID),
-];
-
-/// Which bindings `slab.wesl` reads — one list for both directions, since they take
-/// the same shapes in and put the same shapes out, which is what makes them one module.
-pub(crate) const SLAB_SLOTS: &[desc::Slot] = &[
-    desc::Slot::at(sd::S),
-    desc::Slot::at(sd::IN_COLOR),
-    desc::Slot::at(sd::IN_AUX),
-    desc::Slot::at(sd::IN_RESID),
-];
 
 /// A texture view as the resource a bind-group entry takes.
 fn view(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
@@ -153,16 +128,19 @@ impl MergeRenderer {
     ) -> Self {
         let device = &ctx.device;
         let formats = ChannelFormats::of(color_space);
-        let resid = formats.has_resid();
-        let frag = wgpu::ShaderStages::FRAGMENT;
 
         // The channel targets both of this module's own passes write.
         let targets = formats.targets();
 
         let merge = stark_shaders::merge(color_space.resid());
         let merge_shader = desc::Module::new(device, "stark merge", merge);
-        let direct_bindings =
-            desc::Bindings::new(device, "stark merge bgl", MERGE_SLOTS, frag, resid);
+        let direct_bindings = desc::Bindings::of(
+            device,
+            "stark merge bgl",
+            Stages::Render(merge.vs_main, merge.fs_main),
+            md::M,
+            &[],
+        );
         let direct = desc::fullscreen_pipeline(
             device,
             "stark merge pipeline",
@@ -176,7 +154,16 @@ impl MergeRenderer {
         // the same shapes out, which is what makes them one module (`slab.wesl`).
         let slab_shader_src = stark_shaders::slab(color_space.resid());
         let slab_shader = desc::Module::new(device, "stark slab", slab_shader_src);
-        let slab_bindings = desc::Bindings::new(device, "stark slab bgl", SLAB_SLOTS, frag, resid);
+        let slab_bindings = desc::Bindings::shared_by(
+            device,
+            "stark slab bgl",
+            &[
+                Stages::Render(slab_shader_src.vs_main, slab_shader_src.fs_expand),
+                Stages::Render(slab_shader_src.vs_main, slab_shader_src.fs_store),
+            ],
+            sd::S,
+            &[],
+        );
         let slab_layout = desc::pipeline_layout_of(device, "stark slab layout", &[&slab_bindings]);
         let slab = |label, fs| {
             desc::fullscreen_pipeline(
@@ -398,7 +385,7 @@ impl MergeRenderer {
                 m::UPPER_AUX => view(upper.aux),
                 m::LOWER_RESID => view(resid(lower)),
                 m::UPPER_RESID => view(resid(upper)),
-                other => unreachable!("`MERGE_SLOTS` lists no binding {other}"),
+                other => unreachable!("the merge's group holds no binding {other}"),
             });
         pass(scope, "stark merge tile", &self.direct, &bg, &[], out);
     }
@@ -445,7 +432,7 @@ impl MergeRenderer {
                 sl::IN_COLOR => view(input.color),
                 sl::IN_AUX => view(input.aux),
                 sl::IN_RESID => view(input.resid.expect("a residual build has one")),
-                other => unreachable!("`SLAB_SLOTS` lists no binding {other}"),
+                other => unreachable!("the slab's group holds no binding {other}"),
             });
         pass(scope, "stark slab tile", pipeline, &bg, &[], out);
     }

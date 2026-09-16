@@ -17,6 +17,7 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Bindings};
 use crate::gpu::uniforms::UniformSlots;
 use crate::view::ViewTransform;
+use stark_shaders::Stages;
 use stark_shaders::mirror::filter_common::binding as fc;
 use stark_shaders::mirror::filter_common::decl as fcd;
 use stark_shaders::mirror::filter_mixbox::binding as fm;
@@ -88,10 +89,9 @@ impl FilterPass {
             device,
             "stark filter bgl",
             &[
-                filter.vs_main,
-                filter.fs_main,
-                filter.fs_tile,
-                filter.fs_blur_decode,
+                Stages::Render(filter.vs_main, filter.fs_main),
+                Stages::Render(filter.vs_main, filter.fs_tile),
+                Stages::Render(filter.vs_main, filter.fs_blur_decode),
             ],
             fcd::F,
             &[fcd::F],

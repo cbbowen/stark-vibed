@@ -23,7 +23,6 @@ use std::sync::{Arc, OnceLock};
 use crate::document::selection::Selection;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
-use crate::gpu::desc::Slot;
 use crate::gpu::{MASK_TEX, mask_tex_origin};
 use crate::view::Extent2;
 use stark_model::document::{SelectionOp, SelectionShape};
@@ -64,23 +63,11 @@ const _: () = assert!(
     "a lasso can name more edges than a guaranteed 1-D texture row holds, so the \
      op would fail wgpu validation on some adapters instead of rasterizing"
 );
+use stark_shaders::Stages;
 use stark_shaders::mirror::mask_region::decl as mrd;
 use stark_shaders::mirror::selection::binding as sb;
 use stark_shaders::mirror::selection::decl as sd;
 
-/// One op's rasterize into a mask tile (§6.8): the shape, the mask it combines with,
-/// and the lasso's edge list (a 1×1 stand-in for the analytic shapes).
-pub(crate) const RASTERIZE_SLOTS: &[Slot] = &[
-    // Per tile, so a dynamic-offset slot rather than a buffer each.
-    Slot::dynamic(sd::P),
-    Slot::at(sd::PREV),
-    Slot::at(sd::EDGES),
-];
-
-/// The region gather's two groups (`mask_region.wesl`, §6.8/§6.2) — where the region
-/// sits, and one mask tile drawn into it.
-pub(crate) const REGION_VIEW_SLOTS: &[Slot] = &[Slot::at(mrd::R)];
-pub(crate) const REGION_TILE_SLOTS: &[Slot] = &[Slot::at(mrd::MASK)];
 use crate::gpu::scratch::{BufKey, Key, ScratchPool, SubmitScope};
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TilePool};
 use crate::gpu::uniforms::UniformSlots;
@@ -150,12 +137,19 @@ impl SelectionRenderer {
 
         let selection = stark_shaders::selection();
         let shader = desc::Module::new(device, "stark selection", selection);
-        let frag = wgpu::ShaderStages::FRAGMENT;
         // The mask targets take no blend: the shader does the combine and writes
         // straight through.
         let mask_target = [desc::target(MASK_FORMAT)];
-        let rasterize_bindings =
-            desc::Bindings::new(device, "stark selection bgl", RASTERIZE_SLOTS, frag, false);
+        // One op's rasterize into a mask tile (§6.8): the shape — per tile, so a
+        // dynamic-offset slot rather than a buffer each — the mask it combines with,
+        // and the lasso's edge list.
+        let rasterize_bindings = desc::Bindings::of(
+            device,
+            "stark selection bgl",
+            Stages::Render(selection.vs_main, selection.fs_main),
+            sd::P,
+            &[sd::P],
+        );
         let layout =
             desc::pipeline_layout_of(device, "stark selection layout", &[&rasterize_bindings]);
         let rasterize_pipeline = desc::fullscreen_pipeline(
@@ -170,19 +164,22 @@ impl SelectionRenderer {
         // ---- Region gather (for the brush-dynamics stamp loop, §6.2).
         let region = stark_shaders::mask_region();
         let region_shader = desc::Module::new(device, "stark selection region", region);
-        let region_view_bindings = desc::Bindings::new(
+        // The region gather's two groups (§6.8/§6.2) — where the region sits, and one
+        // mask tile drawn into it.
+        let region_stages = Stages::Render(region.vs_main, region.fs_main);
+        let region_view_bindings = desc::Bindings::of(
             device,
             "stark selection region view bgl",
-            REGION_VIEW_SLOTS,
-            wgpu::ShaderStages::VERTEX_FRAGMENT,
-            false,
+            region_stages,
+            mrd::R,
+            &[],
         );
-        let region_tile_bindings = desc::Bindings::new(
+        let region_tile_bindings = desc::Bindings::of(
             device,
             "stark selection region tile bgl",
-            REGION_TILE_SLOTS,
-            frag,
-            false,
+            region_stages,
+            mrd::MASK,
+            &[],
         );
         let region_layout = desc::pipeline_layout_of(
             device,
@@ -507,7 +504,7 @@ impl SelectionRenderer {
                     sb::P => slots.resource(),
                     sb::PREV => wgpu::BindingResource::TextureView(prev_view.view()),
                     sb::EDGES => wgpu::BindingResource::TextureView(edges),
-                    other => unreachable!("`RASTERIZE_SLOTS` lists no binding {other}"),
+                    other => unreachable!("the rasterize group holds no binding {other}"),
                 });
             {
                 let mut pass = scope

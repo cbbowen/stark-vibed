@@ -14,9 +14,9 @@
 //! a live stroke makes (§6.2's two composable forms). The mass sums additively — so
 //! re-cutting the path changes nothing — and every piece re-derives its tiles from
 //! pristine paint under the total. That bookkeeping is any such effect's, so it
-//! lives in [`accum`](super::accum); what stays here is `erase.wesl`'s own slots,
-//! its pipelines, and the one decision that is this pass's — a tile the layer does
-//! not have is nothing to erase ([`BareCanvas::Skip`]).
+//! lives in [`accum`](super::accum); what stays here is `erase.wesl`'s own layout and
+//! pipelines, and the one decision that is this pass's — a tile the layer does not
+//! have is nothing to erase ([`BareCanvas::Skip`]).
 
 use stark_shaders::Stages;
 use stark_shaders::mirror::erase::binding as eb;

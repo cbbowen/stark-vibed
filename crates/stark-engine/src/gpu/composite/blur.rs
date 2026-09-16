@@ -58,6 +58,7 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Bindings};
 use crate::gpu::uniforms::UniformSlots;
 use crate::view::{Extent2, ViewTransform};
+use stark_shaders::Stages;
 use stark_shaders::mirror::blur::Fft as FftUniform;
 use stark_shaders::mirror::blur::binding as bb;
 use stark_shaders::mirror::blur::decl as bd;
@@ -88,10 +89,10 @@ impl BlurPass {
             device,
             "stark blur bgl",
             &[
-                blur.fft_both,
-                blur.fft_one,
-                blur.make_kernel,
-                blur.apply_kernel,
+                Stages::Compute(blur.fft_both),
+                Stages::Compute(blur.fft_one),
+                Stages::Compute(blur.make_kernel),
+                Stages::Compute(blur.apply_kernel),
             ],
             bd::F,
             &[bd::F],
@@ -373,7 +374,7 @@ struct Dispatch {
     /// The dynamic-offset slot of this dispatch's [`FftUniform`] — its own index,
     /// since the two lists are built in one loop.
     slot: u32,
-    groups: (u32, u32, u32),
+    groups: (u32, u32),
 }
 
 /// One focal-blur layer's share of the frame: which filter slot it serves, and
@@ -568,7 +569,7 @@ impl BlurFrame {
                 Binds::BToKernel => 3,
             }];
             cp.set_bind_group(0, bind, &[UniformSlots::<FftUniform>::offset(d.slot)]);
-            cp.dispatch_workgroups(d.groups.0, d.groups.1, d.groups.2);
+            cp.dispatch_workgroups(d.groups.0, d.groups.1, 1);
         }
     }
 }

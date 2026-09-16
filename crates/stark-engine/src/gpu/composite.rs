@@ -98,7 +98,10 @@ pub(crate) fn tile_bind_group_layout(
     desc::Bindings::shared_by(
         device,
         "stark composite tile bgl",
-        &[c.vs_main, c.fs_main, c.fs_raw],
+        &[
+            stark_shaders::Stages::Render(c.vs_main, c.fs_main),
+            stark_shaders::Stages::Render(c.vs_main, c.fs_raw),
+        ],
         stark_shaders::mirror::composite::decl::TILE_COLOR,
         &[],
     )

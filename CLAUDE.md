@@ -314,10 +314,12 @@ per-test tolerance hides exactly that drift. Deleting a golden re-blesses it.
   host type a caller picks a build with. A host type several pipelines want is a
   shared, binding-owning module they import the binding from (`view.wesl`), which
   is what retired the `SHARED` list and the check that its entries agreed. A
-  hand-written second copy drifts, and the
-  drift is invisible until it is a picture. What is genuinely the host's — a
-  name, a step mode, whether *this* pass samples *that* texture — is worth
-  writing by hand for the same reason: the shader does not say it.
+  hand-written second copy drifts, and the drift is invisible until it is a
+  picture. A **bind group layout** is derived too, off the entry points that bind
+  it (`stark_shaders::layout_of`, `layout_shared_by`): what is genuinely the
+  host's there is which pipelines share one layout, which of its uniforms carry a
+  dynamic offset, and what resource fills each binding — worth writing by hand
+  for the same reason, since the shader does not say it.
 - **A new engine method that mutates state and returns nothing is a bug** — it
   should be a command (§4). Operations that must *answer* are a named request
   tier, so they stay countable when the engine moves behind a channel.

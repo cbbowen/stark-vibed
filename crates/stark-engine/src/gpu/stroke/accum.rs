@@ -23,8 +23,8 @@
 //! `integrate.wesl`), and what bare canvas means ([`BareCanvas`]). So this holds the
 //! orchestration and **not** the rendering: [`IncrementalTileAccumulator::run`] is
 //! handed the effect's own pipelines and asks the effect to bind its own landing group,
-//! so a reader still finds `erase.wesl`'s slots in `erase.rs` and `integrate.wesl`'s in
-//! `swept.rs`, next to the shader each mirrors (§6.10). The two are one *procedure*,
+//! so a reader still finds `erase.wesl`'s layout in `erase.rs` and `integrate.wesl`'s
+//! in `swept.rs`, next to the shader each mirrors (§6.10). The two are one *procedure*,
 //! not one pass.
 //!
 //! **The stamp loop's carried tiles are deliberately not here.** `LoopCarry::fresh`

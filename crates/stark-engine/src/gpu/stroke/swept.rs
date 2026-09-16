@@ -12,7 +12,7 @@ use stark_shaders::mirror::integrate::binding as ib;
 use stark_shaders::mirror::integrate::decl as id;
 use stark_shaders::mirror::stamp_common::binding as sc;
 use stark_shaders::mirror::stamp_common::decl as sd;
-use stark_shaders::{EntryPoint, Lane, Stages};
+use stark_shaders::{Lane, Stages};
 
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap};
 
@@ -134,20 +134,17 @@ pub(super) fn ceiling_target(color_space: &dyn ColorSpace) -> Option<wgpu::Color
     desc::blended_target(CEILING_FORMAT, Some(color_space.aux_blend()))
 }
 
-/// Every stage the sweep's three layouts serve: both stamp builds', over the five
-/// pipelines this kit and the erase kit compile between them (§6.12). One set of
-/// layouts, so one union — and the erase sweep is why `fs_erase` is in it.
-pub(super) fn sweep_stages(color_space: &dyn ColorSpace) -> [EntryPoint; 7] {
+/// The five pipelines the sweep's three layouts serve: this kit's three and the erase
+/// kit's two, over both stamp builds (§6.12). One set of layouts, so one union.
+pub(super) fn sweep_pipelines(color_space: &dyn ColorSpace) -> [Stages; 5] {
     let plain = color_space.stamp_shader(Lane::Plain);
     let ceiling = color_space.stamp_shader(Lane::Ceiling);
     [
-        plain.vs_main,
-        plain.fs_main,
-        plain.fs_levels,
-        plain.fs_erase,
-        ceiling.vs_main,
-        ceiling.fs_main,
-        ceiling.fs_erase,
+        Stages::Render(plain.vs_main, plain.fs_main),
+        Stages::Render(ceiling.vs_main, ceiling.fs_main),
+        Stages::Render(plain.vs_main, plain.fs_levels),
+        Stages::Render(plain.vs_main, plain.fs_erase),
+        Stages::Render(ceiling.vs_main, ceiling.fs_erase),
     ]
 }
 
@@ -164,23 +161,13 @@ pub(super) fn build_swept_kit(
     // stroke with a slot per tile, selected by a dynamic offset ([`XFORM_STRIDE`]);
     // group 1 the prefix-τ volume (§6.6); group 2 the noise field with its repeat
     // sampler beside the canvas substrate's map (§6.2, §6.4).
-    let stages = sweep_stages(color_space);
-    let uniform_bgl = desc::Bindings::shared_by(
-        device,
-        "stark sweep uniform bgl",
-        &stages,
-        sd::XF,
-        &[sd::XF],
-    );
-    let prefix_bgl = desc::Bindings::shared_by(
-        device,
-        "stark sweep prefix bgl",
-        &stages,
-        sd::PREFIX_TEX,
-        &[],
-    );
+    let over = sweep_pipelines(color_space);
+    let uniform_bgl =
+        desc::Bindings::shared_by(device, "stark sweep uniform bgl", &over, sd::XF, &[sd::XF]);
+    let prefix_bgl =
+        desc::Bindings::shared_by(device, "stark sweep prefix bgl", &over, sd::PREFIX_TEX, &[]);
     let noise_bgl =
-        desc::Bindings::shared_by(device, "stark sweep noise bgl", &stages, sd::NOISE_TEX, &[]);
+        desc::Bindings::shared_by(device, "stark sweep noise bgl", &over, sd::NOISE_TEX, &[]);
 
     let layout = desc::pipeline_layout_of(
         device,
@@ -792,9 +779,8 @@ pub(super) fn sweep_draws(
         label: "stark sweep xforms",
     });
     scope.write_lease(&xform_buf, &xform_data);
-    // Through the slot list the layout was built from (§6.10). The window is the
-    // uniform's size and the offset is the draw's, so the entry names a slot rather than
-    // the whole buffer.
+    // The window is the uniform's size and the offset is the draw's, so the entry names
+    // a slot rather than the whole buffer.
     let xforms = r.swept.uniform_bgl.group(device, "stark sweep bg", |_| {
         wgpu::BindingResource::Buffer(wgpu::BufferBinding {
             buffer: &xform_buf,

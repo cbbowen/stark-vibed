@@ -74,8 +74,8 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
     /// The liquify field's three kernels (§6.13, `liquify.wesl`): the field's
     /// snapshot under a segment's square, the composition of one segment's step into
     /// it (`warp`), and the one resample of a piece through it (`warp_apply`). Each
-    /// over its own layout ([`slots`]); only the composition takes group 1, bound to
-    /// the tip's coverage prefix.
+    /// over its own layout; only the composition takes group 1, bound to the tip's
+    /// coverage prefix.
     pub(in crate::gpu::stroke) snapshot_field_pipeline: wgpu::ComputePipeline,
     pub(in crate::gpu::stroke) snapshot_field_bgl: desc::Bindings,
     pub(in crate::gpu::stroke) warp_pipeline: wgpu::ComputePipeline,
@@ -115,11 +115,6 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         sd::REGION_COLOR_W.storage_format(),
         "the loop stores tile color through `region_color_w`; this space's tiles are not that format",
     );
-    // Which **residual** build of every shader here that touches a tile's color this
-    // space links (§6.7). Oklab leaves those bindings and targets off, so its layouts
-    // come out shorter rather than bound to stand-ins — and the layouts below read that
-    // off the record itself rather than being told.
-
     // ---- Region composite: the `composite` shader over region-sized targets
     // (color + the wide aux, so nothing is narrowed until the write-back).
     let composite = stark_shaders::composite(color_space.resid());
@@ -180,18 +175,16 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
 
     // ---- The stamp loop: one module with eight entry points, and the liquify
     // field's module beside it with three more (§6.13), over as many bind group
-    // layouts, each built from the slot list in `slots`. Both modules take that
-    // declaration from `dynamics_common.wesl`, so a pipeline's layout names the same
-    // uniform whichever module it came from.
+    // layouts.
     let dynamics = stark_shaders::dynamics(color_space.resid());
     let module = desc::Module::new(device, "stark dynamics loop", dynamics);
     let liquify = stark_shaders::liquify(color_space.resid());
     let liquify_module = desc::Module::new(device, "stark liquify field", liquify);
     // Every layout below is one kernel's group 0, **exact** rather than shared: these
     // dispatches disagree about the region, which one samples and the next
-    // storage-writes, and a union would merge both into one usage scope (§6.10). `ST`,
-    // the dynamic-offset stamp slot, anchors the group for all of them — both modules
-    // take that declaration from `dynamics_common.wesl`.
+    // storage-writes (`layout_shared_by`, §6.10). `ST`, the dynamic-offset stamp slot,
+    // anchors the group for all of them — both modules take that declaration from
+    // `dynamics_common.wesl`.
     let bgl = |label: &str, kernel| {
         desc::Bindings::of(device, label, Stages::Compute(kernel), sd::ST, &[sd::ST])
     };
@@ -208,18 +201,17 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     let deposit_coarse_bgl = bgl("stark dynamics deposit coarse bgl", dynamics.deposit_coarse);
     // The prefix-τ volume at group 1 — the very texture the fast path samples, so the
     // exchange extent *is* the definite integral of the brush along the travel (§6.6).
-    // **Shared**, and safely: one read-only texture, which no sharer can disagree with
-    // another about.
+    // Shared safely: one read-only texture, which no sharer can disagree about.
     let prefix_bgl = desc::Bindings::shared_by(
         device,
         "stark dynamics prefix bgl",
         &[
-            dynamics.bleed_weight,
-            dynamics.bake,
-            dynamics.deposit,
-            dynamics.cell_hoist,
-            dynamics.settle,
-            liquify.warp,
+            Stages::Compute(dynamics.bleed_weight),
+            Stages::Compute(dynamics.bake),
+            Stages::Compute(dynamics.deposit),
+            Stages::Compute(dynamics.cell_hoist),
+            Stages::Compute(dynamics.settle),
+            Stages::Compute(liquify.warp),
         ],
         scd::PREFIX_TEX,
         &[],

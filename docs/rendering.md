@@ -1227,21 +1227,23 @@ pipeline layout still writes by hand.
 
 **Three things are genuinely the host's**, because no declaration states them:
 
-- **Which pipelines share a layout.** The two spellings are the whole of it:
-  `layout_of` takes one pipeline's `Stages` and cannot express a union, while
-  `layout_shared_by` takes the several that share one and widens to cover them all.
-  Sharing is a claim the fold cannot check — wgpu merges a whole bind group into each
-  dispatch's usage scope, so a compute kernel that storage-writes a texture another
-  kernel samples must not share a layout with it, and a union would hide that.
+- **Which pipelines share a layout.** The two spellings are the whole of it, and both
+  take `Stages` — one pipeline's stages, never a loose bag of them: `layout_of` takes
+  one and cannot express a union, `layout_shared_by` takes the several that share one
+  and widens to cover them all. Sharing is a claim the fold cannot check — wgpu merges
+  a whole bind group into each dispatch's usage scope, so a compute kernel that
+  storage-writes a texture another kernel samples must not share a layout with it, and
+  a union would hide that.
 - **Which uniforms carry a dynamic offset.** `fill.wesl` declares `f` and `tile` both
   `var<uniform>`; the first is one buffer for the whole fill and the second a per-tile
   slot of one. The WGSL is identical either way.
 - **What resource fills each binding**, which is the closure above.
 
-`slot_agreement.rs` is the bridge while the migration runs: it holds every layout
-still written by hand against the very fold `layout_of` is built on, with an
-exact table of the differences that stand. A list that disagrees where the table does
-not say so fails, and so does a waiver that has stopped excusing anything.
+**Every layout in the engine is derived.** The membership lists that used to sit
+beside them — and `slot_agreement.rs`, which held each one against the shader's own
+fold — are gone; what is left of that table is `pipeline_coverage.rs`, which asks the
+other question: that every entry point the shaders declare is built into some pipeline,
+with an exact set of the few that are not.
 
 ### What this does and does not cover
 
@@ -1257,7 +1259,11 @@ and the seven layouts of `dynamics.wesl` were seven pairs of hand-kept arrays
 joined by magic element counts (`[..12 + 4 * usize::from(resid)]`), recounted by
 hand on every edit. First the slots were generated and the host wrote a membership
 list per entry point; then the reflection reached what an entry point *reads*, and
-the list went too.
+the list went too. Deriving the last of them retired three waivers by construction:
+the wet loop's deposit had listed a sampler it never reads, its settle a ceiling lane
+it never lays through, and its exchange had called a residual filterable that it
+loads. None of the three moved a pixel — which is what an unread binding and an
+over-wide filterable flag cost, and why nothing but a second opinion found them.
 
 A **module** is still not tied to its entry points by wgpu — a pipeline is a module
 plus two names, and the plain stamp module under the ceiling record's `fs_main` would
