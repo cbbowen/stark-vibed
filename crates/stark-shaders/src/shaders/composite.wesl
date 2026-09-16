@@ -32,7 +32,8 @@ struct View {
     // (§18.1.2); upright and unmirrored it is diagonal, and this is the
     // scale pair it always was.
     st: vec4<f32>,
-    xlate: vec4<f32>, // translate.xy, unused zw
+    // translate.xy; .z the display transfer (`overlay.wesl` alone reads it); .w unused.
+    xlate: vec4<f32>,
     // misc.x = tile_size (interior, canvas px). The tile texture carries an apron
     // around the interior, so we sample only the interior sub-rect and let the
     // bilinear filter reach into the apron at the edges (kills tile seams):

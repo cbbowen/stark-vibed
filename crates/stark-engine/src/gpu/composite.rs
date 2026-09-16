@@ -971,9 +971,9 @@ impl Streams {
         }
     }
 
-    fn write_views(&mut self, p: &CompositorPipeline, views: &[ViewTransform]) {
+    fn write_views(&mut self, p: &CompositorPipeline, views: &[ViewTransform], transfer: Transfer) {
         self.view
-            .write(&p.ctx.device, &p.ctx.queue, view_groups(p), views);
+            .write(&p.ctx.device, &p.ctx.queue, view_groups(p), views, transfer);
     }
 
     /// Upload everything `plan` decided, returning the per-tile bind groups pass A
@@ -1209,7 +1209,9 @@ impl Compositor {
     /// Separate from the recording because it happens *once* for a trace: every slot
     /// has to be written before the single submit that reads them.
     pub(crate) fn write_views(&mut self, p: &CompositorPipeline, views: &[ViewTransform]) {
-        self.streams.write_views(p, views);
+        // A pick draws pass A alone into a patch of its own — no outline, so the one
+        // thing the view's transfer lane reaches is not encoded here (§6.5).
+        self.streams.write_views(p, views, Transfer::Srgb);
     }
 
     /// Plan and upload one pick's draws — **once for a whole trace**, before any of
@@ -1387,7 +1389,7 @@ impl Compositor {
         let view = view.supersampled(ss);
         // The frame's one view, in slot 0 — the only slot anything on this path
         // binds (`ViewBindings`).
-        self.streams.write_views(p, &[view]);
+        self.streams.write_views(p, &[view], output.transfer());
         let (streams, buffers_moved) = self.streams.upload(p, view, &plan);
         // The focal blur's apertures and radii carried into accumulator texels
         // (§21.12) — `view` is already supersampled, which is the whole reason this
@@ -1483,9 +1485,12 @@ impl Compositor {
             &p.ctx,
             &mut encoder,
             &mut self.streams.guide_uniforms,
-            guides,
-            view,
-            draw_target,
+            guides::GuideDraw {
+                scenes: guides,
+                view,
+                transfer: output.transfer(),
+                target: draw_target,
+            },
         );
 
         // Pass E: everything above, box-averaged in light down to the caller's target

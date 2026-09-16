@@ -64,6 +64,21 @@ fn encode_display(transfer: u32, lin: vec3<f32>) -> vec3<f32> {
     return linear_to_srgb(lin);
 }
 
+// A colour *stated* as a display-sRGB code in `[0,1]` rather than as light — the guide
+// overlay's axis hues, a peer's tint — carried onto whatever the frame's target is
+// (§6.5). A code outside the cube is not one of those, and takes `srgb_to_linear`'s
+// clamped toe rather than the odd curve `encode_extended` exists for.
+//
+// The early return is the identity the general form only approximates: the sRGB target
+// is what such a constant is already written for, and a `pow` round trip there would
+// move an export by a code at the boundaries for nothing.
+fn encode_from_srgb(transfer: u32, srgb: vec3<f32>) -> vec3<f32> {
+    if transfer == TRANSFER_SRGB {
+        return srgb;
+    }
+    return encode_display(transfer, srgb_to_linear(srgb));
+}
+
 // The exact inverse of `encode_display` for the same selector.
 fn decode_display(transfer: u32, enc: vec3<f32>) -> vec3<f32> {
     if transfer == TRANSFER_LINEAR {

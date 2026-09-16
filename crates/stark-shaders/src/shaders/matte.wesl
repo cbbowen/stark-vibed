@@ -31,7 +31,8 @@ struct View {
     // second. A 2x2 because the view can be turned and mirrored; the matte is a
     // canvas-space rect, so it turns with the canvas.
     st: vec4<f32>,
-    xlate: vec4<f32>, // translate.xy, unused zw
+    // translate.xy; .z the display transfer (`overlay.wesl` alone reads it); .w unused.
+    xlate: vec4<f32>,
     misc: vec4<f32>, // tile_size, interior uv scale, interior uv bias, zoom
 }
 

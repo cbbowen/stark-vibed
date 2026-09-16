@@ -1330,3 +1330,151 @@ fn golden_selection_smear() {
     let img = engine.render_to_image();
     assert_golden("selection_smear", &img, 6);
 }
+
+// --- a peer's outline, on whatever display this client is looking at ----------
+//
+// The outline pass draws a peer's selection as a flat line in that peer's own hue
+// (§17.3), and the hue is a display-sRGB code (`peer_color`). The display transfer is a
+// view setting (§6.5), so the target under the line is encoded in whatever the surface
+// speaks — and the pass wrote the code straight out, which on the native frontend's
+// linear `Rgba16Float` swapchain drew every peer a washed-out version of themselves.
+//
+// The other branch of that shader — your own marching ants — is black and white, the
+// two colours every transfer agrees on, so it is not in question here.
+
+/// A half-float target, which can be read back as the floats it holds
+/// (`Engine::render_to_floats`) rather than as an 8-bit code.
+const F16: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// Flat and undithered, over a black substrate: the backdrop under the outline is then
+/// near zero on either target, and what little of it there is comes out of the probe
+/// below by subtraction rather than by hope.
+const FLAT: stark_engine::MediaParams = stark_engine::MediaParams {
+    height_strength: 0.0,
+    specular: 0.0,
+    substrate_strength: 0.0,
+    dither: false,
+};
+
+/// **A peer's outline is drawn in the peer's colour, on any display target**
+/// (§6.5, §17.3).
+///
+/// The line is never opaque — a peer's reads at `PEER_OUTLINE_ALPHA` — so this cannot
+/// compare a texel to a colour directly. It does the next exact thing: the backdrop is
+/// measured (the same frame with nobody on the roster), the line's coverage α is
+/// recovered from the channel the hue is furthest from that backdrop in, and every
+/// *other* channel then has to land where that one α puts it. Which is to say: the
+/// texel is on the segment from the backdrop to the peer's colour **in the target's own
+/// encoding**, wherever along it the antialiasing left it.
+///
+/// Drawing the sRGB code into a linear target moves the colour off that segment rather
+/// than along it — the two are not parallel, `srgb_to_linear` being anything but — so
+/// the residual is what catches it.
+#[test]
+fn a_peer_s_outline_is_their_colour_on_any_display() {
+    use stark_engine::{Engine, Output, Transfer};
+    use stark_model::color::srgb_to_linear;
+    use stark_model::document::ActorId;
+    use stark_model::peer::PeerFrame;
+
+    let (Some(mut a), Some(mut b)) = (
+        common::engine_or_skip_in_format(F16),
+        common::engine_or_skip_in_format(F16),
+    ) else {
+        return;
+    };
+    a.start_collaboration(ActorId(1));
+    b.join_collaboration(&a.document_file(), ActorId(2))
+        .expect("join a session this build can render");
+    a.process(ViewCommand::SetMediaParams(FLAT));
+    a.process(DocCommand::SetSubstrateColor(Srgb::new([0.0, 0.0, 0.0])));
+    a.process(ViewCommand::SetShowPeerSelections(true));
+
+    // The peer's selection is document state, so it travels in the log (§17.1); that
+    // the peer is *here* is presence, so it does not.
+    select(&mut b, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
+    for action in b.take_outbox() {
+        a.merge_remote(action);
+    }
+
+    let shot = |e: &mut Engine, t: Transfer| {
+        e.process(ViewCommand::SetOutput(Output::new(t, 1.0)));
+        e.render_to_floats()
+    };
+    let bare = [shot(&mut a, Transfer::Srgb), shot(&mut a, Transfer::Linear)];
+    assert!(
+        a.merge_presence(
+            ActorId(2),
+            PeerFrame {
+                boot: 0,
+                seq: 1,
+                name: None,
+                active_layer: top(&a),
+                cursor: None,
+                gesture: None,
+                leaving: false,
+            },
+            0.0,
+        ),
+        "the peer did not reach the roster, so no outline of theirs is drawn"
+    );
+    let drawn = [shot(&mut a, Transfer::Srgb), shot(&mut a, Transfer::Linear)];
+
+    let hue = a.peers().next().expect("the peer is on the roster").color;
+    for (i, transfer) in [Transfer::Srgb, Transfer::Linear].into_iter().enumerate() {
+        // The peer's hue as *this* target encodes it — an sRGB code on an sRGB
+        // surface, and the light behind that code on a linear one.
+        let want: [f32; 3] = match transfer {
+            Transfer::Srgb => hue,
+            Transfer::Linear => hue.map(srgb_to_linear),
+            other => unreachable!("{other:?} is not one of the two this test renders"),
+        };
+        let (bare, drawn) = (&bare[i], &drawn[i]);
+        let mut lines = 0usize;
+        let mut worst = (0.0f32, 0usize);
+        for t in 0..drawn.len() / 4 {
+            let back: [f32; 3] = std::array::from_fn(|c| bare[t * 4 + c]);
+            let got: [f32; 3] = std::array::from_fn(|c| drawn[t * 4 + c]);
+            // The channel the hue is furthest from the backdrop in reads α most
+            // steadily; the others are then the claim.
+            let lead = (0..3)
+                .max_by(|&x, &y| {
+                    (want[x] - back[x])
+                        .abs()
+                        .total_cmp(&(want[y] - back[y]).abs())
+                })
+                .expect("3 channels");
+            let alpha = (got[lead] - back[lead]) / (want[lead] - back[lead]);
+            // Off the outline entirely, or in its faintest fringe, where α is too
+            // small to divide by.
+            if !alpha.is_finite() || alpha <= 0.15 {
+                continue;
+            }
+            lines += 1;
+            let res = (0..3)
+                .map(|c| (got[c] - (alpha * want[c] + (1.0 - alpha) * back[c])).abs())
+                .fold(0.0f32, f32::max);
+            if res > worst.0 {
+                worst = (res, t);
+            }
+        }
+        assert!(
+            lines > 200,
+            "{transfer:?}: only {lines} texels carry the peer's outline, so this \
+             measures nothing"
+        );
+        let (res, t) = worst;
+        let back: [f32; 3] = std::array::from_fn(|c| bare[t * 4 + c]);
+        let got: [f32; 3] = std::array::from_fn(|c| drawn[t * 4 + c]);
+        // Half-float storage plus the division measured 2e-4 when this was written;
+        // drawing the sRGB code as light measured 0.13.
+        assert!(
+            res < 0.005,
+            "{transfer:?}: the peer's outline is not their colour — worst residual \
+             {res:.4} at texel ({}, {}), where {got:?} is not on the segment from \
+             {back:?} to {want:?}, over {lines} texels",
+            t as u32 % SIZE.width,
+            t as u32 / SIZE.width,
+        );
+    }
+}

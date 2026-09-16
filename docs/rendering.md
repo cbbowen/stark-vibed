@@ -728,8 +728,17 @@ Oklab ──→ display (the surface's transfer: sRGB, extended sRGB or scRGB �
   show. The media pass tonemaps into the headroom and encodes by the transfer
   (`lib/display.wesl`, one selector for it and for the resolve's decode/encode
   pair, so the two cannot disagree); everything upstream is untouched, since it
-  was linear light in a working space already. Three consequences, each
-  structural rather than a rule to remember:
+  was linear light in a working space already. **Everything drawn *after* the
+  media pass is upstream of nothing**, so it encodes for itself: the selection
+  outline (§6.8) and the guide overlay (§20.4) hold their colours as display-sRGB
+  codes — a hue is picked as a code — and reach the frame through
+  `encode_from_srgb`, off the same selector, with the transfer carried in their own
+  uniforms (`View.xlate.z`, `Guide.cov.w`). A code written straight out is read as
+  light on an scRGB surface and as P3 primaries on a wide-gamut one; the guide's
+  dark halo lost its legibility exactly that way. Black and white are the two
+  colours every transfer agrees on, which is why the local actor's marching ants
+  need none of it. Three consequences, each structural rather than a rule to
+  remember:
   - **An export is SDR, whatever the screen is showing.** `Engine::render_view` draws
     anything bound for a file with `Output::SDR` — the transfer as well as the
     headroom — from the attachments alone. The format follows

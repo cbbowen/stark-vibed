@@ -292,6 +292,16 @@ the dashed 45° circle) ride in the same pass as more distance fields, packed
 as `position + valid` uniform slots so the shader branches on data, never on
 pipeline variants. Axis hues follow the X/Y/Z semantics every 3D tool taught.
 
+Those hues are **codes rather than light**: they are picked in display sRGB, the
+same three `stark.css` declares. The pass draws over the finished image, which is
+encoded in whatever transfer the surface speaks (§6.5) — so the frame's transfer
+rides in the guide uniform and every constant reaches the target through it,
+converted once per triangle rather than once per texel. Without that, a linear
+scRGB swapchain reads the codes as light and the halo that keeps a marker legible
+over paint comes out three times too bright. Black and white are the two colours
+every transfer agrees on, which is why the selection outline's own marching ants
+(§6.8) need none of this and a peer's tint beside them does.
+
 The **rays through the cursor** (§20.9) ride in it too, and in the *vanishing
 trace's* slots rather than in markers' — a ray's curve is one of the same kind,
 the image of a plane through the eye, so one packing and one distance test serve

@@ -5,6 +5,7 @@
 //! dynamic-offset slot; the shader branches on data rather than on pipeline
 //! variants, so an absent element is a zeroed slot rather than a second pipeline.
 
+use super::display::Transfer;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::desc::Slot;
@@ -17,7 +18,12 @@ use stark_shaders::mirror::guides::decl as gd;
 /// One slot per visible guide in the frame, the stride derived from
 /// [`GuideUniform`] itself rather than named here: a stride that under-strides the
 /// uniform has two visible guides reading each other's lanes, with nothing to say so.
-const GUIDE_SLOTS: &[Slot] = &[Slot::dynamic(gd::GUIDE)];
+///
+/// Bound to **both** stages: the vertex stage reads the display transfer out of it, to
+/// convert the pass's sRGB-coded hues once per triangle rather than once per texel of a
+/// fullscreen pass (`guides.wesl`'s `VsOut`).
+const GUIDE_SLOTS: &[Slot] =
+    &[Slot::dynamic(gd::GUIDE).in_stages(wgpu::ShaderStages::VERTEX_FRAGMENT)];
 use crate::gpu::uniforms::UniformSlots;
 
 // Generated from `guides.wesl`'s own declaration — pass D, the drawing guides
@@ -30,7 +36,7 @@ pub(super) use stark_shaders::mirror::guides::Guide as GuideUniform;
 ///
 /// A free function rather than an inherent `pack`: the type is generated into
 /// `stark-shaders`, and an inherent impl on another crate's type is not allowed.
-fn pack_guides(scene: &GuideScene, view: ViewTransform) -> GuideUniform {
+fn pack_guides(scene: &GuideScene, view: ViewTransform, transfer: Transfer) -> GuideUniform {
     use stark_model::document::{Lens, PlaneTrace};
     use stark_shaders::mirror::guides::{
         LENS_FISHEYE, LENS_RECTILINEAR, TRACE_CIRCLE, TRACE_LINE, TRACE_NONE,
@@ -53,7 +59,12 @@ fn pack_guides(scene: &GuideScene, view: ViewTransform) -> GuideUniform {
     GuideUniform {
         inv: inv.to_cols_array(),
         org: [org.x, org.y, view.zoom, scene.focal],
-        cov: [scene.center.x, scene.center.y, scene.opacity, 0.0],
+        cov: [
+            scene.center.x,
+            scene.center.y,
+            scene.opacity,
+            transfer.lane(),
+        ],
         proj: [
             match scene.lens {
                 Lens::Rectilinear => LENS_RECTILINEAR,
@@ -158,14 +169,21 @@ impl GuidePass {
         ctx: &GpuContext,
         encoder: &mut wgpu::CommandEncoder,
         slots: &mut UniformSlots<GuideUniform>,
-        scenes: &[GuideScene],
-        view: ViewTransform,
-        target: &wgpu::TextureView,
+        draw: GuideDraw<'_>,
     ) {
+        let GuideDraw {
+            scenes,
+            view,
+            transfer,
+            target,
+        } = draw;
         if scenes.is_empty() {
             return;
         }
-        let packed: Vec<GuideUniform> = scenes.iter().map(|s| pack_guides(s, view)).collect();
+        let packed: Vec<GuideUniform> = scenes
+            .iter()
+            .map(|s| pack_guides(s, view, transfer))
+            .collect();
         slots.write(&ctx.device, &ctx.queue, &packed);
         // Cached, and dropped by whatever write reallocates the buffer under it, which
         // `UniformSlots::group` handles.
@@ -191,4 +209,20 @@ impl GuidePass {
             pass.draw(0..3, 0..1);
         }
     }
+}
+
+/// What pass D draws, and where (§20.4).
+pub(super) struct GuideDraw<'a> {
+    /// The guides this client has an eye on, one fullscreen triangle each.
+    pub(super) scenes: &'a [GuideScene],
+    /// The **supersampled** view when there is one, as every pass above the resolve
+    /// reads it (§6.4).
+    pub(super) view: ViewTransform,
+    /// What the frame's target encodes light in (§6.5). The pass's hues are
+    /// display-sRGB codes, so without this they would be texel values on a surface
+    /// that is not sRGB — washed out on scRGB, oversaturated on Display P3.
+    pub(super) transfer: Transfer,
+    /// The lit image to draw over — the supersampled target when there is one, so the
+    /// grid goes through the same resolve as the paint and comes out antialiased.
+    pub(super) target: &'a wgpu::TextureView,
 }

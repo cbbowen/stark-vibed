@@ -24,6 +24,7 @@
 // circles, one packing, because one construction derives both), both poles'
 // vanishing points, and the dressed rings already derived.
 
+import package::lib::display::{encode_from_srgb};
 import package::lib::quad::{fullscreen_clip};
 
 struct Guide {
@@ -31,7 +32,8 @@ struct Guide {
     inv: vec4<f32>,
     // org.xy, zoom (screen px per canvas px), focal (canvas px).
     org: vec4<f32>,
-    // Center of view .xy (canvas px), master opacity, unused.
+    // Center of view .xy (canvas px), master opacity, and the display transfer the
+    // frame's target is encoded in (`lib/display.wesl`'s selector, as a float).
     cov: vec4<f32>,
     // Lens (`LENS_*`), 45° ring radius, 90° ring radius (≤ 0 when the lens has
     // none), unused.
@@ -74,8 +76,12 @@ struct Guide {
 
 @group(0) @binding(0) var<uniform> guide: Guide;
 
-// Axis hues (display sRGB — this pass draws over the already-encoded image):
-// the X/Y/Z semantics every 3D tool taught, softened to sit over paint.
+// Axis hues, **stated in display sRGB**: the X/Y/Z semantics every 3D tool taught,
+// softened to sit over paint.
+//
+// Codes, not texel values: the image under them is encoded in whatever transfer the
+// surface speaks and need not be sRGB at all (§6.5), so every constant in this file
+// reaches the frame through `encode_from_srgb` — see `VsOut`.
 //
 // Declared in Oklab and converted here, which is why they are not round:
 // `stark.css`'s `--axis-x/y/z` are the statement of them, all three at one
@@ -126,12 +132,6 @@ const LENS_FISHEYE: f32 = 1.0;
 const TRACE_NONE: f32 = 0.0;
 const TRACE_LINE: f32 = 1.0;
 const TRACE_CIRCLE: f32 = 2.0;
-
-fn axis_color(i: u32) -> vec3<f32> {
-    if i == 0u { return AXIS_X; }
-    if i == 1u { return AXIS_Y; }
-    return AXIS_Z;
-}
 
 /// Coverage of a stroke of half-width `hw` at `d` screen px from its spine.
 fn stroke_cov(d: f32, hw: f32) -> f32 {
@@ -234,7 +234,18 @@ fn cut_cov(c: vec4<f32>, p: vec2<f32>, zoom: f32) -> f32 {
 /// One dashed chrome ring about the center of view — the 45° and 90° cones'
 /// images (§20.1, §20.8). A non-positive radius is a ring the lens does not
 /// have, and draws nothing.
-fn ring(acc: vec4<f32>, p: vec2<f32>, cov: vec2<f32>, radius: f32, zoom: f32, master: f32) -> vec4<f32> {
+///
+/// `chrome` and `halo` arrive already encoded for the target (`VsOut`).
+fn ring(
+    acc: vec4<f32>,
+    p: vec2<f32>,
+    cov: vec2<f32>,
+    radius: f32,
+    zoom: f32,
+    master: f32,
+    chrome: vec3<f32>,
+    halo: vec3<f32>,
+) -> vec4<f32> {
     if radius <= 0.0 { return acc; }
     let dp = p - cov;
     let rad = length(dp);
@@ -246,23 +257,65 @@ fn ring(acc: vec4<f32>, p: vec2<f32>, cov: vec2<f32>, radius: f32, zoom: f32, ma
     // `0 × NaN` would carry into the accumulator.
     let arc = select(atan2(dp.y, dp.x), 0.0, rad < 0.5) * radius * zoom;
     let duty = mix(0.35, RING_OPACITY, step(0.5, fract(arc / DASH)));
-    let haloed = over(acc, HALO, stroke_cov(d_px, CIRCLE_HW + 0.8) * duty * HALO_OPACITY * master);
-    return over(haloed, CHROME, stroke_cov(d_px, CIRCLE_HW) * duty * master);
+    let haloed = over(acc, halo, stroke_cov(d_px, CIRCLE_HW + 0.8) * duty * HALO_OPACITY * master);
+    return over(haloed, chrome, stroke_cov(d_px, CIRCLE_HW) * duty * master);
+}
+
+/// The pass's whole palette in the target's encoding, plus the fullscreen position.
+///
+/// **Flat, and carried across the stage rather than converted per texel.** The
+/// conversion is a function of one uniform lane, so it is the same number for the
+/// whole triangle; leaving it in the fragment stage would run eight `pow` pairs on
+/// every texel of a fullscreen — and, when the view is zoomed out, supersampled —
+/// pass. Flat, so the three vertices' identical answers interpolate to exactly it.
+struct VsOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) @interpolate(flat) axis_x: vec3<f32>,
+    @location(1) @interpolate(flat) axis_y: vec3<f32>,
+    @location(2) @interpolate(flat) axis_z: vec3<f32>,
+    // A pair plane wears its two axes mixed, and the mix is taken in sRGB, which is
+    // where it was taken before this pass knew about transfers — so no colour moves on
+    // an sRGB target. Mixing *after* the encode would make the plane's hue depend on
+    // the surface. Pair k spans axes (k, k+1).
+    @location(3) @interpolate(flat) pair_xy: vec3<f32>,
+    @location(4) @interpolate(flat) pair_yz: vec3<f32>,
+    @location(5) @interpolate(flat) pair_zx: vec3<f32>,
+    @location(6) @interpolate(flat) chrome: vec3<f32>,
+    @location(7) @interpolate(flat) halo: vec3<f32>,
 }
 
 @vertex
-fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
-    return fullscreen_clip(vi);
+fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
+    let transfer = u32(guide.cov.w);
+    var out: VsOut;
+    out.clip = fullscreen_clip(vi);
+    out.axis_x = encode_from_srgb(transfer, AXIS_X);
+    out.axis_y = encode_from_srgb(transfer, AXIS_Y);
+    out.axis_z = encode_from_srgb(transfer, AXIS_Z);
+    out.pair_xy = encode_from_srgb(transfer, mix(AXIS_X, AXIS_Y, 0.5));
+    out.pair_yz = encode_from_srgb(transfer, mix(AXIS_Y, AXIS_Z, 0.5));
+    out.pair_zx = encode_from_srgb(transfer, mix(AXIS_Z, AXIS_X, 0.5));
+    out.chrome = encode_from_srgb(transfer, CHROME);
+    out.halo = encode_from_srgb(transfer, HALO);
+    return out;
 }
 
 @fragment
-fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    let frag = in.clip;
     let m = mat2x2<f32>(guide.inv.xy, guide.inv.zw);
     let p = m * frag.xy + guide.org.xy; // canvas px
     let zoom = guide.org.z;
     let f = guide.org.w;
     let cov = guide.cov.xy;
     let master = guide.cov.z;
+
+    let chrome_c = in.chrome;
+    let halo_c = in.halo;
+    // `var` rather than `let`: WGSL indexes a value only by a constant, and both of
+    // these are indexed by a loop counter.
+    var axis_c = array<vec3<f32>, 3>(in.axis_x, in.axis_y, in.axis_z);
+    var pair_c = array<vec3<f32>, 3>(in.pair_xy, in.pair_yz, in.pair_zx);
 
     // The eye's ray through this texel, camera space — the one place the lens
     // enters (§20.8). Unnormalized both ways: every use below is projective,
@@ -334,8 +387,8 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         // Stepping across the plane spanned with the successor axis (whose own
         // distance from the eye is `pk`, its normal being the predecessor), then
         // across the other: the two planes this axis is a side of.
-        acc = over(acc, axis_color(i), fan_cov(-pk * u, v, -pk * du, dv) * a_ij);
-        acc = over(acc, axis_color(i), fan_cov(-pj * v, u, -pj * dv, du) * a_ik);
+        acc = over(acc, axis_c[i], fan_cov(-pk * u, v, -pk * du, dv) * a_ij);
+        acc = over(acc, axis_c[i], fan_cov(-pj * v, u, -pj * dv, du) * a_ik);
     }
 
     // --- Vanishing traces: each pair's horizon, straight or bowed (§20.2,
@@ -346,8 +399,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         let pair_a = guide.pairs[k];
         if pair_a <= 0.0 { continue; }
         let d_px = trace_dist(guide.lines[k], p, zoom);
-        let rgb = mix(axis_color(k), axis_color((k + 1u) % 3u), 0.5);
-        acc = over(acc, rgb, stroke_cov(d_px, PAIR_HW) * 0.9 * pair_a * master);
+        acc = over(acc, pair_c[k], stroke_cov(d_px, PAIR_HW) * 0.9 * pair_a * master);
     }
 
     // --- The cursor rays (§20.9): per axis, the draughtsman's line from that
@@ -373,13 +425,13 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         ray_d[i] = trace_dist(t, p, zoom);
     }
     for (var i = 0u; i < 3u; i++) {
-        acc = over(acc, axis_color(i), stroke_cov(ray_d[i], RAY_HW) * ray_a[i]);
+        acc = over(acc, axis_c[i], stroke_cov(ray_d[i], RAY_HW) * ray_a[i]);
     }
 
     // --- The view-cone rings: 45° always, 90° where the lens has one
     // (§20.1, §20.8).
-    acc = ring(acc, p, cov, guide.proj.y, zoom, master);
-    acc = ring(acc, p, cov, guide.proj.z, zoom, master);
+    acc = ring(acc, p, cov, guide.proj.y, zoom, master, chrome_c, halo_c);
+    acc = ring(acc, p, cov, guide.proj.z, zoom, master, chrome_c, halo_c);
 
     // --- Station points: rings on the Thales circle (§20.2). ---------------
     for (var k = 0u; k < 3u; k++) {
@@ -387,10 +439,9 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         let pair_a = guide.pairs[k];
         if pair_a <= 0.0 { continue; }
         let d = length(p - guide.sps[k].xy) * zoom;
-        let rgb = mix(axis_color(k), axis_color((k + 1u) % 3u), 0.5);
-        acc = over(acc, HALO, stroke_cov(abs(d - 3.2), 2.0) * HALO_OPACITY * pair_a * master);
-        acc = over(acc, rgb, stroke_cov(abs(d - 3.2), 1.1) * pair_a * master);
-        acc = over(acc, rgb, disc_cov(d, 0.9) * pair_a * master);
+        acc = over(acc, halo_c, stroke_cov(abs(d - 3.2), 2.0) * HALO_OPACITY * pair_a * master);
+        acc = over(acc, pair_c[k], stroke_cov(abs(d - 3.2), 1.1) * pair_a * master);
+        acc = over(acc, pair_c[k], disc_cov(d, 0.9) * pair_a * master);
     }
 
     // --- Vanishing points: filled discs in their axis's color — both poles,
@@ -399,9 +450,9 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         let axis = i % 3u;
         if guide.vps[i].z <= 0.0 || guide.dirs[axis].w <= 0.0 { continue; }
         let d = length(p - guide.vps[i].xy) * zoom;
-        acc = over(acc, HALO, disc_cov(d, 5.2) * HALO_OPACITY * master);
-        acc = over(acc, axis_color(axis), disc_cov(d, 4.0) * master);
-        acc = over(acc, CHROME, stroke_cov(abs(d - 4.0), 0.7) * 0.9 * master);
+        acc = over(acc, halo_c, disc_cov(d, 5.2) * HALO_OPACITY * master);
+        acc = over(acc, axis_c[axis], disc_cov(d, 4.0) * master);
+        acc = over(acc, chrome_c, stroke_cov(abs(d - 4.0), 0.7) * 0.9 * master);
     }
 
     // --- Center of view: a canvas-aligned crosshair, topmost. --------------
@@ -409,9 +460,9 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
         let q = abs((p - cov) * zoom);
         let arm = 6.0;
         let cross_d = min(max(q.x - 1.6, q.y - arm), max(q.y - 1.6, q.x - arm));
-        acc = over(acc, HALO, (1.0 - smoothstep(-0.5, 0.5, cross_d)) * HALO_OPACITY * master);
+        acc = over(acc, halo_c, (1.0 - smoothstep(-0.5, 0.5, cross_d)) * HALO_OPACITY * master);
         let core = min(max(q.x - 0.7, q.y - arm + 0.9), max(q.y - 0.7, q.x - arm + 0.9));
-        acc = over(acc, CHROME, (1.0 - smoothstep(-0.5, 0.5, core)) * master);
+        acc = over(acc, chrome_c, (1.0 - smoothstep(-0.5, 0.5, core)) * master);
     }
 
     // Premultiplied out; the pipeline blends `src + dst·(1 − src.a)`.

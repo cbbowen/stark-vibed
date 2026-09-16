@@ -8,6 +8,7 @@
 //! [`View`] is the shared, never-changing half (the sampler); [`ViewBindings`] the
 //! per-target half (what this render is looking at, and the groups over it).
 
+use super::display::Transfer;
 use crate::gpu::uniforms::UniformSlots;
 use crate::gpu::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE};
 use crate::view::ViewTransform;
@@ -29,15 +30,22 @@ pub(crate) use stark_shaders::mirror::composite::View as ViewUniform;
 /// quoting a different `INTERIOR_UV_BIAS` would sample its neighbours' aprons, the
 /// seam showing on that path alone.
 ///
-/// `zoom` reaches only the overlay pass, which measures its outline width in screen
-/// px from a canvas-space distance (§6.8). Pass 0 when nothing outlines the frame.
+/// `zoom` and `transfer` reach only the overlay pass, which measures its outline width
+/// in screen px from a canvas-space distance (§6.8) and draws a peer's sRGB-coded hue
+/// onto whatever the frame's target is encoded in (§6.5). Pass 0 and
+/// [`Transfer::Srgb`] when nothing outlines the frame.
 ///
 /// A free function rather than an inherent `new` because the type is generated into
 /// `stark-shaders`, but still the only way one is built.
-pub(crate) fn view_uniform(st: [f32; 4], xlate: stark_model::geom::Vec2, zoom: f32) -> ViewUniform {
+pub(crate) fn view_uniform(
+    st: [f32; 4],
+    xlate: stark_model::geom::Vec2,
+    zoom: f32,
+    transfer: Transfer,
+) -> ViewUniform {
     ViewUniform {
         st,
-        xlate: [xlate.x, xlate.y, 0.0, 0.0],
+        xlate: [xlate.x, xlate.y, transfer.lane(), 0.0],
         misc: [TILE_SIZE as f32, INTERIOR_UV_SCALE, INTERIOR_UV_BIAS, zoom],
     }
 }
@@ -130,14 +138,13 @@ impl ViewBindings {
         queue: &wgpu::Queue,
         parts: ViewGroups<'_>,
         views: &[ViewTransform],
+        transfer: Transfer,
     ) {
         let uniforms: Vec<ViewUniform> = views
             .iter()
             .map(|view| {
                 let (m, translate) = view.canvas_to_ndc();
-                // `zoom` rides in `misc.w` for the outline pass, which measures its
-                // width in screen px from a canvas-space distance (§6.8).
-                view_uniform(m.to_cols_array(), translate, view.zoom)
+                view_uniform(m.to_cols_array(), translate, view.zoom, transfer)
             })
             .collect();
         if self.slots.write(device, queue, &uniforms) {

@@ -19,12 +19,17 @@
 // drawn at. This is the *only* thing `level` does here: it says where to draw a
 // boundary, never how strongly anything is selected.
 
+import package::lib::display::{encode_from_srgb};
+
 struct View {
     // Canvas px → NDC, column-major: `st.xy` is the first column, `st.zw` the
     // second. A 2x2 because the view can be turned and mirrored — the outline
     // follows the canvas, so it turns with it.
     st: vec4<f32>,
-    xlate: vec4<f32>, // translate.xy, unused zw
+    // translate.xy; .z the display transfer the frame's target is encoded in
+    // (`lib/display.wesl`'s selector, as a float), which this pass alone reads; .w
+    // unused.
+    xlate: vec4<f32>,
     misc: vec4<f32>, // tile_size (interior, canvas px), uv_scale, uv_bias, zoom
 }
 
@@ -96,12 +101,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     // A peer's selection (tint.a > 0) is a flat line in that peer's color, so it
     // reads as "someone else's region" at a glance and never as your own
-    // (§17.3).
+    // (§17.3). The hue is a display-sRGB code (`peer_color`), and the target need
+    // not be sRGB — so it is carried onto whatever this frame's is (§6.5).
     if in.tint.a > 0.0 {
-        return vec4<f32>(in.tint.rgb, alpha * in.tint.a);
+        let rgb = encode_from_srgb(u32(view.xlate.z), in.tint.rgb);
+        return vec4<f32>(rgb, alpha * in.tint.a);
     }
     // Your own: alternating black/white along the screen diagonal — legible over
-    // paint of any value, which a single-color outline is not.
+    // paint of any value, which a single-color outline is not. Black and white are
+    // the two colours every transfer agrees on, so they are stored as they are.
     let dash = step(0.5, fract((in.clip.x + in.clip.y) / DASH));
     return vec4<f32>(vec3<f32>(dash), alpha);
 }

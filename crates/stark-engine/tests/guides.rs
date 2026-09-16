@@ -24,10 +24,13 @@
 
 mod common;
 
-use common::{engine_or_skip, engine_or_skip_sized};
+use common::{engine_or_skip, engine_or_skip_in_format, engine_or_skip_sized};
 use stark_engine::Engine;
 use stark_engine::Extent2;
 use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
+use stark_engine::{MediaParams, Output, Transfer};
+use stark_model::Srgb;
+use stark_model::color::{linear_to_srgb, srgb_to_linear};
 use stark_model::document::{ActorId, GuideId, Lens, PerspectiveGuide};
 use stark_model::geom::Vec2;
 
@@ -531,4 +534,215 @@ fn the_rays_are_drawn_where_the_camera_says_they_are() {
         // Left as this client found it, so the next lens starts from one guide.
         e.process(DocCommand::RemoveGuide(id));
     }
+}
+
+// --- the display the chrome is drawn for (§6.5, §6.10) ------------------------
+//
+// The overlay's hues are **display sRGB codes** — that is how a hue is picked, and
+// `stark.css` states the same three — but the display transfer is a view setting, and
+// the target under them is encoded in whatever the surface speaks. The pass wrote the
+// codes straight out, so on the native frontend's linear `Rgba16Float` swapchain they
+// were read as light: the halo's 0.09 showed at about sRGB 0.33, and every hue washed
+// out. Nothing in the picture says which of the two happened, and no golden can: a
+// golden is an 8-bit sRGB export, where the two are the same number.
+
+/// A half-float target, which can be read back as the floats it holds
+/// (`Engine::render_to_floats`) rather than as an 8-bit code.
+const F16: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// Flat and undithered: nothing between the constants and the readback but the
+/// display encode this is about.
+const FLAT: MediaParams = MediaParams {
+    height_strength: 0.0,
+    specular: 0.0,
+    substrate_strength: 0.0,
+    dither: false,
+};
+
+/// `guides.wesl`'s `CHROME`, the neutral the crosshair's core is filled with — the one
+/// number this file has to say for itself.
+///
+/// It is the anchor that makes the comparison below absolute: two renders agreeing that
+/// a constant is *some* colour cannot see the decode half of `encode_from_srgb` going
+/// missing, because dropping it scales both sides by the same curve. Pinned on the
+/// neutral rather than on a hue, since the three hues are `stark.css`'s statement and
+/// already have a test of their own holding the two together
+/// (`the_chips_are_painted_in_the_shader_s_own_axis_hues`).
+const CHROME: f32 = 0.96;
+
+/// A pose whose chrome covers a good part of a 256² canvas *completely*: the fisheye
+/// separates an axis's two poles, so six vanishing-point discs are drawn rather than
+/// three, and a short focal brings all six plus the three station rings inside the
+/// viewport. Those, and the crosshair, are the elements that reach full coverage — the
+/// halo never does, being drawn at a fifth.
+fn chrome_pose() -> PerspectiveGuide {
+    PerspectiveGuide {
+        // Half a canvas px off the origin, so a texel *centre* lands on the centre of
+        // view and the crosshair's arms reach coverage 1 rather than straddling it.
+        center: Vec2::new(0.5, 0.5),
+        focal: 25.0,
+        lens: Lens::Fisheye,
+        rotation: Quat::from_rotation_x(0.6155)
+            * Quat::from_rotation_y(std::f32::consts::FRAC_PI_4),
+        opacity: 1.0,
+        ..PerspectiveGuide::default()
+    }
+}
+
+/// One half-float channel back to the 8-bit sRGB code it *means* — the decode is the
+/// target's own transfer, the encode is sRGB's. Per channel, which is why the two
+/// transfers compared below are the two that keep sRGB primaries (`wide.rs` is where a
+/// change of primaries is measured).
+fn code(transfer: Transfer, v: f32) -> i32 {
+    let lin = match transfer {
+        Transfer::Linear => v,
+        Transfer::Srgb => srgb_to_linear(v.clamp(0.0, 1.0)),
+        other => unreachable!("{other:?} is not one of the two this test renders"),
+    };
+    (linear_to_srgb(lin.clamp(0.0, 1.0)) * 255.0).round() as i32
+}
+
+/// The guide rendered for `transfer`, over a black substrate and over a white one.
+fn over_both_substrates(e: &mut Engine, transfer: Transfer) -> (Vec<f32>, Vec<f32>) {
+    e.process(ViewCommand::SetOutput(Output::new(transfer, 1.0)));
+    e.process(DocCommand::SetSubstrateColor(Srgb::new([0.0, 0.0, 0.0])));
+    let dark = e.render_to_floats();
+    e.process(DocCommand::SetSubstrateColor(Srgb::new([1.0, 1.0, 1.0])));
+    (dark, e.render_to_floats())
+}
+
+/// **The chrome means the same colour on any display target** (§6.5, §6.10).
+///
+/// Read off the texels where the overlay draws **one** of its constants and nothing
+/// over it: the interior of a vanishing point's disc, inside the chrome ring that rims
+/// it four px out, and the crosshair's core at the centre of view. There the texel *is*
+/// that constant in the target's own encoding, so decoding it through the target's own
+/// transfer has to give one colour either way — three saturated hues and a near-white,
+/// which is the whole spread the conversion can get wrong.
+///
+/// Every premise of that is checked rather than assumed. The poles are taken from the
+/// camera, as `the_rays_are_drawn_where_the_camera_says_they_are` takes its rays; they
+/// are held apart far enough that no disc's halo reaches a neighbour's interior; and
+/// *covered* — that the substrate under the texel reached none of it — is measured by
+/// rendering each transfer over a black substrate and over a white one and keeping only
+/// the texels the substrate could not move. The crosshair's core is then held against
+/// [`CHROME`] itself, so the pair is anchored and not merely consistent.
+///
+/// **One constant, not merely a covered texel**, and that is a real limit rather than
+/// a convenience: both overlay passes blend in the space their target is encoded in, so
+/// a disc's rim at two-fifths coverage is two-fifths of the way from the disc to the
+/// rim along a *different curve* on each surface, and no decode undoes that. What is
+/// asserted here is the thing the bug was about — which colour is drawn — and not how
+/// it mixes with what is under it.
+#[test]
+fn guide_chrome_means_the_same_colour_on_any_display() {
+    let Some(mut e) = engine_or_skip_in_format(F16) else {
+        return;
+    };
+    e.process(ViewCommand::SetMediaParams(FLAT));
+    let pose = chrome_pose();
+    add_and_show(&mut e, pose, None);
+
+    let srgb = over_both_substrates(&mut e, Transfer::Srgb);
+    let linear = over_both_substrates(&mut e, Transfer::Linear);
+
+    // Both poles of every axis, which is what the fisheye separates (§20.8) — six
+    // discs, in three hues.
+    let camera = pose.scene(None);
+    let poles: Vec<Vec2> = camera
+        .vps
+        .iter()
+        .chain(&camera.anti_vps)
+        .filter_map(|p| *p)
+        .collect();
+    assert_eq!(poles.len(), 6, "a fisheye 3-point pose images both poles");
+
+    let view = e.view();
+    let zoom = view.zoom;
+    // Each pole wears a 5.2-px halo drawn *before* the next pole's disc, so two that
+    // came within 7.7 px would leave one halo over the other's interior — two constants
+    // in one probed texel, which the substrate test below cannot see. The crosshair's
+    // arms reach 6 px from the centre of view and are covered by the same rule.
+    for (n, &c) in poles.iter().enumerate() {
+        for &d in &poles[n + 1..] {
+            assert!(
+                (c - d).length() * zoom > 12.0,
+                "two poles at {c:?} and {d:?} are close enough to tint each other",
+            );
+        }
+        assert!(
+            (c - camera.center).length() * zoom > 12.0,
+            "the pole at {c:?} is close enough to the crosshair to be tinted by it",
+        );
+    }
+    // Where one constant is drawn with nothing over it. The disc is 4 px of axis colour
+    // rimmed by a chrome ring whose falloff starts 2.8 px in; the crosshair's core is
+    // 0.7 px either side of its arms, and is the last thing drawn.
+    let pole_alone = |p: Vec2| poles.iter().any(|&c| (p - c).length() * zoom < 2.5);
+    let cross_alone = |p: Vec2| {
+        let q = (p - camera.center).abs() * zoom;
+        (q.x < 0.2 && q.y < 3.0) || (q.y < 0.2 && q.x < 3.0)
+    };
+    // Covered: none of the substrate under this texel reached it.
+    let covered = |shot: &(Vec<f32>, Vec<f32>), i: usize| {
+        (0..3).all(|c| shot.0[i * 4 + c] == shot.1[i * 4 + c])
+    };
+
+    let want_chrome = (CHROME * 255.0).round() as i32;
+    let mut probed = 0usize;
+    let mut crosses = 0usize;
+    let mut worst = (0i32, 0usize, [0i32; 3], [0i32; 3]);
+    for i in 0..srgb.0.len() / 4 {
+        let (x, y) = (i as u32 % common::SIZE.width, i as u32 / common::SIZE.width);
+        let p = view.screen_to_canvas(Vec2::new(x as f32 + 0.5, y as f32 + 0.5));
+        if !pole_alone(p) && !cross_alone(p) {
+            continue;
+        }
+        assert!(
+            covered(&srgb, i) && covered(&linear, i),
+            "({x}, {y}) is meant to be chrome alone, and the substrate under it showed \
+             through — the premise above claims a region the pass does not fill"
+        );
+        probed += 1;
+        let a: [i32; 3] = std::array::from_fn(|c| code(Transfer::Srgb, srgb.0[i * 4 + c]));
+        let b: [i32; 3] = std::array::from_fn(|c| code(Transfer::Linear, linear.0[i * 4 + c]));
+        // The crosshair's core is `CHROME` and nothing else, which is what anchors the
+        // comparison: two renders agreeing about a colour neither of them names could
+        // both be wrong by the same curve.
+        if cross_alone(p) {
+            crosses += 1;
+            for shot in [&a, &b] {
+                assert!(
+                    shot.iter().all(|&c| (c - want_chrome).abs() <= 2),
+                    "the crosshair at ({x}, {y}) reads {shot:?}, and `CHROME` is \
+                     {want_chrome}"
+                );
+            }
+        }
+        let d = (0..3)
+            .map(|c| (a[c] - b[c]).abs())
+            .max()
+            .expect("3 channels");
+        if d > worst.0 {
+            worst = (d, i, a, b);
+        }
+    }
+    // The pose has to put that chrome on the canvas, or the loop above compares
+    // nothing and reports `ok` for having done so.
+    assert!(
+        probed > 60 && crosses > 8,
+        "only {probed} texels carry one constant alone ({crosses} of them the \
+         crosshair), so this pose measures nothing — see `chrome_pose`"
+    );
+    let (d, i, a, b) = worst;
+    // One code is the half-float store's own rounding, which is what it measured when
+    // this was written; the fault it is guarding against was 72.
+    assert!(
+        d <= 1,
+        "the guide draws a different colour on a linear surface than on an sRGB one: \
+         worst {d} codes at texel ({}, {}) — sRGB {a:?} against linear {b:?}, over \
+         {probed} texels",
+        i as u32 % common::SIZE.width,
+        i as u32 / common::SIZE.width,
+    );
 }

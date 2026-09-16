@@ -1571,9 +1571,11 @@ pub(super) fn composite_tiles(
         // *screen* view happens to be at.
         [sx, 0.0, 0.0, sy],
         Vec2::new(-region_origin.x * sx - 1.0, -region_origin.y * sy + 1.0),
-        // Zoom reaches only the selection outline, and no chrome is drawn into a
-        // working region — this is a buffer the loop evolves, not a picture.
+        // Zoom and the display transfer reach only the selection outline, and no
+        // chrome is drawn into a working region — this is a buffer the loop evolves,
+        // not a picture.
         0.0,
+        crate::Transfer::Srgb,
     );
     let view_buf = scope.take_piece_buffer(BufKey {
         size: std::mem::size_of_val(&view) as u64,
