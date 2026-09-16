@@ -16,10 +16,11 @@
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use wesl::eval::{Context, Type, ty_eval_ty};
+use wesl::eval::{Type, ty_eval_ty};
 use wesl::syntax::Struct;
 
 use crate::docs::doc_lines;
+use crate::eval::module_context;
 use crate::tree::Module;
 
 /// One field of the generated struct: a member, or the padding WGSL puts before one.
@@ -53,7 +54,7 @@ pub(crate) fn lay_out(s: &Struct, module: &Module) -> Result<Laid, String> {
     if s.members.is_empty() {
         return Err(format!("`{path}::{name}` has no members"));
     }
-    let mut ctx = Context::new(tu);
+    let mut ctx = module_context(tu);
 
     let (mut fields, mut offset, mut align) = (Vec::new(), 0u32, 1u32);
     // Documentation for the first member runs from the opening brace.

@@ -1,5 +1,10 @@
 //! Where one module's share of a group's index space stops.
 
+use wesl::SourceMap;
+use wesl::syntax::{GlobalDeclaration, TranslationUnit};
+
+use crate::eval::{group_binding, module_context};
+
 /// Fail unless the modules a pipeline links agree about where each one's share of a
 /// group's index space stops.
 ///
@@ -21,39 +26,28 @@
 /// rule that keeps it sound ("if a fourth map is added, give it its own module rather
 /// than a fourth struct here"). One file can state that about itself; two files
 /// splitting a group cannot, which is why one is checked and the other is not.
-pub(crate) fn bindings_do_not_collide(linked: &wesl::syntax::TranslationUnit, artifact: &str) {
-    use wesl::syntax::{Attribute, GlobalDeclaration};
-    use wesl::{EscapeMangler, Mangler};
-
-    // An `ExpressionNode` renders back to its source text, which for the literal every
-    // one of these is *is* the number. A const-evaluated `@binding` would need the eval
-    // context the linker has already discharged, so it is passed over rather than
-    // guessed at — and there are none in this tree.
-    let literal = |e: &wesl::syntax::ExpressionNode| e.to_string().trim().parse::<u32>().ok();
-    // The root module's own declarations are not mangled, so `unmangle` returning
-    // `None` *is* the answer "this one is the root's".
-    let source = |name: &str| {
-        EscapeMangler
-            .unmangle(name)
-            .map_or_else(|| artifact.to_string(), |(path, _)| path.to_string())
-    };
-
+///
+/// `sourcemap` is the compiler's own record of which module a mangled name came from,
+/// so this does not have to agree with whichever mangler the compiler was configured
+/// with. A name it does not hold is the root's, which is not mangled.
+pub(crate) fn bindings_do_not_collide(
+    linked: &TranslationUnit,
+    sourcemap: &impl SourceMap,
+    artifact: &str,
+) {
+    let mut ctx = module_context(linked);
     let mut seen: Vec<(u32, u32, String, String)> = Vec::new();
     for d in &linked.global_declarations {
         let GlobalDeclaration::Declaration(decl) = &**d else {
             continue;
         };
-        let g = decl.attributes.iter().find_map(|a| match &**a {
-            Attribute::Group(e) => literal(e),
-            _ => None,
-        });
-        let b = decl.attributes.iter().find_map(|a| match &**a {
-            Attribute::Binding(e) => literal(e),
-            _ => None,
-        });
-        let (Some(g), Some(b)) = (g, b) else { continue };
         let name = decl.ident.name().to_string();
-        let from = source(&name);
+        let from = sourcemap
+            .get_decl(&name)
+            .map_or_else(|| artifact.to_string(), |(path, _)| path.to_string());
+        let Some((g, b)) = group_binding(decl, &mut ctx, &format!("`{from}`'s `{name}`")) else {
+            continue;
+        };
         if let Some((_, _, other, other_from)) = seen
             .iter()
             .find(|(sg, sb, _, sf)| *sg == g && *sb == b && *sf != from)
@@ -66,5 +60,113 @@ pub(crate) fn bindings_do_not_collide(linked: &wesl::syntax::TranslationUnit, ar
             );
         }
         seen.push((g, b, name, from));
+    }
+}
+
+/// A linked artifact is two or more modules' declarations in one translation unit, with
+/// every import mangled to the module it came from — so these probes are written the way
+/// the linker leaves them, and the sourcemap says which name is whose.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wesl::{BasicSourceMap, NoSourceMap};
+
+    /// The linker's own mangling, as `mixbox_lut`'s `pigment_lut` reaches an artifact.
+    fn sourcemap(decls: &[(&str, &str, &str)]) -> BasicSourceMap {
+        let mut map = BasicSourceMap::new();
+        for (mangled, module, item) in decls {
+            map.add_decl(
+                (*mangled).to_string(),
+                module.parse().expect("a module path"),
+                (*item).to_string(),
+            );
+        }
+        map
+    }
+
+    fn check(src: &str, map: &BasicSourceMap) {
+        let tu: TranslationUnit = src.parse().expect("the probe parses");
+        bindings_do_not_collide(&tu, map, "blend_mixbox");
+    }
+
+    /// The message names the two *files*, which is the whole point of checking here.
+    #[test]
+    #[should_panic(
+        expected = "`package::blend_common`'s `package__1blend_common_src` and \
+                               `package::mixbox_lut`'s `package__1mixbox_lut_pigment_lut` at \
+                               the same `@group(0) @binding(5)`"
+    )]
+    fn two_modules_at_one_slot_are_named_by_the_sourcemap() {
+        check(
+            "@group(0) @binding(5) var package__1blend_common_src: texture_2d<f32>;\n\
+             @group(0) @binding(5) var package__1mixbox_lut_pigment_lut: texture_2d<f32>;\n",
+            &sourcemap(&[
+                ("package__1blend_common_src", "package::blend_common", "src"),
+                (
+                    "package__1mixbox_lut_pigment_lut",
+                    "package::mixbox_lut",
+                    "pigment_lut",
+                ),
+            ]),
+        );
+    }
+
+    /// One file may put two declarations at one slot when no entry point reaches both
+    /// (`transform.wesl`), and the root module's names are not mangled at all — so the
+    /// sourcemap holding neither is the answer "both are the root's".
+    #[test]
+    fn one_module_at_one_slot_twice_is_allowed() {
+        check(
+            "@group(0) @binding(0) var<uniform> quad: Quad;\n\
+             @group(0) @binding(0) var<uniform> gated: Gated;\n\
+             struct Quad { a: vec4<f32> }\n\
+             struct Gated { b: vec4<f32> }\n",
+            &sourcemap(&[]),
+        );
+    }
+
+    /// The same index in a different group is a different slot, and half the tree
+    /// declares more than one group.
+    #[test]
+    fn the_same_index_in_two_groups_is_two_slots() {
+        check(
+            "@group(0) @binding(1) var package__1a_x: texture_2d<f32>;\n\
+             @group(1) @binding(1) var package__1b_y: texture_2d<f32>;\n",
+            &sourcemap(&[
+                ("package__1a_x", "package::a", "x"),
+                ("package__1b_y", "package::b", "y"),
+            ]),
+        );
+    }
+
+    /// What used to be skipped in silence: the rendered expression is not a literal, so
+    /// the declaration dropped out of the check. It is evaluated now, and the collision
+    /// it was hiding is found.
+    #[test]
+    #[should_panic(expected = "at the same `@group(0) @binding(5)`")]
+    fn a_const_valued_binding_still_collides() {
+        check(
+            "const BASE: u32 = 4u;\n\
+             @group(0) @binding(5) var package__1blend_common_src: texture_2d<f32>;\n\
+             @group(0) @binding(BASE + 1u) var package__1mixbox_lut_pigment_lut: texture_2d<f32>;\n",
+            &sourcemap(&[
+                ("package__1blend_common_src", "package::blend_common", "src"),
+                (
+                    "package__1mixbox_lut_pigment_lut",
+                    "package::mixbox_lut",
+                    "pigment_lut",
+                ),
+            ]),
+        );
+    }
+
+    /// And one the evaluator cannot reach is refused rather than passed over.
+    #[test]
+    #[should_panic(expected = "has a `@binding` that does not evaluate")]
+    fn a_binding_the_evaluator_cannot_reach_is_refused() {
+        let tu: TranslationUnit = "@group(0) @binding(NOWHERE) var x: texture_2d<f32>;\n"
+            .parse()
+            .expect("the probe parses");
+        bindings_do_not_collide(&tu, &NoSourceMap, "blend_mixbox");
     }
 }

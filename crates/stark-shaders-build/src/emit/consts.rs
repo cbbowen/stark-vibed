@@ -2,10 +2,11 @@
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use wesl::eval::{Context, Convert, Eval, Instance, LiteralInstance, Type, ty_eval_ty};
+use wesl::eval::{Convert, Eval, Instance, LiteralInstance, Type, ty_eval_ty};
 use wesl::syntax::GlobalDeclaration;
 
 use crate::docs::doc_lines;
+use crate::eval::module_context;
 use crate::tree::Module;
 
 /// Emit every `const` of `m` that has a Rust spelling, with what was skipped.
@@ -16,14 +17,12 @@ use crate::tree::Module;
 /// source and could do neither: a derived constant is not a literal, and the linker had
 /// already stripped anything no entry point reached.
 ///
-/// **But a constant naming another is still skipped**, because [`Context::new`] opens a
-/// function scope and the evaluator looks a name up in the module's declarations only
-/// from a module scope. `const X: f32 = TAU / 4.0;` gets a note in the generated
-/// header and no mirror at all — see
-/// `emit::tests::a_const_derived_from_its_neighbours_is_skipped`. No `const` in the
-/// tree names another today.
+/// **A constant naming another evaluates too**, in [`module_context`]'s scope — see
+/// `emit::tests::a_const_derived_from_its_neighbours_mirrors_as_its_value`. No `const`
+/// in the tree names another today.
 pub(super) fn emit(m: &Module) -> (TokenStream, Vec<String>) {
     let (tu, src, module) = (&m.tu, m.src.as_str(), m.path.as_str());
+    let mut ctx = module_context(tu);
     let mut out = TokenStream::new();
     let mut skipped = Vec::new();
     for d in &tu.global_declarations {
@@ -50,7 +49,6 @@ pub(super) fn emit(m: &Module) -> (TokenStream, Vec<String>) {
         let Some(init) = decl.initializer.as_ref() else {
             continue;
         };
-        let mut ctx = Context::new(tu);
         let at = || format!("`{module}.wesl`'s `const {name}`");
         let Ok(value) = init.eval_value(&mut ctx) else {
             skipped.push(format!("{} does not const-evaluate", at()));

@@ -75,7 +75,7 @@ fn build_one(
     let compiled = compiler.compile(&root).unwrap_or_else(|e| {
         panic!("failed to build WESL shader `{path}`.\n{e}");
     });
-    collide::bindings_do_not_collide(&compiled.syntax, artifact);
+    collide::bindings_do_not_collide(&compiled.syntax, &compiled.sourcemap, artifact);
     // Rendered once and deposited as it stands: `write_artifact` would render the
     // linked tree a second time to write the same bytes the type check just read.
     let wgsl = compiled.to_string();

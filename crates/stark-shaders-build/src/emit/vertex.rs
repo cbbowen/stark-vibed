@@ -2,14 +2,13 @@
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use wesl::eval::{Context, Type, ty_eval_ty};
+use wesl::eval::{Type, ty_eval_ty};
 use wesl::syntax::{Attribute, GlobalDeclaration};
 
 use crate::docs::doc_lines;
+use crate::eval::{const_u32, module_context};
 use crate::layout::{Field, ident, lit, rust_ty};
 use crate::tree::Module;
-
-use super::const_u32;
 
 /// Every `@vertex` entry point in `m` that takes at least one `@location` parameter —
 /// i.e. that reads a per-instance record the host has to lay out.
@@ -80,7 +79,7 @@ pub(super) fn emit(m: &Module, entry: &str, name: &str) -> TokenStream {
         Some(doc_lines(&src[..line]))
     };
 
-    let mut ctx = Context::new(tu);
+    let mut ctx = module_context(tu);
     let (mut fields, mut attrs, mut offset) = (Vec::new(), Vec::new(), 0u32);
 
     for p in &func.parameters {
@@ -91,8 +90,8 @@ pub(super) fn emit(m: &Module, entry: &str, name: &str) -> TokenStream {
         }) else {
             continue;
         };
-        let location = const_u32(location, &mut ctx).unwrap_or_else(|| {
-            panic!("`{module}.wesl`'s `{entry}` has a `@location` that is not a number")
+        let location = const_u32(location, &mut ctx).unwrap_or_else(|why| {
+            panic!("`{module}.wesl`'s `{entry}` has a `@location` that {why}")
         });
 
         let member = p.ident.name();

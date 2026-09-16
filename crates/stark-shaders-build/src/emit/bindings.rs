@@ -5,14 +5,13 @@ use quote::{format_ident, quote};
 use wesl::eval::{Context, ty_eval_ty};
 use wesl::syntax::{
     AddressSpace, Attribute, Declaration, DeclarationKind, Expression, ExpressionNode,
-    GlobalDeclaration, TranslationUnit, TypeExpression,
+    GlobalDeclaration, TypeExpression,
 };
 
 use crate::docs::doc_lines;
+use crate::eval::{group_binding, module_context};
 use crate::layout::lit;
 use crate::tree::Module;
-
-use super::const_u32;
 
 /// Emit the `@binding` declarations of `m` three ways: `binding::NAME` (the index, for
 /// a `match` arm), `decl::NAME` (the whole declaration, for a slot list), and
@@ -37,6 +36,7 @@ use super::const_u32;
 /// that collide there are a build failure rather than a silent shadowing.
 pub(super) fn emit(m: &Module) -> TokenStream {
     let (tu, src, module) = (&m.tu, m.src.as_str(), m.path.as_str());
+    let mut ctx = module_context(tu);
     let mut names: Vec<String> = Vec::new();
     let mut indices = Vec::new();
     let mut decls = Vec::new();
@@ -45,32 +45,15 @@ pub(super) fn emit(m: &Module) -> TokenStream {
         let GlobalDeclaration::Declaration(decl) = &**d else {
             continue;
         };
-        let Some(expr) = decl.attributes.iter().find_map(|a| match &**a {
-            Attribute::Binding(e) => Some(e),
-            _ => None,
-        }) else {
+        let member = decl.ident.name();
+        // The group as well as the index. A bind group layout is for exactly one group,
+        // so this is what lets the host assert that a slot list names one — and what a
+        // table keyed on the index alone could never have said.
+        let Some((group, index)) =
+            group_binding(decl, &mut ctx, &format!("`{module}.wesl`'s `{member}`"))
+        else {
             continue;
         };
-        let member = decl.ident.name();
-        let at = |what: &str, e: &ExpressionNode| -> u32 {
-            const_u32(e, &mut Context::new(tu)).unwrap_or_else(|| {
-                panic!("`{module}.wesl`'s `{member}` has a `@{what}` that is not a number")
-            })
-        };
-        let index = at("binding", expr);
-        // The group the slot is in. A bind group layout is for exactly one group, so
-        // this is what lets the host assert that a slot list names one — and what a
-        // table keyed on the index alone could never have said.
-        let group = decl
-            .attributes
-            .iter()
-            .find_map(|a| match &**a {
-                Attribute::Group(e) => Some(at("group", e)),
-                _ => None,
-            })
-            .unwrap_or_else(|| {
-                panic!("`{module}.wesl`'s `{member}` has a `@binding` but no `@group`")
-            });
         let name = member.to_uppercase();
         assert!(
             !names.contains(&name),
@@ -87,7 +70,7 @@ pub(super) fn emit(m: &Module) -> TokenStream {
 
         // The rest of what the declaration decides: what kind of thing occupies the
         // slot, and whether it exists at all in a build without the residual.
-        let kind = bind_kind(decl, module, &member, tu);
+        let kind = bind_kind(decl, module, &member, &mut ctx);
         // `@if(resid)` — the shader's own gate on the slot, carried through so a
         // layout never has to restate it as an element count (`[..12 + 4 *
         // usize::from(resid)]`).
@@ -172,7 +155,7 @@ pub(super) fn emit(m: &Module) -> TokenStream {
 /// `&'static str` bought nothing but a pair of string matches on the host, each with a
 /// runtime panic for a fact known here. Now an unmapped format stops *this* build,
 /// naming the declaration.
-fn bind_kind(decl: &Declaration, module: &str, member: &str, tu: &TranslationUnit) -> TokenStream {
+fn bind_kind(decl: &Declaration, module: &str, member: &str, ctx: &mut Context<'_>) -> TokenStream {
     let ty = decl
         .ty
         .as_ref()
@@ -186,7 +169,7 @@ fn bind_kind(decl: &Declaration, module: &str, member: &str, tu: &TranslationUni
         &decl.kind,
         DeclarationKind::Var(Some((AddressSpace::Uniform, _)))
     ) {
-        let size = uniform_size(ty, module, member, tu);
+        let size = uniform_size(ty, module, member, ctx);
         let size = proc_macro2::Literal::u64_unsuffixed(size);
         return quote!(BindKind::Uniform { min_size: #size });
     }
@@ -261,9 +244,8 @@ fn expr_ident(expr: &ExpressionNode) -> Option<String> {
 }
 
 /// The WGSL size of a uniform binding's declared type — its `min_binding_size`.
-fn uniform_size(ty: &TypeExpression, module: &str, member: &str, tu: &TranslationUnit) -> u64 {
-    let mut ctx = Context::new(tu);
-    let resolved = ty_eval_ty(ty, &mut ctx).unwrap_or_else(|e| {
+fn uniform_size(ty: &TypeExpression, module: &str, member: &str, ctx: &mut Context<'_>) -> u64 {
+    let resolved = ty_eval_ty(ty, ctx).unwrap_or_else(|e| {
         panic!("`{module}.wesl`'s `{member}` has an unresolvable uniform type: {e}")
     });
     resolved

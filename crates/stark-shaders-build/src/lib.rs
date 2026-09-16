@@ -14,6 +14,7 @@ mod check;
 mod collide;
 mod docs;
 mod emit;
+mod eval;
 mod layout;
 mod link;
 mod mixbox_poly;
