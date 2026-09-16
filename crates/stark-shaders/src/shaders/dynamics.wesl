@@ -546,7 +546,8 @@ fn bake_at(tex: texture_2d<f32>, x: f32, y: f32) -> vec4<f32> {
 // dispatch dominates the whole dynamics path. The scan computes the same prefix
 // sums (up to float re-association) with every lane of a full-width dispatch busy.
 
-// Must equal the host's BAKE_RES (the bake textures' side).
+// The bake textures' side. The host reads it through the mirror rather than declaring
+// one of its own (§6.10), and so does the scan's `@workgroup_size` below.
 const BAKE_RES: u32 = 128u;
 
 var<workgroup> ws_e: array<f32, BAKE_RES>;
@@ -557,7 +558,7 @@ var<workgroup> ws_load: array<vec4<f32>, BAKE_RES>;
 // scan no width — but the scan itself no longer knows there are two of them.
 var<workgroup> ws_lm: array<Latent, BAKE_RES>;
 
-@compute @workgroup_size(128) // = BAKE_RES: thread i scans column i of its row
+@compute @workgroup_size(BAKE_RES) // thread i scans column i of its row
 fn bake(
     @builtin(workgroup_id) wid: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
@@ -786,12 +787,12 @@ fn exchange(
     @builtin(local_invocation_id) lid: vec3<u32>,
 ) {
     let bdim = textureDimensions(brush_src_color);
-    let ex_groups = (bdim.x + 7u) / 8u;
+    let ex_groups = (bdim.x + TILE_WG - 1u) / TILE_WG;
     if wid.x >= ex_groups {
-        snapshot_at((wid.x - ex_groups) * 8u + lid.x, wid.y * 8u + lid.y);
+        snapshot_at((wid.x - ex_groups) * TILE_WG + lid.x, wid.y * TILE_WG + lid.y);
         return;
     }
-    let gid = wid.xy * 8u + lid.xy;
+    let gid = wid.xy * TILE_WG + lid.xy;
     if gid.x >= bdim.x || gid.y >= bdim.y {
         return;
     }
