@@ -10,16 +10,13 @@
 //! differences the only ones written down.
 //!
 //! **A layout is not written here at all**, it is read off the shader (§6.10).
-//! [`layout_for`] and [`bind_group_for`] take a list of [`Slot`]s naming the generated
-//! declarations, and the index, whether the slot is a uniform and how wide, a sampler,
-//! a texture of a particular scalar, or a storage texture of a particular format and
-//! access mode, and whether the residual build has it, all come from the WESL. What a
-//! list still says is [`How`] the host
-//! binds: through a sampler, as a dynamic-offset slot, in which stages, and (once) that
-//! a slot exists only where the space has a residual. Each of those four is a fact
-//! about the *host*, and none can be read off the declaration. [`Bindings`] holds a
-//! layout together with the list and the residual it was built from, so a group built
-//! through it cannot be handed a different pair.
+//! [`stark_shaders::layout_entries`] derives a whole group's entries from the entry
+//! points that bind it, and [`Bindings`] keeps them beside the layout so every group
+//! over it is built from the same ones.
+//!
+//! [`Slot`] is what is left of the hand-written form, for the layouts not yet derived:
+//! a list naming the generated declarations, saying only [`How`] the host binds —
+//! through a sampler, as a dynamic-offset slot, in which stages.
 
 use stark_shaders::EntryPoint;
 
@@ -142,9 +139,6 @@ enum How {
 pub(crate) struct Slot {
     decl: stark_shaders::Binding,
     how: How,
-    /// Whether this slot exists only in a residual build **although its declaration is
-    /// unconditional** — see [`Slot::only_with_resid`].
-    resid_only: bool,
     /// This slot's own visibility, where it differs from the layout's — see
     /// [`Slot::in_stages`].
     vis: Option<wgpu::ShaderStages>,
@@ -157,7 +151,6 @@ impl Slot {
         Self {
             decl,
             how: How::Plain,
-            resid_only: false,
             vis: None,
         }
     }
@@ -168,7 +161,6 @@ impl Slot {
         Self {
             decl,
             how: How::Sampled,
-            resid_only: false,
             vis: None,
         }
     }
@@ -178,7 +170,6 @@ impl Slot {
         Self {
             decl,
             how: How::Dynamic,
-            resid_only: false,
             vis: None,
         }
     }
@@ -206,24 +197,6 @@ impl Slot {
         matches!(self.how, How::Sampled)
     }
 
-    /// A slot the shader declares **unconditionally** but that only a residual build
-    /// has, because the module declaring it is reached only by a space with a residual
-    /// (§6.7).
-    ///
-    /// The one thing about the residual the WESL cannot say. `blend_mixbox.wesl`
-    /// declares its residual bindings with no `@if`, and rightly so: that shader is
-    /// *only* compiled for the pigment space, so inside it they always exist. What
-    /// varies is which shader the document runs, which is `colorspace.rs`'s business
-    /// — so the host states it, here, once per slot.
-    ///
-    /// Orthogonal to [`How`], because the two vary independently:
-    /// `filter_mixbox.wesl` **samples** its `back_resid` for the chromatic gather
-    /// (§21.10) where `blend_mixbox.wesl` loads its two.
-    pub(crate) const fn only_with_resid(mut self) -> Self {
-        self.resid_only = true;
-        self
-    }
-
     /// The stages that read **this** slot, where they are not the whole layout's.
     ///
     /// Most layouts are one stage's and pass it once. Pass A's view group and the
@@ -235,11 +208,10 @@ impl Slot {
         self
     }
 
-    /// Whether this build has the slot at all: a `@if(resid)` declaration, or one the
-    /// host has gated with [`Self::only_with_resid`], exists only in a color space that
-    /// carries a residual (§6.7).
+    /// Whether this build has the slot at all: an `@if(resid)` declaration exists only
+    /// in a color space that carries a residual (§6.7).
     pub(crate) const fn present(&self, resid: bool) -> bool {
-        resid || !(self.decl.resid || self.resid_only)
+        resid || !self.decl.resid
     }
 }
 
@@ -297,28 +269,21 @@ fn slot_entry(
 /// at its first draw. The longest list today is the dynamics' deposit at 17.
 const MAX_SLOTS: usize = 24;
 
-/// A bind group layout for the `slots` one entry point reads, typed from the shader's
-/// own declarations (§6.10).
-///
-/// The list of slots is the *only* thing written on the host, and it is written once:
-/// [`bind_group_for`] builds the matching group from the same list, so a layout and its
-/// group cannot disagree about which bindings are present, in what order, or of what
-/// type.
+/// The layout entries for `slots`, in list order, with the residual gate applied.
 ///
 /// A bind group layout describes exactly one `@group`, so a list spanning two is a
 /// mistake in the list rather than a layout with a meaning — which is only sayable
 /// because the declaration carries its group. Panics if it does, or if the list is
 /// longer than [`MAX_SLOTS`].
-pub(crate) fn layout_for(
-    device: &wgpu::Device,
+fn slot_entries(
     label: &str,
     slots: &[Slot],
     vis: wgpu::ShaderStages,
     resid: bool,
-) -> wgpu::BindGroupLayout {
+) -> Vec<wgpu::BindGroupLayoutEntry> {
     assert!(
         slots.len() <= MAX_SLOTS,
-        "`{label}` lists {} slots; `bind_group_for` holds at most {MAX_SLOTS}",
+        "`{label}` lists {} slots; a bind group holds at most {MAX_SLOTS}",
         slots.len()
     );
     if let Some(first) = slots.first() {
@@ -335,11 +300,27 @@ pub(crate) fn layout_for(
             );
         }
     }
-    let entries: Vec<_> = slots
+    slots
         .iter()
         .filter_map(|s| slot_entry(*s, vis, resid))
-        .collect();
-    bind_group_layout(device, label, &entries)
+        .collect()
+}
+
+/// A bind group layout for the `slots` one entry point reads, typed from the shader's
+/// own declarations (§6.10).
+///
+/// The list of slots is the *only* thing written on the host, and it is written once:
+/// [`bind_group_for`] builds the matching group from the same list, so a layout and its
+/// group cannot disagree about which bindings are present, in what order, or of what
+/// type.
+pub(crate) fn layout_for(
+    device: &wgpu::Device,
+    label: &str,
+    slots: &[Slot],
+    vis: wgpu::ShaderStages,
+    resid: bool,
+) -> wgpu::BindGroupLayout {
+    bind_group_layout(device, label, &slot_entries(label, slots, vis, resid))
 }
 
 /// The bind group for the same `slots` [`layout_for`] built a layout from, with
@@ -353,20 +334,58 @@ pub(crate) fn bind_group_for<'a>(
     layout: &wgpu::BindGroupLayout,
     slots: &[Slot],
     resid: bool,
+    resource: impl FnMut(u32) -> wgpu::BindingResource<'a>,
+) -> wgpu::BindGroup {
+    bind_group_over(
+        device,
+        label,
+        layout,
+        slots.iter().filter(|s| s.present(resid)).map(Slot::binding),
+        resource,
+    )
+}
+
+/// The bind group for the `entries` a layout was built from
+/// ([`stark_shaders::layout_entries`]), with `resource` asked for each.
+///
+/// Private, and reached only through [`Bindings`]: the entry list *is* the description
+/// of the group, so a caller that could name a different one is the whole disagreement
+/// this path removes.
+fn bind_group_of<'a>(
+    device: &wgpu::Device,
+    label: &str,
+    layout: &wgpu::BindGroupLayout,
+    entries: &[wgpu::BindGroupLayoutEntry],
+    resource: impl FnMut(u32) -> wgpu::BindingResource<'a>,
+) -> wgpu::BindGroup {
+    bind_group_over(
+        device,
+        label,
+        layout,
+        entries.iter().map(|e| e.binding),
+        resource,
+    )
+}
+
+/// One bind group over the `@binding` indices its layout declares, `resource` asked
+/// for each.
+fn bind_group_over<'a>(
+    device: &wgpu::Device,
+    label: &str,
+    layout: &wgpu::BindGroupLayout,
+    mut bindings: impl Iterator<Item = u32>,
     mut resource: impl FnMut(u32) -> wgpu::BindingResource<'a>,
 ) -> wgpu::BindGroup {
-    assert!(slots.len() <= MAX_SLOTS, "`{label}` outgrew `MAX_SLOTS`");
     // On the stack, filled in slot order; the tail past `count` names no resource and
     // is never handed to wgpu — the descriptor takes `[..count]`.
-    let mut present = slots.iter().filter(|s| s.present(resid));
     let mut count = 0;
     let entries: [wgpu::BindGroupEntry<'a>; MAX_SLOTS] =
-        std::array::from_fn(|_| match present.next() {
-            Some(s) => {
+        std::array::from_fn(|_| match bindings.next() {
+            Some(binding) => {
                 count += 1;
                 wgpu::BindGroupEntry {
-                    binding: s.binding(),
-                    resource: resource(s.binding()),
+                    binding,
+                    resource: resource(binding),
                 }
             }
             None => wgpu::BindGroupEntry {
@@ -374,6 +393,10 @@ pub(crate) fn bind_group_for<'a>(
                 resource: wgpu::BindingResource::BufferArray(&[]),
             },
         });
+    assert!(
+        bindings.next().is_none(),
+        "`{label}` binds more than {MAX_SLOTS} slots, which is all this array holds",
+    );
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(label),
         layout,
@@ -381,22 +404,34 @@ pub(crate) fn bind_group_for<'a>(
     })
 }
 
-/// A bind group layout **with the list and the residual it was built from**, so the
-/// group is built from the same pair by construction.
+/// A bind group layout **with the entries it was built from**, so every group over it
+/// is built from the same ones by construction.
 ///
-/// [`layout_for`] and [`bind_group_for`] each take `resid` as an argument, and nothing
-/// makes two calls agree. The disagreement is a group missing the entries its layout
-/// declares — a validation error only a pigment document reaches, which the build
-/// without Mixbox cannot render (§6.7).
+/// Two calls that each decide for themselves which bindings a layout holds — one for
+/// the layout, one for the group — can disagree, and the disagreement is a group
+/// missing the entries its layout declares: a validation error only a pigment document
+/// reaches, which the build without Mixbox cannot render (§6.7).
 #[derive(Clone)]
 pub(crate) struct Bindings {
     layout: wgpu::BindGroupLayout,
-    slots: &'static [Slot],
-    resid: bool,
+    entries: Vec<wgpu::BindGroupLayoutEntry>,
 }
 
 impl Bindings {
-    /// [`layout_for`] over `slots`, keeping `slots` and `resid` for [`Self::group`].
+    /// A layout over `entries` — [`stark_shaders::layout_entries`]' answer — keeping
+    /// them for [`Self::group`].
+    pub(crate) fn of(
+        device: &wgpu::Device,
+        label: &str,
+        entries: Vec<wgpu::BindGroupLayoutEntry>,
+    ) -> Self {
+        Self {
+            layout: bind_group_layout(device, label, &entries),
+            entries,
+        }
+    }
+
+    /// [`Self::of`] over a hand-written slot list.
     pub(crate) fn new(
         device: &wgpu::Device,
         label: &str,
@@ -404,11 +439,7 @@ impl Bindings {
         vis: wgpu::ShaderStages,
         resid: bool,
     ) -> Self {
-        Self {
-            layout: layout_for(device, label, slots, vis, resid),
-            slots,
-            resid,
-        }
+        Self::of(device, label, slot_entries(label, slots, vis, resid))
     }
 
     /// The layout, for a [`pipeline_layout`].
@@ -416,23 +447,15 @@ impl Bindings {
         &self.layout
     }
 
-    /// [`bind_group_for`] against this layout — the same slots and the same residual
-    /// gate it was built with, so `resource` is asked for exactly the entries the
-    /// layout declares.
+    /// [`bind_group_of`] against this layout, so `resource` is asked for exactly the
+    /// entries the layout declares.
     pub(crate) fn group<'a>(
         &self,
         device: &wgpu::Device,
         label: &str,
         resource: impl FnMut(u32) -> wgpu::BindingResource<'a>,
     ) -> wgpu::BindGroup {
-        bind_group_for(
-            device,
-            label,
-            &self.layout,
-            self.slots,
-            self.resid,
-            resource,
-        )
+        bind_group_of(device, label, &self.layout, &self.entries, resource)
     }
 }
 
@@ -762,10 +785,10 @@ mod tests {
         );
     }
 
-    /// The residual gate both [`layout_for`] and [`Bindings::group`] apply is
-    /// [`Slot::present`]: a `@if(resid)` declaration and a host-gated slot exist only
-    /// with the residual, and a plain one always. Device-free, so it can run where
-    /// the pigment build's bind groups themselves cannot be built.
+    /// The residual gate a hand-written list applies is [`Slot::present`]: an
+    /// `@if(resid)` declaration exists only with the residual, a plain one always.
+    /// Device-free, so it can run where the pigment build's bind groups themselves
+    /// cannot be built.
     #[test]
     fn a_gated_slot_is_present_only_with_the_residual() {
         use stark_shaders::mirror::fill::decl as fd;
@@ -774,18 +797,12 @@ mod tests {
             "the fixtures no longer stand for a gated and an ungated declaration",
         );
         let declared = Slot::at(fd::BASE_RESID);
-        let hosted = Slot::at(fd::BASE_COLOR).only_with_resid();
         let plain = Slot::at(fd::BASE_COLOR);
         for resid in [false, true] {
             assert_eq!(
                 declared.present(resid),
                 resid,
                 "@if(resid) at resid={resid}"
-            );
-            assert_eq!(
-                hosted.present(resid),
-                resid,
-                "only_with_resid at resid={resid}"
             );
             assert!(plain.present(resid), "a plain slot at resid={resid}");
         }

@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 use crate::colorspace::ColorSpace;
 use crate::gpu::channels::{ChannelFormats, Targets};
 use crate::gpu::context::GpuContext;
-use crate::gpu::desc::{self, Slot};
+use crate::gpu::desc::{self, Bindings};
 use crate::gpu::pigment::PigmentLut;
 use crate::gpu::uniforms::UniformSlots;
 use crate::view::Extent2;
@@ -20,38 +20,12 @@ use stark_model::document::BlendMode;
 use stark_shaders::mirror::blend_common::binding as bc;
 use stark_shaders::mirror::blend_common::decl as bcd;
 use stark_shaders::mirror::blend_mixbox::binding as bm;
-use stark_shaders::mirror::blend_mixbox::decl as bmd;
 use stark_shaders::mirror::mixbox_lut::binding as ml;
-use stark_shaders::mirror::mixbox_lut::decl as mld;
 
 use super::plan::Phase;
 
 // Generated from `blend_common.wesl`'s own declaration (§6.7).
 pub(crate) use stark_shaders::mirror::blend_common::Blend as BlendUniform;
-
-/// Which bindings the blend pass reads, in layout order (§6.10).
-///
-/// Three modules share this group: 0–4 are `blend_common.wesl`'s, 5–6
-/// `mixbox_lut.wesl`'s, 7–8 `blend_mixbox.wesl`'s. Naming the declarations rather than
-/// the indices is what keeps the host from disagreeing with any of the three, and
-/// `build.rs` checks the linked artifact for a collision between them.
-pub(crate) const BLEND_SLOTS: &[Slot] = &[
-    // One slot per blend group in the frame; see [`UniformSlots`].
-    Slot::dynamic(bcd::B),
-    Slot::at(bcd::BACK_COLOR),
-    Slot::at(bcd::BACK_AUX),
-    Slot::at(bcd::SRC_COLOR),
-    Slot::at(bcd::SRC_AUX),
-    // The pigment LUT is a table Mixbox interpolates in hardware (`mixbox_lut.wesl`);
-    // every other texture here is `textureLoad`ed at the fragment's own coordinate.
-    Slot::sampled(mld::PIGMENT_LUT),
-    Slot::at(mld::PIGMENT_SAMP),
-    // The two residuals get no placeholder, unlike the LUT above: the shader that reads
-    // them is reached only by the space that has them, so there is a layout per space
-    // rather than one layout and a texture Oklab would bind and never sample.
-    Slot::at(bmd::BACK_RESID).only_with_resid(),
-    Slot::at(bmd::SRC_RESID).only_with_resid(),
-];
 
 /// The shader ABI for [`BlendMode`], kept here rather than on the enum: which `u32` a
 /// mode is numbered is a fact about `blend_common.wesl`, not about the document, and
@@ -78,27 +52,33 @@ pub(super) fn blend_code(mode: BlendMode) -> u32 {
 /// Mixbox LUT, which is not a thing to do twice per document.
 pub(crate) struct BlendPass {
     pub(crate) pipeline: wgpu::RenderPipeline,
-    bgl: wgpu::BindGroupLayout,
-    pub(crate) pigment: PigmentLut,
+    bgl: Bindings,
+    /// Mixbox's LUT, `None` in a space whose blend shader declares none — which is
+    /// every colorimetric one (§6.7). Shared with the filter pass, which asks the same
+    /// question of the same space.
+    pub(crate) pigment: Option<PigmentLut>,
 }
 
 impl BlendPass {
     pub(crate) fn new(ctx: &GpuContext, color_space: &dyn ColorSpace) -> Self {
         let device = &ctx.device;
-        let frag = wgpu::ShaderStages::FRAGMENT;
         let blend = color_space.blend_shader();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark blend"),
             source: wgpu::ShaderSource::Wgsl(blend.wgsl.into()),
         });
-        // Its own bind group layout: every texture here is read with `textureLoad`
-        // at the fragment's own coordinate, so nothing needs filtering — except the
-        // pigment LUT, which is a table Mixbox interpolates in hardware
-        // (`mixbox_lut.wesl`).
+        // Three modules share this group — `blend_common.wesl`, `mixbox_lut.wesl` and
+        // `blend_mixbox.wesl` — and which of them the space links is what decides the
+        // layout's length (§6.7). Every texture here is `textureLoad`ed at the
+        // fragment's own coordinate except the LUT, which Mixbox interpolates in
+        // hardware, so it alone comes out filterable.
         let formats = ChannelFormats::of(color_space);
-        let resid = formats.has_resid();
-        let bgl = desc::layout_for(device, "stark blend bgl", BLEND_SLOTS, frag, resid);
-        let layout = desc::pipeline_layout(device, "stark blend layout", &[Some(&bgl)]);
+        let bgl = Bindings::of(
+            device,
+            "stark blend bgl",
+            stark_shaders::layout_entries(&[blend.vs_main, blend.fs_main], bcd::B, &[bcd::B]),
+        );
+        let layout = desc::pipeline_layout(device, "stark blend layout", &[Some(bgl.layout())]);
         // No fixed-function blend on either target: the pass computes the whole
         // merge — backdrop included — and *replaces* what it writes. That is the
         // point of the ping-pong.
@@ -111,23 +91,7 @@ impl BlendPass {
             (blend.vs_main, blend.fs_main),
             &targets,
         );
-        // An Oklab document gets a 1×1 stand-in, so the one bind group layout still
-        // has something to bind. Without the `mixbox` feature no space asks for the
-        // real table, so the stand-in is unconditional.
-        #[cfg(feature = "mixbox")]
-        let pigment = if color_space.needs_pigment_lut() {
-            PigmentLut::load(ctx)
-        } else {
-            PigmentLut::placeholder(ctx)
-        };
-        #[cfg(not(feature = "mixbox"))]
-        let pigment = {
-            debug_assert!(
-                !color_space.needs_pigment_lut(),
-                "no color space in this build has a pigment LUT to bind",
-            );
-            PigmentLut::placeholder(ctx)
-        };
+        let pigment = PigmentLut::read_by(ctx, blend.fs_main);
         Self {
             pipeline,
             bgl,
@@ -150,33 +114,29 @@ impl BlendPass {
         back: Targets<'_>,
         src: Targets<'_>,
     ) -> wgpu::BindGroup {
-        // Both residuals or neither: `back`, `src` and `out` are all targets of the
-        // same document, so the space that gave one a residual gave all three one —
-        // which is why one `resid` answers for the pair.
-        let resid = back.resid.is_some() && src.resid.is_some();
-        desc::bind_group_for(
-            device,
-            "stark blend bg",
-            &self.bgl,
-            BLEND_SLOTS,
-            resid,
-            |i| match i {
-                bc::B => uniform.clone(),
-                bc::BACK_COLOR => wgpu::BindingResource::TextureView(back.color),
-                bc::BACK_AUX => wgpu::BindingResource::TextureView(back.aux),
-                bc::SRC_COLOR => wgpu::BindingResource::TextureView(src.color),
-                bc::SRC_AUX => wgpu::BindingResource::TextureView(src.aux),
-                ml::PIGMENT_LUT => wgpu::BindingResource::TextureView(&self.pigment.view),
-                ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&self.pigment.sampler),
-                bm::BACK_RESID => wgpu::BindingResource::TextureView(
-                    back.resid.expect("a residual build has one"),
-                ),
-                bm::SRC_RESID => {
-                    wgpu::BindingResource::TextureView(src.resid.expect("a residual build has one"))
-                }
-                other => unreachable!("`BLEND_SLOTS` lists no binding {other}"),
-            },
-        )
+        // The two residual `expect`s hold together: `back` and `src` are targets of one
+        // document, so the space that gave either a residual gave both one.
+        let lut = || {
+            self.pigment
+                .as_ref()
+                .expect("the layout holds the LUT only where the shader reads it")
+        };
+        self.bgl.group(device, "stark blend bg", |i| match i {
+            bc::B => uniform.clone(),
+            bc::BACK_COLOR => wgpu::BindingResource::TextureView(back.color),
+            bc::BACK_AUX => wgpu::BindingResource::TextureView(back.aux),
+            bc::SRC_COLOR => wgpu::BindingResource::TextureView(src.color),
+            bc::SRC_AUX => wgpu::BindingResource::TextureView(src.aux),
+            ml::PIGMENT_LUT => wgpu::BindingResource::TextureView(&lut().view),
+            ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&lut().sampler),
+            bm::BACK_RESID => {
+                wgpu::BindingResource::TextureView(back.resid.expect("a residual build has one"))
+            }
+            bm::SRC_RESID => {
+                wgpu::BindingResource::TextureView(src.resid.expect("a residual build has one"))
+            }
+            other => unreachable!("the blend group has no binding {other}"),
+        })
     }
 
     pub(super) fn encode(

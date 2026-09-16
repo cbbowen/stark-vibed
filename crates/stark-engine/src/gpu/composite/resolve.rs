@@ -7,15 +7,11 @@
 
 use super::display::Transfer;
 use crate::gpu::context::GpuContext;
-use crate::gpu::desc;
-use crate::gpu::desc::Slot;
+use crate::gpu::desc::{self, Bindings};
 use crate::view::Extent2;
+use stark_shaders::layout_entries;
 use stark_shaders::mirror::resolve::binding as rb;
 use stark_shaders::mirror::resolve::decl as rd;
-
-/// The presentation resolve's bindings (§6.4): the box filter's extent, and the
-/// supersampled render it averages down.
-pub(crate) const RESOLVE_SLOTS: &[Slot] = &[Slot::at(rd::R), Slot::at(rd::SRC)];
 
 // Generated from `resolve.wesl`'s own declaration (§6.7).
 pub(super) use stark_shaders::mirror::resolve::Resolve as ResolveUniform;
@@ -138,13 +134,12 @@ fn blur_bytes_per_px() -> u64 {
 /// The resolve pass's bind group layout, shared by the pipeline compiled for each
 /// target format ([`TargetPasses`](super::TargetPasses)) so a [`Supersampled`]
 /// set's bind group is valid against either.
-pub(super) fn resolve_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    desc::layout_for(
+pub(super) fn resolve_layout(device: &wgpu::Device) -> Bindings {
+    let re = stark_shaders::resolve();
+    Bindings::of(
         device,
         "stark resolve bgl",
-        RESOLVE_SLOTS,
-        wgpu::ShaderStages::FRAGMENT,
-        false,
+        layout_entries(&[re.vs_main, re.fs_main], rd::R, &[]),
     )
 }
 
@@ -159,7 +154,7 @@ pub(super) struct ResolvePass {
 impl ResolvePass {
     pub(super) fn new(
         device: &wgpu::Device,
-        bgl: &wgpu::BindGroupLayout,
+        bgl: &Bindings,
         target: &[Option<wgpu::ColorTargetState>],
     ) -> Self {
         // A fullscreen pass reading the supersampled target with `textureLoad` at an
@@ -169,7 +164,7 @@ impl ResolvePass {
             label: Some("stark resolve"),
             source: wgpu::ShaderSource::Wgsl(resolve.wgsl.into()),
         });
-        let layout = desc::pipeline_layout(device, "stark resolve layout", &[Some(bgl)]);
+        let layout = desc::pipeline_layout(device, "stark resolve layout", &[Some(bgl.layout())]);
         // The pass covers every texel and carries the alpha it averaged, so there is
         // nothing for a fixed-function blend to do.
         let pipeline = desc::fullscreen_pipeline(
@@ -250,7 +245,7 @@ impl Supersampled {
         device: &wgpu::Device,
         size: Extent2,
         format: wgpu::TextureFormat,
-        bgl: &wgpu::BindGroupLayout,
+        bgl: &Bindings,
     ) -> Self {
         let target = super::Attachment::new(device, size, format, "stark supersampled");
         let buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -259,19 +254,11 @@ impl Supersampled {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bg =
-            desc::bind_group_for(
-                device,
-                "stark resolve bg",
-                bgl,
-                RESOLVE_SLOTS,
-                false,
-                |i| match i {
-                    rb::R => buf.as_entire_binding(),
-                    rb::SRC => wgpu::BindingResource::TextureView(target.view()),
-                    other => unreachable!("`RESOLVE_SLOTS` lists no binding {other}"),
-                },
-            );
+        let bg = bgl.group(device, "stark resolve bg", |i| match i {
+            rb::R => buf.as_entire_binding(),
+            rb::SRC => wgpu::BindingResource::TextureView(target.view()),
+            other => unreachable!("the resolve group has no binding {other}"),
+        });
         Self { target, bg, buf }
     }
 

@@ -178,17 +178,6 @@ pub trait ColorSpace {
     /// while the targets hold channels, so the pass is bracketed by this space's
     /// conversion out and back. The adjustment between them is shared.
     fn filter_shader(&self) -> FilterShader;
-
-    /// Whether [`blend_shader`](Self::blend_shader) needs Mixbox's pigment LUT bound
-    /// (`mixbox_lut.wesl`).
-    ///
-    /// A property of the space rather than a flag on the pass: coming *back* from
-    /// light is a closed-form matrix in a colorimetric space and a table lookup in a
-    /// pigment one, and only the pigment case pays for the texture. Everything else
-    /// binds a 1×1 placeholder, so there is one bind group layout.
-    fn needs_pigment_lut(&self) -> bool {
-        false
-    }
 }
 
 /// One space's build of a pass with a single fragment entry point — the media and
@@ -396,11 +385,5 @@ impl ColorSpace for MixboxColorSpace {
             fs_tile: s.fs_tile,
             fs_blur_decode: s.fs_blur_decode,
         }
-    }
-    /// The one space that needs it: expressing combined or adjusted *light* back as
-    /// a pigment mixture is Mixbox's LUT, the inverse of the polynomial the media
-    /// pass runs forward (§18.0.4, §21).
-    fn needs_pigment_lut(&self) -> bool {
-        true
     }
 }

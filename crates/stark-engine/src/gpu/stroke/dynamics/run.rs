@@ -1582,18 +1582,13 @@ pub(super) fn composite_tiles(
         label: "stark dynamics region view",
     });
     scope.write_lease(&view_buf, bytemuck::bytes_of(&view));
-    let view_bg = desc::bind_group_for(
-        device,
-        "stark dynamics region view bg",
-        &kit.composite_view_bgl,
-        crate::gpu::composite::COMPOSITE_VIEW_SLOTS,
-        false,
-        |i| match i {
-            vb::VIEW => view_buf.as_entire_binding(),
-            vb::SAMP => wgpu::BindingResource::Sampler(&kit.composite_sampler),
-            other => unreachable!("the composite view group lists no binding {other}"),
-        },
-    );
+    let view_bg =
+        kit.composite_view_bgl
+            .group(device, "stark dynamics region view bg", |i| match i {
+                vb::VIEW => view_buf.as_entire_binding(),
+                vb::SAMP => wgpu::BindingResource::Sampler(&kit.composite_sampler),
+                other => unreachable!("the composite view group has no binding {other}"),
+            });
     let mut tile_origins: Vec<TileInstance> = Vec::with_capacity(halo.len());
     let mut tile_bgs: Vec<&wgpu::BindGroup> = Vec::with_capacity(halo.len());
     for coord in halo {

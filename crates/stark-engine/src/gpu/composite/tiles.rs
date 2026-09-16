@@ -7,36 +7,11 @@
 
 use crate::colorspace::ColorSpace;
 use crate::gpu::channels::{ChannelFormats, Targets};
-use crate::gpu::desc::Slot;
-use crate::gpu::desc::{self, RenderPipe};
-use stark_shaders::mirror::composite::decl as cd;
+use crate::gpu::desc::{self, Bindings, RenderPipe};
+use stark_shaders::layout_entries;
 use stark_shaders::mirror::matte::decl as md;
 use stark_shaders::mirror::view::decl as vd;
 
-/// Pass A's **view** group (§6.3) — the canvas→NDC map and the tile sampler, from
-/// `view.wesl`, the module all three passes that draw in canvas space import (§6.10).
-///
-/// The two slots differ in visibility: the vertex stage places the quad from `view`,
-/// the fragment stage samples through `samp`, and neither wants the other's.
-pub(crate) const VIEW_SLOTS: &[Slot] = &[
-    Slot::dynamic(vd::VIEW).in_stages(wgpu::ShaderStages::VERTEX),
-    Slot::at(vd::SAMP),
-];
-
-/// The matte's gradient ramp at group 1, per matte where the view is per pass
-/// (§22.4). Fragment-only — the vertex stage has no use for it.
-///
-/// Visible outside this module because the layout is built here and the group beside
-/// the ramps' upload; one list keeps the two from disagreeing about the binding.
-pub(crate) const RAMP_SLOTS: &[Slot] = &[Slot::dynamic(md::RAMP)];
-
-/// Pass A's **tile** group: one layer tile's channels, sampled through the view's
-/// sampler so the bilinear filter reaches into the apron at the edges (§6.4).
-pub(crate) const TILE_SLOTS: &[Slot] = &[
-    Slot::sampled(cd::TILE_COLOR),
-    Slot::sampled(cd::TILE_AUX),
-    Slot::sampled(cd::TILE_RESID),
-];
 use crate::gpu::uniforms::{InstanceStream, UniformSlots};
 
 use super::plan::Draw;
@@ -57,13 +32,13 @@ pub(super) struct TilePass {
     pub(super) matte_pipeline: wgpu::RenderPipeline,
     /// Group 0's layout, for the consumer that owns the buffer behind it
     /// ([`ViewBindings`](super::view::ViewBindings)).
-    pub(super) view_bgl: wgpu::BindGroupLayout,
-    pub(super) tile_bgl: wgpu::BindGroupLayout,
+    pub(super) view_bgl: Bindings,
+    pub(super) tile_bgl: Bindings,
     /// The matte pipeline's group 1: the per-matte gradient ramp (§22.4), read
     /// through a **dynamic offset** so one buffer and one bind group serve every
     /// matte in the frame. A solid matte's slot is zeroed, its stop count then
     /// saying "use the instance's own channels".
-    pub(super) ramp_bgl: wgpu::BindGroupLayout,
+    pub(super) ramp_bgl: Bindings,
 }
 
 impl TilePass {
@@ -77,26 +52,37 @@ impl TilePass {
         device: &wgpu::Device,
         color_space: &dyn ColorSpace,
         formats: ChannelFormats,
-        tile_bgl: wgpu::BindGroupLayout,
+        tile_bgl: Bindings,
     ) -> Self {
-        let frag = wgpu::ShaderStages::FRAGMENT;
-        // The residual channel a pigment space carries (§6.7): a third sampled tile
-        // texture and a third target, on the shader variant built for it.
-        let resid = formats.has_resid();
         let composite = stark_shaders::composite(color_space.resid());
+        let matte = stark_shaders::matte(color_space.resid());
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark composite"),
             source: wgpu::ShaderSource::Wgsl(composite.wgsl.into()),
         });
 
-        // Vertex-only: the fragment stage gets canvas position as a varying, and the
-        // zoom rides through `misc.w` for the matte's edge antialiasing width.
-        let view_bgl =
-            desc::layout_for(device, "stark composite view bgl", VIEW_SLOTS, frag, resid);
+        // Both pipelines below bind this, so both shaders' stages are folded in.
+        // `view.wesl`'s uniform comes out vertex-only — the fragment stage gets canvas
+        // position as a varying and the zoom through `misc.w` — and its sampler
+        // fragment-only, which no list has to say.
+        let view_bgl = Bindings::of(
+            device,
+            "stark composite view bgl",
+            layout_entries(
+                &[
+                    composite.vs_main,
+                    composite.fs_main,
+                    matte.vs_main,
+                    matte.fs_main,
+                ],
+                vd::VIEW,
+                &[vd::VIEW],
+            ),
+        );
         let layout = desc::pipeline_layout(
             device,
             "stark composite layout",
-            &[Some(&view_bgl), Some(&tile_bgl)],
+            &[Some(view_bgl.layout()), Some(tile_bgl.layout())],
         );
         // Pass A is the one pipeline whose targets do *not* share a blend, so this is
         // spelled out rather than `formats.blended(..)`: premultiplied `over` on the
@@ -126,16 +112,21 @@ impl TilePass {
         );
 
         // ---- Matte layers, inside pass A (§15.4), on pass A's own view group.
-        let matte = stark_shaders::matte(color_space.resid());
         let matte_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark matte"),
             source: wgpu::ShaderSource::Wgsl(matte.wgsl.into()),
         });
-        let ramp_bgl = desc::layout_for(device, "stark matte ramp bgl", RAMP_SLOTS, frag, resid);
+        // The ramp is per matte where the view is per pass (§22.4), so it is bound at a
+        // dynamic offset — the one thing `var<uniform> ramp` does not say.
+        let ramp_bgl = Bindings::of(
+            device,
+            "stark matte ramp bgl",
+            layout_entries(&[matte.vs_main, matte.fs_main], md::RAMP, &[md::RAMP]),
+        );
         let matte_layout = desc::pipeline_layout(
             device,
             "stark matte layout",
-            &[Some(&view_bgl), Some(&ramp_bgl)],
+            &[Some(view_bgl.layout()), Some(ramp_bgl.layout())],
         );
         // Premultiplied `over` on BOTH targets. On the aux that is the load-bearing
         // difference from pass A's additive blend: additive would keep the height of

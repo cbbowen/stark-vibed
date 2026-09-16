@@ -262,7 +262,7 @@ impl StrokeRenderer {
         color_space: Arc<dyn ColorSpace>,
         selection: SelectionRenderer,
         zeroes: Zeroes,
-        tile_bgl: wgpu::BindGroupLayout,
+        tile_bgl: crate::gpu::desc::Bindings,
         scratch: ScratchPool,
     ) -> Self {
         // One compile of `stamp.wesl` per variant — plain, and with the ceiling lane

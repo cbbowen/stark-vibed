@@ -8,34 +8,16 @@ use super::attachment::Trio;
 use super::display::Output;
 use crate::colorspace::ColorSpace;
 use crate::gpu::context::GpuContext;
-use crate::gpu::desc::{self, Slot};
+use crate::gpu::desc::{self, Bindings};
 use crate::gpu::environment::Environment;
 use crate::gpu::substrate::SubstrateMap;
 use crate::view::{Extent2, ViewTransform};
 use stark_shaders::mirror::media_common::binding as mc;
 use stark_shaders::mirror::media_common::decl as mcd;
 use stark_shaders::mirror::media_mixbox::binding as mm;
-use stark_shaders::mirror::media_mixbox::decl as mmd;
 
 // Generated from `media_common.wesl`'s own declaration (§6.7).
 pub(super) use stark_shaders::mirror::media_common::Media as MediaUniform;
-
-/// Which bindings the media pass reads, in layout order (§6.10).
-pub(crate) const MEDIA_SLOTS: &[Slot] = &[
-    Slot::at(mcd::M),
-    Slot::at(mcd::COMP_COLOR),
-    Slot::at(mcd::COMP_AUX),
-    // The substrate and the environment are read through samplers — the first filtered at
-    // canvas scale, the second mipped for the roughness lobe (§6.3).
-    Slot::sampled(mcd::SUBSTRATE),
-    Slot::at(mcd::SUBSTRATE_SAMP),
-    Slot::sampled(mcd::ENV),
-    Slot::at(mcd::ENV_SAMP),
-    // Declared by `media_mixbox.wesl` rather than the shared `media_common`, so a
-    // space with no residual gets a layout without it instead of a placeholder to
-    // bind (§6.7).
-    Slot::at(mmd::COMP_RESID).only_with_resid(),
-];
 
 /// Lighting parameters for the media pass (§6.3). A view setting — never
 /// historized: it changes how the canvas looks, not its pixels.
@@ -88,16 +70,16 @@ pub(super) fn dither_step(format: wgpu::TextureFormat) -> f32 {
 /// The media pass's bind group layout, shared by the pipeline compiled for each
 /// target format ([`TargetPasses`](super::TargetPasses)) so a consumer's bind group
 /// is valid against either.
-pub(super) fn media_layout(
-    device: &wgpu::Device,
-    color_space: &dyn ColorSpace,
-) -> wgpu::BindGroupLayout {
-    desc::layout_for(
+///
+/// The residual is `media_mixbox.wesl`'s own declaration rather than the shared
+/// `media_common`'s, so a space without one gets a shorter layout rather than a
+/// placeholder to bind (§6.7) — and says nothing about it here.
+pub(super) fn media_layout(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Bindings {
+    let media = color_space.media_shader();
+    Bindings::of(
         device,
         "stark media bgl",
-        MEDIA_SLOTS,
-        wgpu::ShaderStages::FRAGMENT,
-        color_space.has_resid(),
+        stark_shaders::layout_entries(&[media.vs_main, media.fs_main], mcd::M, &[]),
     )
 }
 
@@ -115,7 +97,7 @@ impl MediaPass {
     pub(super) fn new(
         device: &wgpu::Device,
         color_space: &dyn ColorSpace,
-        bgl: &wgpu::BindGroupLayout,
+        bgl: &Bindings,
         target: &[Option<wgpu::ColorTargetState>],
     ) -> Self {
         let media = color_space.media_shader();
@@ -123,7 +105,7 @@ impl MediaPass {
             label: Some("stark media"),
             source: wgpu::ShaderSource::Wgsl(media.wgsl.into()),
         });
-        let layout = desc::pipeline_layout(device, "stark media layout", &[Some(bgl)]);
+        let layout = desc::pipeline_layout(device, "stark media layout", &[Some(bgl.layout())]);
         let pipeline = desc::fullscreen_pipeline(
             device,
             "stark media pipeline",
@@ -267,7 +249,7 @@ pub(super) struct OffscreenDesc<'a> {
     /// The channel formats the accumulator carries (§6.7).
     pub(super) formats: crate::gpu::channels::ChannelFormats,
     /// The layout the media bind group is built against ([`media_layout`]).
-    pub(super) media_bgl: &'a wgpu::BindGroupLayout,
+    pub(super) media_bgl: &'a Bindings,
     /// The consumer's own uniform buffer, which this bind group names.
     pub(super) media_buf: &'a wgpu::Buffer,
     pub(super) substrate: &'a SubstrateMap,
@@ -293,7 +275,7 @@ impl Offscreen {
     pub(super) fn rebind(
         &mut self,
         device: &wgpu::Device,
-        media_bgl: &wgpu::BindGroupLayout,
+        media_bgl: &Bindings,
         media_buf: &wgpu::Buffer,
         substrate: &SubstrateMap,
         environment: &Environment,
@@ -351,33 +333,26 @@ pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
 /// swap touches. That is what [`Offscreen::rebind`] rebuilds.
 fn media_bind_group(
     device: &wgpu::Device,
-    media_bgl: &wgpu::BindGroupLayout,
+    media_bgl: &Bindings,
     media_buf: &wgpu::Buffer,
     substrate: &SubstrateMap,
     environment: &Environment,
     channels: &Trio,
 ) -> wgpu::BindGroup {
     let (color, aux, resid) = (&channels.color, &channels.aux, channels.resid.as_ref());
-    desc::bind_group_for(
-        device,
-        "stark media bg",
-        media_bgl,
-        MEDIA_SLOTS,
-        resid.is_some(),
-        |i| match i {
-            mc::M => media_buf.as_entire_binding(),
-            mc::COMP_COLOR => wgpu::BindingResource::TextureView(color.view()),
-            mc::COMP_AUX => wgpu::BindingResource::TextureView(aux.view()),
-            mc::SUBSTRATE => wgpu::BindingResource::TextureView(&substrate.view),
-            mc::SUBSTRATE_SAMP => wgpu::BindingResource::Sampler(&substrate.sampler),
-            mc::ENV => wgpu::BindingResource::TextureView(&environment.view),
-            mc::ENV_SAMP => wgpu::BindingResource::Sampler(&environment.sampler),
-            mm::COMP_RESID => wgpu::BindingResource::TextureView(
-                resid
-                    .expect("a residual build has a composited residual")
-                    .view(),
-            ),
-            other => unreachable!("`MEDIA_SLOTS` lists no binding {other}"),
-        },
-    )
+    media_bgl.group(device, "stark media bg", |i| match i {
+        mc::M => media_buf.as_entire_binding(),
+        mc::COMP_COLOR => wgpu::BindingResource::TextureView(color.view()),
+        mc::COMP_AUX => wgpu::BindingResource::TextureView(aux.view()),
+        mc::SUBSTRATE => wgpu::BindingResource::TextureView(&substrate.view),
+        mc::SUBSTRATE_SAMP => wgpu::BindingResource::Sampler(&substrate.sampler),
+        mc::ENV => wgpu::BindingResource::TextureView(&environment.view),
+        mc::ENV_SAMP => wgpu::BindingResource::Sampler(&environment.sampler),
+        mm::COMP_RESID => wgpu::BindingResource::TextureView(
+            resid
+                .expect("a residual build has a composited residual")
+                .view(),
+        ),
+        other => unreachable!("the media group has no binding {other}"),
+    })
 }

@@ -352,7 +352,7 @@ impl MergeRenderer {
             &self.ctx.device,
             uniform.resource(),
             tile.targets(),
-            &self.blend.pigment,
+            self.blend.pigment.as_ref(),
             None,
         );
         pass(

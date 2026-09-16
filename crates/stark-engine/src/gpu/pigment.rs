@@ -14,15 +14,16 @@
 //! Mixbox 2.0 (c) 2022 Secret Weapons, authors Sarka Sochorova and Ondrej Jamriska.
 //! Licensed CC BY-NC 4.0; see `vendor/mixbox/LICENSE`.
 
+use stark_shaders::EntryPoint;
+use stark_shaders::mirror::mixbox_lut::decl as mld;
+
 use crate::gpu::context::GpuContext;
 
 /// The vendored LUT image (git submodule; CC BY-NC 4.0).
 ///
 /// Behind the `mixbox` feature because `include_bytes!` is resolved at *compile* time:
 /// an unconditional one would keep the submodule a hard build requirement even in a
-/// build that can never decode it. [`PigmentLut::placeholder`] stays unconditional — the
-/// blend pass has one bind group layout in either space, so something must always be
-/// bindable there.
+/// build that can never decode it.
 #[cfg(feature = "mixbox")]
 const LUT_PNG: &[u8] = include_bytes!("../../../../vendor/mixbox/shaders/mixbox_lut.png");
 
@@ -39,13 +40,26 @@ pub struct PigmentLut {
 }
 
 impl PigmentLut {
+    /// The LUT `fs` reads, or `None` where it declares none.
+    ///
+    /// **The shader's answer, not the space's.** `mixbox_lut.wesl` is reached only
+    /// from `blend_mixbox.wesl` and `filter_mixbox.wesl`, so a colorimetric space's
+    /// layout has no slot for it — there is nothing to stand in for, and no
+    /// `needs_pigment_lut` for a space to answer twice.
+    pub fn read_by(ctx: &GpuContext, fs: EntryPoint) -> Option<Self> {
+        fs.uses
+            .iter()
+            .any(|u| u.decl == mld::PIGMENT_LUT)
+            .then(|| Self::load(ctx))
+    }
+
     /// Decode and upload the vendored LUT.
     ///
     /// The texture is **`Rgba8Unorm`, not sRGB**: these texels are polynomial
     /// coefficients that happen to be stored in an image, and letting the hardware
     /// apply a transfer curve to them would silently corrupt every mixture.
     #[cfg(feature = "mixbox")]
-    pub fn load(ctx: &GpuContext) -> Self {
+    fn load(ctx: &GpuContext) -> Self {
         let decoder = png::Decoder::new(std::io::Cursor::new(LUT_PNG));
         let mut reader = decoder.read_info().expect("pigment lut: read png info");
         let size = reader
@@ -116,35 +130,12 @@ impl PigmentLut {
         }
     }
 
-    /// A 1×1 stand-in for color spaces whose blend pass never samples the LUT.
-    ///
-    /// The blend pass has one bind group layout across every space, so the binding
-    /// exists either way; this is what fills it without decoding 512² of table a
-    /// document will not use.
-    pub fn placeholder(ctx: &GpuContext) -> Self {
-        let extent = wgpu::Extent3d {
-            width: 1,
-            height: 1,
-            depth_or_array_layers: 1,
-        };
-        let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("stark pigment lut placeholder"),
-            size: extent,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        Self {
-            view: texture.create_view(&wgpu::TextureViewDescriptor::default()),
-            sampler: ctx.device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("stark pigment lut placeholder sampler"),
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                ..Default::default()
-            }),
-        }
+    /// Unreachable without the feature, and structurally so: `mixbox_lut.wesl` is
+    /// reached only from the two Mixbox shaders, which a build without it does not
+    /// link — so no entry point [`read_by`](Self::read_by) can be handed declares the
+    /// LUT.
+    #[cfg(not(feature = "mixbox"))]
+    fn load(_ctx: &GpuContext) -> Self {
+        unreachable!("no shader in a build without Mixbox declares the pigment LUT")
     }
 }

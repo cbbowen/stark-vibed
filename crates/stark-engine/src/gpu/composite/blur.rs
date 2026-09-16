@@ -55,7 +55,7 @@
 use std::ops::Range;
 
 use crate::gpu::context::GpuContext;
-use crate::gpu::desc::{self, Slot};
+use crate::gpu::desc::{self, Bindings};
 use crate::gpu::uniforms::UniformSlots;
 use crate::view::{Extent2, ViewTransform};
 use stark_shaders::mirror::blur::Fft as FftUniform;
@@ -65,18 +65,6 @@ use stark_shaders::mirror::blur::decl as bd;
 use super::filter::FilterPass;
 use super::group::FilterDraw;
 
-/// The FFT group's bindings, in layout order (§6.10): the per-dispatch plan, the
-/// half of the ping-pong being read, the kernel's transform, and the half being
-/// written.
-pub(crate) const BLUR_SLOTS: &[Slot] = &[
-    Slot::dynamic(bd::F),
-    Slot::at(bd::SRC_LIGHT),
-    Slot::at(bd::SRC_AUX),
-    Slot::at(bd::KERNEL),
-    Slot::at(bd::DST_LIGHT),
-    Slot::at(bd::DST_AUX),
-];
-
 /// The blur's compute pipelines — one module, four entry points — built once per
 /// pipeline kit and shared by every consumer's [`BlurFrame`].
 pub(crate) struct BlurPass {
@@ -84,7 +72,7 @@ pub(crate) struct BlurPass {
     fft_one: wgpu::ComputePipeline,
     make_kernel: wgpu::ComputePipeline,
     apply_kernel: wgpu::ComputePipeline,
-    bgl: wgpu::BindGroupLayout,
+    bgl: Bindings,
 }
 
 impl BlurPass {
@@ -95,14 +83,25 @@ impl BlurPass {
             label: Some("stark blur"),
             source: wgpu::ShaderSource::Wgsl(blur.wgsl.into()),
         });
-        let bgl = desc::layout_for(
+        // One layout for all four kernels (§21.12), a union because no group ever binds
+        // one plane both as a read texture and as a storage destination — `build_binds`
+        // is what arranges that, wgpu taking the whole group into a dispatch's usage
+        // scope whether the kernel stores or not.
+        let bgl = Bindings::of(
             device,
             "stark blur bgl",
-            BLUR_SLOTS,
-            wgpu::ShaderStages::COMPUTE,
-            false,
+            stark_shaders::layout_entries(
+                &[
+                    blur.fft_both,
+                    blur.fft_one,
+                    blur.make_kernel,
+                    blur.apply_kernel,
+                ],
+                bd::F,
+                &[bd::F],
+            ),
         );
-        let layout = desc::pipeline_layout(device, "stark blur layout", &[Some(&bgl)]);
+        let layout = desc::pipeline_layout(device, "stark blur layout", &[Some(bgl.layout())]);
         let cpipe =
             |label: &str, entry| desc::compute_pipeline(device, label, &layout, &module, entry);
         Self {
@@ -465,19 +464,19 @@ impl BlurFrame {
     }
 
     /// The four bind groups of [`Binds`], over the current planes and uniforms.
-    fn build_binds(&mut self, device: &wgpu::Device, bgl: &wgpu::BindGroupLayout) {
+    fn build_binds(&mut self, device: &wgpu::Device, bgl: &Bindings) {
         let make = |label: &str,
                     src: (&wgpu::TextureView, &wgpu::TextureView),
                     kern: &wgpu::TextureView,
                     dst: (&wgpu::TextureView, &wgpu::TextureView)| {
-            desc::bind_group_for(device, label, bgl, BLUR_SLOTS, false, |i| match i {
+            bgl.group(device, label, |i| match i {
                 bb::F => self.uniforms.resource(),
                 bb::SRC_LIGHT => wgpu::BindingResource::TextureView(src.0),
                 bb::SRC_AUX => wgpu::BindingResource::TextureView(src.1),
                 bb::KERNEL => wgpu::BindingResource::TextureView(kern),
                 bb::DST_LIGHT => wgpu::BindingResource::TextureView(dst.0),
                 bb::DST_AUX => wgpu::BindingResource::TextureView(dst.1),
-                other => unreachable!("`BLUR_SLOTS` lists no binding {other}"),
+                other => unreachable!("the FFT group has no binding {other}"),
             })
         };
         let a = (&self.a_light.view, &self.a_aux.view);

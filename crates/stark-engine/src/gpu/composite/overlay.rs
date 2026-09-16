@@ -6,25 +6,11 @@
 
 use crate::document::selection::Selection;
 use crate::gpu::context::GpuContext;
-use crate::gpu::desc::Slot;
-use crate::gpu::desc::{self, RenderPipe};
+use crate::gpu::desc::{self, Bindings, RenderPipe};
+use stark_shaders::layout_entries;
 use stark_shaders::mirror::overlay::decl as od;
 use stark_shaders::mirror::view::decl as vd;
 
-/// The overlay's **view** group — pass A's two slots, from the same `view.wesl`
-/// declarations (§6.10).
-///
-/// Its uniform is `VERTEX_FRAGMENT` where pass A's is vertex-only: the fragment stage
-/// reads the view here too, to convert a canvas-space dash length into screen px with
-/// the zoom. That visibility is the host's to say, and is why this list exists at all
-/// beside pass A's.
-pub(crate) const VIEW_SLOTS: &[Slot] = &[
-    Slot::dynamic(vd::VIEW).in_stages(wgpu::ShaderStages::VERTEX_FRAGMENT),
-    Slot::at(vd::SAMP),
-];
-
-/// One selection mask tile, sampled to find the contour.
-pub(crate) const MASK_SLOTS: &[Slot] = &[Slot::sampled(od::MASK)];
 use crate::gpu::uniforms::InstanceStream;
 
 /// Per-mask-tile instance of the outline pass: where the tile is, and how to draw
@@ -53,23 +39,36 @@ pub(super) const PEER_OUTLINE_ALPHA: f32 = 0.55;
 /// ([`ViewBindings`](super::view::ViewBindings)) is valid against either.
 pub(super) struct OverlayLayouts {
     /// Group 0's layout, for the consumer that owns the buffer behind it.
-    pub(super) view: wgpu::BindGroupLayout,
-    pub(super) tile: wgpu::BindGroupLayout,
+    ///
+    /// Its uniform comes out `VERTEX_FRAGMENT` where pass A's is vertex-only, from
+    /// `overlay.wesl`'s own reads: the fragment stage measures a canvas-space dash
+    /// length in screen px with the zoom (§6.8).
+    pub(super) view: Bindings,
+    pub(super) tile: Bindings,
 }
 
 impl OverlayLayouts {
     pub(super) fn new(device: &wgpu::Device) -> Self {
-        let frag = wgpu::ShaderStages::FRAGMENT;
+        let ov = stark_shaders::overlay();
+        let stages = [ov.vs_main, ov.fs_main];
         Self {
-            view: desc::layout_for(device, "stark overlay view bgl", VIEW_SLOTS, frag, false),
-            tile: desc::layout_for(device, "stark overlay tile bgl", MASK_SLOTS, frag, false),
+            view: Bindings::of(
+                device,
+                "stark overlay view bgl",
+                layout_entries(&stages, vd::VIEW, &[vd::VIEW]),
+            ),
+            tile: Bindings::of(
+                device,
+                "stark overlay tile bgl",
+                layout_entries(&stages, od::MASK, &[]),
+            ),
         }
     }
 }
 
 pub(super) struct OverlayPass {
     pub(super) pipeline: wgpu::RenderPipeline,
-    pub(super) tile_bgl: wgpu::BindGroupLayout,
+    pub(super) tile_bgl: Bindings,
 }
 
 impl OverlayPass {
@@ -86,7 +85,7 @@ impl OverlayPass {
         let layout = desc::pipeline_layout(
             device,
             "stark overlay layout",
-            &[Some(&layouts.view), Some(&layouts.tile)],
+            &[Some(layouts.view.layout()), Some(layouts.tile.layout())],
         );
         let pipeline = desc::render_pipeline(
             device,
@@ -155,14 +154,10 @@ impl OverlayPass {
                 // Kept on the mask tile, like pass A's on the paint tile: the ants
                 // redraw every frame a selection is live, and the mask is immutable.
                 mask_tiles.push(handle.overlay_bg(|| {
-                    desc::bind_group_for(
-                        &ctx.device,
-                        "stark selection outline tile bg",
-                        &self.tile_bgl,
-                        MASK_SLOTS,
-                        false,
-                        |_| wgpu::BindingResource::TextureView(handle.view()),
-                    )
+                    self.tile_bgl
+                        .group(&ctx.device, "stark selection outline tile bg", |_| {
+                            wgpu::BindingResource::TextureView(handle.view())
+                        })
                 }));
             }
         }

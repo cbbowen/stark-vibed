@@ -78,11 +78,6 @@ use resolve::{ResolvePass, Supersampled, supersample};
 use stark_shaders::mirror::composite::binding as cb;
 use tiles::{Instance, MatteInstance, Ramp, TilePass, TileStreams};
 
-/// Pass A's two slot lists, re-exported for the **stamp loop**, which composites its
-/// working region through the very same `composite.wesl` (§6.3, §6.10). One list, so
-/// the two callers cannot disagree about the group they both build.
-pub(crate) use tiles::{TILE_SLOTS as COMPOSITE_TILE_SLOTS, VIEW_SLOTS as COMPOSITE_VIEW_SLOTS};
-
 /// The layout of pass A's group over a tile's channels — **built once and handed to
 /// both consumers**, because a tile caches the group itself
 /// ([`TilePairHandle::composite_bg`]) and a cached group answers to one layout.
@@ -90,20 +85,24 @@ pub(crate) use tiles::{TILE_SLOTS as COMPOSITE_TILE_SLOTS, VIEW_SLOTS as COMPOSI
 /// Pass A binds it and so does the stamp loop's region composite, which runs
 /// `composite.wesl` over the same tiles into its working region (§6.2). What makes a
 /// tile's group reusable is that there is exactly one layout it could have been built
-/// for (§6.7).
+/// for (§6.7) — so both consumers' entry points are folded in here, `fs_raw` beside
+/// `fs_main`.
 ///
 /// A colour-space change rebuilds the whole GPU stack and empties the document
 /// (`rebuild_gpu_for`), so no tile outlives the layout it cached a group against.
 pub(crate) fn tile_bind_group_layout(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
-) -> wgpu::BindGroupLayout {
-    desc::layout_for(
+) -> desc::Bindings {
+    let c = stark_shaders::composite(color_space.resid());
+    desc::Bindings::of(
         device,
         "stark composite tile bgl",
-        COMPOSITE_TILE_SLOTS,
-        wgpu::ShaderStages::FRAGMENT,
-        color_space.has_resid(),
+        stark_shaders::layout_entries(
+            &[c.vs_main, c.fs_main, c.fs_raw],
+            stark_shaders::mirror::composite::decl::TILE_COLOR,
+            &[],
+        ),
     )
 }
 
@@ -119,7 +118,7 @@ pub(crate) fn tile_bind_group_layout(
 pub(crate) struct SharedPasses {
     pub(crate) blend: Arc<BlendPass>,
     pub(crate) filter: Arc<FilterPass>,
-    pub(crate) tile_bgl: wgpu::BindGroupLayout,
+    pub(crate) tile_bgl: desc::Bindings,
 }
 
 /// Pass A's bind group over `handle`'s channels, built on the tile's first composite
@@ -131,31 +130,24 @@ pub(crate) struct SharedPasses {
 /// be two ways to describe it differently and quietly lose the cache.
 pub(crate) fn tile_bind_group<'a>(
     device: &wgpu::Device,
-    bgl: &wgpu::BindGroupLayout,
+    bgl: &desc::Bindings,
     handle: &'a TilePairHandle,
 ) -> &'a wgpu::BindGroup {
     handle.composite_bg(|| {
         // The layout carries the residual slot exactly when the space has one (§6.7),
         // and every tile of such a document has one — the space decides once, at
         // `acquire_tile`.
-        desc::bind_group_for(
-            device,
-            "stark composite tile bg",
-            bgl,
-            COMPOSITE_TILE_SLOTS,
-            handle.resid_view().is_some(),
-            |i| {
-                let v = match i {
-                    cb::TILE_COLOR => handle.color_view(),
-                    cb::TILE_AUX => handle.aux_view(),
-                    cb::TILE_RESID => handle
-                        .resid_view()
-                        .expect("a residual space's tile has one"),
-                    other => unreachable!("`TILE_SLOTS` lists no binding {other}"),
-                };
-                wgpu::BindingResource::TextureView(v)
-            },
-        )
+        bgl.group(device, "stark composite tile bg", |i| {
+            let v = match i {
+                cb::TILE_COLOR => handle.color_view(),
+                cb::TILE_AUX => handle.aux_view(),
+                cb::TILE_RESID => handle
+                    .resid_view()
+                    .expect("a residual space's tile has one"),
+                other => unreachable!("pass A's tile group has no binding {other}"),
+            };
+            wgpu::BindingResource::TextureView(v)
+        })
     })
 }
 use view::{View, ViewBindings, ViewGroups};
@@ -290,10 +282,10 @@ pub struct CompositorPasses {
 /// that does not depend on the target format, so there is one set of these and one
 /// set of pipelines per format.
 struct TargetLayouts {
-    media: wgpu::BindGroupLayout,
+    media: desc::Bindings,
     overlay: OverlayLayouts,
-    guides: wgpu::BindGroupLayout,
-    resolve: wgpu::BindGroupLayout,
+    guides: desc::Bindings,
+    resolve: desc::Bindings,
 }
 
 impl TargetLayouts {
@@ -1020,17 +1012,9 @@ impl Streams {
             // a group asked for before the write would be built over the old buffer
             // and then kept.
             self.matte_ramps.write(device, queue, &plan.ramps);
-            let layout = &p.tiles.ramp_bgl;
-            self.matte_ramps.group(|slot| {
-                desc::bind_group_for(
-                    device,
-                    "stark matte ramp bg",
-                    layout,
-                    tiles::RAMP_SLOTS,
-                    p.formats.has_resid(),
-                    |_| slot.clone(),
-                )
-            });
+            let ramp = &p.tiles.ramp_bgl;
+            self.matte_ramps
+                .group(|slot| ramp.group(device, "stark matte ramp bg", |_| slot.clone()));
         }
         // `None` when the frame has no matte, which is also when nothing above built
         // one — a group kept from an earlier frame is still valid, and a frame with no
@@ -1180,7 +1164,7 @@ impl Streams {
                         encoder,
                         bounce(*back, *out, *slot, *phase),
                         &self.filter_uniforms,
-                        &p.blend.pigment,
+                        p.blend.pigment.as_ref(),
                         blur,
                         convolve,
                     );

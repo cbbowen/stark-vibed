@@ -9,6 +9,7 @@
 //! per-target half (what this render is looking at, and the groups over it).
 
 use super::display::Transfer;
+use crate::gpu::desc::Bindings;
 use crate::gpu::uniforms::UniformSlots;
 use crate::gpu::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE};
 use crate::view::ViewTransform;
@@ -105,8 +106,8 @@ pub(super) struct ViewBindings {
 /// nothing to say so (§6.7).
 pub(super) struct ViewGroups<'a> {
     pub(super) sampler: &'a wgpu::Sampler,
-    pub(super) tiles: &'a wgpu::BindGroupLayout,
-    pub(super) overlay: &'a wgpu::BindGroupLayout,
+    pub(super) tiles: &'a Bindings,
+    pub(super) overlay: &'a Bindings,
 }
 
 impl ViewBindings {
@@ -158,30 +159,22 @@ impl ViewBindings {
 /// The two group-0 bind groups over `slots` — pass A's and the outline's.
 ///
 /// The two hold the same pair against two layouts, which differ only in the stages
-/// each slot is visible from; both lists are built from `view.wesl`'s declarations
-/// (§6.10), so the pair cannot be numbered two ways.
+/// each slot is visible from — read off the entry points that bind each (§6.10), so
+/// the pair cannot be numbered two ways.
 fn groups(
     device: &wgpu::Device,
     slots: &UniformSlots<ViewUniform>,
     parts: ViewGroups<'_>,
 ) -> (wgpu::BindGroup, wgpu::BindGroup) {
-    let group = |label, layout, list| {
-        crate::gpu::desc::bind_group_for(device, label, layout, list, false, |i| match i {
+    let group = |label, bindings: &Bindings| {
+        bindings.group(device, label, |i| match i {
             vb::VIEW => slots.resource(),
             vb::SAMP => wgpu::BindingResource::Sampler(parts.sampler),
-            other => unreachable!("a view group lists no binding {other}"),
+            other => unreachable!("a view group has no binding {other}"),
         })
     };
     (
-        group(
-            "stark composite view bg",
-            parts.tiles,
-            super::tiles::VIEW_SLOTS,
-        ),
-        group(
-            "stark overlay view bg",
-            parts.overlay,
-            super::overlay::VIEW_SLOTS,
-        ),
+        group("stark composite view bg", parts.tiles),
+        group("stark overlay view bg", parts.overlay),
     )
 }

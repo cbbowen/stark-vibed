@@ -33,8 +33,8 @@ use super::slots;
 pub(in crate::gpu::stroke) struct DynamicsKit {
     // Region composite: base tiles → one 1:1 canvas region (color + wide aux).
     pub(in crate::gpu::stroke) composite_pipeline: wgpu::RenderPipeline,
-    pub(in crate::gpu::stroke) composite_view_bgl: wgpu::BindGroupLayout,
-    pub(in crate::gpu::stroke) composite_tile_bgl: wgpu::BindGroupLayout,
+    pub(in crate::gpu::stroke) composite_view_bgl: desc::Bindings,
+    pub(in crate::gpu::stroke) composite_tile_bgl: desc::Bindings,
     pub(in crate::gpu::stroke) composite_sampler: wgpu::Sampler,
     // The stamp-loop dispatches (one compute shader, several entry points).
     /// The extent copy that gives the `deposit`/`settle` something to read while
@@ -117,7 +117,7 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
 pub(in crate::gpu::stroke) fn build_dynamics_kit(
     ctx: &crate::gpu::context::GpuContext,
     color_space: &dyn ColorSpace,
-    composite_tile_bgl: wgpu::BindGroupLayout,
+    composite_tile_bgl: desc::Bindings,
 ) -> DynamicsKit {
     let device = &ctx.device;
     // The loop stores a tile's color through `region_color_w` and copies the region
@@ -146,19 +146,24 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     });
     // Pass A's own tile layout, because the group this loop binds per tile is the one
     // the tile itself caches (`composite::tile_bind_group_layout`). The view group has
-    // no such cache, so it is built here from the declarations pass A reads — this
-    // loop composites its working region through `composite.wesl` itself (§6.3).
-    let composite_view_bgl = desc::layout_for(
+    // no such cache, so it is built here off the two stages this loop runs — which
+    // composite their working region through `composite.wesl` itself (§6.3).
+    let composite_view_bgl = desc::Bindings::of(
         device,
         "stark dynamics composite view bgl",
-        crate::gpu::composite::COMPOSITE_VIEW_SLOTS,
-        frag,
-        resid,
+        stark_shaders::layout_entries(
+            &[composite.vs_main, composite.fs_raw],
+            stark_shaders::mirror::view::decl::VIEW,
+            &[stark_shaders::mirror::view::decl::VIEW],
+        ),
     );
     let composite_layout = desc::pipeline_layout(
         device,
         "stark dynamics composite layout",
-        &[Some(&composite_view_bgl), Some(&composite_tile_bgl)],
+        &[
+            Some(composite_view_bgl.layout()),
+            Some(composite_tile_bgl.layout()),
+        ],
     );
     // Not `ChannelFormats::blended`: the region's aux is the *wide* scratch format and
     // takes the aux blend where the two color targets take the color's. Built rather

@@ -14,50 +14,19 @@
 use crate::colorspace::ColorSpace;
 use crate::gpu::channels::Targets;
 use crate::gpu::context::GpuContext;
-use crate::gpu::desc::{self, Slot};
+use crate::gpu::desc::{self, Bindings};
 use crate::gpu::uniforms::UniformSlots;
 use crate::view::ViewTransform;
 use stark_shaders::mirror::filter_common::binding as fc;
 use stark_shaders::mirror::filter_common::decl as fcd;
 use stark_shaders::mirror::filter_mixbox::binding as fm;
-use stark_shaders::mirror::filter_mixbox::decl as fmd;
 use stark_shaders::mirror::mixbox_lut::binding as ml;
-use stark_shaders::mirror::mixbox_lut::decl as mld;
 
 use super::blend::Bounce;
 use super::group::FilterDraw;
 
 // Generated from `filter_common.wesl`'s own declaration (§6.10).
 pub(crate) use stark_shaders::mirror::filter_common::Filter as FilterUniform;
-
-/// Which bindings the filter pass reads, in layout order (§6.10).
-///
-/// **The gap at 4 is deliberate.** The numbers are the blend pass's: this pass is
-/// that shape with one input instead of two, so binding 3 carries the chromatic
-/// gather's sampler, 4 stays undeclared, and everything after keeps the number it
-/// has there.
-///
-/// The accumulator textures are declared **sampled** rather than loaded, because the
-/// chromatic filter (§21.10) reads them through `back_samp` at fractional positions.
-/// That asks their formats to be filterable, which `Rgba16Float`/`R16Float` are
-/// everywhere this runs — including WebGPU's core feature set — and costs the point
-/// filters nothing: a sampled declaration still serves their exact `textureLoad`s.
-pub(crate) const FILTER_SLOTS: &[Slot] = &[
-    Slot::dynamic(fcd::F),
-    Slot::sampled(fcd::BACK_COLOR),
-    Slot::sampled(fcd::BACK_AUX),
-    Slot::at(fcd::BACK_SAMP),
-    // The focal blur's convolved planes (§21.12). Loaded exactly, never sampled:
-    // their `f32` formats are not filterable everywhere this runs, and the resolve
-    // wants its own texel. A 1×1 zero stands in when the frame has no blur (§6.8).
-    Slot::at(fcd::BLUR_LIGHT),
-    Slot::sampled(mld::PIGMENT_LUT),
-    Slot::at(mld::PIGMENT_SAMP),
-    // Sampled, unlike the blend's two: the gather reads the residual through the same
-    // taps as the color it belongs to.
-    Slot::sampled(fmd::BACK_RESID).only_with_resid(),
-    Slot::at(fcd::BLUR_AUX),
-];
 
 /// The filter pass: one fullscreen draw rewriting the accumulator.
 ///
@@ -86,7 +55,7 @@ pub(crate) struct FilterPass {
     ///
     /// [`BlurPass`]: super::blur::BlurPass
     pub(super) blur_decode: wgpu::RenderPipeline,
-    bgl: wgpu::BindGroupLayout,
+    bgl: Bindings,
     /// How the chromatic gather (§21.10) reads the accumulator *between* texels:
     /// bilinear, clamped to the edge — a tap displaced past the viewport reads the
     /// rim rather than wrapping the far side of the picture into a fringe. The point
@@ -103,21 +72,32 @@ impl FilterPass {
     pub(crate) fn new(ctx: &GpuContext, color_space: &dyn ColorSpace) -> Self {
         let device = &ctx.device;
         let formats = crate::gpu::channels::ChannelFormats::of(color_space);
-        let frag = wgpu::ShaderStages::FRAGMENT;
         let filter = color_space.filter_shader();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark filter"),
             source: wgpu::ShaderSource::Wgsl(filter.wgsl.into()),
         });
-        let resid_format = formats.resid;
-        let bgl = desc::layout_for(
+        // One layout for all three fragment entry points below, so the accumulator's
+        // textures come out **filterable**: the chromatic gather (§21.10) reads them
+        // through `back_samp` at fractional positions where the point filters
+        // `textureLoad` them, and one filterable declaration serves both. The blur's
+        // convolved planes stay unfilterable — their `f32` formats are not filterable
+        // everywhere this runs, and nothing samples them (§21.12).
+        let bgl = Bindings::of(
             device,
             "stark filter bgl",
-            FILTER_SLOTS,
-            frag,
-            resid_format.is_some(),
+            stark_shaders::layout_entries(
+                &[
+                    filter.vs_main,
+                    filter.fs_main,
+                    filter.fs_tile,
+                    filter.fs_blur_decode,
+                ],
+                fcd::F,
+                &[fcd::F],
+            ),
         );
-        let layout = desc::pipeline_layout(device, "stark filter layout", &[Some(&bgl)]);
+        let layout = desc::pipeline_layout(device, "stark filter layout", &[Some(bgl.layout())]);
         // No fixed-function blend: the pass computes the whole texel — including the
         // height it copies straight across — and *replaces* what it writes. That is
         // what the ping-pong is for.
@@ -193,31 +173,25 @@ impl FilterPass {
         device: &wgpu::Device,
         uniform: wgpu::BindingResource<'_>,
         back: Targets<'_>,
-        pigment: &crate::gpu::pigment::PigmentLut,
+        pigment: Option<&crate::gpu::pigment::PigmentLut>,
         blur: Option<(&wgpu::TextureView, &wgpu::TextureView)>,
     ) -> wgpu::BindGroup {
         let (blur_light, blur_aux) = blur.unwrap_or((&self.blur_zero.0, &self.blur_zero.1));
-        desc::bind_group_for(
-            device,
-            "stark filter bg",
-            &self.bgl,
-            FILTER_SLOTS,
-            back.resid.is_some(),
-            |i| match i {
-                fc::F => uniform.clone(),
-                fc::BACK_COLOR => wgpu::BindingResource::TextureView(back.color),
-                fc::BACK_AUX => wgpu::BindingResource::TextureView(back.aux),
-                fc::BACK_SAMP => wgpu::BindingResource::Sampler(&self.sampler),
-                fc::BLUR_LIGHT => wgpu::BindingResource::TextureView(blur_light),
-                fc::BLUR_AUX => wgpu::BindingResource::TextureView(blur_aux),
-                ml::PIGMENT_LUT => wgpu::BindingResource::TextureView(&pigment.view),
-                ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&pigment.sampler),
-                fm::BACK_RESID => wgpu::BindingResource::TextureView(
-                    back.resid.expect("a residual build has one"),
-                ),
-                other => unreachable!("`FILTER_SLOTS` lists no binding {other}"),
-            },
-        )
+        let lut = || pigment.expect("the layout holds the LUT only where the shader reads it");
+        self.bgl.group(device, "stark filter bg", |i| match i {
+            fc::F => uniform.clone(),
+            fc::BACK_COLOR => wgpu::BindingResource::TextureView(back.color),
+            fc::BACK_AUX => wgpu::BindingResource::TextureView(back.aux),
+            fc::BACK_SAMP => wgpu::BindingResource::Sampler(&self.sampler),
+            fc::BLUR_LIGHT => wgpu::BindingResource::TextureView(blur_light),
+            fc::BLUR_AUX => wgpu::BindingResource::TextureView(blur_aux),
+            ml::PIGMENT_LUT => wgpu::BindingResource::TextureView(&lut().view),
+            ml::PIGMENT_SAMP => wgpu::BindingResource::Sampler(&lut().sampler),
+            fm::BACK_RESID => {
+                wgpu::BindingResource::TextureView(back.resid.expect("a residual build has one"))
+            }
+            other => unreachable!("the filter group has no binding {other}"),
+        })
     }
 
     /// Encode one filter layer: the accumulator `b.back` read and written back
@@ -237,7 +211,7 @@ impl FilterPass {
         encoder: &mut wgpu::CommandEncoder,
         b: Bounce<'_>,
         slots: &UniformSlots<FilterUniform>,
-        pigment: &crate::gpu::pigment::PigmentLut,
+        pigment: Option<&crate::gpu::pigment::PigmentLut>,
         blur: Option<&super::blur::BlurFrame>,
         convolve: Option<&super::blur::BlurPass>,
     ) {

@@ -12,6 +12,11 @@
 //! layout objects, the sweep's fragment-visible one and the wet loop's compute-visible
 //! one, and the union spans both.
 //!
+//! A pipeline whose layouts are **derived** (`stark_shaders::layout_entries`) names no
+//! list, and nothing here checks it: there is no second opinion to hold against the
+//! shader. It stays in the table for the other test, which asks that every entry point
+//! declared is built into something.
+//!
 //! [`KNOWN`] is the differences that stand today; the check is that the differences
 //! found **equal** it. Nothing here changes the engine.
 
@@ -19,7 +24,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use stark_shaders::{Binding, EntryPoint, Lane, Resid};
 
-use crate::gpu::composite::{blend, blur, filter, guides, media, overlay, resolve, tiles};
 use crate::gpu::desc::Slot;
 use crate::gpu::stroke::dynamics::{kit, slots as dyn_slots};
 use crate::gpu::stroke::{erase, swept};
@@ -27,8 +31,8 @@ use crate::gpu::{fill, merge, selection, transform};
 
 /// One bind group layout a pipeline binds: the list it is built from, named as the
 /// host writes it, and **the residual the host built it under** — which is not always
-/// the colour space's. The sweep, the prefix tap and the overlay pass `false`
-/// unconditionally, having no `@if(resid)` declaration between them.
+/// the colour space's. The sweep and the prefix tap pass `false` unconditionally,
+/// having no `@if(resid)` declaration between them.
 #[derive(Clone, Copy)]
 struct Group {
     name: &'static str,
@@ -48,6 +52,9 @@ struct Case {
     /// Every stage's entry point. A render pipeline's layout has to satisfy the vertex
     /// and fragment stages together, so the two are read as one set.
     entries: Vec<EntryPoint>,
+    /// The hand-written lists its pipeline layout **begins** with — empty where every
+    /// one of them is derived. A case naming some but not all must name them from
+    /// group 0 up, which is what [`by_list`]'s position check reads.
     groups: Vec<Group>,
 }
 
@@ -75,9 +82,9 @@ enum Diff {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Where {
     /// Whether it stands in the space that carries a residual (§6.7). **Part of the
-    /// key**, because a difference is a fact about one space: the pigment LUT is a
-    /// placeholder in Oklab and the real table in Mixbox, so a waiver keyed without
-    /// this would cover a genuine fault in the other.
+    /// key**, because a difference is a fact about one space: a slot the pigment build
+    /// declares is in no list at all without it, so a waiver keyed without this would
+    /// cover a genuine fault in the other space.
     resid: bool,
     list: &'static str,
     module: &'static str,
@@ -113,49 +120,14 @@ impl Known {
 /// The differences that stand today, one row per colour space each stands in.
 ///
 /// **Two rows where one difference stands in both spaces**, because the space is part
-/// of what is being declared: three of the seven below hold in Oklab and Mixbox alike,
-/// and four are the colorimetric space's alone. None of them is fixed here — the lists
-/// are another commit's business, and a check that quietly edits what it measures is
-/// not a check.
+/// of what is being declared: two of the three below hold in Oklab and Mixbox alike,
+/// and one is the pigment space's alone. None of them is fixed here — the lists are
+/// another commit's business, and a check that quietly edits what it measures is not a
+/// check.
 const KNOWN: &[Known] = &[
-    // One layout serves both spaces because whether the pigment LUT is real is
-    // `ColorSpace::needs_pigment_lut`'s answer rather than the layout's — so Oklab binds
-    // a 1×1 stand-in (§6.8's pattern) and these four stand there alone.
-    Known {
-        resid: false,
-        list: "BLEND_SLOTS",
-        module: "mixbox_lut",
-        decl: "PIGMENT_LUT",
-        diff: Diff::Unread,
-        why: "a placeholder in the colorimetric space, which declares no LUT",
-    },
-    Known {
-        resid: false,
-        list: "BLEND_SLOTS",
-        module: "mixbox_lut",
-        decl: "PIGMENT_SAMP",
-        diff: Diff::Unread,
-        why: "the placeholder LUT's sampler",
-    },
-    Known {
-        resid: false,
-        list: "FILTER_SLOTS",
-        module: "mixbox_lut",
-        decl: "PIGMENT_LUT",
-        diff: Diff::Unread,
-        why: "a placeholder in the colorimetric space, which declares no LUT",
-    },
-    Known {
-        resid: false,
-        list: "FILTER_SLOTS",
-        module: "mixbox_lut",
-        decl: "PIGMENT_SAMP",
-        diff: Diff::Unread,
-        why: "the placeholder LUT's sampler",
-    },
-    // The three below are the lists being wrong rather than a layout being shared.
-    // Left as they are and recorded here, since fixing a list changes a layout and a
-    // bind group, which is a pixel-affecting change.
+    // All three are the lists being wrong rather than a layout being shared. Left as
+    // they are and recorded here, since fixing a list changes a layout and a bind
+    // group, which is a pixel-affecting change.
     //
     // The first two are unconditional declarations, so they stand in both spaces.
     Known {
@@ -193,7 +165,7 @@ const KNOWN: &[Known] = &[
         diff: Diff::Unread,
         why: "the same, in the pigment space",
     },
-    // And the third is `@if(resid)`, so it is in no list at all without the residual —
+    // And the last is `@if(resid)`, so it is in no list at all without the residual —
     // the pigment space alone. The allow-list this replaced was keyed without the space
     // and declared it at `resid: false`, where it never fired.
     Known {
@@ -268,40 +240,44 @@ struct Table {
 ///
 /// Shaped like [`ColorSpace::resid`](crate::colorspace::ColorSpace::resid) for the same
 /// reason — without the `mixbox` feature the pigment half does not exist to be named.
-fn space_table(resid: bool) -> Table {
-    #[cfg(feature = "mixbox")]
-    if resid {
-        let (m, b, f) = (
-            stark_shaders::media_mixbox(),
-            stark_shaders::blend_mixbox(),
-            stark_shaders::filter_mixbox(),
-        );
-        return space_shaped(
-            resid,
-            ("media_mixbox", m.entries, [m.vs_main, m.fs_main]),
-            ("blend_mixbox", b.entries, [b.vs_main, b.fs_main]),
-            (
-                "filter_mixbox",
-                f.entries,
-                [f.vs_main, f.fs_main, f.fs_tile, f.fs_blur_decode],
-            ),
-        );
+fn space_table(r: Resid) -> Table {
+    match r {
+        // Exhaustive either way, with no gate of its own: `Resid::With` is generated
+        // only where the build linked the pigment variant.
+        #[cfg(feature = "mixbox")]
+        Resid::With => {
+            let (m, b, f) = (
+                stark_shaders::media_mixbox(),
+                stark_shaders::blend_mixbox(),
+                stark_shaders::filter_mixbox(),
+            );
+            space_shaped(
+                ("media_mixbox", m.entries, [m.vs_main, m.fs_main]),
+                ("blend_mixbox", b.entries, [b.vs_main, b.fs_main]),
+                (
+                    "filter_mixbox",
+                    f.entries,
+                    [f.vs_main, f.fs_main, f.fs_tile, f.fs_blur_decode],
+                ),
+            )
+        }
+        Resid::Without => {
+            let (m, b, f) = (
+                stark_shaders::media_oklab(),
+                stark_shaders::blend_oklab(),
+                stark_shaders::filter_oklab(),
+            );
+            space_shaped(
+                ("media_oklab", m.entries, [m.vs_main, m.fs_main]),
+                ("blend_oklab", b.entries, [b.vs_main, b.fs_main]),
+                (
+                    "filter_oklab",
+                    f.entries,
+                    [f.vs_main, f.fs_main, f.fs_tile, f.fs_blur_decode],
+                ),
+            )
+        }
     }
-    let (m, b, f) = (
-        stark_shaders::media_oklab(),
-        stark_shaders::blend_oklab(),
-        stark_shaders::filter_oklab(),
-    );
-    space_shaped(
-        resid,
-        ("media_oklab", m.entries, [m.vs_main, m.fs_main]),
-        ("blend_oklab", b.entries, [b.vs_main, b.fs_main]),
-        (
-            "filter_oklab",
-            f.entries,
-            [f.vs_main, f.fs_main, f.fs_tile, f.fs_blur_decode],
-        ),
-    )
 }
 
 /// One space's record, as [`space_shaped`] takes it: its name, everything it declares,
@@ -309,25 +285,26 @@ fn space_table(resid: bool) -> Table {
 type Shader<const N: usize> = (&'static str, &'static [EntryPoint], [EntryPoint; N]);
 
 /// The five pipelines the two spaces have the same shape of — one media pass, one
-/// blend, and the filter's three fragment entry points over one layout.
-fn space_shaped(resid: bool, media: Shader<2>, blend: Shader<2>, filter: Shader<4>) -> Table {
+/// blend, and the filter's three fragment entry points over one layout. Every layout
+/// between them is derived, so none of them names a list.
+fn space_shaped(media: Shader<2>, blend: Shader<2>, filter: Shader<4>) -> Table {
     let [vs, fs_main, fs_tile, fs_blur_decode] = filter.2;
     let one = |what, fs| Case {
         what,
         entries: vec![vs, fs],
-        groups: vec![group("FILTER_SLOTS", filter::FILTER_SLOTS, resid)],
+        groups: Vec::new(),
     };
     Table {
         cases: vec![
             Case {
                 what: "media",
                 entries: media.2.to_vec(),
-                groups: vec![group("MEDIA_SLOTS", media::MEDIA_SLOTS, resid)],
+                groups: Vec::new(),
             },
             Case {
                 what: "blend",
                 entries: blend.2.to_vec(),
-                groups: vec![group("BLEND_SLOTS", blend::BLEND_SLOTS, resid)],
+                groups: Vec::new(),
             },
             one("filter", fs_main),
             one("filter tile", fs_tile),
@@ -377,10 +354,6 @@ fn table(r: Resid) -> Table {
     let li = stark_shaders::liquify(r);
     let sc = stark_shaders::slice();
 
-    // The composite's two groups, which the wet loop's own preview pass rebuilds from
-    // the same two lists.
-    let view = || group("composite::VIEW_SLOTS", tiles::VIEW_SLOTS, resid);
-    let tile = || group("composite::TILE_SLOTS", tiles::TILE_SLOTS, resid);
     // The sweep's three, shared by five pipelines and built `false` throughout: nothing
     // `stamp_common` declares is `@if(resid)`.
     let sweep = || {
@@ -397,53 +370,52 @@ fn table(r: Resid) -> Table {
     let dyn_group = |name, slots| group(name, slots, resid);
 
     let mut all = vec![
+        // The compositing passes' layouts are all derived, so none of the nine below
+        // names a list — they stand here for the entry-point coverage check alone.
         Case {
             what: "composite",
             entries: vec![composite.vs_main, composite.fs_main],
-            groups: vec![view(), tile()],
+            groups: Vec::new(),
         },
         Case {
             what: "matte",
             entries: vec![matte.vs_main, matte.fs_main],
-            groups: vec![view(), group("RAMP_SLOTS", tiles::RAMP_SLOTS, resid)],
+            groups: Vec::new(),
         },
         Case {
             what: "overlay",
             entries: vec![ov.vs_main, ov.fs_main],
-            groups: vec![
-                group("overlay::VIEW_SLOTS", overlay::VIEW_SLOTS, false),
-                group("MASK_SLOTS", overlay::MASK_SLOTS, false),
-            ],
+            groups: Vec::new(),
         },
         Case {
             what: "guides",
             entries: vec![gu.vs_main, gu.fs_main],
-            groups: vec![group("GUIDE_SLOTS", guides::GUIDE_SLOTS, false)],
+            groups: Vec::new(),
         },
         Case {
             what: "resolve",
             entries: vec![re.vs_main, re.fs_main],
-            groups: vec![group("RESOLVE_SLOTS", resolve::RESOLVE_SLOTS, false)],
+            groups: Vec::new(),
         },
         Case {
             what: "blur fft",
             entries: vec![bl.fft_both],
-            groups: vec![group("BLUR_SLOTS", blur::BLUR_SLOTS, false)],
+            groups: Vec::new(),
         },
         Case {
             what: "blur kernel fft",
             entries: vec![bl.fft_one],
-            groups: vec![group("BLUR_SLOTS", blur::BLUR_SLOTS, false)],
+            groups: Vec::new(),
         },
         Case {
             what: "blur make kernel",
             entries: vec![bl.make_kernel],
-            groups: vec![group("BLUR_SLOTS", blur::BLUR_SLOTS, false)],
+            groups: Vec::new(),
         },
         Case {
             what: "blur apply kernel",
             entries: vec![bl.apply_kernel],
-            groups: vec![group("BLUR_SLOTS", blur::BLUR_SLOTS, false)],
+            groups: Vec::new(),
         },
         Case {
             what: "fill",
@@ -561,7 +533,7 @@ fn table(r: Resid) -> Table {
         Case {
             what: "dynamics composite",
             entries: vec![composite.vs_main, composite.fs_raw],
-            groups: vec![view(), tile()],
+            groups: Vec::new(),
         },
         Case {
             what: "dynamics snapshot",
@@ -711,7 +683,7 @@ fn table(r: Resid) -> Table {
             entries: sc.entries,
         },
     ];
-    let space = space_table(resid);
+    let space = space_table(r);
     all.extend(space.cases);
     records.extend(space.records);
     Table {
@@ -723,21 +695,16 @@ fn table(r: Resid) -> Table {
 /// The table folded by list: each one, and every entry point bound through it.
 ///
 /// # Panics
-/// On a case that claims nothing — no entry point, or no group — on a group vector
-/// whose order is not the `@group` numbering the shader declares, or if one name
-/// stands for two lists or for one list at two residuals. Each would make the union
-/// below a comparison against something no pipeline is.
+/// On a case that names no entry point, on a group vector whose order is not the
+/// `@group` numbering the shader declares, or if one name stands for two lists or for
+/// one list at two residuals. Each would make the union below a comparison against
+/// something no pipeline is.
 fn by_list(cases: &[Case]) -> BTreeMap<&'static str, (Group, Vec<EntryPoint>)> {
     let mut out: BTreeMap<&'static str, (Group, Vec<EntryPoint>)> = BTreeMap::new();
     for case in cases {
         assert!(
             !case.entries.is_empty(),
             "`{}` names no entry point, so it says nothing about any list it holds",
-            case.what,
-        );
-        assert!(
-            !case.groups.is_empty(),
-            "`{}` names no group, so nothing of it is checked",
             case.what,
         );
         for (i, g) in case.groups.iter().enumerate() {

@@ -7,23 +7,12 @@
 
 use super::display::Transfer;
 use crate::gpu::context::GpuContext;
-use crate::gpu::desc;
-use crate::gpu::desc::Slot;
+use crate::gpu::desc::{self, Bindings};
 use crate::view::ViewTransform;
 use stark_model::document::GuideScene;
+use stark_shaders::layout_entries;
 use stark_shaders::mirror::guides::decl as gd;
 
-/// The guide overlay's one binding (§20.4).
-///
-/// One slot per visible guide in the frame, the stride derived from
-/// [`GuideUniform`] itself rather than named here: a stride that under-strides the
-/// uniform has two visible guides reading each other's lanes, with nothing to say so.
-///
-/// Bound to **both** stages: the vertex stage reads the display transfer out of it, to
-/// convert the pass's sRGB-coded hues once per triangle rather than once per texel of a
-/// fullscreen pass (`guides.wesl`'s `VsOut`).
-pub(crate) const GUIDE_SLOTS: &[Slot] =
-    &[Slot::dynamic(gd::GUIDE).in_stages(wgpu::ShaderStages::VERTEX_FRAGMENT)];
 use crate::gpu::uniforms::UniformSlots;
 
 // Generated from `guides.wesl`'s own declaration — pass D, the drawing guides
@@ -114,33 +103,38 @@ fn pack_guides(scene: &GuideScene, view: ViewTransform, transfer: Transfer) -> G
 
 /// The guide pass's bind group layout, shared by the pipeline compiled for each
 /// target format ([`TargetPasses`](super::TargetPasses)).
-pub(super) fn guide_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    desc::layout_for(
+///
+/// One slot per visible guide in the frame (§20.4), so the uniform is bound at a
+/// dynamic offset; the stride is [`GuideUniform`]'s own, never named here. It comes
+/// out visible to **both** stages, because the vertex stage reads the display
+/// transfer out of it to convert the pass's sRGB-coded hues once per triangle rather
+/// than once per texel (`guides.wesl`'s `VsOut`).
+pub(super) fn guide_layout(device: &wgpu::Device) -> Bindings {
+    let gu = stark_shaders::guides();
+    Bindings::of(
         device,
         "stark guides bgl",
-        GUIDE_SLOTS,
-        wgpu::ShaderStages::FRAGMENT,
-        false,
+        layout_entries(&[gu.vs_main, gu.fs_main], gd::GUIDE, &[gd::GUIDE]),
     )
 }
 
 pub(super) struct GuidePass {
     pub(super) pipeline: wgpu::RenderPipeline,
-    pub(super) bgl: wgpu::BindGroupLayout,
+    pub(super) bgl: Bindings,
 }
 
 impl GuidePass {
     pub(super) fn new(
         device: &wgpu::Device,
         target_format: wgpu::TextureFormat,
-        bgl: &wgpu::BindGroupLayout,
+        bgl: &Bindings,
     ) -> Self {
         let guides = stark_shaders::guides();
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("stark guides"),
             source: wgpu::ShaderSource::Wgsl(guides.wgsl.into()),
         });
-        let layout = desc::pipeline_layout(device, "stark guides layout", &[Some(bgl)]);
+        let layout = desc::pipeline_layout(device, "stark guides layout", &[Some(bgl.layout())]);
         let pipeline = desc::fullscreen_pipeline(
             device,
             "stark guides pipeline",
@@ -188,17 +182,9 @@ impl GuidePass {
         slots.write(&ctx.device, &ctx.queue, &packed);
         // Cached, and dropped by whatever write reallocates the buffer under it, which
         // `UniformSlots::group` handles.
-        let layout = &self.bgl;
-        let bg = slots.group(|slot| {
-            desc::bind_group_for(
-                &ctx.device,
-                "stark guides bg",
-                layout,
-                GUIDE_SLOTS,
-                false,
-                |_| slot.clone(),
-            )
-        });
+        let bindings = &self.bgl;
+        let bg =
+            slots.group(|slot| bindings.group(&ctx.device, "stark guides bg", |_| slot.clone()));
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark guides pass"),
             color_attachments: &[Some(desc::attach(target, desc::LOAD))],
