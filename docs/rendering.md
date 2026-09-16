@@ -1122,10 +1122,25 @@ four.
 
 ### Adding a vertex instance record
 
-Add `("<wesl module>", "<vs entry>", "<RustName>")` to `VERTEX`. The name is the
-one thing the shader cannot supply — a parameter list has no name of its own — so
-it is written once, beside the declaration it names. Then delete the host struct
-*and* its `vertex_attr_array!`, and build the buffer from the generated layout:
+Declare the `@location` attributes as the members of a **named struct** and have the
+entry point take one of those:
+
+```wgsl
+struct SegmentInstance {
+    // Where the segment starts, in canvas px.
+    @location(0) start: vec2<f32>,
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32, inst: SegmentInstance) -> VsOut { … }
+```
+
+The struct's name is the Rust record's. That used to be the one thing the shader
+could not supply — a parameter list has no name of its own — so the build script
+kept a `VERTEX` table naming each one; the struct says it instead, and the table is
+gone. A `@vertex` entry point taking bare `@location` parameters is refused, with the
+same message. Then delete the host struct *and* its `vertex_attr_array!`, and build
+the buffer from the generated layout:
 
 ```rust
 buffers: &[Some(stark_shaders::mirror::stamp::segment_instance_layout(
@@ -1134,7 +1149,7 @@ buffers: &[Some(stark_shaders::mirror::stamp::segment_instance_layout(
 ```
 
 **Three transcriptions collapse here, not two.** A vertex input was written as the
-shader's parameter list, as a host `#[repr(C)]` struct, and *again* as
+shader's declaration, as a host `#[repr(C)]` struct, and *again* as
 `vertex_attr_array![0 => Float32x2, 1 => Float32]` — where the formats restate the
 types and the offsets are implied by the order. The third is the one with no
 redundancy to catch it: swapping two same-sized attributes made every instance read
@@ -1155,7 +1170,7 @@ means to advance the buffer per vertex or per instance. Everything else — stri
 formats, offsets — comes from the declaration.
 
 This is also where the generator stops *catching* mismatches and starts making them
-unrepresentable. Renumbering a `@location` or reordering the parameters moves the
+unrepresentable. Renumbering a `@location` or reordering the members moves the
 struct, the formats and the offsets together, so there is nothing left to disagree;
 the only thing that can still fail is the host assigning a wrong *value*, and a
 type change fails at the assignment.

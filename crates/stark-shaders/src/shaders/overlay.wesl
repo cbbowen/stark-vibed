@@ -50,9 +50,8 @@ struct VsOut {
     @location(2) @interpolate(flat) level: f32,
 }
 
-@vertex
-fn vs_main(
-    @builtin(vertex_index) vi: u32,
+// One mask tile of the outline being traced. Its name is the Rust record's (§6.10).
+struct OverlayInstance {
     // Per-tile instance: the mask tile interior's top-left in canvas px.
     @location(0) origin: vec2<f32>,
     // The outline's color — the marching ants, or a peer's hue (§17.3).
@@ -60,9 +59,12 @@ fn vs_main(
     // The mask's peak coverage (`Selection::level`) — what "fully selected" means
     // for this instance's selection, and so twice the contour to trace.
     @location(2) level: f32,
-) -> VsOut {
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32, inst: OverlayInstance) -> VsOut {
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
-    let canvas_pos = origin + corner * view.misc.x;
+    let canvas_pos = inst.origin + corner * view.misc.x;
     var out: VsOut;
     let m = mat2x2<f32>(view.st.xy, view.st.zw);
     out.clip = vec4<f32>(m * canvas_pos + view.xlate.xy, 0.0, 1.0);
@@ -70,8 +72,8 @@ fn vs_main(
     // a color tile — so the taps below reach into the apron (the neighbour's real
     // coverage) at the tile edge rather than clamping.
     out.uv = corner * view.misc.y + view.misc.z;
-    out.tint = tint;
-    out.level = level;
+    out.tint = inst.tint;
+    out.level = inst.level;
     return out;
 }
 

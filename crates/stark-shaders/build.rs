@@ -1,7 +1,7 @@
 //! Compiles WESL shader modules to WGSL at build time (§2).
 //!
 //! The work is `stark-shaders-build`'s. What is left here is what belongs to *this*
-//! crate: the entry-point list, the two things the shaders cannot say about
+//! crate: the entry-point list, the one thing the shaders cannot say about
 //! themselves, and the paths.
 
 use std::path::{Path, PathBuf};
@@ -15,24 +15,6 @@ include!("src/entry_points.rs");
 /// host type, and generating from one of them while ignoring the rest would move the
 /// drift rather than remove it. Every *other* uniform struct is discovered.
 const SHARED: &[(&[&str], &str)] = &[(&["composite", "matte", "overlay"], "View")];
-
-/// The per-instance records a vertex entry point's `@location` parameters describe, as
-/// `(module, entry point, Rust name)`.
-///
-/// The name is the one thing here the shader cannot supply — a parameter list has no
-/// name of its own. The *membership* is not a choice: the generator fails the build for
-/// any `@vertex` entry point taking `@location` parameters that is missing here.
-///
-/// `composite`'s record is generated once and used twice: pass A draws the layer stack
-/// with it and the brush-dynamics loop composites its working region through the very
-/// same shader (§6.3).
-const VERTEX: &[(&str, &str, &str)] = &[
-    ("composite", "vs_main", "Instance"),
-    ("mask_region", "vs_main", "MaskInstance"),
-    ("matte", "vs_main", "MatteInstance"),
-    ("overlay", "vs_main", "OverlayInstance"),
-    ("stamp", "vs_main", "SegmentInstance"),
-];
 
 /// The vendored Mixbox shader (git submodule), source of the pigment-mixing
 /// polynomial. Licensed CC BY-NC 4.0 — see `vendor/mixbox/LICENSE`.
@@ -64,7 +46,6 @@ fn main() {
         resid_feature: RESID_FEATURE,
         ceiling_feature: CEILING_FEATURE,
         shared: SHARED,
-        vertex: VERTEX,
     });
 
     // The tree, by directory: cargo scans a named directory recursively, so this

@@ -28,17 +28,19 @@ struct VsOut {
     @location(0) @interpolate(flat) origin: vec2<f32>,
 }
 
-@vertex
-fn vs_main(
-    @builtin(vertex_index) vi: u32,
+// One mask tile. Its name is the Rust record's (§6.10).
+struct MaskInstance {
     // The tile texture's top-left in region px.
     @location(0) origin: vec2<f32>,
-) -> VsOut {
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32, inst: MaskInstance) -> VsOut {
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
-    let px = origin + corner * r.a.z;
+    let px = inst.origin + corner * r.a.z;
     var out: VsOut;
     out.clip = vec4<f32>(px.x / r.a.x * 2.0 - 1.0, 1.0 - px.y / r.a.y * 2.0, 0.0, 1.0);
-    out.origin = origin;
+    out.origin = inst.origin;
     return out;
 }
 

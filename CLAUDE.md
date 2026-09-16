@@ -299,11 +299,11 @@ per-test tolerance hides exactly that drift. Deleting a golden re-blesses it.
   Uniform lanes, constants, vertex formats, binding indices and binding *types*
   are all generated from the shader's own declaration — and **discovered, not
   listed**: `stark-shaders-build`'s `emit` mirrors every typed `const`, every
-  `@binding` and every `var<uniform>` struct in the tree (`emit::consts`,
-  `emit::bindings`, `emit::structs`), so a host transcription is always
-  avoidable. `build.rs` names only what a shader cannot say about itself:
-  `SHARED` (one host type several shaders declare identically) and `VERTEX` (the
-  name of a per-instance record). A hand-written second copy drifts, and the
+  `@binding`, every `var<uniform>` struct and every `@vertex` record in the tree
+  (`emit::consts`, `emit::bindings`, `emit::structs`, `emit::vertex`), so a host
+  transcription is always avoidable. `build.rs` names only what a shader cannot
+  say about itself, which is now one thing: `SHARED`, the host type several
+  shaders declare identically. A hand-written second copy drifts, and the
   drift is invisible until it is a picture. What is genuinely the host's — a
   name, a step mode, whether *this* pass samples *that* texture — is worth
   writing by hand for the same reason: the shader does not say it.

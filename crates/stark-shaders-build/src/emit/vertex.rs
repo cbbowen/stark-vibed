@@ -1,43 +1,78 @@
-//! The per-instance records a `@vertex` entry point's `@location` parameters describe.
+//! The per-instance records a `@vertex` entry point reads.
 
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use wesl::eval::{Type, ty_eval_ty};
-use wesl::syntax::{Attribute, GlobalDeclaration};
+use wesl::syntax::{Attribute, Function, GlobalDeclaration, Struct};
 
 use crate::docs::doc_lines;
 use crate::eval::{const_u32, is_gated, module_context};
 use crate::layout::{Field, ident, lit, rust_ty};
 use crate::tree::Module;
 
-/// Every `@vertex` entry point in `m` that takes at least one `@location` parameter —
-/// i.e. that reads a per-instance record the host has to lay out.
-pub(super) fn instanced_entries(m: &Module) -> Vec<String> {
-    m.tu.global_declarations
-        .iter()
-        .filter_map(|d| match &**d {
-            GlobalDeclaration::Function(f)
-                if f.attributes
-                    .iter()
-                    .any(|a| matches!(**a, Attribute::Vertex))
-                    && f.parameters.iter().any(|p| {
-                        p.attributes
-                            .iter()
-                            .any(|a| matches!(**a, Attribute::Location(_)))
-                    }) =>
-            {
-                Some(f.ident.name().to_string())
-            }
-            _ => None,
-        })
-        .collect()
+/// Emit the record every `@vertex` entry point of `m` reads, where it reads one.
+///
+/// **The shader names it.** A vertex input is declared as a named struct the entry
+/// point takes whole, so the Rust record's name is the struct's — the one thing a
+/// bare parameter list cannot supply, and the last thing the build script had to be
+/// told (§6.10). An entry point taking `@location` parameters directly is refused
+/// here rather than listed somewhere.
+pub(super) fn emit(m: &Module) -> TokenStream {
+    let mut out = TokenStream::new();
+    for f in m.tu.global_declarations.iter().filter_map(|d| match &**d {
+        GlobalDeclaration::Function(f)
+            if f.attributes
+                .iter()
+                .any(|a| matches!(**a, Attribute::Vertex)) =>
+        {
+            Some(f)
+        }
+        _ => None,
+    }) {
+        out.extend(record(m, f));
+    }
+    out
 }
 
-/// Emit the per-instance record `entry`'s `@location` parameters describe, as a Rust
-/// struct plus the `wgpu::VertexAttribute` array that reads it.
+/// The record `f` reads, if it reads one.
+///
+/// A vertex-stage parameter carries `@builtin` or `@location`, directly or through the
+/// members of a struct — so a parameter with no attribute at all *is* the record, and
+/// there is nothing else it could be.
+fn record(m: &Module, f: &Function) -> TokenStream {
+    let (module, entry) = (m.path.as_str(), f.ident.name());
+    let mut out = TokenStream::new();
+    for p in &f.parameters {
+        let member = p.ident.name();
+        assert!(
+            !p.attributes
+                .iter()
+                .any(|a| matches!(**a, Attribute::Location(_))),
+            "`{module}.wesl`'s `{entry}.{member}` is a `@location` parameter. A parameter \
+             list has no name, so nothing can name the Rust record the host fills from it. \
+             Declare the attributes as the members of a named struct and take one of those \
+             (§6.10)."
+        );
+        if !p.attributes.is_empty() {
+            continue; // `@builtin(vertex_index)` and friends come from the pipeline
+        }
+        let name = p.ty.ident.name();
+        let s = m.struct_named(name.as_str()).unwrap_or_else(|| {
+            panic!(
+                "`{module}.wesl`'s `{entry}.{member}` is a `{name}`, which this module \
+                 declares no `struct` for. A record is mirrored from the unlinked source, \
+                 where an import is only a name — declare the struct here (§6.10)."
+            )
+        });
+        out.extend(from_struct(m, &entry, s));
+    }
+    out
+}
+
+/// Emit `s` as a Rust struct plus the `wgpu::VertexAttribute` array that reads it.
 ///
 /// **Three transcriptions collapse into one here, not two.** A vertex input was
-/// written out as the shader's parameter list, as a host `#[repr(C)]` struct, and
+/// written out as the shader's declaration, as a host `#[repr(C)]` struct, and
 /// *again* as a `vertex_attr_array![0 => Float32x2, 1 => Float32]` — where the
 /// formats restate the types and the offsets are implied by the order. Nothing tied
 /// the three together, and the third is the one with no redundancy to catch it: swap
@@ -50,39 +85,26 @@ pub(super) fn instanced_entries(m: &Module) -> Vec<String> {
 /// which for these types is also exactly what `#[repr(C)]` does (every one is
 /// 4-byte-aligned and a multiple of 4 in size). The emitted `offset_of` assertions
 /// are what say those two rules still agree.
-pub(super) fn emit(m: &Module, entry: &str, name: &str) -> TokenStream {
-    let (tu, src, module) = (&m.tu, m.src.as_str(), m.path.as_str());
-    let (func, body) = tu
-        .global_declarations
-        .iter()
-        .find_map(|d| match &**d {
-            GlobalDeclaration::Function(f)
-                if f.ident.name().as_str() == entry
-                    && f.attributes
-                        .iter()
-                        .any(|a| matches!(**a, Attribute::Vertex)) =>
-            {
-                Some((f, d.span().range()))
-            }
-            _ => None,
-        })
-        .unwrap_or_else(|| panic!("`{module}.wesl` has no `@vertex fn {entry}`"));
-
-    // A `FormalParameter` is not a spanned node, so a parameter's own documentation is
-    // found by locating its `@location` within the function's span. That is what lets
-    // the prose describing a lane live beside the lane, in the shader, the way the
-    // uniforms' does — rather than in a host struct the shader cannot see.
-    let doc_for = |location: u32| {
-        let needle = format!("@location({location})");
-        let at = src[body.clone()].find(&needle)? + body.start;
-        let line = src[..at].rfind('\n').map_or(0, |i| i + 1);
-        Some(doc_lines(&src[..line]))
-    };
-
-    let mut ctx = module_context(tu);
+fn from_struct(m: &Module, entry: &str, s: &Struct) -> TokenStream {
+    let (src, module) = (m.src.as_str(), m.path.as_str());
+    let name = s.ident.name();
+    let name = name.as_str();
+    let mut ctx = module_context(&m.tu);
     let (mut fields, mut attrs, mut offset) = (Vec::new(), Vec::new(), 0u32);
+    // Documentation for the first member runs from the opening brace, exactly as
+    // `layout::lay_out` reads a uniform struct's: a member's span starts at its
+    // attributes, so what precedes it is whatever the author wrote about it.
+    let mut prev_end = src[..s.members[0].span().range().start]
+        .rfind('{')
+        .expect("a struct body opens")
+        + 1;
 
-    for p in &func.parameters {
+    for p in &s.members {
+        let member = p.ident.name();
+        let span = p.span().range();
+        let docs = doc_lines(&src[prev_end..span.start]);
+        prev_end = span.end;
+
         // `@builtin(vertex_index)` and friends come from the pipeline, not the buffer.
         let Some(location) = p.attributes.iter().find_map(|a| match &**a {
             Attribute::Location(e) => Some(e),
@@ -91,28 +113,27 @@ pub(super) fn emit(m: &Module, entry: &str, name: &str) -> TokenStream {
             continue;
         };
         let location = const_u32(location, &mut ctx).unwrap_or_else(|why| {
-            panic!("`{module}.wesl`'s `{entry}` has a `@location` that {why}")
+            panic!("`{module}.wesl`'s `{name}.{member}` has a `@location` that {why}")
         });
 
-        let member = p.ident.name();
         // Refused for the same reason a uniform struct's `@if` member is (`layout`).
         assert!(
             !is_gated(&p.attributes),
-            "`{module}.wesl`'s `{entry}.{member}` is an `@if`-gated `@location` \
-             parameter. The record is mirrored from the unlinked source, which has no \
-             feature set to evaluate, so one Rust struct would have to answer for every \
-             build of it. Declare the attribute unconditionally (§6.10)."
+            "`{module}.wesl`'s `{name}.{member}` is an `@if`-gated `@location` member. \
+             The record is mirrored from the unlinked source, which has no feature set to \
+             evaluate, so one Rust struct would have to answer for every build of it. \
+             Declare the attribute unconditionally (§6.10)."
         );
         let ty = ty_eval_ty(&p.ty, &mut ctx)
-            .unwrap_or_else(|e| panic!("`{module}.wesl`'s `{entry}.{member}` has no type: {e}"));
+            .unwrap_or_else(|e| panic!("`{module}.wesl`'s `{name}.{member}` has no type: {e}"));
         let (format, size) = vertex_format(&ty).unwrap_or_else(|| {
-            panic!("`{module}.wesl`'s `{entry}.{member}` is a `{ty}`, which is not a vertex format")
+            panic!("`{module}.wesl`'s `{name}.{member}` is a `{ty}`, which is not a vertex format")
         });
         let spelling = rust_ty(&ty, size)
-            .unwrap_or_else(|| panic!("`{module}.wesl`'s `{entry}.{member}` has no Rust spelling"));
+            .unwrap_or_else(|| panic!("`{module}.wesl`'s `{name}.{member}` has no Rust spelling"));
 
         fields.push(Field {
-            docs: doc_for(location).unwrap_or_default(),
+            docs,
             ident: ident(member.as_str()),
             ty: spelling,
             offset,
@@ -130,8 +151,8 @@ pub(super) fn emit(m: &Module, entry: &str, name: &str) -> TokenStream {
     }
     assert!(
         !fields.is_empty(),
-        "`{module}.wesl`'s `{entry}` takes no `@location` parameters, so there is no \
-         per-instance record to generate"
+        "`{module}.wesl`'s `{entry}` takes a `{name}`, which declares no `@location` \
+         member, so there is no per-instance record to generate"
     );
 
     let ident = format_ident!("{name}");
@@ -161,8 +182,8 @@ pub(super) fn emit(m: &Module, entry: &str, name: &str) -> TokenStream {
     let layout_fn = format_ident!("{snake}_layout");
     let size = lit(offset);
     let doc = format!(
-        " `{name}`, generated from `{module}.wesl`'s `@vertex fn {entry}` — the shader's\n \
-         parameter list is the only declaration.",
+        " `{name}`, generated from `{module}.wesl`'s `struct {name}` — the record\n \
+         `@vertex fn {entry}` takes, and the only declaration of it.",
     );
     let attrs_doc = format!(" The vertex attributes reading a [`{name}`], in declaration order.");
     let layout_doc = format!(

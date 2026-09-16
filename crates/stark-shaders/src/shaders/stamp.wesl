@@ -54,9 +54,8 @@ import package::stamp_common::{
 };
 import package::lib::paint_common::{OPACITY_K, level_sums};
 
-@vertex
-fn vs_main(
-    @builtin(vertex_index) vi: u32,
+// One swept segment. Its name is the Rust record's (§6.10).
+struct SegmentInstance {
     // Per-segment instance data: what actually varies from segment to segment.
     // `drain` is the one rate that does not, and rides the `TileXform` uniform
     // because it is recovered per *fragment* from its own arc length rather than
@@ -104,8 +103,14 @@ fn vs_main(
     // (§6.2) — their means ride `extra.w` and `tooth_give`. `(0, 0)` on a brush the
     // pen does not drive that way.
     @location(7) ramps: vec2<f32>,
-) -> VsOut {
-    return sweep_vertex(vi, start, dir, geom, extra, tooth_give, stretch, opacity, ramps);
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32, inst: SegmentInstance) -> VsOut {
+    return sweep_vertex(
+        vi, inst.start, inst.dir, inst.geom, inst.extra, inst.tooth_give, inst.stretch,
+        inst.opacity, inst.ramps,
+    );
 }
 
 @fragment

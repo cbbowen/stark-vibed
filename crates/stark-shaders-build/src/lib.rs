@@ -68,13 +68,6 @@ pub struct Config<'a> {
     /// discovery does not emit a second copy. Every *other* uniform struct is
     /// discovered — this is only about which declarations claim to be one declaration.
     pub shared: &'a [(&'a [&'a str], &'a str)],
-    /// The per-instance records a vertex entry point's `@location` parameters
-    /// describe, as `(module, entry point, Rust name)`.
-    ///
-    /// The name is the one thing the shader cannot supply — a parameter list has no
-    /// name of its own. The *membership* is not a choice: a `@vertex` entry point
-    /// taking `@location` parameters and missing here fails the build.
-    pub vertex: &'a [(&'a str, &'a str, &'a str)],
 }
 
 /// Generate the mirrors and deposit every artifact.
@@ -82,7 +75,7 @@ pub struct Config<'a> {
 /// # Panics
 /// On anything the shader tree gets wrong — a module that will not parse, link,
 /// typecheck or lay out, two modules claiming one binding slot, a vertex entry point
-/// [`Config::vertex`] does not name. The message names the declaration.
+/// whose record has no name. The message names the declaration.
 pub fn run(cfg: &Config<'_>) {
     let gen_dir = cfg
         .mixbox_glsl
@@ -91,12 +84,7 @@ pub fn run(cfg: &Config<'_>) {
     // Read from the *unlinked* sources: the linker mangles `Stamp` to
     // `package__1dynamics_common_Stamp`, emits it once per artifact that reaches it,
     // and has already stripped whatever no entry point uses.
-    emit::generate(
-        cfg.shader_dir,
-        &cfg.out_dir.join("mirror.rs"),
-        cfg.shared,
-        cfg.vertex,
-    );
+    emit::generate(cfg.shader_dir, &cfg.out_dir.join("mirror.rs"), cfg.shared);
 
     link::compile_all(cfg, gen_dir.as_deref());
 }

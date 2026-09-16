@@ -3,8 +3,7 @@
 //! Four kinds, each generated from the WESL declaration that decides how it is read:
 //! the **uniform structs** ([`structs`]), the **constants** both sides compute with
 //! ([`consts`]), the **`@binding` declarations** ([`bindings`]), and the
-//! **per-instance vertex records** a vertex entry point's `@location` parameters
-//! describe ([`vertex`]).
+//! **per-instance vertex records** a vertex entry point takes ([`vertex`]).
 //!
 //! Every one of them is half of a pair the compiler cannot see across. A hand-written
 //! Rust half is a second declaration with its own copy of what the lanes mean, and
@@ -62,13 +61,8 @@ fn refuse_imported_uniform(ty: &TypeExpression, m: &Module, member: &str, ctx: &
 
 /// Generate the host mirrors of everything the shader tree at `shader_dir` declares,
 /// into `dest`.
-pub(crate) fn generate(
-    shader_dir: &Path,
-    dest: &Path,
-    shared: &[(&[&str], &str)],
-    vertex: &[(&str, &str, &str)],
-) {
-    let text = mirrors(&read_tree(shader_dir), shared, vertex);
+pub(crate) fn generate(shader_dir: &Path, dest: &Path, shared: &[(&[&str], &str)]) {
+    let text = mirrors(&read_tree(shader_dir), shared);
     std::fs::write(dest, text).unwrap_or_else(|e| panic!("write {}: {e}", dest.display()));
 }
 
@@ -82,19 +76,15 @@ pub(crate) fn generate(
 /// filter's kind codes were generated while the blend's were transcribed, and the
 /// binding tables covered one module of twenty-one.
 ///
-/// `shared` and `vertex` are what the shader does not say about itself; see
+/// `shared` is the one thing left that the shader does not say about itself; see
 /// [`crate::Config`].
 ///
-/// Anything discovery cannot spell in Rust — a nested struct, a non-scalar const — is
+/// Anything discovery cannot spell in Rust — a nested struct, a matrix const — is
 /// **skipped with a note in the generated file's header** rather than failing the
 /// build. It has to be: discovery reaches declarations no host has ever asked for, and
 /// one of them being unmirrorable is not a reason to stop. A caller that needed it
 /// still fails, at its own use site.
-fn mirrors(
-    modules: &[Module],
-    shared: &[(&[&str], &str)],
-    vertex: &[(&str, &str, &str)],
-) -> String {
+fn mirrors(modules: &[Module], shared: &[(&[&str], &str)]) -> String {
     let find_module = |path: &str| {
         modules
             .iter()
@@ -140,24 +130,7 @@ fn mirrors(
         let (uniforms, skips) = structs::discover(m, &aliased);
         skipped.extend(skips);
         push(&mut items, &m.rust, uniforms);
-    }
-
-    for (module, entry, name) in vertex {
-        let m = find_module(module);
-        push(&mut items, &m.rust, vertex::emit(m, entry, name));
-    }
-    // The other half of that list being a name and not a membership statement: an
-    // entry point the host would have to write a record for by hand is a build
-    // failure here instead.
-    for m in modules {
-        for entry in vertex::instanced_entries(m) {
-            assert!(
-                vertex.iter().any(|(md, e, _)| *md == m.path && *e == entry),
-                "`{}.wesl`'s `@vertex fn {entry}` takes `@location` parameters but is \
-                 not named in `VERTEX`, so nothing generates the record it reads",
-                m.path,
-            );
-        }
+        push(&mut items, &m.rust, vertex::emit(m));
     }
 
     let items = items.iter().map(|(module, items)| {
@@ -232,7 +205,7 @@ mod tests {
     /// test's business ([`a_const_derived_from_its_neighbours_mirrors_as_its_value`])
     /// rather than every test's.
     fn generated(src: &str) -> String {
-        past_header(&mirrors(&[Module::parse("probe", src)], &[], &[]))
+        past_header(&mirrors(&[Module::parse("probe", src)], &[]))
     }
 
     fn past_header(out: &str) -> String {
@@ -377,7 +350,6 @@ const DOUBLE: f32 = RISE * 2.0;
 const FLIP: mat2x2<f32> = mat2x2<f32>(vec2<f32>(0.0, 1.0), vec2<f32>(1.0, 0.0));
 ",
             )],
-            &[],
             &[],
         );
         let (header, body) = out.split_once("\n\n").expect("a header, then the body");
@@ -524,35 +496,33 @@ struct View { origin: vec4<f32> }
     }
 
     #[test]
-    fn a_vertex_parameter_list_mirrors_as_a_tightly_packed_record() {
-        let m = Module::parse(
-            "probe",
+    fn a_vertex_record_struct_mirrors_as_a_tightly_packed_record() {
+        let out = generated(
             r"
-@vertex
-fn vs_main(
+struct CornerInstance {
     // Where the corner lands, in canvas px.
     @location(0) at: vec2<f32>,
     // Its half-extent.
     @location(1) half_extent: f32,
     // Which slot it reads.
     @location(2) slot: u32,
+}
+
+@vertex
+fn vs_main(
     @builtin(vertex_index) vi: u32,
+    inst: CornerInstance,
 ) -> @builtin(position) vec4<f32> {
-    return vec4<f32>(at, f32(slot) * half_extent, 1.0);
+    return vec4<f32>(inst.at, f32(inst.slot) * inst.half_extent, f32(vi));
 }
 ",
         );
-        let out = past_header(&mirrors(
-            &[m],
-            &[],
-            &[("probe", "vs_main", "CornerInstance")],
-        ));
         assert_eq!(
             out,
             r#"/// Host mirrors of what `probe.wesl` declares.
 pub mod probe {
-    /** `CornerInstance`, generated from `probe.wesl`'s `@vertex fn vs_main` — the shader's
- parameter list is the only declaration.*/
+    /** `CornerInstance`, generated from `probe.wesl`'s `struct CornerInstance` — the record
+ `@vertex fn vs_main` takes, and the only declaration of it.*/
     #[repr(C)]
     #[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
     pub struct CornerInstance {
@@ -729,18 +699,15 @@ struct Params { @size(16) feather: f32, @align(32) rect: vec4<f32> }
 
     /// The same rule on the other half of the boundary.
     #[test]
-    #[should_panic(expected = "is an `@if`-gated `@location` parameter")]
-    fn an_if_gated_vertex_parameter_is_refused() {
-        mirrors(
-            &[Module::parse(
-                "probe",
-                "@vertex\nfn vs_main(\n\
-                 \x20   @location(0) at: vec2<f32>,\n\
-                 \x20   @if(resid) @location(1) resid: vec4<f32>,\n\
-                 ) -> @builtin(position) vec4<f32> { return vec4<f32>(at, 0.0, 1.0); }\n",
-            )],
-            &[],
-            &[("probe", "vs_main", "CornerInstance")],
+    #[should_panic(expected = "is an `@if`-gated `@location` member")]
+    fn an_if_gated_vertex_member_is_refused() {
+        generated(
+            "struct CornerInstance {\n\
+             \x20   @location(0) at: vec2<f32>,\n\
+             \x20   @if(resid) @location(1) resid: vec4<f32>,\n\
+             }\n\
+             @vertex\nfn vs_main(inst: CornerInstance) -> @builtin(position) vec4<f32> {\n\
+             \x20   return vec4<f32>(inst.at, 0.0, 1.0);\n}\n",
         );
     }
 
@@ -766,7 +733,6 @@ struct Params { @size(16) feather: f32, @align(32) rect: vec4<f32> }
                 "@group(0) @binding(0) var st: texture_2d<f32>;\n",
             )],
             &[],
-            &[],
         );
     }
 
@@ -780,7 +746,6 @@ struct Params { @size(16) feather: f32, @align(32) rect: vec4<f32> }
                 "@group(0) @binding(0) var st: texture_2d<f32>;\n",
             )],
             &[],
-            &[],
         );
     }
 
@@ -789,7 +754,6 @@ struct Params { @size(16) feather: f32, @align(32) rect: vec4<f32> }
     fn a_lib_module_mirrors_everything_else() {
         let out = past_header(&mirrors(
             &[Module::parse("lib/ramp", "const STOPS: u32 = 4u;\n")],
-            &[],
             &[],
         ));
         assert!(out.contains("pub mod ramp {"), "{out}");
@@ -821,11 +785,11 @@ struct Params { @size(16) feather: f32, @align(32) rect: vec4<f32> }
         assert_eq!(generated("var<uniform> origin: vec4<f32>;\n"), "");
     }
 
-    /// The `VERTEX` list is a name, not a membership statement — a record the host would
-    /// otherwise have to write by hand fails the build instead.
+    /// What replaced the hand-kept `VERTEX` list: the record's name came from there
+    /// because a parameter list has none, so a parameter list is what is refused.
     #[test]
-    #[should_panic(expected = "not named in `VERTEX`")]
-    fn an_unnamed_instanced_vertex_entry_fails_the_build() {
+    #[should_panic(expected = "is a `@location` parameter")]
+    fn a_bare_location_parameter_list_fails_the_build() {
         generated(
             r"
 @vertex
@@ -833,6 +797,18 @@ fn vs_main(@location(0) at: vec2<f32>) -> @builtin(position) vec4<f32> {
     return vec4<f32>(at, 0.0, 1.0);
 }
 ",
+        );
+    }
+
+    /// A record reached through an import has no mirror, for the reason a uniform
+    /// struct's does: the generator reads the unlinked source, where the import is only
+    /// a name.
+    #[test]
+    #[should_panic(expected = "which this module declares no `struct` for")]
+    fn a_vertex_record_from_another_module_is_refused() {
+        generated(
+            "@vertex\nfn vs_main(inst: CornerInstance) -> @builtin(position) vec4<f32> {\n\
+             \x20   return vec4<f32>(inst.at, 0.0, 1.0);\n}\n",
         );
     }
 
@@ -857,7 +833,6 @@ fn vs_main(@location(0) at: vec2<f32>) -> @builtin(position) vec4<f32> {
         let out = past_header(&mirrors(
             &[Module::parse("one", view), Module::parse("two", view)],
             &[(&["one", "two"], "View")],
-            &[],
         ));
         assert_eq!(
             out,
@@ -900,7 +875,6 @@ pub mod one {
                 Module::parse("two", "struct View { origin: vec2<f32> }\n"),
             ],
             &[(&["one", "two"], "View")],
-            &[],
         );
     }
 
@@ -913,7 +887,6 @@ pub mod one {
                 "probe",
                 "struct Inner { a: f32 }\nstruct Outer { inner: Inner }\nvar<uniform> o: Outer;\n",
             )],
-            &[],
             &[],
         );
         assert_eq!(

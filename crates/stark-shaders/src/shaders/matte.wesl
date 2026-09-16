@@ -91,13 +91,8 @@ struct FsOut {
     @if(resid) @location(2) resid: vec4<f32>,
 }
 
-// A fullscreen quad — the region is unbounded, so the draw covers the viewport
-// and the fragment stage decides coverage. The canvas position is recovered by
-// inverting the view's canvas->NDC map; that map is affine, so interpolating the
-// corners is exact.
-@vertex
-fn vs_main(
-    @builtin(vertex_index) vi: u32,
+// One matte region. Its name is the Rust record's (§6.10).
+struct MatteInstance {
     // Per-matte instance: min.xy, max.xy in canvas px.
     @location(0) rect: vec4<f32>,
     // The fill, in the working color space.
@@ -107,16 +102,22 @@ fn vs_main(
     // cannot express (§6.7); .w unused. Zero for every space but Mixbox.
     //
     // An instance attribute declared unconditionally, where the varying and the target
-    // below are `@if(resid)`: this parameter list is mirrored into Rust from the
-    // unlinked source (§6.10), which has no feature set to evaluate, so a
-    // parameter that came and went with the variant would give `MatteInstance` two
-    // layouts. Sixteen bytes per matte, against a per-texel channel Oklab still does
-    // not allocate.
+    // below are `@if(resid)`: this struct is mirrored into Rust from the unlinked
+    // source (§6.10), which has no feature set to evaluate, so a member that came and
+    // went with the variant would give `MatteInstance` two layouts. Sixteen bytes per
+    // matte, against a per-texel channel Oklab still does not allocate.
     @location(3) resid: vec4<f32>,
     // Region kind (`REGION_*`): outside `rect` (the frame), or the whole plane
     // (§15.5's substrate) — `rect` then carries zeros and is never read.
     @location(4) flags: f32,
-) -> VsOut {
+}
+
+// A fullscreen quad — the region is unbounded, so the draw covers the viewport
+// and the fragment stage decides coverage. The canvas position is recovered by
+// inverting the view's canvas->NDC map; that map is affine, so interpolating the
+// corners is exact.
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32, inst: MatteInstance) -> VsOut {
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
     let ndc = corner * 2.0 - 1.0;
 
@@ -132,14 +133,14 @@ fn vs_main(
         vec2<f32>(-m[1][0], m[0][0]),
     ) * (1.0 / det);
     out.canvas = inv * (ndc - view.xlate.xy);
-    out.rect = rect;
-    out.channels = channels;
-    out.opacity = opacity;
+    out.rect = inst.rect;
+    out.channels = inst.channels;
+    out.opacity = inst.opacity;
     // `misc.w` is the zoom (screen px per canvas px), so the edge keeps a constant
     // on-screen softness at any zoom.
     out.aa = 1.0 / max(view.misc.w, 1e-6);
-    out.flags = flags;
-    @if(resid) out.resid = resid;
+    out.flags = inst.flags;
+    @if(resid) out.resid = inst.resid;
     return out;
 }
 

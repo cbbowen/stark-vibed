@@ -63,23 +63,27 @@ struct FsOut {
     @if(resid) @location(2) resid: vec4<f32>,
 }
 
-@vertex
-fn vs_main(
-    @builtin(vertex_index) vi: u32,
+// One tile of the layer being drawn. Its name is the Rust record's (§6.10). Generated
+// once and used twice: pass A draws the layer stack with it and the brush-dynamics loop
+// composites its working region through this very shader (§6.3).
+struct Instance {
     // Per-tile instance: the tile interior's top-left in canvas px.
     @location(0) origin: vec2<f32>,
     // The layer's opacity.
     @location(1) opacity: f32,
-) -> VsOut {
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32, inst: Instance) -> VsOut {
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
     let m = mat2x2<f32>(view.st.xy, view.st.zw);
-    let canvas_pos = origin + corner * view.misc.x;
+    let canvas_pos = inst.origin + corner * view.misc.x;
     let ndc = m * canvas_pos + view.xlate.xy;
 
     var out: VsOut;
     out.clip = vec4<f32>(ndc, 0.0, 1.0);
     out.uv = corner * view.misc.y + view.misc.z; // interior sub-rect of the apron'd texture
-    out.opacity = opacity;
+    out.opacity = inst.opacity;
     return out;
 }
 
