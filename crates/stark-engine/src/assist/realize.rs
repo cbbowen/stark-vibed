@@ -7,7 +7,7 @@
 //! fraction of the way along.
 
 use super::AssistShape;
-use crate::path::{FLATTEN_TOLERANCE, arc_profile, flatten, param_at};
+use crate::path::{FLATTEN_TOLERANCE, arc_profile, flatten_spans_from, param_at, span_count};
 use crate::spline::{CubicBSpline, Observations, SplineIndex};
 use nalgebra::{Const, Dyn, OMatrix};
 use stark_model::geom::Vec2;
@@ -66,9 +66,13 @@ pub struct PenProfile {
 use crate::path::CHANNELS;
 
 impl PenProfile {
-    /// The profile of a fitted path.
-    pub fn of(path: &[ControlPoint]) -> Self {
-        let poly = flatten(path, FLATTEN_TOLERANCE);
+    /// The profile of a fitted path from its marker `start` on
+    /// ([`StrokeRecord::start`](stark_model::document::StrokeRecord::start)). The
+    /// shape is recognized from the stroke after the press, so a run-up ahead of the
+    /// marker is left out here too, or it would shift the pen along the shape.
+    pub fn of(path: &[ControlPoint], start: f32) -> Self {
+        let spans = 0..span_count(path.len());
+        let poly = flatten_spans_from(path, start, spans, 0.0, FLATTEN_TOLERANCE);
         let total = poly.last().map_or(0.0, |s| s.dist);
         let inv = if total > 1e-6 { 1.0 / total } else { 0.0 };
         Self {
@@ -257,13 +261,14 @@ fn leg_count(radius: f32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::path::flatten;
 
     /// The realized path has to *be* the shape, not merely resemble it — including at
     /// the clamped ends, which is what the ellipse's least-squares placement buys.
     #[test]
     fn a_snapped_line_is_straight() {
         let (a, b) = (Vec2::new(-50.0, 30.0), Vec2::new(250.0, 130.0));
-        let pen = PenProfile::of(&[ControlPoint::at(a), ControlPoint::at(b)]);
+        let pen = PenProfile::of(&[ControlPoint::at(a), ControlPoint::at(b)], 0.0);
         let path = AssistShape::Line {
             a,
             b,
@@ -290,7 +295,10 @@ mod tests {
                 winding: 1.0,
                 plane: None,
             };
-            let pen = PenProfile::of(&[ControlPoint::at(Vec2::ZERO), ControlPoint::at(Vec2::X)]);
+            let pen = PenProfile::of(
+                &[ControlPoint::at(Vec2::ZERO), ControlPoint::at(Vec2::X)],
+                0.0,
+            );
             let path = shape.to_path(&pen, 8);
             let poly = flatten(&path, FLATTEN_TOLERANCE);
             let worst = poly
@@ -316,7 +324,7 @@ mod tests {
                 }
             })
             .collect();
-        let pen = PenProfile::of(&drawn);
+        let pen = PenProfile::of(&drawn, 0.0);
         let path = AssistShape::Line {
             a: Vec2::ZERO,
             b: Vec2::new(300.0, 0.0),
@@ -327,5 +335,63 @@ mod tests {
         let ends = path[0].pressure.max(path[path.len() - 1].pressure);
         assert!(mid > 0.8, "the swell was flattened out (mid {mid})");
         assert!(ends < 0.4, "the light ends were filled in (ends {ends})");
+    }
+
+    /// The profile starts at the marker: a run-up ahead of it is entry geometry, not
+    /// pen the shape carries (§6.2). The shape starts at the press, so its first
+    /// control point reads the press's channels.
+    #[test]
+    fn the_profile_starts_at_the_marker() {
+        // Control points 0..4 are the run-up: light, leaning, and before the press.
+        let drawn: Vec<ControlPoint> = (0..13)
+            .map(|i| {
+                let run_up = i < 4;
+                ControlPoint {
+                    pos: Vec2::new(i as f32 * 25.0, 0.0),
+                    pressure: if run_up { 0.1 } else { 0.9 },
+                    tilt: if run_up {
+                        Vec2::new(0.6, 0.0)
+                    } else {
+                        Vec2::ZERO
+                    },
+                    time: (i as f32 - 4.0) * 0.1,
+                }
+            })
+            .collect();
+        // Span 6 reads control points 4..=7, all past the run-up.
+        let start = 6.0;
+        let press = flatten_spans_from(
+            &drawn,
+            start,
+            0..span_count(drawn.len()),
+            0.0,
+            FLATTEN_TOLERANCE,
+        )[0];
+        let path = AssistShape::Line {
+            a: press.pos,
+            b: drawn[drawn.len() - 1].pos,
+            on_axis: false,
+        }
+        .to_path(&PenProfile::of(&drawn, start), drawn.len());
+
+        let first = path[0];
+        assert!(
+            (first.pressure - press.pressure).abs() < 0.05,
+            "pressure {} at the shape's start, {} at the press",
+            first.pressure,
+            press.pressure
+        );
+        assert!(
+            first.tilt.distance(press.tilt) < 0.05,
+            "tilt {} at the shape's start, {} at the press",
+            first.tilt,
+            press.tilt
+        );
+        assert!(
+            (first.time - press.time).abs() < 0.05,
+            "time {} at the shape's start, {} at the press",
+            first.time,
+            press.time
+        );
     }
 }

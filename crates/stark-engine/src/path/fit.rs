@@ -554,6 +554,12 @@ impl PathFitter {
         control_points(&self.geom, &self.attr)
     }
 
+    /// The start marker on [`path`](Self::path)'s curve: where the stroke itself
+    /// begins, past any run-up ([`seed_runup`](Self::seed_runup)). 0 with no run-up.
+    pub fn start(&self) -> f32 {
+        self.start_param
+    }
+
     /// The path and the start marker exactly as [`finish`](Self::finish) would
     /// leave them, as a pure query: the one last solve with the window still
     /// free, *not* adopted — and one solve for both halves, so the marker names

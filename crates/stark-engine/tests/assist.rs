@@ -20,8 +20,11 @@ use stark_engine::Session;
 use stark_engine::ViewTransform;
 use stark_engine::command::InputSample;
 use stark_engine::command::Tool;
-use stark_engine::path::{DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, flatten};
-use stark_model::document::{LayerId, PerspectiveGuide, Scaffold};
+use stark_engine::path::{
+    DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, IntermediateSample, flatten, flatten_spans_from,
+    span_count,
+};
+use stark_model::document::{LayerId, PerspectiveGuide, Scaffold, StrokeRecord};
 use stark_model::geom::{Ellipse, Vec2};
 
 fn session() -> Session {
@@ -438,6 +441,87 @@ fn a_hidden_plane_leaves_the_loop_alone() {
         })
         .fold(0.0f32, f32::max);
     assert!(worst < 4.0, "the loop was reshaped, sitting {worst}px off");
+}
+
+/// Where a record's pressure swell sits, as a fraction of the stroke from its marker
+/// on — the centroid of the pressure above `floor` — and the pen at the marker.
+fn swell(record: &StrokeRecord, floor: f32) -> (f32, IntermediateSample) {
+    let spans = 0..span_count(record.path.len());
+    let poly = flatten_spans_from(&record.path, record.start, spans, 0.0, FLATTEN_TOLERANCE);
+    let total = poly.last().expect("samples").dist;
+    let (mut moment, mut mass) = (0.0, 0.0);
+    for w in poly.windows(2) {
+        let excess = 0.5 * (w[0].pressure + w[1].pressure) - floor;
+        let ds = w[1].dist - w[0].dist;
+        moment += excess * ds * 0.5 * (w[0].dist + w[1].dist) / total;
+        mass += excess * ds;
+    }
+    (moment / mass, poly[0])
+}
+
+/// A hover run-up ahead of the press does not shift the pen along the snapped shape
+/// (§6.2, §6.9). The shape is recognized from the stroke after the press, so the pen
+/// carried onto it is read from there too — otherwise a watched approach lands the
+/// swell late and starts the clock before the press.
+#[test]
+fn a_run_up_does_not_shift_the_snapped_pen() {
+    let mut session = session();
+    // A 38 px approach along the line, in the fifth of a second before the press.
+    for i in 0..20 {
+        let hover = InputSample {
+            pos: Vec2::new(-40.0 + 2.0 * i as f32, 0.0),
+            time: -0.2 + 0.01 * f64::from(i),
+            ..InputSample::default()
+        };
+        assert!(session.hover_to(hover, DEFAULT_TOLERANCE, 50.0));
+    }
+    // A 120 px line whose pressure swells in the middle.
+    let light = 0.15;
+    let n = 40;
+    let at = |i: usize| {
+        let t = i as f32 / (n - 1) as f32;
+        InputSample {
+            pos: Vec2::new(120.0 * t, 0.0),
+            pressure: light + (1.0 - light) * (t * std::f32::consts::PI).sin(),
+            time: 0.4 * f64::from(t),
+            ..InputSample::default()
+        }
+    };
+    session.start_stroke(
+        Tool::Brush,
+        at(0),
+        1,
+        DEFAULT_TOLERANCE,
+        0.0,
+        stark_model::geom::IVec2::ZERO,
+    );
+    for i in 1..n {
+        session.stroke_to(at(i));
+    }
+    let drawn = session.preview_record().expect("in flight");
+    assert!(drawn.start > 0.0, "the hover did not become a run-up");
+    assert!(
+        session.assist_stroke(&nothing()),
+        "a straight drag is a line"
+    );
+    let snapped = session.preview_record().expect("in flight");
+
+    // Against the drawn stroke from its own marker rather than the ideal swell: a
+    // straight stroke this short is fitted with a handful of control points, and
+    // that is all the pressure has to ride on either way.
+    let (drawn_at, drawn_press) = swell(&drawn, light);
+    let (snapped_at, snapped_press) = swell(&snapped, light);
+    assert!(
+        (snapped_at - drawn_at).abs() < 0.02,
+        "the swell sits {snapped_at} of the way along the snapped line, {drawn_at} along \
+         the drawn one"
+    );
+    assert!(
+        (snapped_press.time - drawn_press.time).abs() < 0.02,
+        "the snapped line starts its clock at {}, the stroke at {}",
+        snapped_press.time,
+        drawn_press.time
+    );
 }
 
 #[test]

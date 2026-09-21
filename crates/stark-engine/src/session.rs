@@ -563,7 +563,8 @@ impl Session {
             return false;
         };
         let drawn = b.fitter.path();
-        let pen = PenProfile::of(&drawn);
+        // From the marker on, as `trace` is: the run-up is not part of the shape.
+        let pen = PenProfile::of(&drawn, b.fitter.start());
         let knots = drawn.len();
         b.assist = Some(Assist {
             base,
