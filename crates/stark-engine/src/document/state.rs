@@ -533,10 +533,12 @@ impl DocState {
     /// screen can never share a number, and one is reused only after the layer wearing
     /// it is gone. Deleting the top layer and adding another therefore gets the same
     /// number back, which is the reading that leaves no gap to explain.
+    ///
+    /// Saturates: a number arrives in a payload unsanitized, so `u32::MAX` is reachable.
     pub(crate) fn next_layer_number(&self) -> u32 {
         let mut top = 0;
         self.visit(&mut |l: &Layer, _| top = top.max(l.number.unwrap_or(0)));
-        top + 1
+        top.saturating_add(1)
     }
 
     /// What the layer with the given id is called, or `None` if it is unnamed —
@@ -1172,8 +1174,10 @@ fn copy_subtree(layer: &Layer, ids: &[(LayerId, LayerId)], base: u32) -> Option<
         // A copy takes the source's *name* verbatim (§14.8) and a number of its own,
         // which is what keeps a duplicate of an unnamed layer two readable rows. The
         // `map` is what leaves a matte or a filter copy unnumbered, as its source is:
-        // the run simply skips those positions.
-        number: layer.number.map(|_| base + k as u32),
+        // the run simply skips those positions. Saturating, as `next_layer_number` is.
+        number: layer
+            .number
+            .map(|_| base.saturating_add(u32::try_from(k).unwrap_or(u32::MAX))),
         ..layer.with_carries(carries)
     })
 }
@@ -1626,5 +1630,34 @@ mod tests {
             Some("Sky"),
             "the name is the one thing a copy takes verbatim"
         );
+    }
+
+    /// A number arrives in a payload unsanitized, so counting past one at the top of
+    /// the range saturates rather than overflowing — a panic in debug, "Layer 0" in
+    /// release.
+    #[test]
+    fn a_number_at_the_top_of_the_range_saturates() {
+        let doc = DocState::with_layer(BASE).insert_layer(OTHER, None, None, Some(u32::MAX));
+        assert_eq!(doc.next_layer_number(), u32::MAX);
+        let added = doc.insert_layer(LayerId::solo(3), None, None, None);
+        assert_eq!(
+            added.layer(LayerId::solo(3)).expect("added").number,
+            Some(u32::MAX)
+        );
+
+        // A duplicate's run, one number per copy, saturates the same way.
+        let group = doc.insert_layer(LayerId::solo(3), Some(OTHER), None, Some(1));
+        let ids = [
+            (OTHER, LayerId::solo(10)),
+            (LayerId::solo(3), LayerId::solo(11)),
+        ];
+        let copied = group.duplicate_layer(&ids, Some(u32::MAX));
+        for (_, copy) in ids {
+            assert_eq!(
+                copied.layer(copy).expect("copied").number,
+                Some(u32::MAX),
+                "{copy:?}"
+            );
+        }
     }
 }
