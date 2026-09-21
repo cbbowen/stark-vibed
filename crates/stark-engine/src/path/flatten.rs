@@ -404,14 +404,14 @@ fn within(
 
 /// Below this *squared* speed a derivative names no direction, and [`turn`] reads 0.
 /// A speed of 1e-6 — far wider than `arc`'s `STATIONARY_SPEED` of 1e-12, so the two
-/// disagree about a derivative between them. Kept as found: it decides where segments
-/// are cut, so changing it moves strokes.
+/// disagree about a derivative between them. It decides where segments are cut, so it
+/// does not change without moving strokes.
 const STATIONARY_SPEED_SQ: f32 = 1e-12;
 
 /// The unsigned angle between two derivatives; 0 where either is stationary and
 /// the direction is undefined.
 ///
-/// Exactly what `a.angle_to(b).abs()` computed, operation for operation, through
+/// `a.angle_to(b).abs()`, operation for operation, through
 /// [`acos_approx`](crate::detmath::acos_approx): this decides where segments are cut,
 /// so it may not depend on how a dependency chooses to evaluate an arccosine.
 fn turn(a: Vec2, b: Vec2) -> f32 {

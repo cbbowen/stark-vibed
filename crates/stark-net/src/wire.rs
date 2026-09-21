@@ -149,7 +149,11 @@ use iroh::EndpointId;
 /// off the sender's, which is two documents that disagree about a label;
 /// 29: two records the fold used to take are refused whole — a stroke reaching past
 /// `MAX_STROKE_TILES`, and a `PlaceImage` onto a layer id the document already holds.
-/// Neither shape moved, so a file reads either way; what such a log *means* changed.
+/// Beside them, a layer number at `u32::MAX` saturates where it wrapped to 0, and the
+/// replay path's trig is `detmath`'s rather than libm's: its `atan2` and
+/// `sin_cos_turns` can land a Pen-oriented slice, a stretched tip's map or a tooth
+/// bearing's bin an ulp from where a peer on 28 put it. No shape moved, so a file
+/// reads either way; what such a log *means* changed.
 pub(crate) const ALPN: &[u8] = b"stark/collab/29";
 
 /// The number [`ALPN`] ends with, as a number, for a ticket to carry — see

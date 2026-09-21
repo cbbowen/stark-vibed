@@ -100,7 +100,7 @@ pub struct EngineShared {
     scratch: ScratchPool,
     /// The compiled compositing passes — the ~19 shaders and ~30 pipelines that make
     /// building an engine expensive. A sibling's [`CompositorPipeline`] is built over
-    /// these ([`CompositorPipeline::sharing`]), so it pays for its own three view
+    /// these ([`CompositorPipeline::sharing`]), so it pays for its own view
     /// settings and nothing else.
     passes: Arc<crate::gpu::composite::CompositorPasses>,
     /// The HDR lighting environment and its registered bytes (§6.3). A view setting,

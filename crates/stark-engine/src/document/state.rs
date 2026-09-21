@@ -530,9 +530,10 @@ impl DocState {
     /// written before actions carried one — see `ActionKind::AddLayer`'s `number`.
     ///
     /// Highest **living**, not highest ever, so there is nothing to store: two rows on
-    /// screen can never share a number, and one is reused only after the layer wearing
-    /// it is gone. Deleting the top layer and adding another therefore gets the same
-    /// number back, which is the reading that leaves no gap to explain.
+    /// screen share a number only once it has saturated at `u32::MAX`, and one is reused
+    /// only after the layer wearing it is gone. Deleting the top layer and adding
+    /// another therefore gets the same number back, which is the reading that leaves no
+    /// gap to explain.
     ///
     /// Saturates: a number arrives in a payload unsanitized, so `u32::MAX` is reachable.
     pub(crate) fn next_layer_number(&self) -> u32 {

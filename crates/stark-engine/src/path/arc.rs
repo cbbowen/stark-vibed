@@ -32,8 +32,8 @@ const MAX_HALF_TURN_SIN: f32 = 0.2;
 /// Below this speed a curve's derivative names no tangent, and [`fit_arc`] sends the
 /// edge straight. Unsquared: far narrower than `flatten::turn`'s own stationary test
 /// (`STATIONARY_SPEED_SQ`), which declines below a speed of 1e-6 — so a derivative
-/// between the two is bent here while its turn reads 0 there. Kept as found: either
-/// value decides where segments are cut, so changing one moves strokes.
+/// between the two is bent here while its turn reads 0 there. Both decide where
+/// segments are cut, so neither changes without moving strokes.
 const STATIONARY_SPEED: f32 = 1e-12;
 
 /// One flattened edge, as it will actually be swept.
@@ -166,48 +166,53 @@ mod tests {
     use super::*;
 
     /// The three series against an **f64** reference, over the whole range their
-    /// callers are guarded to.
+    /// callers reach: [`sin_small`] and [`versin_small`] over the widest turn [`arc_at`]
+    /// is asked for, [`asin_over_x`] over the half-turn sine [`fit_arc`] caps.
+    ///
+    /// The widest turn is an edge's whole turn, `2·asin(MAX_HALF_TURN_SIN)`, plus a bleed
+    /// firing's walk back one quantum past its segment's start: a quarter of the tip at
+    /// a curvature capped at a tenth of the tip's reciprocal (`BLEED_TRAVEL_QUANTUM`,
+    /// `MAX_TIP_TURN`), so 0.025.
     ///
     /// The reference is f64 deliberately: held against the *f32* library functions this
-    /// would measure their error and not the series'.
+    /// would measure their error and not the series'. The versine's is `2·sin²(x/2)`,
+    /// which keeps the digits `1 − cos` cancels even in f64. The bounds are the worst
+    /// the series reach over every f32 in range (9.03e-8, 4.11e-7, 1.39e-7), not an
+    /// ulp: past `asin(0.2)` the versine's first dropped term reaches 3e-7 of it.
     #[test]
-    fn the_series_stay_within_an_f32_ulp() {
-        // A shade over `f32::EPSILON` (1.19e-7), which is what the measurements sit at.
-        const ULP: f64 = 1.5e-7;
-        let half_max = MAX_HALF_TURN_SIN.asin();
-        for i in 0..=2000 {
-            let x = -half_max + (i as f32 / 1000.0) * half_max;
-            let xd = x as f64;
-            let want = xd.sin();
-            if want != 0.0 {
-                let got = sin_small(x) as f64;
-                assert!(
-                    ((got - want) / want).abs() <= ULP,
-                    "sin_small({x}) = {got}, sin = {want}"
-                );
+    fn the_series_stay_within_their_measured_bounds() {
+        let turn = 2.0 * f64::from(MAX_HALF_TURN_SIN).asin() + 0.025;
+        let rel = |got: f32, want: f64| ((f64::from(got) - want) / want).abs();
+        let (mut sin, mut versin, mut asin) = (0.0f64, 0.0f64, 0.0f64);
+        const N: i32 = 400_000;
+        for i in -N..=N {
+            let t = f64::from(i) / f64::from(N);
+            let x = (t * turn) as f32;
+            let xd = f64::from(x);
+            if x != 0.0 {
+                sin = sin.max(rel(sin_small(x), xd.sin()));
+                versin = versin.max(rel(versin_small(x), 2.0 * (xd / 2.0).sin().powi(2)));
             }
-            let want = 1.0 - xd.cos();
-            if want > 1e-12 {
-                let got = versin_small(x) as f64;
-                assert!(
-                    ((got - want) / want).abs() <= ULP,
-                    "versin_small({x}) = {got}, 1 - cos = {want}"
-                );
-            }
-            let u = -MAX_HALF_TURN_SIN + (i as f32 / 1000.0) * MAX_HALF_TURN_SIN;
-            let ud = u as f64;
-            let want = if ud == 0.0 { 1.0 } else { ud.asin() / ud };
-            let got = asin_over_x(u) as f64;
-            assert!(
-                ((got - want) / want).abs() <= ULP,
-                "asin_over_x({u}) = {got}, asin/u = {want}"
-            );
+            let u = (t * f64::from(MAX_HALF_TURN_SIN)) as f32;
+            let ud = f64::from(u);
+            let want = if u == 0.0 { 1.0 } else { ud.asin() / ud };
+            asin = asin.max(rel(asin_over_x(u), want));
         }
+        assert!(sin <= 9.1e-8, "sin_small's worst relative error is {sin:e}");
+        assert!(
+            versin <= 4.2e-7,
+            "versin_small's worst relative error is {versin:e}"
+        );
+        assert!(
+            asin <= 1.4e-7,
+            "asin_over_x's worst relative error is {asin:e}"
+        );
     }
 
     /// `versin_small` is `1 − cos` taken **directly**, and this is the whole reason it
-    /// exists: over the range above, the subtraction spent in f32 reaches a relative
-    /// error of 1.0 — every digit gone — where the series stays within an ulp.
+    /// exists: over the half turn [`arc_sagitta`] asks, the subtraction spent in f32
+    /// reaches a relative error of 1.0 — every digit gone — where the series stays
+    /// within two ulp.
     #[test]
     fn the_versine_keeps_digits_the_subtraction_loses() {
         let half_max = MAX_HALF_TURN_SIN.asin();

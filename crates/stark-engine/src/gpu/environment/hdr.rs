@@ -59,6 +59,12 @@ pub(super) fn decode_hdr(bytes: &[u8]) -> Result<(Vec<[f32; 3]>, u32, u32), Stri
     }
     let (wu, hu) = (w as usize, h as usize);
     let texels = wu.checked_mul(hu).ok_or("hdr: image too large")?;
+    // The reservation below is 12 bytes a texel, sized by the header alone: a few
+    // bytes claiming 8192² would reserve 805 MB before the first scanline ran short.
+    let body = bytes.len().saturating_sub(pos);
+    if body < min_body_len(wu, hu).ok_or("hdr: image too large")? {
+        return Err(format!("hdr: {body} bytes cannot hold a {w}x{h} image"));
+    }
 
     let mut out: Vec<[f32; 3]> = Vec::new();
     out.try_reserve_exact(texels)
@@ -71,6 +77,26 @@ pub(super) fn decode_hdr(bytes: &[u8]) -> Result<(Vec<[f32; 3]>, u32, u32), Stri
     Ok((out, w, h))
 }
 
+/// The widths a scanline may be new-style run-length encoded at; any other is flat
+/// RGBE quads.
+const RLE_WIDTHS: std::ops::Range<usize> = 8..0x8000;
+
+/// The most texels one run covers: its count byte is `128 + n`.
+const MAX_RUN: usize = (u8::MAX - 128) as usize;
+
+/// The fewest body bytes that can hold `h` scanlines of `w` texels, as
+/// [`read_scanline`] reads them: behind each new-style scanline's 4-byte header, every
+/// channel as runs of [`MAX_RUN`] texels at two bytes each — and four bytes a texel
+/// where a scanline cannot be encoded. `None` past `usize`.
+fn min_body_len(w: usize, h: usize) -> Option<usize> {
+    let scanline = if RLE_WIDTHS.contains(&w) {
+        4 + 4 * 2 * w.div_ceil(MAX_RUN)
+    } else {
+        w.checked_mul(4)?
+    };
+    scanline.checked_mul(h)
+}
+
 /// Read one scanline of `w` RGBE pixels into `scan`, advancing `pos`. Handles the
 /// new-style RLE header (`0x02 0x02 hi lo`) per channel, else flat/old quads.
 fn read_scanline(
@@ -79,9 +105,9 @@ fn read_scanline(
     scan: &mut [[u8; 4]],
     w: usize,
 ) -> Result<(), String> {
-    // New-style RLE is only used for widths in [8, 0x7fff] and is flagged by a
-    // leading 0x02 0x02 with the width in the next two bytes.
-    let new_rle = (8..0x8000).contains(&w)
+    // New-style RLE is flagged by a leading 0x02 0x02 with the width in the next two
+    // bytes.
+    let new_rle = RLE_WIDTHS.contains(&w)
         && *pos + 4 <= bytes.len()
         && bytes[*pos] == 2
         && bytes[*pos + 1] == 2
@@ -103,10 +129,7 @@ fn read_scanline(
 
     // Four channel planes (R, G, B, E), each run-length encoded across the row.
     // `ch` indexes the *inner* `[u8; 4]` of `scan[x]`, not `scan` itself, so there is
-    // no slice for an iterator rewrite to walk. This carried an
-    // `#[expect(clippy::needless_range_loop)]` until clippy learned to see that for
-    // itself, at which point the expectation failed as an unfulfilled one — which is
-    // the mechanism working, and the reason these are `expect` and not `allow`.
+    // no slice for an iterator rewrite to walk.
     for ch in 0..4 {
         let mut x = 0usize;
         while x < w {
@@ -211,5 +234,29 @@ mod tests {
     #[test]
     fn a_huge_header_is_refused_before_allocating() {
         assert!(decode_hdr(&file("-Y 65536 +X 65536", &[])).is_err());
+    }
+
+    /// A header naming more texels than its body could hold is refused before the image
+    /// is reserved: a few bytes claiming 8192² would otherwise reserve 805 MB.
+    #[test]
+    fn a_body_too_short_for_its_header_is_refused_before_reserving() {
+        let max = MAX_TEXTURE_DIM_2D;
+        let err = decode_hdr(&file(&format!("-Y {max} +X {max}"), &[0; 64])).unwrap_err();
+        assert!(err.contains("cannot hold"), "{err}");
+    }
+
+    /// The bound is the decoder's own least: the shortest bodies it reads — one run per
+    /// channel of a new-style scanline, and flat quads at a width too narrow to encode
+    /// — meet it exactly and decode, and one byte fewer is refused.
+    #[test]
+    fn the_shortest_bodies_the_decoder_reads_meet_the_bound() {
+        let rle = [2, 2, 0, 8, 136, 128, 136, 64, 136, 32, 136, 129];
+        let flat = [128, 64, 32, 129].repeat(4);
+        for (res, w, body) in [("-Y 1 +X 8", 8, &rle[..]), ("-Y 1 +X 4", 4, &flat[..])] {
+            assert_eq!(min_body_len(w, 1), Some(body.len()), "{res}");
+            assert!(decode_hdr(&file(res, body)).is_ok(), "{res} was refused");
+            let err = decode_hdr(&file(res, &body[..body.len() - 1])).unwrap_err();
+            assert!(err.contains("cannot hold"), "{res}: {err}");
+        }
     }
 }

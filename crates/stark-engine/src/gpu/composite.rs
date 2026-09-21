@@ -649,7 +649,7 @@ impl CompositorPipeline {
 
     /// A pipeline over **already-built** passes — the whole of what a sibling engine
     /// pays for its compositor ([`Engine::new_sharing`]): no shader compiles, no
-    /// pipeline creation, just its own copy of the three view settings.
+    /// pipeline creation, just its own copy of the view settings.
     ///
     /// The settings are the caller's to seed because the two consumers want opposite
     /// things: the brush editor's preview opens mirroring the canvas's current look,

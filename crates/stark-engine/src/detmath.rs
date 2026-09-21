@@ -1,22 +1,33 @@
-//! Math the replay path may use (§12.1): functions built only from IEEE-754's
-//! correctly rounded operations (`+ − × ÷ √`), so native and wasm builds compute
-//! them to the same bit.
+//! Math the replay path may use (§12.1): functions built only from IEEE-754's exact or
+//! correctly rounded operations (`+ − × ÷ √`, `round`, `%`, sign and bit
+//! manipulation), so native and wasm builds compute them to the same bit.
 //!
 //! What decides where a stroke's segments are cut, and what they deposit, has to
 //! agree to the last bit across replay, goldens and peers. The library
 //! transcendentals (`sin`, `atan2`, …) are not specified to that — each platform's
-//! libm may round differently — so anything a replay computes from a record reaches
-//! for these instead.
+//! libm may round differently. These cover the arc an edge is swept as, the
+//! flattener's turn, the pen's orientation, a stretched tip's map and the tooth's
+//! bearing.
+//!
+//! The known remainder still on libm: `ln_keep` (`gpu/stroke/budget.rs`: the λ a slot
+//! transfers at, and the exchange travel that bounds a segment), the bleed's `ln` and
+//! `exp` (`gpu/stroke/dynamics/bleed.rs`), the tip volumes `gpu/stroke/tips.rs` bakes
+//! (`exp`, `powf`, `ln`, `cos`), and the tooth's `exp` (`gpu/substrate/tooth.rs`).
 
-/// `sin(x)` as a truncated Maclaurin series, **for small `x` only**: within an f32 ulp
-/// (worst relative error 8.1e-8 against an f64 reference) for `|x| ≤ asin(0.2)`, the
-/// range [`fit_arc`](crate::path::fit_arc) guards its callers to.
+/// `sin(x)` as a truncated Maclaurin series, **for small `x` only**: within 1.03 ulp
+/// (worst relative error 9.1e-8 against an f64 reference) for `|x| ≤ 0.428`, which is
+/// `2·asin(0.2) + 0.025` — the whole turn [`arc_at`](crate::path::arc_at) takes across
+/// an edge [`fit_arc`](crate::path::fit_arc) bent, and a bleed firing's walk back past
+/// it.
 pub(crate) fn sin_small(x: f32) -> f32 {
     let x2 = x * x;
     x * (1.0 - x2 * (1.0 / 6.0 - x2 * (1.0 / 120.0 - x2 / 5040.0)))
 }
 
-/// `1 − cos(x)` as a series, over [`sin_small`]'s range (worst relative error 1.2e-7).
+/// `1 − cos(x)` as a series, over [`sin_small`]'s range: within 5 ulp (worst relative
+/// error 4.2e-7) there, and within 2 ulp (1.5e-7) for the half turn
+/// [`arc_sagitta`](crate::path::arc_sagitta) asks, `|x| ≤ asin(0.2)`. The first term
+/// dropped, `x⁸/8!`, is what the wider range pays.
 ///
 /// Evaluated directly rather than by subtraction, which is not a nicety: near zero
 /// `cos(x)` rounds to exactly 1, and the difference cancels every digit it had.
@@ -25,7 +36,7 @@ pub(crate) fn versin_small(x: f32) -> f32 {
     x2 * (0.5 - x2 * (1.0 / 24.0 - x2 / 720.0))
 }
 
-/// `asin(u)/u` as a series, for `|u| ≤ 0.2` (worst relative error 1.3e-7).
+/// `asin(u)/u` as a series, for `|u| ≤ 0.2` (worst relative error 1.4e-7).
 pub(crate) fn asin_over_x(u: f32) -> f32 {
     let u2 = u * u;
     1.0 + u2 * (1.0 / 6.0 + u2 * (3.0 / 40.0 + u2 * (15.0 / 336.0)))
@@ -34,9 +45,8 @@ pub(crate) fn asin_over_x(u: f32) -> f32 {
 /// `acos(v.clamp(-1, 1))` to within ~1e-7 absolute: a 7-degree minimax polynomial
 /// times a square root (DirectXMath's `XMScalarAcos`).
 ///
-/// **A verbatim copy of glam 0.33's `acos_approx_f32`**, which `Vec2::angle_to` is
-/// built on — so `flatten`'s turn test, which used `angle_to`, cuts exactly where it
-/// did, now without depending on glam keeping that implementation.
+/// **Bit for bit glam 0.33's `acos_approx_f32`**, which `Vec2::angle_to` is built on:
+/// `flatten`'s turn test decides cuts through it, so any other arccosine moves them.
 pub(crate) fn acos_approx(v: f32) -> f32 {
     let nonnegative = v >= 0.0;
     let x = v.abs();

@@ -123,7 +123,7 @@ impl Engine {
     /// sharing the machinery is a correctness argument as much as an economy. What is
     /// shared is what cannot disagree — immutable, content-addressed, or an allocator.
     /// Everything an engine can *set* stays per-engine: the document, the session view,
-    /// and the three compositor view settings, which open mirroring the donor's look
+    /// and the compositor's view settings, which open mirroring the donor's look
     /// and move independently from there.
     ///
     /// The document opens on the donor's current substrate, so a preview needs no
@@ -155,7 +155,7 @@ impl Engine {
                 .with_substrate(initial_substrate)
                 .with_substrate_scale(substrate.scale),
         ));
-        // Its own three view settings over the shared passes — the whole of what a
+        // Its own view settings over the shared passes — the whole of what a
         // sibling's compositor costs — seeded from `shared` so it opens mirroring the
         // canvas it came from.
         let compositor_pipeline = CompositorPipeline::sharing(
@@ -227,7 +227,7 @@ impl Engine {
     /// The expensive half of this engine, for building another on the same device
     /// (§11) — see [`EngineShared`].
     ///
-    /// The three view settings are read live, so a sibling opens on the look the
+    /// The view settings are read live, so a sibling opens on the look the
     /// canvas has now rather than the one it was built with.
     pub fn shared(&self) -> EngineShared {
         debug_assert!(
@@ -340,7 +340,7 @@ struct GpuKeep {
 ///
 /// The two compositor values come back beside it rather than inside it because they
 /// are **per-engine**: the attachments are this target's, and the pipeline carries
-/// this engine's three view settings. What `shared` keeps of them is the compiled
+/// this engine's view settings. What `shared` keeps of them is the compiled
 /// `passes`, read off the pipeline built here so the two cannot come apart.
 struct GpuBuilt {
     shared: EngineShared,
