@@ -48,16 +48,25 @@ pub(super) fn decode_hdr(bytes: &[u8]) -> Result<(Vec<[f32; 3]>, u32, u32), Stri
     }
     let h: u32 = parts[1].parse().map_err(|_| "hdr: bad height")?;
     let w: u32 = parts[3].parse().map_err(|_| "hdr: bad width")?;
+    // The image becomes one texture (`Environment::from_equirect`), which can be
+    // neither empty nor past the device's limit — and the header alone sizes the
+    // allocation below, so it is bounded before a byte of the body is read.
+    let max = crate::gpu::context::MAX_TEXTURE_DIM_2D;
+    if w == 0 || h == 0 || w > max || h > max {
+        return Err(format!(
+            "hdr: a {w}x{h} image is not 1..={max} texels a side"
+        ));
+    }
     let (wu, hu) = (w as usize, h as usize);
+    let texels = wu.checked_mul(hu).ok_or("hdr: image too large")?;
 
-    let mut out = vec![[0.0f32; 3]; wu * hu];
+    let mut out: Vec<[f32; 3]> = Vec::new();
+    out.try_reserve_exact(texels)
+        .map_err(|_| format!("hdr: no memory for a {w}x{h} image"))?;
     let mut scan = vec![[0u8; 4]; wu]; // one scanline of RGBE
-    for y in 0..hu {
+    for _ in 0..hu {
         read_scanline(bytes, &mut pos, &mut scan, wu)?;
-        let row = &mut out[y * wu..(y + 1) * wu];
-        for (px, rgbe) in row.iter_mut().zip(scan.iter()) {
-            *px = rgbe_to_linear(*rgbe);
-        }
+        out.extend(scan.iter().map(|&rgbe| rgbe_to_linear(rgbe)));
     }
     Ok((out, w, h))
 }
@@ -153,6 +162,7 @@ fn rgbe_to_linear(rgbe: [u8; 4]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gpu::context::MAX_TEXTURE_DIM_2D;
 
     #[test]
     fn decodes_bundled_studio_hdr() {
@@ -167,5 +177,39 @@ mod tests {
             max > 1.0,
             "studio HDR should contain values >1 (got max {max})"
         );
+    }
+
+    /// A Radiance header with resolution line `res`, then `body`.
+    fn file(res: &str, body: &[u8]) -> Vec<u8> {
+        let mut out = format!("#?RADIANCE\nFORMAT=32-bit_rle_rgbe\n\n{res}\n").into_bytes();
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// An image with no texels decodes to nothing a texture can be made of.
+    #[test]
+    fn an_empty_image_is_refused() {
+        for res in ["-Y 0 +X 0", "-Y 0 +X 16", "-Y 16 +X 0"] {
+            assert!(decode_hdr(&file(res, &[])).is_err(), "{res} decoded");
+        }
+    }
+
+    /// One texel past the largest texture on either side, with a complete body — so
+    /// the refusal is for the size, not for a short read.
+    #[test]
+    fn an_image_past_the_texture_limit_is_refused() {
+        let over = MAX_TEXTURE_DIM_2D + 1;
+        // Flat RGBE quads, none of which starts an RLE scanline.
+        let body = [128u8; 4].repeat(over as usize);
+        for res in [format!("-Y 1 +X {over}"), format!("-Y {over} +X 1")] {
+            assert!(decode_hdr(&file(&res, &body)).is_err(), "{res} decoded");
+        }
+    }
+
+    /// A header claiming 65536² texels is refused before anything is allocated for
+    /// them — 51 GB here, and a `usize` overflow on 32-bit wasm.
+    #[test]
+    fn a_huge_header_is_refused_before_allocating() {
+        assert!(decode_hdr(&file("-Y 65536 +X 65536", &[])).is_err());
     }
 }
