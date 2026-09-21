@@ -90,6 +90,12 @@ test-group = 'gpu'
 filter = 'test(a_pair_that_claims_to_commute_does)'
 slow-timeout = { period = "120s", terminate-after = 5 }
 
+# Compares early against late per-move milliseconds, so a parallel run's load makes it
+# flake. It runs with nothing beside it, and so its bound can stay at 2x.
+[[profile.default.overrides]]
+filter = 'test(per_move_cost_does_not_grow_with_stroke_length)'
+threads-required = "num-test-threads"
+
 [profile.default]
 # A GPU that stops answering should fail the test that was waiting on it, by name,
 # rather than the job's own timeout — which reports that something hung and nothing
