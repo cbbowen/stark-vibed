@@ -32,6 +32,31 @@ pub enum Timeline {
     Replicated(ReplicatedTimeline),
 }
 
+/// One move of the history playhead ([`Timeline::step`]).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Step {
+    Undo,
+    Redo,
+    /// To this many applied actions, clamped to [`Timeline::scrub_range`]. Withdrawn
+    /// actions are kept, as undo keeps them, so scrubbing is lossless both ways and an
+    /// edit made at a scrubbed-back position truncates the future as one after an undo
+    /// does (§18.2.4).
+    Seek(usize),
+}
+
+/// What a [`Step`] did to the timeline.
+#[must_use]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Stepped {
+    /// The playhead moved: the current document is a different one.
+    Moved,
+    /// There was nothing to step over, and nothing changed.
+    Stayed,
+    /// A shared session's step: nothing has moved, and the caller owes the log an
+    /// `Undo` of this action (§12.3).
+    Log(ActionId),
+}
+
 impl Timeline {
     /// The current document state (`O(1)`).
     pub fn current(&self) -> &DocState {
@@ -51,24 +76,33 @@ impl Timeline {
         }
     }
 
-    /// Step back one action if possible; returns whether anything was undone.
+    /// Navigate the history one [`Step`], or say what must be logged instead.
     ///
-    /// **Shared sessions never come through here.** Undo is a logged action there so
-    /// peers can order it (§12.3): ask [`undo_as_action`](Self::undo_as_action) first,
-    /// which answers `Some` for exactly the timeline this arm refuses.
-    pub fn undo(&mut self, ctx: &mut ApplyCtx) -> bool {
-        match self {
-            Timeline::Linear(t) => t.undo(ctx),
-            Timeline::Replicated(_) => false,
-        }
-    }
-
-    /// Re-apply the most recently undone action; returns whether anything was redone.
-    /// Refused in a shared session for [`undo`](Self::undo)'s reason.
-    pub fn redo(&mut self, ctx: &mut ApplyCtx) -> bool {
-        match self {
-            Timeline::Linear(t) => t.redo(ctx),
-            Timeline::Replicated(_) => false,
+    /// A solo timeline moves its playhead. A shared one moves nothing: undo is a
+    /// logged action there so peers can order it (§5.4, §12.3), and redo is an `Undo`
+    /// of an `Undo`, so it answers [`Stepped::Log`] with the target and leaves the
+    /// commit to the caller. It has no single playhead to [`Seek`](Step::Seek)
+    /// (see [`scrub_range`](Self::scrub_range)), so a seek there stays put.
+    pub fn step(&mut self, step: Step, ctx: &mut ApplyCtx) -> Stepped {
+        let moved = match self {
+            Timeline::Linear(t) => match step {
+                Step::Undo => t.undo(ctx),
+                Step::Redo => t.redo(ctx),
+                Step::Seek(to) => t.seek(to, ctx),
+            },
+            Timeline::Replicated(t) => {
+                let target = match step {
+                    Step::Undo => t.targets.undo,
+                    Step::Redo => t.targets.redo,
+                    Step::Seek(_) => None,
+                };
+                return target.map_or(Stepped::Stayed, Stepped::Log);
+            }
+        };
+        if moved {
+            Stepped::Moved
+        } else {
+            Stepped::Stayed
         }
     }
 
@@ -94,26 +128,6 @@ impl Timeline {
         match self {
             Timeline::Linear(t) => t.actions().cloned().collect(),
             Timeline::Replicated(t) => t.log.clone(),
-        }
-    }
-
-    /// Shared-mode undo (§5.4): the action an "undo" should target by logging an
-    /// [`ActionKind::Undo`](stark_model::document::ActionKind::Undo), or `None` if undo
-    /// is plain timeline navigation. Ask this first and fall back to
-    /// [`undo`](Self::undo) only on `None`.
-    pub fn undo_as_action(&self) -> Option<ActionId> {
-        match self {
-            Timeline::Linear(_) => None,
-            Timeline::Replicated(t) => t.targets.undo,
-        }
-    }
-
-    /// Shared-mode redo: the **`Undo` action** a "redo" should itself undo (redo is an
-    /// `Undo` of an `Undo`, §12.3), or `None`.
-    pub fn redo_as_action(&self) -> Option<ActionId> {
-        match self {
-            Timeline::Linear(_) => None,
-            Timeline::Replicated(t) => t.targets.redo,
         }
     }
 
@@ -150,21 +164,6 @@ impl Timeline {
         match self {
             Timeline::Linear(t) => Some((t.applied(), t.applied() + t.redo.len())),
             Timeline::Replicated(_) => None,
-        }
-    }
-
-    /// Move the playhead to `to` (clamped to the range), applying or withdrawing
-    /// whatever lies between. Returns whether the document changed.
-    ///
-    /// Withdrawn actions are *kept*, as undo keeps them: scrubbing is lossless in both
-    /// directions, and committing a fresh edit at a scrubbed-back position truncates the
-    /// future exactly as painting after an undo does.
-    ///
-    /// A shared session declines, for [`scrub_range`](Self::scrub_range)'s reason.
-    pub fn seek(&mut self, to: usize, ctx: &mut ApplyCtx) -> bool {
-        match self {
-            Timeline::Linear(t) => t.seek(to, ctx),
-            Timeline::Replicated(_) => false,
         }
     }
 
@@ -388,7 +387,7 @@ impl LinearTimeline {
 /// the *effective* actions in that order, so two peers that have seen the same set
 /// compute identical pixels (strong eventual consistency, §12.2).
 pub struct ReplicatedTimeline {
-    /// Whose undo/redo this timeline answers for ([`Timeline::undo_as_action`]).
+    /// Whose undo/redo this timeline answers for ([`Timeline::step`]).
     actor: ActorId,
     /// The full log, sorted by id, no duplicates. Grow-only.
     log: Vec<Action>,

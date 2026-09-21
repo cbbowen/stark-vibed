@@ -2,7 +2,7 @@
 //! many marks a track draws for it.
 //!
 //! The playhead is not here, and not in either frontend: it is the engine timeline's
-//! applied/withheld split (`Timeline::seek`), the same one undo and redo move. What is
+//! applied/withheld split (`Step::Seek`), the same one undo and redo move. What is
 //! here is the pace a transport steps it at.
 
 /// Actions per second at 1×. Eight is about the rate at which a painting reads as being

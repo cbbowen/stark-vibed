@@ -7,6 +7,7 @@
 
 use super::Engine;
 use crate::command::{DocCommand, GestureCommand, PeerCommand, Tool, ViewCommand};
+use crate::document::Step;
 use crate::session::ShapeResult;
 use stark_model::document::{
     ActionId, ActionKind, BlendMode, Filter, GuideId, LayerId, Parcel, PerspectiveGuide,
@@ -276,26 +277,9 @@ impl Engine {
 
     fn process_doc_inner(&mut self, command: DocCommand) {
         match command {
-            // Shared sessions log undo as an action peers can order (§5.4, §12.3);
-            // solo falls back to navigation. Redo is an `Undo` of an `Undo`, which
-            // is why the two differ only in which pair of timeline methods they
-            // name — see [`Self::navigate`].
-            DocCommand::Undo => {
-                self.navigate(|t| t.undo_as_action(), |t, ctx| t.undo(ctx));
-            }
-            DocCommand::Redo => {
-                self.navigate(|t| t.redo_as_action(), |t, ctx| t.redo(ctx));
-            }
-            DocCommand::Seek(to) => {
-                self.preview.set_doc(None);
-                if self.timeline.seek(to, &mut self.shared.apply) {
-                    // A scrub crosses layer additions wholesale, so the selected layer
-                    // routinely stops existing here. `committed_changed` repoints the
-                    // brush for every such cause at once (§17.9).
-                    self.committed_changed();
-                    self.apply_document_substrate();
-                }
-            }
+            DocCommand::Undo => self.navigate(Step::Undo),
+            DocCommand::Redo => self.navigate(Step::Redo),
+            DocCommand::Seek(to) => self.navigate(Step::Seek(to)),
             DocCommand::Select(op) => self.commit(ActionKind::Select(op)),
             DocCommand::InvertSelection => self.commit(ActionKind::InvertSelection),
             DocCommand::SetSelectionOpacity(opacity) => {

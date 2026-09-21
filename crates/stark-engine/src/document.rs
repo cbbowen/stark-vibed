@@ -36,7 +36,7 @@ pub use selection::Selection;
 pub use state::{
     CanvasBounds, DEFAULT_SUBSTRATE, DEFAULT_SUBSTRATE_COLOR, DocState, Guide, LayerSite,
 };
-pub use timeline::{LinearTimeline, ReplicatedTimeline, Timeline, TimelineStats};
+pub use timeline::{LinearTimeline, ReplicatedTimeline, Step, Stepped, Timeline, TimelineStats};
 // Re-exported from the model, where the undo algebra lives (§12.3) — `engine::file`
 // and the tests reach it by this path and need not learn that it moved.
 pub use stark_model::document::effective_actions;

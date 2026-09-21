@@ -115,6 +115,38 @@ fn a_document_is_edited_only_once_it_moves_from_what_arrived() {
     );
 }
 
+/// A history step with nothing to step over is not an edit: it leaves both
+/// `edited` and `doc_revision` where they were, so neither the unsaved-work prompt
+/// nor anything memoized on the revision is disturbed by a stray Ctrl+Z.
+#[test]
+fn a_step_with_nowhere_to_go_leaves_the_document_unedited() {
+    let unmoved = |engine: &Engine, at: u64, what: &str| {
+        let obs = engine.observe();
+        assert!(!obs.edited, "{what} marked the document edited");
+        assert_eq!(obs.doc_revision, at, "{what} moved the revision");
+    };
+
+    let Some(mut fresh) = engine_or_skip() else {
+        return;
+    };
+    let at = fresh.observe().doc_revision;
+    fresh.process(DocCommand::Undo);
+    unmoved(&fresh, at, "an undo on a blank document");
+    fresh.process(DocCommand::Redo);
+    unmoved(&fresh, at, "a redo on a blank document");
+
+    paint_two(&mut fresh);
+    let bytes = fresh.save_bytes().expect("serialize");
+    let mut loaded = engine_or_skip().expect("adapter available (original built)");
+    loaded.load_bytes(&bytes).expect("deserialize + replay");
+    let at = loaded.observe().doc_revision;
+    loaded.process(DocCommand::Redo);
+    unmoved(&loaded, at, "a redo straight after a load");
+    let (applied, _) = loaded.scrub_range().expect("a solo document scrubs");
+    loaded.process(DocCommand::Seek(applied));
+    unmoved(&loaded, at, "a seek to where the playhead stands");
+}
+
 #[test]
 fn undo_after_load_drops_last_stroke() {
     let Some(mut original) = engine_or_skip_blue() else {

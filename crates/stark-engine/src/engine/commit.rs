@@ -7,7 +7,7 @@
 //! gone, and the undo depth given up to memory.
 
 use super::Engine;
-use crate::document::{ApplyCtx, Timeline};
+use crate::document::{Step, Stepped};
 use stark_model::document::{Action, ActionId, ActionKind, LayerId, StrokeRecord};
 
 /// How much resident tile memory the engine will let **history retention** hold
@@ -82,31 +82,27 @@ impl Engine {
         self.repoint_active_layer();
     }
 
-    /// Move the history playhead one step, the way
-    /// [`DocCommand::Undo`](crate::command::DocCommand::Undo) and
-    /// [`DocCommand::Redo`](crate::command::DocCommand::Redo) each do it.
+    /// Move the history playhead: [`DocCommand::Undo`](crate::command::DocCommand::Undo),
+    /// [`Redo`](crate::command::DocCommand::Redo) and
+    /// [`Seek`](crate::command::DocCommand::Seek) alike.
     ///
-    /// The two are one operation named twice: a shared session logs the step as an
-    /// `Undo` action peers can order (§5.4, §12.3) and a solo one navigates, and redo
-    /// is an `Undo` of an `Undo` — so the *only* thing that differs is which pair of
-    /// timeline methods is asked. Passing the pair is what stops the two drifting over
-    /// what surrounds the step: the dropped preview, the revision bump, the substrate
-    /// re-read.
-    pub(super) fn navigate(
-        &mut self,
-        as_action: impl Fn(&Timeline) -> Option<ActionId>,
-        step: impl Fn(&mut Timeline, &mut ApplyCtx) -> bool,
-    ) {
+    /// Only a step that moved something is a committed change. One with nowhere to go
+    /// leaves `doc_revision` alone, so it neither marks the document edited nor
+    /// discards the heads and memos keyed on the revision. The drag preview is dropped
+    /// either way, for [`commit`](Self::commit)'s reason.
+    pub(super) fn navigate(&mut self, step: Step) {
         self.preview.set_doc(None);
-        if let Some(target) = as_action(&self.timeline) {
+        match self.timeline.step(step, &mut self.shared.apply) {
+            Stepped::Stayed => return,
+            // Also repoints the brush when the step withdrew its layer (§17.9).
+            Stepped::Moved => self.committed_changed(),
             // The unconditional door: a step the timeline has just said it can take
             // must land, and a declined `Undo` would report a move the playhead did
             // not make.
-            let id = self.next_action_id();
-            self.commit_with_id(id, ActionKind::Undo(target));
-        } else {
-            step(&mut self.timeline, &mut self.shared.apply);
-            self.committed_changed();
+            Stepped::Log(target) => {
+                let id = self.next_action_id();
+                self.commit_with_id(id, ActionKind::Undo(target));
+            }
         }
         // A step across a `SetSubstrate` — or a `SetSubstrateScale` — moves the
         // document's substrate (§6.4).
@@ -257,7 +253,7 @@ impl Engine {
     /// What is measured is resident tile bytes, and what a fold releases is the tile
     /// handles the discarded snapshots pinned.
     ///
-    /// A shared session declines by construction, because [`Timeline::forget_oldest`]
+    /// A shared session declines by construction, because [`Timeline::forget_oldest`](crate::document::Timeline::forget_oldest)
     /// does: its document is re-materialized from the whole log (§12.2), so nothing
     /// there is foldable. Nothing about this call site has to know that.
     fn trim_history(&mut self) {

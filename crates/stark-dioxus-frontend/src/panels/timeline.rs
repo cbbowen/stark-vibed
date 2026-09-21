@@ -8,7 +8,7 @@
 //!
 //! **The playhead is not stored here.** Scrubbing moves the engine timeline's
 //! applied/withheld split — the very split undo and redo move one step at a time
-//! ([`Timeline::seek`](stark_engine::document::Timeline::seek)) — so the mode adds
+//! ([`Step::Seek`](stark_engine::document::Step::Seek)) — so the mode adds
 //! no second notion of "where we are" that could disagree with the undo stack.
 //! Two consequences fall out rather than being arranged:
 //!
