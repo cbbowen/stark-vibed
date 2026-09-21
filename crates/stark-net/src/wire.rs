@@ -146,14 +146,17 @@ use iroh::EndpointId;
 /// carries, which a file fills from its default and the wire cannot — and the
 /// default is load-bearing here: a peer on 27 would send actions carrying none, and
 /// the receiver would number them off its *own* state while the sender numbered them
-/// off the sender's, which is two documents that disagree about a label.
-pub(crate) const ALPN: &[u8] = b"stark/collab/28";
+/// off the sender's, which is two documents that disagree about a label;
+/// 29: two records the fold used to take are refused whole — a stroke reaching past
+/// `MAX_STROKE_TILES`, and a `PlaceImage` onto a layer id the document already holds.
+/// Neither shape moved, so a file reads either way; what such a log *means* changed.
+pub(crate) const ALPN: &[u8] = b"stark/collab/29";
 
 /// The number [`ALPN`] ends with, as a number, for a ticket to carry — see
 /// `ticket`'s `TicketBody::proto` for why a link names it. Kept in step with
 /// [`ALPN`] by a test rather than by building the byte-string from it: two
 /// tokens side by side are not worth the compile-time ceremony.
-pub(crate) const PROTO: u32 = 28;
+pub(crate) const PROTO: u32 = 29;
 
 /// Upper bound on an encoded request, over any transport.
 ///
