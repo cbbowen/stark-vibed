@@ -62,6 +62,7 @@ pub(crate) mod assets;
 pub(crate) mod assist;
 pub(crate) mod colorspace;
 pub mod command;
+pub(crate) mod detmath;
 pub mod document;
 pub(crate) mod engine;
 pub(crate) mod error;

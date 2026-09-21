@@ -402,13 +402,23 @@ fn within(
     attr <= tol.attribute
 }
 
+/// Below this *squared* speed a derivative names no direction, and [`turn`] reads 0.
+/// A speed of 1e-6 — far wider than `arc`'s `STATIONARY_SPEED` of 1e-12, so the two
+/// disagree about a derivative between them. Kept as found: it decides where segments
+/// are cut, so changing it moves strokes.
+const STATIONARY_SPEED_SQ: f32 = 1e-12;
+
 /// The unsigned angle between two derivatives; 0 where either is stationary and
 /// the direction is undefined.
+///
+/// Exactly what `a.angle_to(b).abs()` computed, operation for operation, through
+/// [`acos_approx`](crate::detmath::acos_approx): this decides where segments are cut,
+/// so it may not depend on how a dependency chooses to evaluate an arccosine.
 fn turn(a: Vec2, b: Vec2) -> f32 {
-    if a.length_squared() < 1e-12 || b.length_squared() < 1e-12 {
+    if a.length_squared() < STATIONARY_SPEED_SQ || b.length_squared() < STATIONARY_SPEED_SQ {
         return 0.0;
     }
-    a.angle_to(b).abs()
+    crate::detmath::acos_approx(a.dot(b) / (a.length_squared() * b.length_squared()).sqrt())
 }
 
 /// One cubic span of the path, in Bézier form: position *and* every pen attribute,
@@ -820,6 +830,31 @@ mod tests {
             over_chord > 0,
             "no configuration measured longer along the arcs than along the chords",
         );
+    }
+
+    /// [`turn`] is the angle glam's `Vec2::angle_to` measured, **bit for bit**, over
+    /// directions all round the circle and lengths across thirteen orders of
+    /// magnitude — so the flattener cuts every stroke exactly where it did.
+    #[test]
+    fn the_turn_is_the_angle_glam_measures() {
+        let mut checked = 0;
+        for i in 0..720 {
+            for j in 0..97 {
+                let (ta, tb) = (i as f32 * 0.00873, j as f32 * 0.0659 - 3.1);
+                for (la, lb) in [(1.0f32, 1.0f32), (2e-6, 3e4), (7e6, 2e-3), (0.37, 1.9)] {
+                    let a = Vec2::new(ta.cos(), ta.sin()) * la;
+                    let b = Vec2::new((ta + tb).cos(), (ta + tb).sin()) * lb;
+                    let (ours, glam) = (turn(a, b), a.angle_to(b).abs());
+                    assert_eq!(
+                        ours.to_bits(),
+                        glam.to_bits(),
+                        "{a:?} against {b:?}: {ours} against glam's {glam}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 720 * 97 * 4);
     }
 
     #[test]

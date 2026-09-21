@@ -14,6 +14,8 @@
 
 use stark_model::geom::Vec2;
 
+use crate::detmath::{asin_over_x, sin_small, versin_small};
+
 /// The least sagitta (canvas px) an arc has to buy before an edge is bent at all.
 /// Under this the arc is indistinguishable from its chord and is reported straight,
 /// which keeps a straight or barely-curved stroke on the chord's own arithmetic.
@@ -22,9 +24,17 @@ const MIN_SAGITTA: f32 = 0.01;
 /// Cap on `sin(θ/2)` for the turn `θ` one edge may bend through — ~23°, far past the
 /// ~5.7° [`FLATTEN_TOLERANCE`](super::FLATTEN_TOLERANCE)'s `angle` bound admits. A backstop on a pathological
 /// edge (a cusp, or a span that bottomed out `flatten`'s subdivision cap) rather than a
-/// quality knob: past it the series below stop being the right approximation, and so
-/// does the annular sector the shaders rasterize a curved sweep as.
+/// quality knob: past it the [`detmath`](crate::detmath) series stop being the right
+/// approximation, and so does the annular sector the shaders rasterize a curved sweep
+/// as.
 const MAX_HALF_TURN_SIN: f32 = 0.2;
+
+/// Below this speed a curve's derivative names no tangent, and [`fit_arc`] sends the
+/// edge straight. Unsquared: far narrower than `flatten::turn`'s own stationary test
+/// (`STATIONARY_SPEED_SQ`), which declines below a speed of 1e-6 — so a derivative
+/// between the two is bent here while its turn reads 0 there. Kept as found: either
+/// value decides where segments are cut, so changing one moves strokes.
+const STATIONARY_SPEED: f32 = 1e-12;
 
 /// One flattened edge, as it will actually be swept.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -37,34 +47,6 @@ pub struct Arc {
     pub curvature: f32,
     /// Length along the arc.
     pub length: f32,
-}
-
-/// `sin(x)`, `1 − cos(x)` and `asin(u)/u` as **polynomials**, for the same reason
-/// [`taper_profile`](crate::gpu::stroke) is one: these decide where segments are cut
-/// and so which pixels are stored, and replay, goldens and peers all have to agree on
-/// them to the last bit — which the transcendental library functions are not specified
-/// to. Each is a truncated Maclaurin series, accurate **to within an f32 ulp** over the
-/// range its caller is guarded to ([`MAX_HALF_TURN_SIN`]): measured against an f64
-/// reference, worst relative error 8.1e-8 for `sin`, 1.2e-7 for `versin` and 1.3e-7 for
-/// `asin/u`, against an `f32::EPSILON` of 1.19e-7.
-///
-/// `versin` is `1 − cos(x)` evaluated *directly* rather than by subtraction, and that
-/// is not a nicety: over this same range the subtraction's relative error reaches
-/// **100%**, because near zero `cos(x)` rounds to exactly 1 and the difference cancels
-/// every digit it had. The series keeps them all.
-fn sin_small(x: f32) -> f32 {
-    let x2 = x * x;
-    x * (1.0 - x2 * (1.0 / 6.0 - x2 * (1.0 / 120.0 - x2 / 5040.0)))
-}
-
-fn versin_small(x: f32) -> f32 {
-    let x2 = x * x;
-    x2 * (0.5 - x2 * (1.0 / 24.0 - x2 / 720.0))
-}
-
-fn asin_over_x(u: f32) -> f32 {
-    let u2 = u * u;
-    1.0 + u2 * (1.0 / 6.0 + u2 * (3.0 / 40.0 + u2 * (15.0 / 336.0)))
 }
 
 /// The arc standing in for the edge from a curve point with derivative `vel` along
@@ -81,8 +63,8 @@ fn asin_over_x(u: f32) -> f32 {
 /// Fitting from the start tangent alone is what makes it cheap: with `t̂` the unit
 /// tangent and `n̂` its left normal, an arc leaving along `t̂` reaches chord `v` iff
 /// `κ = 2 (v·n̂)/|v|²`, and `sin(θ/2) = κ|v|/2` falls out of the same identity. No
-/// angle is ever formed, so nothing here needs a transcendental beyond the series
-/// above.
+/// angle is ever formed, so nothing here needs a transcendental beyond the `detmath`
+/// series.
 ///
 /// The end tangent is *not* pinned to the curve's tangent there, so consecutive arcs
 /// still meet with a small kink — second order in the turn, where the chord's was
@@ -104,9 +86,7 @@ pub fn fit_arc(vel: Vec2, v: Vec2, max_curvature: f32) -> Arc {
         length: chord,
     };
     let speed = vel.length();
-    if speed < 1e-12 {
-        // A stationary derivative names no tangent (`turn` declines the same case):
-        // there is nothing to bend towards.
+    if speed < STATIONARY_SPEED {
         return straight;
     }
     let t = vel / speed;
