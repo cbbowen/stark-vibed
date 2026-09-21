@@ -153,7 +153,7 @@ impl BlendPass {
         slots: &UniformSlots<BlendUniform>,
     ) {
         // Two per level rather than one per merge per frame: the views this names are
-        // fixed by the phase, and the whole scratch is dropped when they change (see
+        // fixed by the phase, and the cached groups are dropped when they change (see
         // [`ScratchLevel::blend_bg`]).
         let bg = b.here.blend_bg(b.phase.back_is_swap, || {
             self.bind_group(&ctx.device, slots.resource(), b.back, src)
@@ -233,16 +233,19 @@ pub(super) struct ScratchLevel {
     /// and a merge's source is always this level's `iso`. Two phases, so two of each,
     /// however many merges the document has.
     ///
-    /// **Two things invalidate one.** The textures are covered by the scratch's own
-    /// lifetime — `ensure_targets` drops the whole scratch when the accumulator is
-    /// rebuilt. The pass's **uniform buffer** is not: a frame with more merges than any
+    /// **Three things invalidate one.** On the render path the stack's target is the
+    /// accumulator, and the textures are covered by the scratch's own lifetime —
+    /// `ensure_targets` drops the whole scratch when the accumulator is rebuilt. A
+    /// pick's scratch outlives its targets instead: every patch of a trace is a target
+    /// of its own, so [`Compositor::composite_channels`] drops the groups before each
+    /// patch. And the pass's **uniform buffer**: a frame with more merges than any
     /// before it *replaces* that buffer ([`UniformSlots::write`]), leaving a kept group
     /// pointing at one too small for the offset it is about to be given — a validation
     /// error no single-render test can reach, since a fresh compositor sizes its buffer
-    /// before it builds anything over it. [`Compositor::upload_streams`] calls
-    /// [`ScratchTargets::invalidate_bind_groups`] when the buffer moves.
+    /// before it builds anything over it. `Streams::upload` reports that, and its
+    /// callers invalidate.
     ///
-    /// [`Compositor::upload_streams`]: super::Compositor
+    /// [`Compositor::composite_channels`]: super::Compositor::composite_channels
     blend_bg: [OnceLock<[wgpu::BindGroup; 2]>; 2],
     filter_bg: [OnceLock<[wgpu::BindGroup; 2]>; 2],
 }

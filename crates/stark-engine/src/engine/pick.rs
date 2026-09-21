@@ -326,7 +326,7 @@ impl Engine {
         // (`Compositor::prepare_pick`). Kept across the loop and past the submit.
         //
         // `None` only for an empty trace, where the loop below draws nothing either.
-        let prepared = views.first().map(|&first| {
+        let mut prepared = views.first().map(|&first| {
             self.compositor
                 .prepare_pick(&self.compositor_pipeline, first, &groups)
         });
@@ -343,7 +343,7 @@ impl Engine {
         // The `Option` is unwrapped once, around the loop, rather than per slot: "a
         // non-empty trace prepared above" is a fact about this call, so it is a shape
         // here instead of an `expect` inside.
-        if let Some(prepared) = &prepared {
+        if let Some(prepared) = &mut prepared {
             for slot in 0..views.len() {
                 let (color, resid) = self.composite_patch(
                     &mut encoder,
@@ -432,7 +432,7 @@ impl Engine {
     fn composite_patch(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        prepared: &crate::gpu::composite::PreparedPick<'_>,
+        prepared: &mut crate::gpu::composite::PreparedPick<'_>,
         slot: usize,
         size: Extent2,
         formats: crate::gpu::channels::ChannelFormats,
@@ -582,9 +582,9 @@ impl Engine {
             .write_views(&self.compositor_pipeline, &[view]);
         let mut hits: Vec<(LayerId, wgpu::Texture)> = Vec::with_capacity(lists.len());
         for (id, groups) in &lists {
-            let prepared = self
-                .compositor
-                .prepare_pick(&self.compositor_pipeline, view, groups);
+            let mut prepared =
+                self.compositor
+                    .prepare_pick(&self.compositor_pipeline, view, groups);
             let mut encoder =
                 self.shared
                     .gpu
@@ -597,7 +597,7 @@ impl Engine {
             // any part of that.
             let (color, _resid) = self.composite_patch(
                 &mut encoder,
-                &prepared,
+                &mut prepared,
                 0,
                 size,
                 formats,

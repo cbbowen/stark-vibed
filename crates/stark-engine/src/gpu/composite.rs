@@ -1250,12 +1250,14 @@ impl Compositor {
         // `ensure_scratch`). Blend modes have to be honoured here or an eyedropper
         // would report a color the screen never showed.
         //
-        // One set for every patch is sound because the patches are recorded into one
-        // encoder and commands in an encoder run in order: each patch's bounces clear
-        // and rewrite the scratch before reading it. What it must outlive is the
-        // *submit*, which is why it is here and not in the recording call —
-        // `Attachment`'s drop `destroy()`s the texture, and a recorded encoder is not
-        // in-flight work.
+        // One set of textures for every patch is sound because the patches are
+        // recorded into one encoder and commands in an encoder run in order: each
+        // patch's bounces clear and rewrite the scratch before reading it. The bind
+        // groups the scratch caches are not shared, since at level 0 they name the
+        // patch's own target; `composite_channels` drops them per patch. What the
+        // scratch must outlive is the *submit*, which is why it is here and not in the
+        // recording call — `Attachment`'s drop `destroy()`s the texture, and a recorded
+        // encoder is not in-flight work.
         let scratch = (!plan.scratch.is_empty())
             .then(|| ScratchTargets::new(&p.ctx.device, view.viewport, &plan.scratch, p.formats));
         // Its own blur scratch too, on the same argument, and serially sound across
@@ -1305,7 +1307,7 @@ impl Compositor {
         p: &CompositorPipeline,
         encoder: &mut wgpu::CommandEncoder,
         into: Targets<'_>,
-        prepared: &PreparedPick<'_>,
+        prepared: &mut PreparedPick<'_>,
         slot: usize,
     ) {
         debug_assert_eq!(
@@ -1313,6 +1315,12 @@ impl Compositor {
             p.formats.count(),
             "pass A's attachment count is the color space's, not the caller's",
         );
+        // A bounce at level 0 reads the stack's own target, which is `into` — a
+        // different texture every patch. Groups cached over the previous patch's
+        // would read its accumulator as this one's backdrop.
+        if let Some(scratch) = prepared.scratch.as_mut() {
+            scratch.invalidate_bind_groups();
+        }
         self.streams.encode_plan(
             p,
             encoder,

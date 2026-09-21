@@ -27,7 +27,7 @@ use common::*;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::{Engine, PickOptions, PickSource};
 use stark_model::Srgb;
-use stark_model::document::{BlendMode, LayerId, Place};
+use stark_model::document::{BlendMode, ColorAdjust, Filter, LayerId, Place};
 use stark_model::geom::Vec2;
 
 /// The layer every fresh document starts with.
@@ -327,6 +327,112 @@ fn a_pick_over_a_blended_stack_still_answers() {
         traced.is_some(),
         "the trace over a blended stack found no paint at all — its submit was lost",
     );
+}
+
+/// Where a trace starts: on the base's red, clear of every other layer's paint.
+const TRACE_FROM: Vec2 = Vec2::new(-60.5, 0.5);
+
+/// Where the traces below end: on red under the second bounce's paint, on green under
+/// the first's, and on green alone. Each sits on a texel centre, so a trace's end is
+/// the very texel a pick at the same point reads.
+const TRACE_TO: [Vec2; 3] = [
+    Vec2::new(-40.5, 0.5),
+    Vec2::new(40.5, 0.5),
+    Vec2::new(60.5, 0.5),
+];
+
+/// Light enough that a Multiply by either leaves a color rather than black.
+const TINT_WARM: [f32; 3] = [0.95, 0.9, 0.35];
+const TINT_COOL: [f32; 3] = [0.35, 0.9, 0.95];
+
+/// A base of red on the left and green on the right, under a Multiply layer holding a
+/// dab over the green: the first of the two bounces the traces below read through.
+fn base_under_a_multiply(engine: &mut Engine) {
+    paint(
+        engine,
+        RED_WARM,
+        16.0,
+        &[Vec2::new(-70.0, 0.0), Vec2::new(-20.0, 0.0)],
+    );
+    paint(
+        engine,
+        GREEN,
+        16.0,
+        &[Vec2::new(20.0, 0.0), Vec2::new(70.0, 0.0)],
+    );
+    add_multiply(engine, TINT_WARM, 40.0);
+}
+
+/// A Multiply layer on top holding one dab at `x` on the base's axis.
+fn add_multiply(engine: &mut Engine, tint: [f32; 3], x: f32) {
+    engine.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
+    let layer = engine.observe().active_layer;
+    paint(engine, tint, 8.0, &[Vec2::new(x, -4.0), Vec2::new(x, 4.0)]);
+    engine.process(DocCommand::SetLayerBlend(layer, BlendMode::Multiply));
+}
+
+/// Every sample of a trace is an eyedropper pick (§22.2). The fitted ramp keeps both
+/// ends verbatim, so each end must be what a single pick at that point reports — and
+/// the end is a later patch of the trace than the start, which is the one that can
+/// read an earlier patch's leftovers.
+fn assert_traces_agree_with_picks(engine: &mut Engine, what: &str) {
+    let start = pick_point(engine, TRACE_FROM).expect("paint where the traces start");
+    for to in TRACE_TO {
+        let end = pick_point(engine, to)
+            .unwrap_or_else(|| panic!("{what}: no paint where a trace ends, at {to:?}"));
+        let traced =
+            pollster::block_on(engine.pick_gradient(&[TRACE_FROM, to], PickOptions::default()))
+                .unwrap_or_else(|| panic!("{what}: the trace to {to:?} found no gradient"));
+        assert_near(
+            Some(traced.sample(0.0).get()),
+            start,
+            0.01,
+            &format!("{what}: the start of the trace to {to:?}"),
+        );
+        assert_near(
+            Some(traced.sample(1.0).get()),
+            end,
+            0.01,
+            &format!("{what}: the end of the trace to {to:?}"),
+        );
+    }
+}
+
+/// **A trace through two bounces at the top level reads each patch's own backdrop.**
+///
+/// Two bounces start the ping-pong in the caller's target, so the first merge reads
+/// that target as its backdrop — and each patch of a trace is its own target. A bind
+/// group cached across patches would hand every later patch the first one's result.
+#[test]
+fn a_trace_through_two_multiplies_is_a_pick_at_every_end() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    base_under_a_multiply(&mut engine);
+    add_multiply(&mut engine, TINT_COOL, -40.0);
+    assert_traces_agree_with_picks(&mut engine, "two Multiply layers");
+}
+
+/// The same with a filter as the second bounce, which caches its bind group on the
+/// same terms (§21.3).
+#[test]
+fn a_trace_through_a_multiply_and_a_filter_is_a_pick_at_every_end() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    base_under_a_multiply(&mut engine);
+    engine.process(DocCommand::AddFilter {
+        carrier: None,
+        above: None,
+        filter: Filter::Color(ColorAdjust {
+            saturation: 0.5,
+            ..ColorAdjust::NEUTRAL
+        }),
+    });
+    assert_traces_agree_with_picks(&mut engine, "a Multiply and a filter");
 }
 
 /// Sampling one layer **ignores its opacity slider** — and stops entirely at zero.
