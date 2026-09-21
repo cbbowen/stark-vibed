@@ -202,6 +202,16 @@ impl Engine {
     /// ([`DocError::MissingContent`]): the check runs before [`Self::adopt`], so a
     /// refusal leaves the open document alone.
     pub fn load_document(&mut self, file: &DocumentFile) -> Result<()> {
+        self.replay_file(file, |_| {})
+    }
+
+    /// Replace the document by replaying `file`, calling `each` after every action —
+    /// the whole of [`load_document`](Self::load_document), and of a timelapse, which
+    /// renders a frame there.
+    ///
+    /// Refuses before touching anything, as [`load_document`](Self::load_document)
+    /// promises.
+    fn replay_file(&mut self, file: &DocumentFile, mut each: impl FnMut(&mut Self)) -> Result<()> {
         let file = ValidatedFile::new(file)?;
         self.require_content(&file)?;
         self.adopt(file);
@@ -210,12 +220,13 @@ impl Engine {
         // they suppress (§12.3). A solo load flattens those away.
         for action in effective_actions(&file.actions) {
             self.replay_one(action);
+            each(self);
         }
         self.resync_counters(&file.actions);
         // Whatever the replayed log left the document on.
         self.apply_document_substrate();
-        // The loaded document *is* this file, unedited — so the baseline is where the
-        // replay ended, not where `reset_document` set it before the replay began.
+        // The document *is* this file, unedited — so the baseline is where the replay
+        // ended, not where `reset_document` set it before the replay began.
         self.doc_origin = self.doc_revision;
         Ok(())
     }
@@ -252,20 +263,14 @@ impl Engine {
         file: &DocumentFile,
         mut on_frame: impl FnMut(crate::image::RgbaImage),
     ) -> Result<()> {
-        let file = ValidatedFile::new(file)?;
-        self.require_content(&file)?;
-        self.adopt(file);
-        for action in effective_actions(&file.actions) {
-            self.replay_one(action);
-            // Per action, not once before the loop: a replayed `SetSubstrate` moves the
+        self.replay_file(file, |engine| {
+            // Per action, not once at the end: a replayed `SetSubstrate` moves the
             // substrate the *media pass* samples as well as the one the deposit reads, so
             // a timelapse across a mid-document switch would otherwise go on lighting
             // every later frame through the substrate the piece started on.
-            self.apply_document_substrate();
-            on_frame(self.render_to_image());
-        }
-        self.resync_counters(&file.actions);
-        Ok(())
+            engine.apply_document_substrate();
+            on_frame(engine.render_to_image());
+        })
     }
 
     /// Every imported brush asset (id + canonical PNG bytes) — used to seed a
@@ -341,7 +346,11 @@ impl Engine {
             .ok_or(DocError::UnsupportedColorSpace(color_space))?;
         self.initial_substrate = substrate;
         self.reset_document();
-        self.rebuild_gpu_for(cs);
+        // The pipelines are the color space's, not the document's: the same space
+        // keeps them (§6.7).
+        if cs.id() != self.shared.color_space.id() {
+            self.rebuild_gpu_for(cs);
+        }
         self.apply_document_substrate();
         Ok(())
     }

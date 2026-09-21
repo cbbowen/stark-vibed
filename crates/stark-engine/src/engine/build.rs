@@ -12,6 +12,7 @@ use crate::assets::AssetStore;
 use crate::colorspace::ColorSpace;
 use crate::document::{ApplyCtx, DocState, LinearTimeline, Timeline};
 use crate::gpu::channels::Zeroes;
+use crate::gpu::composite::ViewSettings;
 use crate::gpu::scratch::ScratchPool;
 use crate::gpu::{
     BlendPass, Compositor, CompositorPipeline, Environment, EnvironmentId, FillRenderer,
@@ -93,6 +94,7 @@ impl Engine {
             cs: &color_space,
             substrate: &substrate,
             environment: &environment,
+            settings: ViewSettings::default(),
         });
 
         let initial = DocState::with_layer(ROOT_LAYER);
@@ -158,8 +160,7 @@ impl Engine {
             shared.passes.clone(),
             shared.apply.substrates.current(),
             shared.environment.current(),
-            shared.media,
-            shared.output,
+            shared.settings,
         );
         let compositor = Compositor::new(&compositor_pipeline);
         Self::assemble(
@@ -232,8 +233,7 @@ impl Engine {
             "the shared passes and this engine's pipeline have come apart",
         );
         EngineShared {
-            media: self.compositor_pipeline.media(),
-            output: self.compositor_pipeline.output(),
+            settings: self.compositor_pipeline.settings(),
             ..self.shared.clone()
         }
     }
@@ -263,6 +263,8 @@ impl Engine {
             cs: &cs,
             substrate: &substrate,
             environment: &environment,
+            // View settings, not the document's: a new color space keeps them.
+            settings: self.compositor_pipeline.settings(),
         });
         // Whole, not field by field: anything added to the shared half is rebuilt by
         // construction rather than by somebody remembering this line. `passes` is the
@@ -288,6 +290,7 @@ struct GpuBuild<'a> {
     cs: &'a Arc<dyn ColorSpace>,
     substrate: &'a SubstrateMap,
     environment: &'a Environment,
+    settings: ViewSettings,
 }
 
 /// The pieces of [`ApplyCtx`] a color-space rebuild **survives** — the device, and
@@ -352,6 +355,7 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
         cs,
         substrate,
         environment,
+        settings,
     } = b;
     // The color space's formats — the only ones this call site knows; the pool unions
     // in its own (`TilePool::new`), so none can be forgotten here. The residual's is
@@ -389,6 +393,7 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
         cs.as_ref(),
         substrate.clone(),
         environment.clone(),
+        settings,
         crate::gpu::composite::SharedPasses {
             blend: blend.clone(),
             filter: filter.clone(),
@@ -417,14 +422,13 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
     // Rebuilt with the rest rather than carried across, like the two stores beside it:
     // a color-space change is a new document (§6.7), so nothing it held is still named.
     let pictures = crate::pictures::PictureStore::new();
-    // `passes` and `media` are read off the pipeline that was just built, never
+    // `passes` and `settings` are read off the pipeline that was just built, never
     // assembled beside it: they are the two things `EngineShared` keeps *of* the
     // compositor, and a second source for either is how a rebuild leaves a sibling
     // holding pipelines that no longer exist.
     let shared = EngineShared {
         passes: compositor_pipeline.passes(),
-        media: compositor_pipeline.media(),
-        output: compositor_pipeline.output(),
+        settings: compositor_pipeline.settings(),
         gpu: gpu.clone(),
         target_format,
         color_space: cs.clone(),

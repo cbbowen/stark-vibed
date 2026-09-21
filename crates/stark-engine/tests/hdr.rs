@@ -219,6 +219,36 @@ fn paint_never_leaves_white_behind_it() {
     );
 }
 
+/// The display and the lighting are view settings, so replacing the document keeps
+/// them — in the same color space, and across a change of space, which rebuilds the
+/// pipelines they are read through (§6.5, §6.7). Every space this build carries, then
+/// back to the first, so both kinds of change are made wherever there are two.
+#[test]
+fn a_new_document_keeps_the_display_and_the_lighting() {
+    let Some(mut hdr) = engine_or_skip_in_format(F16) else {
+        return;
+    };
+    let output = Output::new(Transfer::Linear, 4.0);
+    hdr.process(ViewCommand::SetMediaParams(GLOSSY));
+    hdr.process(ViewCommand::SetOutput(output));
+    let substrate = hdr.substrate();
+    let first = hdr.observe().color_space;
+    for space in stark_engine::all_available().chain([first]) {
+        hdr.new_document(space, substrate)
+            .expect("a space this build carries");
+        let obs = hdr.observe();
+        assert_eq!(obs.color_space, space);
+        assert_eq!(
+            obs.output, output,
+            "a new {space:?} document reset the display"
+        );
+        assert_eq!(
+            obs.media, GLOSSY,
+            "a new {space:?} document reset the lighting"
+        );
+    }
+}
+
 /// An export from an HDR session is the SDR export, byte for byte (§15.6).
 #[test]
 fn an_export_from_an_hdr_session_is_the_sdr_export() {

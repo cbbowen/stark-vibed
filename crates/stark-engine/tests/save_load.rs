@@ -191,6 +191,11 @@ fn timelapse_yields_one_frame_per_action() {
         images_match(frames.last().unwrap(), &final_image, 0),
         "last timelapse frame must equal the fully-replayed image"
     );
+    // A timelapse ends with the file loaded, and a loaded file is unedited.
+    assert!(
+        !engine.observe().edited,
+        "a timelapse left the document it replayed marked edited"
+    );
 }
 
 /// A timelapse replays through the **document's** color space, not through whichever

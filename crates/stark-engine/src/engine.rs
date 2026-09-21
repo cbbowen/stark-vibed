@@ -51,10 +51,9 @@ use crate::Result;
 use crate::colorspace::ColorSpace;
 use crate::command::InputCommand;
 use crate::document::{ApplyCtx, DocState, Timeline};
+use crate::gpu::composite::ViewSettings;
 use crate::gpu::scratch::ScratchPool;
-use crate::gpu::{
-    Compositor, CompositorPipeline, EnvironmentId, GpuContext, MediaParams, Output, Registry,
-};
+use crate::gpu::{Compositor, CompositorPipeline, EnvironmentId, GpuContext, Registry};
 use crate::peer::Peers;
 use crate::projection::{Memo, Revision};
 use crate::view::ViewTransform;
@@ -107,12 +106,10 @@ pub struct EngineShared {
     /// The HDR lighting environment and its registered bytes (§6.3). A view setting,
     /// so it is the *store* that is shared and the current id that is seeded.
     environment: Registry<EnvironmentId>,
-    /// The media/lighting parameters a sibling opens with (§6.3) — a seed, not a
-    /// shared value; see the note on the type.
-    media: MediaParams,
-    /// The display a sibling opens presenting to (§6.5) — a seed on `media`'s terms,
-    /// since a sibling's surface is the same screen's.
-    output: Output,
+    /// The lighting and the display a sibling opens with (§6.3, §6.5) — a seed, not
+    /// a shared value; see the note on the type. The display too, since a sibling's
+    /// surface is the same screen's.
+    settings: ViewSettings,
 }
 
 pub struct Engine {

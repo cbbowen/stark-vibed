@@ -320,8 +320,9 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
     // slot's attachments belong to. Same substrate, so nothing else moves with it.
     //
     // Only where there *is* another one: without the `mixbox` feature Oklab is the
-    // whole set, and "switching" to the space already open would rebuild nothing, so
-    // the claim has nothing left to make rather than a weaker version of itself.
+    // whole set, and a new document in the space already open keeps its pipelines
+    // (`new_document` rebuilds only on a change of space), so the claim has nothing
+    // left to make rather than a weaker version of itself.
     #[cfg(feature = "mixbox")]
     {
         let substrate = engine.substrate();

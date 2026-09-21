@@ -362,6 +362,22 @@ pub(crate) struct PreparedPick<'a> {
     blur: Option<BlurFrame>,
 }
 
+/// The view settings a [`CompositorPipeline`] holds as plain values: how the media
+/// pass lights the paint and which display the screen is presented on. Neither
+/// depends on the color space, so a rebuild for a new one is seeded with the old
+/// pipeline's rather than with the defaults. (The substrate and the environment are
+/// the others, and a rebuild re-reads those from their registries.)
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub(crate) struct ViewSettings {
+    /// The media pass's lighting parameters (§6.3).
+    pub(crate) media: MediaParams,
+    /// The display the screen is presented on (§6.5). An 8-bit render still reads the
+    /// *transfer* from here, so an 8-bit Display-P3 screen shows P3; what
+    /// [`Compositor::render`] drops for it is the headroom. An export never reads it:
+    /// `Engine::render_view` draws one through [`Output::SDR`] entirely.
+    pub(crate) output: Output,
+}
+
 /// Everything about compositing that does not depend on *what is being drawn into*:
 /// the passes ([`CompositorPasses`], reached through `Deref`) and the view settings
 /// the media pass reads.
@@ -382,15 +398,9 @@ pub struct CompositorPipeline {
     /// engine's too after [`Self::sharing`].
     passes: Arc<CompositorPasses>,
 
-    /// Lighting parameters for the media pass (§6.3) — a view setting like the two
-    /// below, copied into each renderer's own media uniform on every render.
-    media_params: MediaParams,
-    /// The display the screen is presented on (§6.5) — a view setting like
-    /// `media_params`. An 8-bit render still reads the *transfer* from here, so an
-    /// 8-bit Display-P3 screen shows P3; what [`Compositor::render`] drops for it is
-    /// the headroom. An export never reads it at all: `Engine::render_view` draws one
-    /// through [`Output::SDR`] entirely.
-    output: Output,
+    /// The lighting and the display, copied into each renderer's own uniforms on every
+    /// render.
+    settings: ViewSettings,
     // The canvas substrate (bump) sampled by the media pass for relief.
     substrate: SubstrateMap,
     // The HDR lighting environment sampled by the media pass (§6.3).
@@ -594,6 +604,7 @@ impl CompositorPipeline {
         color_space: &dyn ColorSpace,
         substrate: SubstrateMap,
         environment: Environment,
+        settings: ViewSettings,
         shared: SharedPasses,
     ) -> Self {
         let device = &ctx.device;
@@ -633,13 +644,7 @@ impl CompositorPipeline {
             ctx: ctx.clone(),
             formats,
         };
-        Self::sharing(
-            Arc::new(passes),
-            substrate,
-            environment,
-            MediaParams::default(),
-            Output::SDR,
-        )
+        Self::sharing(Arc::new(passes), substrate, environment, settings)
     }
 
     /// A pipeline over **already-built** passes — the whole of what a sibling engine
@@ -655,13 +660,11 @@ impl CompositorPipeline {
         passes: Arc<CompositorPasses>,
         substrate: SubstrateMap,
         environment: Environment,
-        media_params: MediaParams,
-        output: Output,
+        settings: ViewSettings,
     ) -> Self {
         Self {
             passes,
-            media_params,
-            output,
+            settings,
             substrate,
             environment,
             generation: next_generation(),
@@ -674,25 +677,30 @@ impl CompositorPipeline {
         Arc::clone(&self.passes)
     }
 
+    /// Both view settings, for seeding another pipeline with them.
+    pub(crate) fn settings(&self) -> ViewSettings {
+        self.settings
+    }
+
     /// The current media/lighting parameters (§6.3).
     pub fn media(&self) -> MediaParams {
-        self.media_params
+        self.settings.media
     }
 
     /// Adjust the media/lighting parameters (§6.3).
     pub fn set_media(&mut self, media: MediaParams) {
-        self.media_params = media;
+        self.settings.media = media;
     }
 
     /// The display the screen is presented on (§6.5).
     pub fn output(&self) -> Output {
-        self.output
+        self.settings.output
     }
 
     /// State the display the screen is presented on (§6.5). No attachment is
     /// rebuilt; the next render reads it into its uniforms.
     pub fn set_output(&mut self, output: Output) {
-        self.output = output;
+        self.settings.output = output;
     }
 
     /// The four target passes compiled for `format` — the screen's or the export's
@@ -1412,7 +1420,7 @@ impl Compositor {
         // One code of the target's encoding for both walks down to it — the
         // supersampled intermediate carries the target's own format (§6.4) — and 0
         // when this consumer's params ask for the undithered reference (§6.5).
-        let dither_step = if p.media_params.dither {
+        let dither_step = if p.settings.media.dither {
             media::dither_step(format)
         } else {
             0.0
@@ -1447,7 +1455,7 @@ impl Compositor {
             &frame.accum.bg,
             draw_target,
             media::MediaScene {
-                params: p.media_params,
+                params: p.settings.media,
                 environment: &p.environment,
                 substrate_uv_scale,
                 view,
