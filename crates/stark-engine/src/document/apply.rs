@@ -572,6 +572,16 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             image,
             number,
         } => {
+            // A held id is refused outright, as float and duplicate refuse theirs:
+            // `insert_layer` would decline it, but the rename and the tiles below
+            // would still land on the layer that holds it.
+            if state.contains_layer(*id) {
+                tracing::warn!(
+                    ?id,
+                    "placement names a layer the document already holds; ignored"
+                );
+                return state;
+            }
             let state = state
                 .insert_layer(*id, *carrier, *above, *number)
                 .set_layer_name(*id, name.as_deref().map(Into::into));

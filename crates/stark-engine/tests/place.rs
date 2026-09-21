@@ -16,6 +16,7 @@ use common::*;
 use stark_assetid::Picture;
 use stark_engine::Engine;
 use stark_engine::command::DocCommand;
+use stark_model::document::ActionKind;
 use stark_model::geom::{IVec2, Vec2};
 
 /// A 64×64 swatch: opaque red in the left half, opaque green in the right, and a
@@ -245,6 +246,55 @@ fn a_placement_whose_picture_is_missing_leaves_an_empty_layer() {
     assert!(
         images_match(&before, &engine.render_to_image(), 0),
         "…and nothing was painted onto it",
+    );
+}
+
+/// **A placement onto a layer id the document already holds is refused**, as every
+/// other minting action's is (§17.9). No action this engine mints can say it, but a
+/// log off a file or a wire can; it used to rename the layer it landed on and
+/// replace its paint.
+#[test]
+fn a_placement_onto_a_held_id_is_refused() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    place(&mut engine);
+    let mut file = engine.document_file();
+    let placed = file.actions.last().expect("the placement");
+    let ActionKind::PlaceImage { id, .. } = placed.kind else {
+        panic!("the last action is the placement");
+    };
+    // The same layer id again, under another name and somewhere else.
+    let mut clash = placed.clone();
+    clash.id.lamport += 1;
+    let ActionKind::PlaceImage { name, at, .. } = &mut clash.kind else {
+        unreachable!("cloned from a placement");
+    };
+    *name = Some("impostor.png".into());
+    *at = IVec2::new(24, -80);
+    file.actions.push(clash);
+
+    let mut loaded = engine_or_skip_blue().expect("adapter available (original built)");
+    loaded.load_document(&file).expect("deserialize + replay");
+    let obs = loaded.observe();
+    let layer = obs
+        .layers
+        .iter()
+        .find(|l| l.id == id)
+        .expect("the placed layer");
+    assert_eq!(
+        layer.name.as_deref(),
+        Some("swatch.png"),
+        "the clashing placement renamed the layer it landed on",
+    );
+    assert_eq!(
+        obs.layers.len(),
+        engine.observe().layers.len(),
+        "the clashing placement added a layer",
+    );
+    assert!(
+        images_match(&engine.render_to_image(), &loaded.render_to_image(), 0),
+        "the clashing placement changed the picture",
     );
 }
 
