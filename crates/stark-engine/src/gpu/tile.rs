@@ -1005,6 +1005,39 @@ impl TilePool {
             .sum()
     }
 
+    /// Hand every idle texture back to the driver at once — what a document reset
+    /// calls, when the closed document's tiles have all just come back and nothing is
+    /// left that would reuse them (§5). Left to the epoch trim (`PoolInner::tick`),
+    /// they would drain at most `MAX_RELEASE_PER_EPOCH` an epoch, and only once
+    /// painting resumed.
+    ///
+    /// **Only between operations**, which the trim's quarantine exists not to need: a
+    /// texture on the free list may still be named by an encoder that has not been
+    /// submitted. A reset is such a moment — every operation submits what it recorded
+    /// before it returns — and `destroy()` waits out submitted work that still reads
+    /// the texture.
+    pub fn release_idle(&self) {
+        for (format, pool) in self.format_pools.iter() {
+            let mut inner = unpoisoned(pool.lock());
+            let released = inner.free.len();
+            if released == 0 {
+                continue;
+            }
+            for slot in inner.free.drain(..) {
+                slot.tex.destroy();
+            }
+            inner.capacity -= released;
+            // The closed document's demand is no measure of the next one's.
+            inner.peak = inner.in_use();
+            tracing::debug!(
+                format = ?format,
+                released,
+                capacity = inner.capacity,
+                "released every idle texture",
+            );
+        }
+    }
+
     /// How many recycled textures of `format` are idle — what the pool would serve
     /// the next acquires from without touching the device.
     ///

@@ -37,6 +37,7 @@ mod pick;
 mod place;
 mod reference;
 mod replay;
+mod reset;
 mod retention;
 mod save_load;
 mod seam;

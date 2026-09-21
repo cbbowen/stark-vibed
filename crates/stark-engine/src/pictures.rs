@@ -24,11 +24,12 @@ use stark_assetid::Picture;
 use stark_model::AssetId;
 
 /// One loaded picture: what replay reads, and what a bundle or a peer is given.
+#[derive(Clone)]
 struct Held {
     picture: Arc<Picture>,
     /// The canonical RGBA PNG the id names, retained so the asset can be bundled
     /// into the save file (§8) and handed to a peer without re-encoding.
-    bytes: Vec<u8>,
+    bytes: Arc<[u8]>,
 }
 
 /// The pictures this session holds, by content id.
@@ -78,7 +79,7 @@ impl PictureStore {
             };
             slot.insert(Held {
                 picture: Arc::new(picture),
-                bytes,
+                bytes: bytes.into(),
             });
         }
         Ok(id)
@@ -104,7 +105,21 @@ impl PictureStore {
     pub fn bytes(&self, id: AssetId) -> Option<Vec<u8>> {
         unpoisoned(self.inner.lock())
             .get(&id)
-            .map(|held| held.bytes.clone())
+            .map(|held| held.bytes.to_vec())
+    }
+
+    /// A store of its own holding only the pictures `keep` answers `true` for — what
+    /// the next document starts with when this one closes (§23). The entries are
+    /// shared, not copied.
+    pub fn keeping(&self, keep: impl Fn(AssetId) -> bool) -> Self {
+        let kept = unpoisoned(self.inner.lock())
+            .iter()
+            .filter(|(id, _)| keep(**id))
+            .map(|(id, held)| (*id, held.clone()))
+            .collect();
+        Self {
+            inner: Arc::new(Mutex::new(kept)),
+        }
     }
 }
 
@@ -153,6 +168,20 @@ mod tests {
             second.get(id).expect("held").pixels,
             store.get(id).unwrap().pixels
         );
+    }
+
+    /// The next document's store holds what it was asked to keep, and the store it
+    /// came from is left as it was.
+    #[test]
+    fn keeping_takes_only_what_it_is_asked_for() {
+        let store = PictureStore::new();
+        let kept = store.import(&png(8, 6, 0)).expect("import");
+        let dropped = store.import(&png(8, 6, 7)).expect("import");
+        let next = store.keeping(|id| id == kept);
+        assert!(next.contains(kept));
+        assert!(!next.contains(dropped));
+        assert_eq!(next.bytes(kept), store.bytes(kept));
+        assert!(store.contains(dropped), "the old store was pruned in place");
     }
 
     /// A store that does not hold a picture says so, rather than answering with an

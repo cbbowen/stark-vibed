@@ -144,7 +144,7 @@ impl Engine {
     /// fatal: the document still opens, degraded.
     pub(super) fn adopt(&mut self, file: ValidatedFile<'_>) {
         self.initial_substrate = file.canvas.substrate;
-        self.reset_document();
+        self.reset_document(&file.required_content());
         if file.canvas.color_space != self.shared.color_space.id() {
             // Infallible because of the argument's *type*: a [`ValidatedFile`] is one
             // whose space this build resolves, and there is no other way to spell one —
@@ -345,7 +345,7 @@ impl Engine {
         let cs = crate::colorspace::make(color_space)
             .ok_or(DocError::UnsupportedColorSpace(color_space))?;
         self.initial_substrate = substrate;
-        self.reset_document();
+        self.reset_document(&[]);
         // The pipelines are the color space's, not the document's: the same space
         // keeps them (§6.7).
         if cs.id() != self.shared.color_space.id() {
@@ -602,12 +602,19 @@ impl Engine {
     /// Reset to an empty document (one root layer) before a load/replay. Also
     /// leaves any shared session: the caller (UI/transport) tears down the
     /// network side; `join_collaboration` re-enables after its reset.
-    fn reset_document(&mut self) {
+    ///
+    /// `named` is what the next document's log names (§8): the pictures among it are
+    /// kept, because a held picture is what let a load pass its content check without
+    /// bundling it. Everything else the closed document held goes — see
+    /// [`release_closed_document`](Self::release_closed_document).
+    fn reset_document(&mut self, named: &[AssetNeed]) {
         self.timeline = Timeline::Linear(LinearTimeline::new(
             DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate),
         ));
         self.preview.clear();
         self.peers.clear();
+        // Built over the closed document's tiles; the next frame builds its own.
+        self.draw_cache = Default::default();
         self.committed_changed();
         // The baseline later edits are measured against, taken after
         // `committed_changed` moves the counter it copies. A load re-states it once its
@@ -623,6 +630,24 @@ impl Engine {
         self.session.forget_document();
         self.session
             .set_active_layer(ROOT_LAYER, self.timeline.current());
+        // Last, once nothing above is left holding one of the closed document's tiles.
+        self.release_closed_document(named);
+    }
+
+    /// Hand back what only the closed document was holding, which a reset in the
+    /// same space otherwise keeps — no rebuild replaces the pool or the compositor
+    /// there (§6.7).
+    ///
+    /// - its pictures, but for those `named` (§23);
+    /// - its tiles, idle on the pool's free list by now and counted against the
+    ///   history budget (§5), so a blank document would give up undo depth for them;
+    /// - the compositor's blend scratch and streams, grown to the closed document and
+    ///   never shrunk.
+    fn release_closed_document(&mut self, named: &[AssetNeed]) {
+        let pictures = &self.shared.apply.pictures;
+        self.shared.apply.pictures = pictures.keeping(|id| named.contains(&AssetNeed::Picture(id)));
+        self.shared.apply.pool.release_idle();
+        self.compositor = crate::gpu::Compositor::new(&self.compositor_pipeline);
     }
 
     /// Commit one already-built action onto the timeline (replays its GPU work).

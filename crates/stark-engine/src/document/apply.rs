@@ -40,7 +40,8 @@ pub struct ApplyCtx {
     pub(crate) place: crate::gpu::place::PlaceRenderer,
     /// The pictures a `PlaceImage` names (§23) — the third content-addressed store,
     /// beside `assets` and `substrates` and for their reason: the log carries the id
-    /// and the pixels ride here.
+    /// and the pixels ride here. Unlike those two it is the **document's**: a reset
+    /// keeps only what the next log names, and a clone starts empty.
     pub(crate) pictures: crate::pictures::PictureStore,
     /// The device, so a canvas substrate can be built here on demand.
     pub(crate) gpu: crate::gpu::context::GpuContext,
@@ -79,13 +80,16 @@ impl ApplyCtx {
 }
 
 /// Every field is a handle, so a copy is a fistful of refcount bumps — **except
-/// [`prepared`](Self::prepared), which a clone always leaves empty.**
+/// [`prepared`](Self::prepared), which a clone always leaves empty, and
+/// `pictures`, which it starts afresh.**
 ///
-/// Hand-written for that exception: the slot is a message to one fold, and a derive
-/// taken while it was full would hand a sibling preview engine (`Engine::new_sharing`,
-/// §11) a whole stroke's worth of fresh `Arc<GpuTile>` handles and pin them for its
-/// life. A property of the type rather than of the engine's call order (CLAUDE.md:
-/// rule out a class).
+/// Hand-written for those two. The slot is a message to one fold, and a derive taken
+/// while it was full would hand a sibling preview engine (`Engine::new_sharing`, §11)
+/// a whole stroke's worth of fresh `Arc<GpuTile>` handles and pin them for its life.
+/// The pictures are the donor's document's, and a shared store would keep them alive
+/// in every sibling — and in any `EngineShared` a frontend holds on to — past the reset
+/// that lets them go. Properties of the type rather than of the engine's call order
+/// (CLAUDE.md: rule out a class).
 impl Clone for ApplyCtx {
     fn clone(&self) -> Self {
         Self {
@@ -97,7 +101,7 @@ impl Clone for ApplyCtx {
             fill: self.fill.clone(),
             merge: self.merge.clone(),
             place: self.place.clone(),
-            pictures: self.pictures.clone(),
+            pictures: crate::pictures::PictureStore::new(),
             gpu: self.gpu.clone(),
             substrates: self.substrates.clone(),
             prepared: None,

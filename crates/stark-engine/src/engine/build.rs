@@ -20,6 +20,7 @@ use crate::gpu::{
     SubstrateMap, TilePool, TransformRenderer,
 };
 use crate::peer::Peers;
+use crate::pictures::PictureStore;
 use crate::projection::{Memo, Revision};
 use crate::view::{Extent2, ViewTransform};
 use stark_model::{ColorSpaceId, DocError, SubstrateId};
@@ -84,6 +85,7 @@ impl Engine {
         let built = build_gpu(GpuBuild {
             keep: GpuKeep {
                 assets: AssetStore::new(gpu.clone()),
+                pictures: PictureStore::new(),
                 selection: SelectionRenderer::new(&gpu, scratch.clone()),
                 scratch,
                 gpu: gpu.clone(),
@@ -254,6 +256,7 @@ impl Engine {
             keep: GpuKeep {
                 gpu: self.shared.gpu.clone(),
                 assets: self.shared.apply.assets.clone(),
+                pictures: self.shared.apply.pictures.clone(),
                 selection: self.shared.apply.selection.clone(),
                 scratch: self.shared.scratch.clone(),
                 substrates: self.shared.apply.substrates.clone(),
@@ -302,6 +305,11 @@ struct GpuKeep {
     /// Brush shapes, named by the hash of their bytes — so nothing about them
     /// changes when the color space does (§6.6).
     assets: AssetStore,
+    /// The pictures the document places, decoded on the CPU and independent of how
+    /// color is represented (§23). The document bounds their lifetime, not the space:
+    /// a load rebuilds *after* its reset kept the ones its log names
+    /// (`Engine::reset_document`).
+    pictures: PictureStore,
     /// A mask is one coverage channel whatever the paint is, so the rasterizer is
     /// color-space independent and is handed back in rather than rebuilt (§6.8).
     selection: SelectionRenderer,
@@ -346,6 +354,7 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
             GpuKeep {
                 gpu,
                 assets,
+                pictures,
                 selection,
                 scratch,
                 substrates,
@@ -419,9 +428,6 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
     // No pipeline and no layout: a placed image's tiles are computed on the CPU
     // (§23), so this is the color space and the queue and nothing else.
     let place = crate::gpu::PlaceRenderer::new(&gpu, cs.clone());
-    // Rebuilt with the rest rather than carried across, like the two stores beside it:
-    // a color-space change is a new document (§6.7), so nothing it held is still named.
-    let pictures = crate::pictures::PictureStore::new();
     // `passes` and `settings` are read off the pipeline that was just built, never
     // assembled beside it: they are the two things `EngineShared` keeps *of* the
     // compositor, and a second source for either is how a rebuild leaves a sibling
