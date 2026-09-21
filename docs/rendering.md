@@ -24,7 +24,7 @@ old defect: a film with opacity 1 and no thickness — every soft brush's fringe
 drew as nothing over bare canvas yet replaced the color over another layer's
 paint.) Because the slab is multiplicative in optical mass, "over" on these
 weights accumulates the *stack's* coverage in the target's alpha, and the media
-pass reads it there instead of re-deriving it. `tests/composite.rs` guards it.
+pass reads it there instead of re-deriving it. `tests/engine/composite.rs` guards it.
 
 One consumer must *not* see that weighting: the dynamics loop composites base
 tiles into its working region with this same shader, and that region holds the
@@ -109,7 +109,7 @@ and `exposure` buys the headroom back — which is why it belongs to the *light*
 Dividing by `flat_irradiance` already makes 1.0 mean the same thing everywhere,
 but that is a statement about the diffuse response, not the peaks: a room with
 bright windows puts saturated paint over 1.0 long before a smooth grey dome does.
-So `Neutral` stays at 1.0. `tests/reference.rs` pins the invariant.
+So `Neutral` stays at 1.0. `tests/engine/reference.rs` pins the invariant.
 
 **The blend modes** are deliberately not Photoshop's: each is ordinary **addition
 of light, conjugated by a tone curve** — `f(a,b) = T(T⁻¹(a) + T⁻¹(b))` —
@@ -195,7 +195,7 @@ and this engine mixes occluded paint in the perceptual working space on purpose
 (§6.1), so both weightings are right for their own question — but it means "black
 is the identity" is no longer *pixel* identity with a `Normal` render at partial
 coverage. It remains the identity of the combination, which is what the law says.
-`tests/blend.rs` pins all three facts separately: the identity at full coverage
+`tests/engine/blend.rs` pins all three facts separately: the identity at full coverage
 where the conversions are the only thing running, the order-independence over the
 whole canvas, and the coverage-law gap itself — asserted rather than accepted,
 because it is the one place these modes part company with the rest of the
@@ -338,7 +338,7 @@ for less of the problem. A `TILE_TEX`-square texture with a 1-px apron around a
 254-px interior has no mip level at which the interior sub-rect still lands on
 texel centres, so every level past 0 needs its own apron refresh or the seam
 invariant below breaks; the chain has to be regenerated on every tile write; and
-it would still leave the relief sparkling. `tests/minify.rs` pins what was bought
+it would still leave the relief sparkling. `tests/engine/minify.rs` pins what was bought
 instead: a 1:4 render is the 1:1 render boxed down by four, and is *not* one texel
 in sixteen of it.
 
@@ -372,7 +372,7 @@ px square, carrying a halo of neighbouring canvas content around its interior.
 Alternatives rejected: *composite-then-scale* makes zooming far out balloon that
 buffer with the visible tile count; a *padded tile atlas* is heavier machinery
 than the problem warrants. The translation invariance the apron restores is
-locked by `tests/seam.rs`: a stroke across the 4-tile corner must render
+locked by `tests/engine/seam.rs`: a stroke across the 4-tile corner must render
 identically to the same stroke shifted half a tile into one tile's interior.
 
 **The canvas substrate.** Paint sits on a physical substrate — a tileable height map
@@ -601,7 +601,7 @@ rather than what it computes:
   overlapping quads, and — the reason the mark reads as paper rather than as noise
   — successive strokes the same way over the same substrate catch on the same faces
   and register with each other. A stroke run the *other* way deliberately does not:
-  that is the physics, and `tests/tooth.rs` measures it — the two runs lay their
+  that is the physics, and `tests/engine/tooth.rs` measures it — the two runs lay their
   ink on opposite sides of the grain.
 - **It gates height, never the per-unit opacity** (§6.1). The tooth decides how
   much paint arrives, not what the pigment is. Both render paths call the same
@@ -749,7 +749,7 @@ Oklab ──→ display (the surface's transfer: sRGB, extended sRGB or scRGB �
     shows P3, and only the range it cannot hold is dropped. So a PNG written from
     an HDR session is the picture an SDR viewer of it sees, every golden is
     unchanged, and the screen's headroom cannot reach a file by a frontend
-    forgetting to say so. `tests/hdr.rs` pins it.
+    forgetting to say so. `tests/engine/hdr.rs` pins it.
   - **"HDR off" is a preview of the export.** The Lighting panel's switch (and
     `Command::ToggleHdr`) sets the headroom to 1 and nothing else: the transfer
     stays the surface's, and at headroom 1 the curve is the SDR curve exactly, so
@@ -926,7 +926,7 @@ so every pass does to it exactly what it already does to the latent: the same
 premultiply, the same "over", the same parcel law on the same masses, the same
 bilinear taps. The blend pass gains from it too — its trip back from light now stores
 `srgb − poly(blended)` and is exact, where it used to pull every blend result toward
-the polynomial's reachable set (`tests/blend.rs` carried an 8/255 and a 40/255
+the polynomial's reachable set (`tests/engine/blend.rs` carried an 8/255 and a 40/255
 tolerance for that; both are 2/255 now, the same as Oklab's).
 
 **Oklab pays nothing.** Its three channels reproduce every sRGB color, so

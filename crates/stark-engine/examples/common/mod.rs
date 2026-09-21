@@ -2,7 +2,7 @@
 //!
 //! Not a Cargo example itself — `examples/*/mod.rs` matches neither of the patterns
 //! Cargo auto-discovers, so this is included with `mod common;` exactly the way
-//! `tests/common` is.
+//! `tests/engine/common` is.
 
 /// Resolve everything `file` names out of the frontend's bundled assets, so a
 /// captured document replays as the app replays it (§8).

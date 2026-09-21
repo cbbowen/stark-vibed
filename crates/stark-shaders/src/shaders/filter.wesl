@@ -267,7 +267,7 @@ fn fs_blur_decode(@builtin(position) frag: vec4<f32>) -> BlurOut {
 //
 // **Why only a point filter may come here.** Every pass that writes tiles must be a
 // pure function of canvas position (§6.4) — that is what keeps a tile's apron
-// bit-identical to its neighbour's interior without a copy pass, and `tests/seam.rs`
+// bit-identical to its neighbour's interior without a copy pass, and `tests/engine/seam.rs`
 // guards it. This one is: the texel's own channels in, its own channels out. A
 // **gather** is not, and no width of apron would make it so at an arbitrary spread —
 // which is why the merge rule refuses one (§14.11.7) rather than this file growing a

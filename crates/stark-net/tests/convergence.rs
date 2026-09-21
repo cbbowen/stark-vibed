@@ -1,6 +1,6 @@
 //! End-to-end: two engines converge over *real* iroh endpoints on loopback
 //! (§12.4, build-order step 12) — no relays, no external services.
-//! This is the wire-level counterpart of stark-engine's `tests/collab.rs`.
+//! This is the wire-level counterpart of stark-engine's `tests/engine/collab.rs`.
 
 mod util;
 

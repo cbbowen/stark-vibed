@@ -116,7 +116,7 @@ different fill on every client.
 **A fill deposits paint, not color.** It stacks by the shared parcel law
 (`paint_common.wesl`) — the very law a stroke deposits through. A filled region
 has real thickness: it takes the light, it can be glazed over, and a lift brush
-scrapes it back off (`tests/fill.rs` pins that last one, because it is the whole
+scrapes it back off (`tests/engine/fill.rs` pins that last one, because it is the whole
 difference from a paint bucket). Coverage scales the *paint*, never the per-unit
 opacity, so a feathered edge is a thinning of the deposit rather than a fade of
 its color. The drag previews as the *paint* rather than an outline — the same
@@ -850,7 +850,7 @@ source's paint whole (the mask bounds the cut and a footprint cannot measure a
 mask — `Transform`'s answer), the child entire, the author's selection, the
 stack order.
 
-Invariants in `tests/translate.rs`: the float's picture within one level of the
+Invariants in `tests/engine/translate.rs`: the float's picture within one level of the
 unselected canvas; refusal of an empty float; float + drag + merge against the
 old cut/paste path; undo restoring paint and mask together.
 

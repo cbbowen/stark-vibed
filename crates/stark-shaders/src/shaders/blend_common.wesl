@@ -235,7 +235,7 @@ fn merge_alpha(cb_a: f32, cs_a: f32) -> f32 {
 // than a premultiplied one, and multiplying it back would round-trip a division for
 // no reason. Spelling it this way is what makes an **empty backdrop**
 // exact: `mix(x, y, 0)` is `x` to the bit, so a mode over an empty stack is
-// bit-for-bit the `Normal` render, which `tests/blend.rs` asserts to the byte. The
+// bit-for-bit the `Normal` render, which `tests/engine/blend.rs` asserts to the byte. The
 // space shaders route `αb = 0` here for exactly that reason rather than through
 // `added_light`, whose round trip out to light and back could not promise it — and
 // in a Mixbox document that trip is a LUT lookup which drops the latent residual, so
@@ -263,7 +263,7 @@ fn merge_alpha(cb_a: f32, cs_a: f32) -> f32 {
 // The two weights below are written so that an **unclipped** layer runs exactly the
 // arithmetic it would with clipping out of the picture entirely — `x * 1.0` and
 // `x * keep` with `keep` an exact 1.0 — rather than something that agrees only to a
-// least-significant bit. `tests/blend.rs` compares byte-for-byte, and a `mix` that
+// least-significant bit. `tests/engine/blend.rs` compares byte-for-byte, and a `mix` that
 // reconstructs 1.0 from `(1−αb) + αb` would not survive it.
 //
 // The aux is summed, mode or no mode. Aux is *amount of paint*, and paint stacks
@@ -328,7 +328,7 @@ fn merge_added(cb: vec4<f32>, cs_raw: vec4<f32>, chan: vec3<f32>, hb: f32, hs: f
 /// once, by `merge`, and both triples ride it — so this returns only the triple.
 ///
 /// Everything that made the unclipped case exact stays exact here: `outside` and the
-/// `Normal` shortcut are the same expressions in the same order, so `tests/blend.rs`'s
+/// `Normal` shortcut are the same expressions in the same order, so `tests/engine/blend.rs`'s
 /// byte-for-byte comparison is unaffected by the extraction.
 fn merge_triple(
     cb_rgb: vec3<f32>, cb_a: f32, cs_rgb: vec3<f32>, cs_a: f32, blended: vec3<f32>,

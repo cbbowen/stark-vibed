@@ -983,7 +983,7 @@ mod tests {
     #[test]
     fn empty_inputs_plan_trivially() {
         // No paint and no mask tiles: both plans succeed and do nothing — the
-        // classification and GPU paths are exercised by tests/transform.rs,
+        // classification and GPU paths are exercised by tests/engine/transform.rs,
         // which has a device to mint real tile handles with.
         let tiles = TileMap::new();
         let sel = Selection::everything();

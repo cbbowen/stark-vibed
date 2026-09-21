@@ -10,7 +10,7 @@
 //! `stark_testdata::vocabulary`, whose exhaustive match stops compiling when a
 //! variant appears and whose roster is this array's declared length.
 //!
-//! That device is shared with `stark-engine/tests/footprint.rs`, which asks a
+//! That device is shared with `stark-engine/tests/engine/footprint.rs`, which asks a
 //! different question of the same vocabulary (did a *run* reach every kind?) and
 //! needs a GPU to ask it — which is why the model's funnel cannot simply be checked
 //! beside it. The roster lives once, in `stark_testdata::vocabulary`, the crate both

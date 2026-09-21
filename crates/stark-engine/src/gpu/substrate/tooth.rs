@@ -9,7 +9,7 @@
 //! **The mirror is load-bearing.** The canvas evaluates the gate per texel on the GPU
 //! while the tool books against [`Bearing::at`] here; if the two disagree the two
 //! halves of a transfer disagree and a smear stops conserving paint, which
-//! `tests/dynamics.rs`'s conservation pair is sensitive to.
+//! `tests/engine/dynamics.rs`'s conservation pair is sensitive to.
 
 use std::sync::Arc;
 

@@ -167,7 +167,7 @@ impl Resource {
     /// [`Footprint::conflicts`] is built from.
     ///
     /// Public so a test can hold an `apply` to its declaration through the *same*
-    /// predicate the timeline commutes by (`stark-engine/tests/footprint.rs`);
+    /// predicate the timeline commutes by (`stark-engine/tests/engine/footprint.rs`);
     /// answering that question a second way is how a coarse claim comes to look finer
     /// than it is.
     pub fn overlaps(&self, other: &Resource) -> bool {

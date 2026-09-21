@@ -172,6 +172,8 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo nextest run --workspace   # the suite (`.config/nextest.toml`; see below)
 cargo test --workspace --doc    # doctests, which nextest cannot run (see below)
+# the engine's integration tests are one binary, `tests/engine/`, a module per file
+cargo nextest run -p stark-engine --test engine seam::   # one module of it
 # doc links. `--document-private-items` is not optional: rustdoc does not render a
 # private module at all, and this crate is almost entirely private modules — without
 # the flag it checks `pub` items only and reports a fraction of what is broken.
@@ -254,7 +256,7 @@ per-test tolerance hides exactly that drift. Deleting a golden re-blesses it.
   peers, and pixels cannot show which path ran.
 - **Every pass that writes tiles must be a pure function of canvas position**
   (§6.4). That is what makes a tile's apron bit-identical to its neighbour's
-  interior without a copy pass. `tests/seam.rs` guards it.
+  interior without a copy pass. `tests/engine/seam.rs` guards it.
 - **A stroke's per-segment deposit must be additive in `τ` or of the form
   `1 − exp(−k·τ)`** (§6.2). Any other shape makes stroke weight depend on the
   *number* of segments — invisible under uniform sampling, immediate under

@@ -532,7 +532,7 @@ pub(crate) fn too_large(rec: &StrokeRecord) -> bool {
 /// nothing to do with any of this: nudge `deposit` off zero and the same color, the
 /// same flow and the same substrate must still lay the same paint.
 ///
-/// That is not hypothetical. `tests/dynamics.rs`'s
+/// That is not hypothetical. `tests/engine/dynamics.rs`'s
 /// `a_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs` exists because the two
 /// paths once disagreed by 157 levels, and both halves of the disagreement were
 /// quantities of exactly this kind, derived twice and drifted apart. Resolving them in

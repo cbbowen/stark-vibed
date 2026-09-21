@@ -13,7 +13,7 @@
 //! to ignore.
 
 /// The recycling tile pool (§6.1), for the one test that drives it directly
-/// (`tests/tile_pool.rs`), and the tag `acquire_tex` demands of a caller.
+/// (`tests/engine/tile_pool.rs`), and the tag `acquire_tex` demands of a caller.
 pub use crate::gpu::{AllocSource, TilePool};
 
 /// The environment variable that turns a missing GPU from a failure into a skip.
@@ -60,19 +60,19 @@ pub fn or_skip<T, E: std::fmt::Display>(built: std::result::Result<T, E>, what: 
 /// What moving it buys is the crate the static is *proved* in.
 /// `OnceLock<Option<GpuContext>>: Sync` unfolds through wgpu's dispatch enum and
 /// wgpu-core's `Global` deeply enough to outrun the default recursion limit, and the
-/// limit is a **crate** property: this crate raises it once (`lib.rs`), where the
-/// forty-odd integration-test crates that share `tests/common` would each have had to
-/// raise their own, and a forty-first would have to remember.
+/// limit is a **crate** property: this crate raises it once (`lib.rs`), where every
+/// test crate that shares the cache would have had to raise its own, and the next one
+/// would have to remember.
 ///
-/// Still one device per test *binary*, which is what it was when `tests/common` held
+/// Still one device per test *binary*, which is what it was when `tests/engine/common` held
 /// the lock: a static in a linked rlib is per-binary, and each test target is its own
 /// binary. What that means for a test — a shared device and driver shader cache, but
-/// its own pool, renderers and document — `tests/common` explains at the call site.
+/// its own pool, renderers and document — `tests/engine/common` explains at the call site.
 ///
 /// Native only, and not by taste: a `GpuContext` is `Send + Sync` on native — wgpu's
 /// handles are, and the health cell is an `Arc<Mutex<..>>` — while on wasm they are
 /// `Rc<Cell<..>>` and a `static` could not hold one at all. The suite is native by
-/// construction, which is what let `tests/common` keep this without a gate; the gate
+/// construction, which is what let `tests/engine/common` keep this without a gate; the gate
 /// is what the move across the crate boundary costs (`bench` below is gated for its
 /// own reason).
 #[cfg(not(target_arch = "wasm32"))]

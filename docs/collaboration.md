@@ -267,7 +267,7 @@ computes bit-identical pixels to the canonical replay — **provided every `appl
 touches only what its footprint declares, which is an invariant `action.rs`
 changes must maintain.** `TimelineStats` (`Engine::timeline_stats`) counts fast
 removes vs. rebuilds, because pixels *cannot* show which path ran;
-`tests/commute.rs` asserts both the stats and exact pixel equality against a
+`tests/engine/commute.rs` asserts both the stats and exact pixel equality against a
 fresh peer's canonical materialization of the same log.
 
 
@@ -781,7 +781,7 @@ the roster before it is drawn.
 ### 17.10 Testing
 
 The valuable tests are headless and need no network, because §17.3 put the
-semantics in `stark-engine`. `tests/peer_state.rs` covers:
+semantics in `stark-engine`. `tests/engine/peer_state.rs` covers:
 
 - **The masking defect.** `one_peers_selection_does_not_clip_anothers_stroke` — A
   selects the left half, B paints across the boundary, and both halves must land

@@ -59,7 +59,7 @@ impl std::fmt::Display for Diff {
 /// Every difference between two states that `footprint` does not declare, described
 /// for a human — empty when the fold was honest.
 ///
-/// **The one enumeration of "what can differ"** — `tests/footprint.rs` and the debug
+/// **The one enumeration of "what can differ"** — `tests/engine/footprint.rs` and the debug
 /// fold below both call it, so a `Layer` or `DocState` field added without a case
 /// here goes uncovered in one place rather than two.
 ///

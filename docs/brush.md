@@ -529,7 +529,7 @@ multiplicative in `(1−α)`, hence additive in **optical depth** `τ = −ln(1�
   color meant a 5%-flow glaze drew as nothing over bare canvas (the media pass
   covers for it, since visible alpha is `opacity × height` there and the height
   was right) and repainted at full strength over existing paint, where nothing
-  does. `tests/dynamics.rs::a_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs`
+  does. `tests/engine/dynamics.rs::a_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs`
   pins the agreement, by drawing the same glaze with `deposit` at 0 and at 0.01 —
   which routes it through the whole sequential loop with an empty reservoir, so
   every texel is still the brush's own `add` paint.
@@ -1084,7 +1084,7 @@ applied once per tile in `integrate.wesl`, before the parcel stacks on the
 base. `w` saturates at 1 however long the stroke works one spot, so what lands
 saturates at the dial: scrubbing walks the soft edge toward the cap, a stroke
 crossing itself never outruns it, and a saturated stroke at 0.5 over bare
-canvas is *pixel-equal to the fill at 0.5* (`tests/opacity.rs`). Separate
+canvas is *pixel-equal to the fill at 0.5* (`tests/engine/opacity.rs`). Separate
 strokes still compound as glazes — each stroke's scaled parcel stacks its mass
 through the shared law, so two saturated halves are the three-quarter fill. At
 1 the shader takes an exact branch and the path is bit-for-bit what it always
@@ -1124,7 +1124,7 @@ above, scaled by its own in-flight survival against the lift
 (`dynamics.wesl::lay_parcel`). The differences telescope, so the per-texel
 total is exactly the swept integrate's scaled parcel — mass *and* height,
 drain variation included — and the two renderers agree texel for texel
-wherever both can run the brush (`tests/opacity.rs`,
+wherever both can run the brush (`tests/engine/opacity.rs`,
 `a_whisper_of_deposit_does_not_change_the_paint`). The totals ride the
 stroke's carry per touched tile (`LoopCarry::fresh`, cut from and seeded into
 the region by the write-back's own copies), so a live stroke's pieces spend
@@ -1219,7 +1219,7 @@ swept integrate reads the finished sums once, so it reports the fallen value; th
 stamp loop mints prefix differences and a mint cannot run backwards — fresh paint
 already smeared into the picture is not the loop's to take back, and a negative
 parcel is not expressible in a colour that is a mass-weighted mean of the tool's
-and the brush's own (it blew out to white when it was tried; `tests/opacity.rs`,
+and the brush's own (it blew out to white when it was tried; `tests/engine/opacity.rs`,
 `a_smear_under_a_pen_driven_ceiling_stays_in_gamut`). So the loop holds the
 running maximum, which is the nearer of the two to the max the law approximates.
 On the crossing the suite draws the gap is inside the f16 stores
@@ -1288,7 +1288,7 @@ A difference below zero — the within-third average falling — mints nothing (
 running maximum, above), and the lane rides the per-tile carry beside the mint
 budget (`LoopCarry::levels`, cut and seeded by the same copies). The two
 renderers agree texel for texel under a pressure ramp and across a crossing
-(`tests/opacity.rs`,
+(`tests/engine/opacity.rs`,
 `the_loop_lays_the_pen_driven_ceiling_the_fast_path_lays`). The `charge` glob is
 scaled by the dial alone: it is minted once, before the pen has moved, and
 `charge` is an initial condition the pen cannot reach (below). Moved paint is
@@ -2387,7 +2387,7 @@ ceiling lane beside its accumulator, summed exactly as the deposit's is (§6.2,
 *The ceiling under the pen*), and the integrate reads the claimed coverage —
 the largest ceiling any pass asked for, averaged over the texel — in place of
 `w`. A light touch thins where a heavy one clears, and a light pass back over a
-cleared band takes nothing more from it (`tests/erase.rs`,
+cleared band takes nothing more from it (`tests/engine/erase.rs`,
 `an_eraser_under_the_pen_removes_what_the_pen_asks`).
 
 ## 6.13 The liquify brush — dragging the picture itself
@@ -2440,7 +2440,7 @@ nearest texels — the cubic keeps a hard edge a texel sharper than a tent, and
 the clamp keeps its lobes from ringing a value no neighbour holds, which on
 premultiplied lanes would be paint no brush laid. The identity is exact: a
 texel the run never moved lands on its own centre, weights `(0, 1, 0, 0)`, and
-`f16_nearest` of an f16 value is itself (`tests/liquify.rs`,
+`f16_nearest` of an f16 value is itself (`tests/engine/liquify.rs`,
 `a_drag_through_a_uniform_fill_is_the_identity`).
 
 **The follow is the tip's own coverage, swept.** The follow at a texel is
@@ -2593,7 +2593,7 @@ the drag is shorter than the shoulder is wide.
 **Strength 0 stores nothing** (`WARP_MIN_FOLLOW`, the deposit's rewrite guard
 in this kernel's terms), so a near-inert drag cannot walk the field down the
 f32 lattice, and a zero-strength stroke leaves the picture byte-identical
-(`tests/liquify.rs`). A stroke over bare canvas composes a field over nothing
+(`tests/engine/liquify.rs`). A stroke over bare canvas composes a field over nothing
 and shows nothing.
 
 *Determinism* — the walk, the plan and the chunking are CPU float math over

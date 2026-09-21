@@ -372,7 +372,7 @@ impl Engine {
     /// on (§6.4): the bearing fraction a toothed transfer is booked against.
     ///
     /// Exposed because it is the model's own falsifiable quantity, checkable against
-    /// the map rather than taken on trust (`tests/tooth.rs`). `dir` is there because
+    /// the map rather than taken on trust (`tests/engine/tooth.rs`). `dir` is there because
     /// contact reads the substrate's slope *along the travel*, which makes the curve a
     /// property of the substrate and the direction crossing it together. Builds the
     /// substrate on the first ask.

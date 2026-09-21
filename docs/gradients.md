@@ -126,7 +126,7 @@ Inside the request:
      drift a visible distance from the paint. A clean two-color blend fits to
      exactly two stops; a palette with a hard turn earns a stop at the turn.
 
-`tests/gradient.rs` holds the capture to the promises: ends match an eyedropper
+`tests/engine/gradient.rs` holds the capture to the promises: ends match an eyedropper
 pick at the same points in both color spaces, bare canvas refuses, a mid-trace
 gap stays a red-to-blue mixture with nothing foreign joining the ramp. The
 fitter's own behaviour (two stops for a clean ramp, a stop at a turn, an
@@ -246,7 +246,7 @@ library does not disable the entry: the mode opens with an empty well, nothing
 previews until it supplies a ramp, and Done then leaves without laying. Every mutation funnels through one update
 that issues `ViewCommand::PreviewFill` — the same `FillRenderer::apply` the
 commit runs over the committed tiles, so **preview == commit bit-exactly**
-(pinned in `tests/fill.rs`) and re-dragging previews one fill, never a stack of
+(pinned in `tests/engine/fill.rs`) and re-dragging previews one fill, never a stack of
 glazes. "Done" commits a single `DocCommand::Fill`; entering Timeline mode
 abandons the composition the way it abandons a transform — while a trace armed
 from the bar's own well *suspends* it, the one displacement that is not an

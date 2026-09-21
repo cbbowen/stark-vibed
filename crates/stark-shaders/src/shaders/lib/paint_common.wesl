@@ -101,7 +101,7 @@ fn blend_latent(lat0: vec3<f32>, m0: f32, lat1: vec3<f32>, m1: f32) -> vec3<f32>
 // exists for is pressure: a tip barely touching the paper has no give and prints the
 // peaks alone, and one borne down has all of it. The field is directional outright:
 // run the same stroke backwards and the rise negates, so the mark moves to the other
-// side of every feature (tests/tooth.rs).
+// side of every feature (tests/engine/tooth.rs).
 //
 // **It scales the exposure, not the transfer**, and that one choice is what makes it
 // compose and what makes it conserve. Every rate in this engine is a function of
@@ -287,7 +287,7 @@ fn tooth_level(give: f32) -> f32 {
 // **Mirrored on the CPU** in `gpu::substrate`, which averages it over the map's rise
 // distribution to get the bearing fraction the tool books against. The two must be
 // the same function or the two halves of a toothed transfer disagree; the
-// conservation pair in `tests/dynamics.rs` is what notices if they drift.
+// conservation pair in `tests/engine/dynamics.rs` is what notices if they drift.
 fn tooth_gate(d: f32, give: f32, softness: f32) -> f32 {
     let t = clamp(
         (d - tooth_level(give)) / max(softness, TOOTH_SOFTNESS_FLOOR) + 0.5,

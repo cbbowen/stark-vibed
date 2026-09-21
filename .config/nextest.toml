@@ -1,8 +1,8 @@
 # How the test suite is run (`cargo nextest run`). See CLAUDE.md → Commands.
 #
 # nextest runs every test in its **own process**, which is the fact everything here is
-# arranged around. `tests/common`'s device is a `OnceLock`, so under `cargo test` one
-# device served a whole binary; under nextest each test builds its own — ~340 ms of
+# arranged around. `tests/engine/common`'s device is a `OnceLock`, so under `cargo test`
+# one device served a whole binary; under nextest each test builds its own — ~340 ms of
 # adapter, device and ~19 shader compiles, against ~22 ms for an engine on a device
 # that already exists.
 #
@@ -38,9 +38,9 @@
 gpu = { max-threads = 16 }
 
 # The engine's integration tests, which is all of them: every one goes through
-# `tests/common`, and 434 of the ~445 build an engine there. Structural rather than
-# named — `kind(test)` is the whole set by construction, so a new integration test is
-# in the group the moment the file exists.
+# `tests/engine/common`, and 434 of the ~445 build an engine there. Structural rather
+# than named — `kind(test)` is the whole set by construction, so a new integration test
+# is in the group the moment it is compiled.
 [[profile.default.overrides]]
 filter = 'package(stark-engine) and kind(test)'
 test-group = 'gpu'

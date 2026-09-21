@@ -161,7 +161,7 @@ Three things fall out, and each is worth more than the pass it replaces:
 - **The apron is free, and provably right.** Each texel is computed from its own
   canvas position, so a tile's apron is bit-identical to its neighbour's interior
   by construction — §6.4's rule met by the strongest available form of the
-  argument rather than by a pass being careful. `tests/seam.rs` holds this path
+  argument rather than by a pass being careful. `tests/engine/seam.rs` holds this path
   to a far tighter tolerance than the two beside it for exactly that reason.
 
 **What a source pixel becomes.** The source's alpha is a *coverage* — the

@@ -253,7 +253,7 @@ impl MergeRenderer {
         }
 
         // A layer over an empty backdrop is that layer whatever its mode — the
-        // identity `tests/blend.rs` pins to the byte — so at full opacity the source's
+        // identity `tests/engine/blend.rs` pins to the byte — so at full opacity the source's
         // own handle *is* the answer for a tile the destination lacks. Clipping is the
         // exception: with no backdrop nothing of it survives, so the tile is dropped.
         if !clip && upper.opacity >= 1.0 {

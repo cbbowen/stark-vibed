@@ -78,7 +78,7 @@ out.rgb = mix(cs.rgb, blended · cs.a, 0.0) + 0.0 = cs.rgb
 out.a   = cs.a + 0.0 · (1 − cs.a)              = cs.a
 ```
 
-— bit-for-bit the `Normal` result, which is deliberate and which `tests/blend.rs`
+— bit-for-bit the `Normal` result, which is deliberate and which `tests/engine/blend.rs`
 already asserts to the byte. The substrate does not rescue it either: it
 is composited in pass B, after all blending, so the bottom of a stack genuinely
 has nothing underneath. So the bottom layer of any stack carries a blend-mode
@@ -509,7 +509,7 @@ Two details are the difference between that working and nearly working:
   when undo reaches it.
 
 Both are asserted by `dragging_layer_opacity_previews_without_logging` and
-`an_opacity_drag_that_ends_where_it_started_logs_nothing` (`tests/layers.rs`).
+`an_opacity_drag_that_ends_where_it_started_logs_nothing` (`tests/engine/layers.rs`).
 
 The **Bend** slider beside the blend picker is the second control on this bargain,
 and it is here rather than in a section of its own because nothing about it is new:
@@ -621,7 +621,7 @@ Two consequences to know about:
   };
   ```
 
-  Two tests hold it. `tests/groups.rs::a_groups_opacity_fades_its_base_exactly_once`
+  Two tests hold it. `tests/engine/groups.rs::a_groups_opacity_fades_its_base_exactly_once`
   pins the pixels by the one case where the two granularities **coincide**: with
   non-overlapping members, a group at opacity `a` must render exactly as the same
   layers ungrouped at `a`, which a base at `a²` breaks while everything it carries
@@ -691,7 +691,7 @@ resource is already coarse.
   content*: no carried layers, unclipped, unblended. Sampling a clipped layer
   should show the paint that is there, not the paint that survives.
 
-### 14.9 Invariants worth a golden test (`tests/groups.rs`)
+### 14.9 Invariants worth a golden test (`tests/engine/groups.rs`)
 
 1. A `Normal`, unclipped, opaque group of `Normal` unclipped layers is
    **bit-identical** to the same layers ungrouped.
@@ -714,11 +714,11 @@ resource is already coarse.
    accepted: it is the one place this model is worse than pass-through, and the
    test is where anyone who decides to "fix" it has to come and read why.
 8. A blend mode on a bottom-most layer with nothing beneath it is still the
-   `Normal` render — the existing `tests/blend.rs` assertion, which this design
+   `Normal` render — the existing `tests/engine/blend.rs` assertion, which this design
    depends on and must not break.
 9. Duplicating a group copies the **whole subtree**, nested the same way, beside
    the group it copied — and hiding the copy is bit-identical to never having made
-   it. Copy-on-write is asserted from the other side in `tests/layers.rs`: paint
+   it. Copy-on-write is asserted from the other side in `tests/engine/layers.rs`: paint
    one of the two and the other must not change.
 
 ### 14.10 Open
@@ -928,7 +928,7 @@ merge treating its slider as a sibling's.
   by handle, and within a shared tile the shader has an exact passthrough branch on
   each side — so merging a small stroke layer onto a canvas-spanning backing
   rewrites the tiles the stroke covers and leaves the rest bit-identical, which
-  `tests/merge.rs` asserts to the byte rather than to a tolerance.
+  `tests/engine/merge.rs` asserts to the byte rather than to a tolerance.
 
 #### 14.11.7 Merging a filter layer
 
@@ -976,7 +976,7 @@ being the identity for every filter that may come this way (§21.4.1).
 **One refusal of its own, and it is a law rather than a preference.** Every pass that
 writes tiles must be a pure function of canvas position (§6.4) — that is what makes a
 tile's apron bit-identical to its neighbour's interior without a copy pass, and
-`tests/seam.rs` guards it. A point filter is such a function: the texel's own channels
+`tests/engine/seam.rs` guards it. A point filter is such a function: the texel's own channels
 in, its own channels out, so the apron texel and the neighbour's interior are the same
 input and come out the same number. A **gather** (§21.10) is not, and no width of apron
 would make it one — its reach is the document's to set, while the apron is one texel.
@@ -989,7 +989,7 @@ out (§21.3), so it contributes nothing to the picture, and the tiles are handed
 by handle rather than run through a pass that would land the identity plus one round
 trip's rounding.
 
-#### 14.11.6 Invariants worth a test (`tests/merge.rs`)
+#### 14.11.6 Invariants worth a test (`tests/engine/merge.rs`)
 
 Every test in that file has the same shape — render, merge, render, compare —
 because a merge has no property of its own to assert: its whole content is
@@ -1090,7 +1090,7 @@ universal mask — and the survivor keeps its own frame. The merge that must not
 change the picture (§14.11) therefore does not; past the transform's tile caps
 it declines, deterministically, like every refusal there.
 
-### 14.12.4 Invariants worth a test (`tests/translate.rs`)
+### 14.12.4 Invariants worth a test (`tests/engine/translate.rs`)
 
 1. A translated layer renders **bit-for-bit** as the same layer with the offset
    baked through `Transform` — the field against the rewrite it replaces.
@@ -1105,7 +1105,7 @@ it declines, deterministically, like every refusal there.
 5. Undo restores the frame exactly.
 6. A translated matte renders identically to one *made* at the shifted rect —
    gradient axis included — and export frames the moved hole
-   (`tests/matte.rs`, beside the matte's own claims).
+   (`tests/engine/matte.rs`, beside the matte's own claims).
 
 ---
 
@@ -1642,7 +1642,7 @@ check in two keys.
   comic gutters, lasso mattes, frame-from-selection. (The `All` slab arrived
   early as `Everything` — it needed no algebra, only a variant and a button.)
 
-### 15.10 Testing (`tests/matte.rs`)
+### 15.10 Testing (`tests/engine/matte.rs`)
 
 - **`frame_covers_outside_and_spares_inside`** — the core claim, and the §15.4.1
   regression: a matte that failed to write the aux target would be perfectly

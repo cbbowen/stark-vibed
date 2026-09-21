@@ -1,0 +1,2402 @@
+//! Brush-dynamics stamp-loop tests (§6.2): the sequential pickup ⇄
+//! deposit exchange against a 2-D tool reservoir. Covers conservation (paint
+//! moves by height, is neither created nor destroyed), smearing onto bare
+//! canvas, erasing without re-tinting, the pre-`charge` glob, and determinism.
+
+use crate::common::palette::{GREEN, RED};
+use crate::common::*;
+use stark_engine::command::Tool;
+use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
+use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_model::document::{
+    BrushDynamics, BrushEffect, BrushParams, BrushShape, LayerId, OrientationSource,
+};
+use stark_model::geom::Vec2;
+
+/// A brush with the given [`BrushDynamics`].
+fn dyn_brush(color: [f32; 3], radius: f32, dynamics: BrushDynamics) -> BrushParams {
+    BrushParams {
+        effect: BrushEffect::wet_with(color, dynamics),
+        ..brush(color, radius)
+    }
+}
+
+// Channel-dominance predicates — see tests/engine/stroke.rs for why dominance (not
+// saturation) and why the 60-level margin.
+/// Lit bare paper reads warm enough to pass the suite's default margin, so this
+/// file's "is there paint here?" is asked at [`MARGIN_LIT`] — see
+/// `dynamics_wet_field_stays_paper`, which asserts that precondition directly.
+fn is_red(c: [u8; 4]) -> bool {
+    leads(rgb(c), Lead::Red, MARGIN_LIT)
+}
+fn is_green(c: [u8; 4]) -> bool {
+    leads(rgb(c), Lead::Green, MARGIN_LIT)
+}
+#[test]
+fn conservative_smear_preserves_uniform_field() {
+    // With `add = 0` the tool only *moves* paint between canvas and reservoir.
+    // Smearing entirely inside a uniform field has nothing to move — the lift
+    // takes paint up and the deposit lays the same color straight back — so the
+    // field must stay essentially unchanged (paint neither destroyed nor piled).
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    assert!(
+        !is_red(center(&engine.render_to_image())),
+        "lit bare paper reads as red — is_red can't discriminate paint here"
+    );
+    paint(
+        &mut engine,
+        RED,
+        80.0,
+        &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
+    );
+    let before = engine.render_to_image();
+
+    let b = dyn_brush(
+        RED,
+        24.0,
+        BrushDynamics {
+            add: 0.0,
+            lift: 0.5,
+            deposit: 0.5,
+            ..Default::default()
+        },
+    );
+    stroke_with(
+        &mut engine,
+        b,
+        &[Vec2::new(-50.0, 0.0), Vec2::new(50.0, 0.0)],
+    );
+    let after = engine.render_to_image();
+
+    assert!(
+        is_red(center(&after)),
+        "paint must not be destroyed by a conservative smear of a uniform field"
+    );
+    let frac = frac_exceeding(&before, &after, 40);
+    assert!(
+        frac < 0.2,
+        "smearing a uniform field should move almost nothing, but {:.1}% of pixels differ by >40 levels",
+        frac * 100.0
+    );
+}
+
+#[test]
+fn smear_carries_paint_onto_bare_canvas() {
+    // The headline behaviour: dragging an `add = 0` brush from a painted patch
+    // onto bare canvas deposits the carried paint there. Any red on the
+    // previously-bare runway *must* have been lifted off the patch (conservation).
+    // Measured via the green channel: red on the warm paper lowers it.
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let y = SIZE.height / 2;
+    let run_x = SIZE.width / 2 - 12; // canvas −12: bare runway past the patch
+
+    paint(
+        &mut engine,
+        RED,
+        40.0,
+        &[Vec2::new(-90.0, 0.0), Vec2::new(-50.0, 0.0)],
+    );
+    let run_before = engine.render_to_image().pixel(run_x, y);
+    assert!(
+        run_before[1] > 170,
+        "the runway should start bare paper: {run_before:?}"
+    );
+
+    let b = dyn_brush(
+        RED,
+        28.0,
+        BrushDynamics {
+            add: 0.0,
+            lift: 0.9,
+            deposit: 0.3,
+            ..Default::default()
+        },
+    );
+    stroke_with(
+        &mut engine,
+        b,
+        &[
+            Vec2::new(-80.0, 0.0),
+            Vec2::new(-30.0, 0.0),
+            Vec2::new(30.0, 0.0),
+            Vec2::new(90.0, 0.0),
+        ],
+    );
+    let run_after = engine.render_to_image().pixel(run_x, y);
+
+    assert!(
+        (run_after[1] as i32) < run_before[1] as i32 - 15,
+        "with add=0, the bare runway must gain carried paint (green drops): {run_before:?} -> {run_after:?}"
+    );
+}
+
+/// **Flow scales the whole effect on a wet brush** (§6.2): the same smudge at a
+/// lower flow carries visibly less paint per pass — the Flow slider strengthens
+/// and weakens the blend instead of turning a blender into a paint brush. The
+/// axes are untouched: what changes hands per pass, not what the tool is.
+#[test]
+fn a_wet_brushs_flow_scales_the_smear() {
+    let carried = |flow: f32| -> Option<i32> {
+        let mut engine = engine_or_skip()?;
+        let y = SIZE.height / 2;
+        let run_x = SIZE.width / 2 - 12; // bare runway past the patch
+        paint(
+            &mut engine,
+            RED,
+            40.0,
+            &[Vec2::new(-90.0, 0.0), Vec2::new(-50.0, 0.0)],
+        );
+        let run_before = engine.render_to_image().pixel(run_x, y);
+        let mut b = dyn_brush(
+            RED,
+            28.0,
+            BrushDynamics {
+                add: 0.0,
+                lift: 0.9,
+                deposit: 0.3,
+                ..Default::default()
+            },
+        );
+        b.effect.set_flow(flow);
+        stroke_with(
+            &mut engine,
+            b,
+            &[
+                Vec2::new(-80.0, 0.0),
+                Vec2::new(-30.0, 0.0),
+                Vec2::new(30.0, 0.0),
+                Vec2::new(90.0, 0.0),
+            ],
+        );
+        let run_after = engine.render_to_image().pixel(run_x, y);
+        // Carried red suppresses the runway's green — the carrying test's metric.
+        Some(run_before[1] as i32 - run_after[1] as i32)
+    };
+    let (Some(full), Some(half), Some(off)) = (carried(1.0), carried(0.35), carried(0.0)) else {
+        return;
+    };
+    // Quoted against the full-flow carry rather than in levels, because *how much* a
+    // tip carries is a property of the tip — §6.6's lays a bounded depth where the old
+    // one's ceiling let it run past a pass — while what this test is about is that the
+    // three are separated and ordered. A quarter of the full carry between each is the
+    // same claim the level counts were making, in a unit that survives the tip.
+    let step = full / 4;
+    assert!(
+        full > half + step,
+        "a lower flow must carry visibly less: full {full}, half {half}",
+    );
+    assert!(
+        half > off + step,
+        "…and a token flow still more than none: half {half}, off {off}",
+    );
+    assert!(
+        off.abs() <= 2,
+        "a wet brush at flow 0 must move essentially nothing: {off}",
+    );
+}
+
+/// A wet brush at **flow 0 changes nothing, byte for byte**: every λ is scaled
+/// to the identity and the mint to nothing, so the loop's rewrite of the texels
+/// it covers must hand every one back exactly. Over a filled field rather than
+/// a stroked one, because a swept stroke's interior carries ±1-ulp f16 speckle
+/// that is about the *deposit*, not the loop under test.
+#[test]
+fn a_wet_brush_at_flow_zero_is_the_identity() {
+    use stark_model::Srgb;
+    use stark_model::document::{FillOp, SelectionShape};
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let layer = engine.observe().active_layer;
+    engine.process(DocCommand::Fill {
+        layer,
+        op: FillOp::new(
+            SelectionShape::rect_from_corners(Vec2::new(-128.0, -128.0), Vec2::new(128.0, 128.0)),
+            0.0,
+            Srgb::new(RED),
+            1.0,
+        ),
+    });
+    let before = engine.render_to_image();
+    let mut b = dyn_brush(
+        GREEN,
+        24.0,
+        BrushDynamics {
+            add: 0.9,
+            lift: 0.7,
+            deposit: 0.7,
+            bleed: 0.5,
+            ..Default::default()
+        },
+    );
+    b.effect.set_flow(0.0);
+    stroke_with(
+        &mut engine,
+        b,
+        &[Vec2::new(-60.0, 0.0), Vec2::new(60.0, 0.0)],
+    );
+    let after = engine.render_to_image();
+    assert!(
+        images_match(&before, &after, 0),
+        "a wet stroke at flow 0 rewrote the picture",
+    );
+}
+
+#[test]
+fn eraser_thins_without_retint() {
+    // An eraser (`load > 0, deposit = 0, add = 0`) fills its reservoir but lays
+    // nothing back — paint it crosses must only *thin* (height drops), never take
+    // on the color the tool picked up earlier.
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let y = SIZE.height / 2;
+    let green_x = SIZE.width / 2 + 60; // inside the green bar
+
+    paint(
+        &mut engine,
+        RED,
+        40.0,
+        &[Vec2::new(-90.0, 0.0), Vec2::new(-50.0, 0.0)],
+    );
+    paint(
+        &mut engine,
+        GREEN,
+        40.0,
+        &[Vec2::new(30.0, 0.0), Vec2::new(90.0, 0.0)],
+    );
+    let before = engine.render_to_image().pixel(green_x, y);
+    assert!(is_green(before), "the bar should start green: {before:?}");
+
+    // Drag from inside the red patch across the green bar: the tool holds red
+    // while it crosses green.
+    let b = dyn_brush(
+        RED,
+        24.0,
+        BrushDynamics {
+            add: 0.0,
+            lift: 0.5,
+            deposit: 0.0,
+            ..Default::default()
+        },
+    );
+    stroke_with(
+        &mut engine,
+        b,
+        &[Vec2::new(-80.0, 0.0), Vec2::new(90.0, 0.0)],
+    );
+    let after = engine.render_to_image().pixel(green_x, y);
+
+    assert!(
+        !is_red(after),
+        "erasing across the green bar must thin it, not re-tint it red: {before:?} -> {after:?}"
+    );
+}
+
+#[test]
+fn smear_over_empty_canvas_adds_nothing() {
+    // Bare canvas has no paint to lift, so an `add = 0` tool must lay nothing —
+    // no color, no height (no relief raised out of nothing).
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let blank = engine.render_to_image();
+    let b = dyn_brush(
+        RED,
+        24.0,
+        BrushDynamics {
+            add: 0.0,
+            lift: 1.0,
+            deposit: 1.0,
+            ..Default::default()
+        },
+    );
+    stroke_with(
+        &mut engine,
+        b,
+        &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
+    );
+    let after = engine.render_to_image();
+    assert!(
+        images_match(&blank, &after, 2),
+        "a pure smear over empty canvas must add no paint or height"
+    );
+}
+
+/// The pen-up settle (§6.2), from the canvas → tool side: **an eraser must take the
+/// paint it stopped on.**
+///
+/// A stroke ends with the tip still in contact and the transfer still in flight, and
+/// on the last footprint alone nothing finishes it — everywhere else on the trail a
+/// point sees the whole footprint pass over it and leave by the trailing rim. Without
+/// a settle the eraser's own last footprint keeps a tip-shaped patch of the paint it
+/// was standing on: measured here, 18 levels of red still there at the pen-up point
+/// against a trail that is scraped to bare paper. The settle takes it, and the mark
+/// then ends where the pen did, tapering only across the half the tip had not reached.
+#[test]
+fn an_eraser_takes_the_paint_it_stopped_on() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // A bed far wider than the tip, so the whole stroke runs inside it.
+    paint(
+        &mut engine,
+        RED,
+        140.0,
+        &[Vec2::new(-220.0, 0.0), Vec2::new(220.0, 0.0)],
+    );
+    stroke_with(
+        &mut engine,
+        dyn_brush(
+            RED,
+            45.0,
+            BrushDynamics {
+                add: 0.0,
+                lift: 0.95,
+                deposit: 0.0,
+                ..Default::default()
+            },
+        ),
+        &[Vec2::new(-150.0, 0.0), Vec2::new(0.0, 0.0)],
+    );
+    let img = engine.render_to_image();
+    let y = SIZE.height / 2;
+    // Red on the warm substrate pulls green down, so paint left behind reads as green
+    // that failed to come back up. Canvas 0 is the pen-up point.
+    let trail = img.pixel(SIZE.width / 2 - 38, y)[1] as i32;
+    let stop = img.pixel(SIZE.width / 2, y)[1] as i32;
+    assert!(
+        trail - stop < 8,
+        "the eraser left {} levels of paint under its last footprint that the rest of \
+         the trail was scraped clean of — the pen-up transfer is stranded on the tool",
+        trail - stop
+    );
+}
+
+/// The same settle from the tool → canvas side: **a carrying stroke must not break
+/// its own slope where it stops.**
+///
+/// A tool laying its load onto bare canvas leaves a mark that fades as the load runs
+/// down — gently, since one tip radius of travel depletes it barely at all. But the
+/// last footprint is served only by the tip's *leading* half, which is the depleted
+/// half, so without a settle the mark falls off a cliff at the trailing rim of that
+/// footprint: measured here it lightens by 17 levels across the final footprint
+/// against 2 over the whole trail before it, and the corner reads as a tip-shaped
+/// disc. With the settle it is 4.
+///
+/// The bound is on the *deficit at the pen-up point* rather than on a slope ratio
+/// because a gentle fade is only a few levels over the window either way, and a ratio
+/// of two small differences is mostly quantization.
+#[test]
+fn a_carrying_stroke_ends_without_breaking_its_own_slope() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    stroke_with(
+        &mut engine,
+        BrushParams {
+            // No `drain`: it fades the mark on its own and caps the segment length,
+            // and both would muddy a measurement about how the mark *ends*. A hard tip
+            // because that is where the corner is sharpest — `κ = −ln(1−coverage)`
+            // knees wherever coverage approaches 1, and a soft tip spreads the break
+            // over its own falloff.
+            drain: 0.0,
+            shape: BrushShape::Round { hardness: 0.95 },
+            ..dyn_brush(
+                RED,
+                70.0,
+                BrushDynamics {
+                    add: 0.0,
+                    lift: 0.0,
+                    deposit: 0.12,
+                    charge: 2.0,
+                    bleed: 0.0,
+                },
+            )
+        },
+        &[Vec2::new(-260.0, 0.0), Vec2::new(0.0, 0.0)],
+    );
+    let img = engine.render_to_image();
+    let y = SIZE.height / 2;
+    // Just behind the final footprint (canvas −76) against the pen-up point itself.
+    let trail = img.pixel(SIZE.width / 2 - 76, y)[1] as i32;
+    let stop = img.pixel(SIZE.width / 2, y)[1] as i32;
+    assert!(
+        stop - trail < 10,
+        "the mark lightened by {} levels across the final footprint against {} of fade \
+         over the whole trail before it — the tool's load is stranded at the pen-up",
+        stop - trail,
+        trail - img.pixel(SIZE.width / 2 - 108, y)[1] as i32
+    );
+}
+
+#[test]
+fn charged_tool_lays_a_finite_glob() {
+    // A pre-`charge`d tool (add = 0, no lift) deposits its glob along the stroke:
+    // paint appears near the start and runs out with distance — the reservoir is
+    // finite, unlike the inexhaustible `add` source.
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let y = SIZE.height / 2;
+    let b = dyn_brush(
+        RED,
+        20.0,
+        BrushDynamics {
+            add: 0.0,
+            deposit: 0.12,
+            charge: 2.0,
+            ..Default::default()
+        },
+    );
+    stroke_with(
+        &mut engine,
+        b,
+        &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
+    );
+    let img = engine.render_to_image();
+
+    // Bare paper, read off this very image instead of hardcoded. An absolute bound
+    // ("reads ~200") records what the tonemap happens to do on the day it is written,
+    // and has to be re-derived every time the lighting model moves — bare paper shifts
+    // by forty levels between the studio HDR and the reference light (§6.3) alone.
+    // What this test is *about* is the difference: red
+    // paint pulls the paper's green down where the glob landed, and pulls it down less
+    // once the charge has run out. That survives any exposure or tonemap.
+    let paper = img.pixel(20, 20); // well above the stroke, never touched
+    let green_loss = |px: [u8; 4]| paper[1] as i32 - px[1] as i32;
+
+    let start = img.pixel(20, y); // near the stroke start
+    assert!(
+        green_loss(start) > 15,
+        "the charged glob must lay paint near the stroke start: {start:?} on paper {paper:?}"
+    );
+    // The glob depletes: the very end of the stroke carries visibly less paint
+    // than the start.
+    let end = img.pixel(SIZE.width - 20, y);
+    assert!(
+        green_loss(end) < green_loss(start),
+        "the finite charge must deplete along the stroke: start {start:?} vs end {end:?}"
+    );
+}
+
+#[test]
+fn dynamics_stroke_is_deterministic() {
+    // The stamp loop is a pure function of base + record: two engines running the
+    // same script must produce identical images (replay / live == committed).
+    let render = || {
+        let mut engine = engine_or_skip()?;
+        paint(
+            &mut engine,
+            GREEN,
+            38.0,
+            &[Vec2::new(0.0, -90.0), Vec2::new(0.0, 90.0)],
+        );
+        let b = dyn_brush(
+            RED,
+            16.0,
+            BrushDynamics {
+                add: 0.1,
+                lift: 0.5,
+                deposit: 0.5,
+                ..Default::default()
+            },
+        );
+        stroke_with(
+            &mut engine,
+            b,
+            &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
+        );
+        Some(engine.render_to_image())
+    };
+    let (Some(a), Some(b)) = (render(), render()) else {
+        return;
+    };
+    assert!(
+        images_match(&a, &b, 0),
+        "the same dynamics script must render bit-identically"
+    );
+}
+
+#[test]
+fn golden_smudge_drag() {
+    // A committed green bar, then a red smudge dragged left→right across it: the
+    // tool picks up green where it crosses and carries a fading tint downstream
+    // (§6.2). Guards the look of the sequential stamp loop end-to-end.
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(
+        &mut engine,
+        GREEN,
+        38.0,
+        &[Vec2::new(0.0, -90.0), Vec2::new(0.0, 90.0)],
+    );
+    let b = dyn_brush(
+        RED,
+        16.0,
+        BrushDynamics {
+            add: 0.1,
+            lift: 0.5,
+            deposit: 0.5,
+            ..Default::default()
+        },
+    );
+    stroke_with(
+        &mut engine,
+        b,
+        &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
+    );
+    let img = engine.render_to_image();
+    assert_golden("smudge_drag", &img, 6);
+}
+
+#[test]
+fn golden_self_smear() {
+    // A single stroke that crosses its own trail: because pickup reads the
+    // *evolving* region, the second pass must smear the paint the first pass just
+    // laid — an order-dependence a base-only reservoir cannot express.
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(
+        &mut engine,
+        GREEN,
+        30.0,
+        &[Vec2::new(-60.0, 40.0), Vec2::new(60.0, 40.0)],
+    );
+    let b = dyn_brush(
+        RED,
+        18.0,
+        BrushDynamics {
+            add: 0.5,
+            lift: 0.6,
+            deposit: 0.5,
+            ..Default::default()
+        },
+    );
+    // Down through the bar, loop around, and back across its own trail.
+    engine.process(ViewCommand::set_brush(b));
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(-40.0, -70.0)),
+        tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+    for &(x, y) in &[(-40.0, 60.0), (20.0, 70.0), (40.0, 0.0), (-70.0, 10.0)] {
+        engine.process(GestureCommand::To {
+            sample: InputSample::at(Vec2::new(x, y)),
+        });
+    }
+    engine.process(GestureCommand::End);
+    let img = engine.render_to_image();
+    assert_golden("self_smear", &img, 6);
+}
+
+/// A dynamics stroke must read as one continuous mark, not a row of stamps.
+///
+/// The loop's transfers compose only if each is a function of the segment's swept
+/// exposure that survives re-cutting the path — additive in `e`, or multiplicative
+/// `exp(k·e)`. Anything saturating per segment (`1 − exp(k·e)` applied to a
+/// reservoir the segment does not deplete) deposits a steep ramp inside each quad,
+/// which shows up as arcs at the flattening's segment spacing. Uniform 2px
+/// sampling hid it; adaptive sampling does not.
+#[test]
+fn dynamics_stroke_reads_as_one_continuous_mark() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // A long straight stroke with a big tip: `drain` fades it along its length, so
+    // the profile should be smooth and monotone. Banding shows as ripple against
+    // that ramp.
+    let b = BrushParams {
+        // 0.24 per radius = 0.004 per canvas px at this 60px tip: 250px to bone dry.
+        drain: 0.24,
+        ..dyn_brush(
+            RED,
+            60.0,
+            BrushDynamics {
+                add: 0.6,
+                lift: 0.2,
+                deposit: 0.9,
+                ..Default::default()
+            },
+        )
+    };
+    stroke_with(
+        &mut engine,
+        b,
+        &[Vec2::new(-120.0, 0.0), Vec2::new(120.0, 0.0)],
+    );
+    let img = engine.render_to_image();
+
+    // Walk the centre row across the stroke's body and track the red channel. A
+    // continuous stroke fades monotonically; each reversal is a band edge.
+    let y = img.height / 2;
+    let prof: Vec<i32> = (40..216).map(|x| img.pixel(x, y)[0] as i32).collect();
+    let mut reversals = 0;
+    for w in prof.windows(3) {
+        let (d0, d1) = (w[1] - w[0], w[2] - w[1]);
+        // Only count reversals big enough to be a band, not sampling noise.
+        if d0 * d1 < 0 && (d0.abs() > 1 || d1.abs() > 1) {
+            reversals += 1;
+        }
+    }
+    assert!(
+        reversals <= 6,
+        "stroke profile reverses {reversals}× across its body — per-segment banding",
+    );
+}
+
+/// A stroke that is *carrying* paint must still read as one continuous mark.
+///
+/// The stamp loop's exchange has to survive being re-cut into different segments,
+/// which adaptive flattening makes it do (uniform 2px sampling hid it). Two things
+/// break that and both show up here as scalloped arcs at the segment spacing: a
+/// deposit that is not the exchange ODE's own solution (`dynamics.wesl`'s
+/// `laid_window`), and segments long enough that the tool reservoir's single
+/// mid-pass sample jumps between them (`gpu::stroke::flatten_tolerance`). Only a
+/// loaded tool exposes either — the `add` axis alone is smooth, which is why this
+/// test smears existing paint rather than painting on bare canvas.
+#[test]
+fn a_carrying_stroke_reads_as_one_continuous_mark() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // A slab to load the tool from, then a smear that drags it out across the canvas.
+    let mut slab = brush(GREEN, 70.0);
+    slab.drain = 0.0;
+    stroke_with(
+        &mut engine,
+        slab,
+        &[Vec2::new(-115.0, 0.0), Vec2::new(-60.0, 0.0)],
+    );
+
+    let smear = BrushParams {
+        shape: BrushShape::Round { hardness: 0.95 },
+        drain: 0.0,
+        ..dyn_brush(
+            RED,
+            60.0,
+            BrushDynamics {
+                add: 0.0,
+                lift: 0.4,
+                deposit: 0.9,
+                ..Default::default()
+            },
+        )
+    };
+    stroke_with(
+        &mut engine,
+        smear,
+        &[Vec2::new(-100.0, 0.0), Vec2::new(115.0, 0.0)],
+    );
+    let img = engine.render_to_image();
+
+    // Green rises monotonically as the carried paint thins out; each reversal past
+    // the noise floor is a band edge.
+    let y = img.height / 2;
+    let prof: Vec<i32> = (100..230).map(|x| img.pixel(x, y)[1] as i32).collect();
+    let d: Vec<i32> = prof.windows(2).map(|w| w[1] - w[0]).collect();
+    let reversals = d
+        .windows(2)
+        .filter(|w| w[0] * w[1] < 0 && (w[0].abs() > 1 || w[1].abs() > 1))
+        .count();
+    assert!(
+        reversals <= 4,
+        "carried-paint profile reverses {reversals}× — per-segment scalloping",
+    );
+}
+
+/// A conservative smear (`add = 0`) can move paint around for as long as it likes and
+/// must never end up with more of it than it started with.
+///
+/// The single-pass test above cannot see this. The failure it guards against is a
+/// *drift* in the tool's own accounting, and one pass of a drift is nothing — what
+/// makes it visible is the tool's load compounding, which needs one **long** gesture
+/// rather than many short ones (a fresh gesture starts the tool empty, so repeating
+/// short strokes resets the very thing that accumulates).
+///
+/// The shape it rules out: a fudge factor on the tool's drain ("deplete a bit slower
+/// than the math would indicate to account for error") leaves the tool keeping a
+/// fraction of every deposit it makes *and laying it anyway*. Such a factor only ever
+/// compensates for the two sides of the transfer measuring different things; with both
+/// measuring the same segment there is nothing for it to cover, and a 0.75 fails this
+/// by ~6%.
+///
+/// Measured on **height itself** (`common::total_height`), which is the channel the
+/// law is about (§6.1). It read image darkness for as long as a tile could not be
+/// asked what it held — a proxy through the media pass, the blend and the tonemap,
+/// which cannot separate "height was not conserved" from "the light changed", and
+/// which only registers at all while the paint is short of opaque. The field is still
+/// laid faint, so the two readings can be compared.
+#[test]
+fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // A broad field to smear inside, so nothing the tip carries leaves the region.
+    // Laid at low opacity (§6.2) so the render still shows height moving.
+    let mut faint = brush([1.0, 0.0, 0.0], 110.0);
+    faint.effect.set_opacity(0.12);
+    faint.drain = 0.0;
+    stroke_with(
+        &mut engine,
+        faint,
+        &[Vec2::new(-120.0, 0.0), Vec2::new(120.0, 0.0)],
+    );
+
+    let before = total_height(&engine, LayerId::ROOT);
+
+    // `add = 0`, so the tool can only move what is already there. Zig-zagging keeps
+    // the tip inside the field for the whole gesture.
+    let smear = dyn_brush(
+        RED,
+        30.0,
+        BrushDynamics {
+            add: 0.0,
+            lift: 0.9,
+            deposit: 0.9,
+            ..Default::default()
+        },
+    );
+    engine.process(ViewCommand::set_brush(smear));
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(-70.0, 0.0)),
+        tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+    for i in 1..=240 {
+        let t = i as f32;
+        engine.process(GestureCommand::To {
+            sample: InputSample::at(Vec2::new((t * 0.19).sin() * 70.0, (t * 0.11).cos() * 40.0)),
+        });
+    }
+    engine.process(GestureCommand::End);
+    let after = total_height(&engine, LayerId::ROOT);
+
+    // Conserved, the tool ends the stroke still holding some of what it lifted, so
+    // the canvas can only come out level or slightly lighter. Minting shows up as the
+    // one thing conservation forbids: more paint than went in.
+    let growth = after / before;
+    assert!(
+        growth <= 1.0,
+        "a conservative smear left {:.1}% more height on the canvas than it found          — the tool is minting paint",
+        (growth - 1.0) * 100.0
+    );
+}
+
+/// The other half of conservation: a smear must not **destroy** paint either.
+///
+/// The test above bounds the transfer from one side only, and a leak passes it
+/// trivially — losing paint is never "more than went in". It is also the side that is
+/// easy to lose: solve half the coupled pair (the canvas relaxing towards a tool that
+/// never takes anything back) and then lift from the region as the `deposit` has
+/// already left it, and the two halves disagree about how much changed hands by
+/// `O(lift²)` per segment. At the rates below that is
+/// ~39% of the total `canvas + tool` height at *every* segment boundary, and what it
+/// draws is the pair of artifacts `golden_heavy_smear_regression` and
+/// `golden_lift_end_regression` pin: arcs at the segment spacing through thick paint,
+/// and a tip-shaped hole where a stroke stops.
+///
+/// Measured as the **worst** lightening along the smear rather than as total ink,
+/// because that is what the eye is picking up and because a global average dilutes a
+/// hole the size of a tip into nothing. Inside a uniform field a conservative smear
+/// has nothing to move — the lift takes paint up and the deposit lays the same color
+/// straight back — so the only lightening the law permits is the load the tool is
+/// still carrying, one tip's worth of a pass. `conservative_smear_preserves_uniform_field`
+/// makes the same argument at `lift = deposit = 0.5`; the rates here are the ones that
+/// made the discrepancy an `O(1)` fraction of the transfer instead of a rounding error.
+///
+/// The bound is a **fraction of the field's own contrast** rather than a level count,
+/// and that is not fussiness. A level count is a claim about the light: change the
+/// lighting and the same physical lightening reads a different number of levels, so
+/// the test fails with nothing broken. Quoted against the swing it is a share of, the
+/// bound survives that. Room on both sides: the tool's own load measures a shade under
+/// a third of the contrast, and a half-solved exchange measures 2.6× that.
+#[test]
+fn a_conservative_smear_does_not_destroy_paint_either() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // A field far wider than the tip, so nothing it carries can be left outside it.
+    paint(
+        &mut engine,
+        RED,
+        140.0,
+        &[Vec2::new(-200.0, 0.0), Vec2::new(200.0, 0.0)],
+    );
+    let before = engine.render_to_image();
+
+    stroke_with(
+        &mut engine,
+        dyn_brush(
+            RED,
+            40.0,
+            BrushDynamics {
+                add: 0.0,
+                lift: 0.95,
+                deposit: 0.95,
+                ..Default::default()
+            },
+        ),
+        &[Vec2::new(-100.0, 0.0), Vec2::new(0.0, 0.0)],
+    );
+    let after = engine.render_to_image();
+
+    // Red paint pulls the green channel down, so paint going missing shows as green
+    // coming back up. The field covers the whole viewport, so the "no paint" end of
+    // the scale comes from the substrate itself: under the reference light a bare
+    // substrate renders its own sRGB to within a couple of levels (`reference.rs`),
+    // which is exactly the guarantee that lets this test carry its own scale.
+    let y = SIZE.height / 2;
+    let bare = (PAPER.g * 255.0).round() as i32;
+    let swing = bare - before.pixel(SIZE.width / 2, y)[1] as i32;
+    assert!(
+        swing > 100,
+        "the field did not land: only {swing} levels of it"
+    );
+
+    let worst = (0..SIZE.width)
+        .map(|x| after.pixel(x, y)[1] as i32 - before.pixel(x, y)[1] as i32)
+        .max()
+        .expect("a row of pixels");
+    let share = worst as f32 / swing as f32;
+    assert!(
+        share < 0.5,
+        "a conservative smear gave back {:.0}% of the field it was smearing \
+         ({worst} of {swing} levels) — the two halves of the exchange are not taking \
+         complementary shares of it",
+        share * 100.0,
+    );
+}
+
+/// A `lift` a whisker off zero must paint what a `lift` of exactly zero paints.
+///
+/// The axis is continuous at 0 — `keep = exp(−k·e)` with `k ≈ 3e−4` leaves the canvas
+/// 99.97% of its height — so the two renders are the same picture, and any *visible*
+/// difference is arithmetic rather than physics.
+///
+/// It was 210 levels, as a speckle of blown-out texels along the stroke (measured here
+/// at 102 isolated ones; the user-visible report was NaN/inf). The tool's share of the
+/// brush's own source was evaluated as `e − (1 − exp(−k·e))/k`, a difference whose two
+/// terms agree to every digit the answer needed: at `k·e ≈ 3e−4` the true share is
+/// `1.5e−4` and the cancellation error is a full ulp of 1, **signed**. A negative share
+/// is the tool minting height it never lifted, and a high `deposit` is what turns that
+/// residue into the whole reservoir — it empties the tool every segment, so there is no
+/// load left for the error to be small against. From there every reciprocal in the loop
+/// divides by a negative or vanishing denominator (`exchange_at`, `src_share`).
+///
+/// So the pair of rates is the point: `lift = 0` is clean (the series is exactly zero),
+/// `lift = 0.5` is clean (nothing cancels), and `deposit = 0.1` is clean at the very
+/// same `lift`. Only the corner where the tool is drained faster than it is filled
+/// shows it, which is why this pins the corner and not the axis.
+#[test]
+fn a_barely_lifting_brush_reads_as_one_that_does_not_lift() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let smear = |lift: f32| BrushParams {
+        size: 30.0,
+        shape: BrushShape::Round { hardness: 0.9 },
+        effect: BrushEffect::wet_with(
+            RED,
+            BrushDynamics {
+                add: 0.6,
+                lift,
+                // High enough to empty the tool every segment: with nothing lifted
+                // to refill it, whatever the source hands back is all it carries.
+                deposit: 0.95,
+                ..BrushDynamics::default()
+            },
+        ),
+        ..brush(RED, 30.0)
+    };
+    let mut render = |lift: f32| {
+        stroke_with(
+            &mut engine,
+            smear(lift),
+            &[
+                Vec2::new(-120.0, -90.0),
+                Vec2::new(-40.0, -20.0),
+                Vec2::new(20.0, 40.0),
+                Vec2::new(90.0, 100.0),
+            ],
+        );
+        let img = engine.render_to_image();
+        engine.process(DocCommand::Undo);
+        img
+    };
+    let barely = render(0.002);
+    let none = render(0.0);
+
+    let (_, worst) = diff_fraction(&barely, &none);
+    eprintln!("lift 0.002 vs 0.0: {worst} levels");
+    assert!(
+        worst < 12,
+        "a lift of 0.002 painted {worst} levels away from a lift of 0 — the exchange's \
+         two shares of the source are not both non-negative"
+    );
+    // The failure's own signature, since a speckle of a hundred texels can hide under a
+    // whole-image bound: a texel more than 100 levels from *both* its neighbours is not
+    // paint, it is a blown-out quotient.
+    let speckles = (0..barely.height)
+        .flat_map(|y| (1..barely.width - 1).map(move |x| (x, y)))
+        .filter(|&(x, y)| {
+            let far = |a: [u8; 4], b: [u8; 4]| {
+                (0..3).map(|i| (a[i] as i32 - b[i] as i32).abs()).max() > Some(100)
+            };
+            let c = barely.pixel(x, y);
+            far(c, barely.pixel(x - 1, y)) && far(c, barely.pixel(x + 1, y))
+        })
+        .count();
+    assert_eq!(speckles, 0, "{speckles} blown-out texels along the stroke");
+}
+
+/// A lift decides where the brush's own `add` settles, not how fast the brush runs dry,
+/// so what a lifting stroke lays as a share of a non-lifting one cannot depend on
+/// `drain`. An obliquely stretched tip seats each reservoir texel far from its mask
+/// position (§6.6); a tool reading the drain at the mask position takes the source back
+/// at a different rate than the canvas under it mints it, and the share moves with it.
+#[test]
+fn a_stretched_tips_lift_share_does_not_depend_on_its_drain() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // Fully stretched along a pen azimuth 60° off the travel: a shear large enough that
+    // a reservoir texel's travel coordinate is nowhere near its mask one.
+    let tilt = Vec2::from_angle(60f32.to_radians()) * 0.5;
+    let mut share = |drain: f32| {
+        let [lifted, still] = [0.95, 0.0].map(|lift| {
+            engine.process(ViewCommand::set_brush(BrushParams {
+                stretch: BrushParams::MAX_STRETCH,
+                orientation: OrientationSource::Pen,
+                drain,
+                effect: BrushEffect::wet_with(
+                    RED,
+                    BrushDynamics {
+                        add: 1.0,
+                        lift,
+                        deposit: 0.95,
+                        ..BrushDynamics::default()
+                    },
+                ),
+                ..brush(RED, 10.0)
+            }));
+            let sample = |x: f32| InputSample {
+                pos: Vec2::new(x, 0.0),
+                tilt,
+                ..InputSample::default()
+            };
+            engine.process(GestureCommand::Start {
+                tool: Tool::Brush,
+                sample: sample(-300.0),
+                tolerance: DEFAULT_TOLERANCE,
+                rope: 0.0,
+            });
+            engine.process(GestureCommand::To {
+                sample: sample(300.0),
+            });
+            engine.process(GestureCommand::End);
+            let h = total_height(&engine, LayerId::ROOT);
+            engine.process(DocCommand::Undo);
+            h
+        });
+        lifted / still
+    };
+    // Dry one and ten radii past the press, both far short of the 60-radius stroke's end.
+    let (strong, gentle) = (share(1.0), share(0.1));
+    eprintln!("lift share at drain 1: {strong:.4}, at drain 0.1: {gentle:.4}");
+    // Read at the mask position the two were 0.025 apart; at the seat, 0.001.
+    assert!(
+        (strong - gentle).abs() < 0.005,
+        "a lifting stretched tip laid {strong:.4} of a still one's height at drain 1 but \
+         {gentle:.4} at drain 0.1 — the tool reads the drain somewhere it is not",
+    );
+}
+
+/// Once the tool's load is steady, a lifting brush's finished mid-stroke columns hold what
+/// a non-lifting one's do: the tool only moves the source. A stretched tip (§6.6) must
+/// trade at the canvas's own exposure to keep that, whichever way it faces. The bound is
+/// per unit of stretch because the tool/canvas quadrature residual grows with the exchange,
+/// which a stretch along the travel multiplies by about `s`.
+#[test]
+fn a_stretched_tips_steady_columns_hold_what_it_minted() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let mut ratio = |stretch: f32, orientation: OrientationSource, tilt: Vec2| {
+        let [lifted, still] = [0.95, 0.0].map(|lift| {
+            engine.process(ViewCommand::set_brush(BrushParams {
+                stretch,
+                orientation,
+                drain: 0.0,
+                effect: BrushEffect::wet_with(
+                    RED,
+                    BrushDynamics {
+                        add: 1.0,
+                        lift,
+                        deposit: 0.95,
+                        ..BrushDynamics::default()
+                    },
+                ),
+                ..brush(RED, 10.0)
+            }));
+            let sample = |x: f32| InputSample {
+                pos: Vec2::new(x, 0.0),
+                tilt,
+                ..InputSample::default()
+            };
+            // 100 radii, and the widest tip is 16 radii long: the window below starts 32
+            // radii into the stroke and is finished 32 before the pen lifts.
+            engine.process(GestureCommand::Start {
+                tool: Tool::Brush,
+                sample: sample(-500.0),
+                tolerance: DEFAULT_TOLERANCE,
+                rope: 0.0,
+            });
+            engine.process(GestureCommand::To {
+                sample: sample(500.0),
+            });
+            engine.process(GestureCommand::End);
+            let window: f64 = column_height(&engine, LayerId::ROOT, -100..100)
+                .iter()
+                .sum();
+            engine.process(DocCommand::Undo);
+            window
+        });
+        lifted / still
+    };
+    let along = (OrientationSource::FollowStroke, InputSample::default().tilt);
+    // A pen azimuth 60° off the travel, where the map also shears and widens the lookup.
+    let oblique = (
+        OrientationSource::Pen,
+        Vec2::from_angle(60f32.to_radians()) * 0.5,
+    );
+    for (stretch, (orientation, tilt)) in [
+        (0.0, along),
+        (0.75, along),
+        (BrushParams::MAX_STRETCH, along),
+        (BrushParams::MAX_STRETCH, oblique),
+    ] {
+        let s = BrushParams::elongation(stretch);
+        let r = ratio(stretch, orientation, tilt);
+        eprintln!("{s}x tip, {orientation:?}: steady column share {r:.4}");
+        // Per unit of stretch, measured along the travel: 0.0035 at 1x, 0.0053 at 4x,
+        // 0.0060 at 8x; a tool trading at the stretch-scaled exposure, 0.025 and 0.062.
+        assert!(
+            (r - 1.0).abs() / f64::from(s) < 0.008,
+            "a {s}x tip's lifting stroke holds {r:.4} of a non-lifting one's height \
+             mid-stroke — the tool and the canvas disagree about how much changed hands",
+        );
+    }
+}
+
+/// The same visible stretch of stroke, painted with five different tails, must come
+/// out the same however the flattener happened to cut it.
+///
+/// This is `golden_drained_brush_length_independent` asked as a *number* rather than as
+/// five blessed images. The golden pins the artifact but cannot say how far off it is,
+/// and the whole story on [`RESERVOIR_EXCHANGE_STEP`](stark_engine) is a convergence
+/// table — so the quantity it converges in belongs in the suite, not just in a comment.
+///
+/// The five strokes are collinear, so the *geometry* of the visible stretch is
+/// identical in all five; the brush runs dry (`drain = 0.4` per radius, so 200px on
+/// this 80px tip) a whole tip before entering view, so every visible pixel arrived
+/// through the reservoir. All that differs is where the flattener's bisection put the
+/// segment boundaries, which depends on the whole path's length. Any spread at all is
+/// the loop's first-order splitting error printing as a delay line ringing at the
+/// segment cadence.
+///
+/// The bound is set above the 8-bit quantization floor the step was converged to and
+/// below the ~6.6 levels the step before it produced, so it fails on a regression of
+/// the transport accuracy without firing on rounding.
+#[test]
+fn a_carried_stroke_is_independent_of_how_the_path_was_cut() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let brush = BrushParams {
+        size: 80.0,
+        shape: BrushShape::Round { hardness: 0.95 },
+        // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
+        drain: 0.4,
+        // Black, as `BrushParams::default()` always painted here.
+        effect: BrushEffect::wet_with(
+            [0.0; 3],
+            BrushDynamics {
+                add: 1.0,
+                lift: 0.95,
+                deposit: 0.95,
+                ..BrushDynamics::default()
+            },
+        ),
+        ..BrushParams::default()
+    };
+    let renders: Vec<stark_engine::RgbaImage> = [200.0f32, 300.0, 400.0, 500.0, 600.0]
+        .into_iter()
+        .map(|x| {
+            stroke_with(
+                &mut engine,
+                brush,
+                &[
+                    Vec2::new(-400.0, 0.0),
+                    Vec2::new(0.0, 0.0),
+                    Vec2::new(x, 0.0),
+                ],
+            );
+            let img = engine.render_to_image();
+            engine.process(DocCommand::Undo);
+            img
+        })
+        .collect();
+
+    let (worst, rms) = cut_spread(&renders);
+    eprintln!("length-independence: {worst} levels max, {rms:.2} rms");
+    assert!(
+        worst <= 4,
+        "the same visible stretch of stroke came out {worst} levels apart ({rms:.2} rms)          depending on where the pen went afterwards — the exchange's transport error is          tracking the segment cadence"
+    );
+}
+
+/// Worst and rms per-pixel spread across renders that are supposed to be identical.
+///
+/// Measured on green: the paint is red over a light grey substrate, so green is the
+/// channel it moves furthest. No high-pass is needed the way there is when judging one
+/// image by eye — these five share a geometry, so the stroke's own gradient cancels in
+/// the spread and what is left is only the disagreement.
+fn cut_spread(imgs: &[stark_engine::RgbaImage]) -> (u8, f64) {
+    let (w, h) = (imgs[0].width, imgs[0].height);
+    let mut worst = 0u8;
+    let mut sq = 0.0f64;
+    for y in 0..h {
+        for x in 0..w {
+            let (lo, hi) = imgs
+                .iter()
+                .map(|im| im.pixel(x, y)[1])
+                .fold((255u8, 0u8), |(lo, hi), g| (lo.min(g), hi.max(g)));
+            let d = hi - lo;
+            worst = worst.max(d);
+            sq += (d as f64) * (d as f64);
+        }
+    }
+    (worst, (sq / (w * h) as f64).sqrt())
+}
+
+/// Mean darkness over the image: with a fixed palette this rises as paint thickens,
+/// so it stands in for "how much paint is on the canvas" without a height readback.
+fn total_ink(img: &stark_engine::RgbaImage) -> f64 {
+    let sum: u64 = img
+        .pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|p| (255 - p[1]) as u64 + (255 - p[2]) as u64)
+        .sum();
+    sum as f64 / (img.width * img.height) as f64
+}
+
+/// Flow for the glaze below. Low on purpose: `add` is the amount of paint the brush
+/// lays and the only thing that decides it (§6.1), so at full flow a renderer
+/// that honours it and one that ignores it both come out red and there is nothing
+/// left to measure.
+const GLAZE_ADD: f32 = 0.02;
+
+/// Paint a solid vertical bar, then glaze a horizontal stroke across it at `add`
+/// flow with the given `deposit`, and return the lit result.
+fn bar_then_glaze(add: f32, deposit: f32) -> Option<stark_engine::RgbaImage> {
+    let mut engine = engine_or_skip()?;
+    paint(
+        &mut engine,
+        GREEN,
+        34.0,
+        &[Vec2::new(0.0, -110.0), Vec2::new(0.0, 110.0)],
+    );
+    let mut glaze = dyn_brush(
+        RED,
+        34.0,
+        BrushDynamics {
+            add,
+            lift: 0.0,
+            deposit,
+            charge: 0.0,
+            bleed: 0.0,
+        },
+    );
+    // No falloff, so the glaze is one uniform parcel over its whole travel and both
+    // paths are being asked the same question at every texel of it.
+    glaze.drain = 0.0;
+    stroke_with(
+        &mut engine,
+        glaze,
+        &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
+    );
+    Some(engine.render_to_image())
+}
+
+/// **The stamp loop reduces to the swept fast path when there is nothing to
+/// manipulate**, and the same brush must therefore draw the same picture whichever
+/// one runs (§6.2). A `deposit` of 0.01 with no `lift` and no `charge` puts the
+/// stroke through the whole sequential loop while leaving the tool's reservoir empty
+/// for all of it — nothing ever gets onto the tip, so `deposit` has nothing to lay
+/// and every texel of the mark is the brush's own `add` paint, exactly as on the
+/// fast path. `exchange_at` says so algebraically: with `k_lift = 0` the canvas keeps
+/// all of its height (`keep = 1`) and the source rides the full exposure
+/// (`add_w = e`), which is the fast path's deposit written out.
+///
+/// It is drawn *over existing paint*, which is where the two can differ without the
+/// media pass covering for them. Over bare canvas visible alpha is `opacity × height`
+/// and the height was always right, so a path that laid the color by the brush's
+/// per-unit opacity alone still came out faint; over a stroke already on the canvas
+/// nothing checks it, and a 2%-flow glaze repainted the bar at full strength. That
+/// was the swept path's `integrate`, covering by opacity rather than by the parcel's
+/// visible alpha `1 − exp(−K·opacity·height)` — the same defect §6.3 names in
+/// the layer composite, one level down.
+///
+/// The other half of the agreement is that `add` mean the same amount of paint on
+/// both paths. It did not: the loop scaled it by a gain of 2, so nudging `deposit`
+/// off zero doubled the flow of a slider that has nothing to do with it — 24% of
+/// this image more than 4 levels apart on its own. Together the two put the worst
+/// pixel 157 levels out; what is left is 2, which is the 8-bit floor.
+#[test]
+fn a_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs() {
+    let Some(swept) = bar_then_glaze(GLAZE_ADD, 0.0) else {
+        return;
+    };
+    let Some(looped) = bar_then_glaze(GLAZE_ADD, 0.01) else {
+        return;
+    };
+    let (_, worst) = diff_fraction(&swept, &looped);
+    let frac = frac_exceeding(&swept, &looped, 4);
+    assert!(
+        frac < 0.002 && worst <= 8,
+        "the same glaze drew differently through the stamp loop: {:.2}% of pixels \
+         differ by >4 levels, worst {worst} — the loop is not reducing to the fast path",
+        frac * 100.0
+    );
+
+    // …and the glaze must actually be a glaze, or the two paths above agree only
+    // because they are both ignoring `add`. Against the bar alone and against the
+    // same stroke at full flow, at the crossing: a fiftieth of the flow has to move
+    // the color a great deal less than all of it.
+    let (Some(bar), Some(opaque)) = (bar_then_glaze(0.0, 0.0), bar_then_glaze(1.0, 0.0)) else {
+        return;
+    };
+    let (x, y) = (SIZE.width / 2, SIZE.height / 2);
+    let shift = |img: &stark_engine::RgbaImage| {
+        (0..3)
+            .map(|i| (img.pixel(x, y)[i] as i32 - bar.pixel(x, y)[i] as i32).abs())
+            .max()
+            .expect("three channels")
+    };
+    let (thin, thick) = (shift(&swept), shift(&opaque));
+    assert!(
+        thin * 2 < thick,
+        "a {GLAZE_ADD}-flow glaze moved the paint under it {thin} levels where full \
+         flow moved it {thick} — `add` is not deciding how much paint lands"
+    );
+}
+
+/// The `bleed` axis is a *lateral* flux: it must move paint between neighbouring
+/// canvas texels and do nothing else. Run alone over a uniform field it therefore
+/// has to be very nearly the identity — every neighbourhood difference it trades
+/// on is zero — and, because it is not a source, none of the brush's own color
+/// may reach the canvas however hard it scrubs. The brush is deliberately GREEN
+/// over RED paint so that failure mode has a color.
+#[test]
+fn bleed_alone_neither_lays_paint_nor_disturbs_a_uniform_field() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(
+        &mut engine,
+        RED,
+        80.0,
+        &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
+    );
+    let before = engine.render_to_image();
+    assert!(is_red(center(&before)), "the field never got painted");
+
+    let b = dyn_brush(
+        GREEN,
+        24.0,
+        BrushDynamics {
+            add: 0.0,
+            bleed: 0.95,
+            ..Default::default()
+        },
+    );
+    // Back and forth, so a compounding leak (a source term hiding in the flux)
+    // gets several passes to show itself.
+    stroke_with(
+        &mut engine,
+        b,
+        &[
+            Vec2::new(-50.0, 0.0),
+            Vec2::new(50.0, 0.0),
+            Vec2::new(-50.0, 0.0),
+            Vec2::new(50.0, 0.0),
+        ],
+    );
+    let after = engine.render_to_image();
+
+    assert!(
+        is_red(center(&after)),
+        "a bleed-only brush re-tinted the field towards its own color: {:?}",
+        center(&after)
+    );
+    let frac = frac_exceeding(&before, &after, 40);
+    assert!(
+        frac < 0.2,
+        "diffusing a uniform field should move almost nothing, but {:.1}% of pixels \
+         differ by >40 levels",
+        frac * 100.0
+    );
+}
+
+/// The headline behaviour: scrubbing a bleed-only brush along the boundary between
+/// two colors softens it — the transition spreads, so its *steepest step* drops.
+/// Measured on the per-row difference of a signed red-vs-green signal, which is
+/// what "blur" means and does not care which side of the image either stripe
+/// landed on, or exactly where the dominance predicates would draw their lines.
+/// (A first cut counted rows that read as *neither* color instead, and failed
+/// backwards: the stripes met over a sliver of paper, diffusion pulled paint into
+/// the gap, and the "mixed" band narrowed while the edge genuinely softened.)
+#[test]
+fn bleed_softens_a_color_boundary() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // Two overlapping stripes — no paper gap at the boundary, so the transition
+    // is stripe against stripe and its slope belongs to the meeting edge.
+    paint(
+        &mut engine,
+        RED,
+        20.0,
+        &[Vec2::new(-90.0, -16.0), Vec2::new(90.0, -16.0)],
+    );
+    paint(
+        &mut engine,
+        GREEN,
+        20.0,
+        &[Vec2::new(-90.0, 16.0), Vec2::new(90.0, 16.0)],
+    );
+
+    let (cx, cy) = (SIZE.width / 2, SIZE.height / 2);
+    // The steepest per-row step of (green − red) down the boundary's column.
+    let max_step = |img: &stark_engine::RgbaImage| {
+        (cy - 12..cy + 12)
+            .map(|y| {
+                let s = |y: u32| {
+                    let p = img.pixel(cx, y);
+                    p[1] as i32 - p[0] as i32
+                };
+                (s(y + 1) - s(y)).abs()
+            })
+            .max()
+            .expect("non-empty window")
+    };
+    let before = engine.render_to_image();
+    let step_before = max_step(&before);
+    assert!(
+        step_before >= 25,
+        "the stripes should meet in a steep edge, got a max step of {step_before} \
+         levels/row — too soft for a blur to measure"
+    );
+
+    let b = dyn_brush(
+        RED,
+        28.0,
+        BrushDynamics {
+            add: 0.0,
+            bleed: 0.95,
+            ..Default::default()
+        },
+    );
+    // Several passes along the boundary: the axis is a diffusivity, so each pass of
+    // the tip buys another helping of variance and the spread grows as its root.
+    stroke_with(
+        &mut engine,
+        b,
+        &[
+            Vec2::new(-70.0, 0.0),
+            Vec2::new(70.0, 0.0),
+            Vec2::new(-70.0, 0.0),
+            Vec2::new(70.0, 0.0),
+            Vec2::new(-70.0, 0.0),
+            Vec2::new(70.0, 0.0),
+            Vec2::new(-70.0, 0.0),
+            Vec2::new(70.0, 0.0),
+            Vec2::new(-70.0, 0.0),
+        ],
+    );
+    let after = engine.render_to_image();
+    let step_after = max_step(&after);
+
+    assert!(
+        step_after * 10 <= step_before * 8,
+        "scrubbing bleed = 0.95 along the boundary should soften its steepest step \
+         by at least a fifth, got {step_before} -> {step_after} levels/row"
+    );
+    // The edge softened by **mixing rather than erasure**, said two ways that do not
+    // depend on how far this calibration of the axis happens to spread — the reach is
+    // solved per firing from a diffusivity now (`stroke::budget::bleed_stencil`), so a
+    // purity reading at a fixed distance measures the tuning rather than the model.
+    //
+    // Outside the tip nothing moved at all. The pair's mobility is `min` of its two
+    // exposures, so a texel the footprint never covered has no partner and no share:
+    // the stripes still read pure where the blender never reached, 32 px out against a
+    // 28 px tip.
+    for y in [cy - 32, cy + 32] {
+        let (b, a) = (before.pixel(cx, y), after.pixel(cx, y));
+        let moved = (0..3).map(|c| (a[c] as i32 - b[c] as i32).abs()).max();
+        assert!(
+            moved <= Some(1),
+            "a texel 32 px out, outside a 28 px tip, moved {b:?} -> {a:?}"
+        );
+    }
+    // That the paint *inside* the tip is redistributed rather than consumed is not
+    // checked here, and deliberately: the conserved quantities are height and optical
+    // mass, and what this reads is an 8-bit composite of a perceptual mix over paper,
+    // where neither survives as a mean. Two tests carry it on the quantities it is
+    // actually true of — `bleed_alone_neither_lays_paint_nor_disturbs_a_uniform_field`
+    // and `a_dense_bleed_scribble_over_flat_paint_is_a_no_op`.
+}
+
+/// **A bleed pass across a hard edge leaves a smooth trail, not a stack of slabs.**
+///
+/// Every tap of the stencil lays a *displaced ghost* of what it reads: a tap at `±d`
+/// answers a hard edge with that edge again, `d` away. With the shed loaded onto a
+/// single tap out at the reach, and a texel covered by only a handful of firings, the
+/// ghosts never filled in — dragging a blender across a painted bar printed the bar's
+/// own edge over and over, a reach apart, with steps as sharp as the original
+/// (`dynamics.wesl`'s `BLEED_SHARE_LADDER`, `budget::BLEED_TRAVEL_QUANTUM`).
+///
+/// Measured as the **ripple** of the trail's profile: how far each sample sits from the
+/// mean of its neighbours a tap-scale away, which is zero for any straight or smoothly
+/// curving falloff and is exactly the step height where a ghost lands. Read down the
+/// blender's own centreline, over the stretch of trail past the bar's edge that is all
+/// carried paint, and away from the bar itself, whose real profile has curvature of its
+/// own. The pre-ladder stencil put 15 levels through this; the bound is set between.
+#[test]
+fn a_bleed_trail_across_an_edge_has_no_step_in_it() {
+    let Some(mut engine) = engine_or_skip_sized(stark_engine::Extent2 {
+        width: 512,
+        height: 512,
+    }) else {
+        return;
+    };
+    // A hard-edged bar to smear off: the ghosts this is looking for are copies of its
+    // edge, so the edge has to be sharp enough that a copy of it would be obvious.
+    let mut bar = brush(RED, 60.0);
+    bar.shape = BrushShape::Round { hardness: 1.0 };
+    bar.drain = 0.0;
+    stroke_with(
+        &mut engine,
+        bar,
+        &[Vec2::new(-200.0, 0.0), Vec2::new(200.0, 0.0)],
+    );
+
+    // …and a bleed-only pass straight down through it, so the trail runs perpendicular
+    // to the edge it is dragging.
+    let mut blender = dyn_brush(
+        RED,
+        70.0,
+        BrushDynamics {
+            add: 0.0,
+            bleed: 0.95,
+            ..Default::default()
+        },
+    );
+    blender.shape = BrushShape::Round { hardness: 1.0 };
+    blender.drain = 0.0;
+    stroke_with(
+        &mut engine,
+        blender,
+        &[Vec2::new(0.0, -150.0), Vec2::new(0.0, 150.0)],
+    );
+
+    let img = engine.render_to_image();
+    let (cx, cy) = (img.width / 2, img.height / 2);
+    // Green: the paint is red over a light substrate, so green is the channel it moves
+    // furthest. Averaged across the blender's middle, since one column of it is noise.
+    let profile: Vec<f64> = (0..img.height)
+        .map(|y| {
+            let lo = cx - 20;
+            (lo..cx + 20)
+                .map(|x| img.pixel(x, y)[1] as f64)
+                .sum::<f64>()
+                / 40.0
+        })
+        .collect();
+    // The trail below the bar: past its edge (60 px of tip) with a margin, out to where
+    // the smear has faded into the substrate.
+    let (from, to) = (cy as usize + 75, cy as usize + 150);
+    let step = 8usize; // a tap scale: a ghost of the edge lands as a step this wide
+    let ripple = |i: usize| (profile[i] - 0.5 * (profile[i - step] + profile[i + step])).abs();
+    let worst = (from..to).map(ripple).fold(0.0f64, f64::max);
+    let rms = ((from..to).map(|i| ripple(i).powi(2)).sum::<f64>() / (to - from) as f64).sqrt();
+    eprintln!("bleed trail ripple: worst {worst:.2} levels, {rms:.2} rms");
+    // The trail has to *be* there, or a brush that bled nothing would pass this.
+    let carried = profile[cy as usize + 80] - profile[cy as usize + 150];
+    assert!(
+        carried <= -20.0,
+        "the blender carried almost nothing past the bar ({carried:.1} levels of green \
+         across the trail) — this is not measuring a trail's smoothness"
+    );
+    assert!(
+        worst <= 6.0,
+        "the bleed trail steps by {worst:.1} levels ({rms:.2} rms) over an 8 px scale — \
+         the stencil is printing displaced copies of the bar's edge rather than blurring it"
+    );
+}
+
+/// **`bleed`'s smoothing distance scales with the brush**, so a big blender softens
+/// far from the boundary in one pass. A fixed 1-texel stencil tops out near a pixel of
+/// σ per pass and cannot move a reading 10 px away no matter the rate — an axis that
+/// "works" and is invisible at any usable brush size.
+///
+/// Measured as the red-vs-green contrast 10 px to each side of the boundary
+/// dropping materially after a single pass, which no orientation, color-space
+/// or dominance-threshold detail can fake: only paint arriving from across the
+/// boundary moves those readings toward one another.
+#[test]
+fn bleed_reach_scales_with_the_brush() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(
+        &mut engine,
+        RED,
+        20.0,
+        &[Vec2::new(-90.0, -16.0), Vec2::new(90.0, -16.0)],
+    );
+    paint(
+        &mut engine,
+        GREEN,
+        20.0,
+        &[Vec2::new(-90.0, 16.0), Vec2::new(90.0, 16.0)],
+    );
+
+    let (cx, cy) = (SIZE.width / 2, SIZE.height / 2);
+    // Signed red-vs-green contrast at a pixel; |it| is purity of whichever side.
+    let contrast = |img: &stark_engine::RgbaImage, y: u32| {
+        let p = img.pixel(cx, y);
+        (p[1] as i32 - p[0] as i32).abs()
+    };
+    let before = engine.render_to_image();
+    let (b_lo, b_hi) = (contrast(&before, cy - 10), contrast(&before, cy + 10));
+    assert!(
+        b_lo >= 60 && b_hi >= 60,
+        "10 px out each stripe should still read nearly pure, got {b_lo}/{b_hi}"
+    );
+
+    let b = dyn_brush(
+        RED,
+        60.0,
+        BrushDynamics {
+            add: 0.0,
+            bleed: 0.95,
+            ..Default::default()
+        },
+    );
+    // One pass. The reach has to come from the stencil scaling with the radius,
+    // not from scrubbing long enough that any stencil would get there.
+    stroke_with(
+        &mut engine,
+        b,
+        &[Vec2::new(-70.0, 0.0), Vec2::new(70.0, 0.0)],
+    );
+    let after = engine.render_to_image();
+    let (a_lo, a_hi) = (contrast(&after, cy - 10), contrast(&after, cy + 10));
+
+    assert!(
+        a_lo + 25 <= b_lo && a_hi + 25 <= b_hi,
+        "one pass of a radius-60 blur should mix the stripes 10 px out on both \
+         sides, got {b_lo} -> {a_lo} and {b_hi} -> {a_hi}"
+    );
+}
+
+/// What the bleed cadence's fire slots and the deposit's rewrite guard exist for
+/// (§6.2): a slow hand is fitted at a control point per pointer sample, so a
+/// bleed-only stroke can arrive as hundreds of **sub-pixel** knots — and over a flat
+/// coat it must change nothing at all. Fired per segment instead, the per-texel
+/// exposure is prefix-cancellation noise and the flux sits under the f16 ULP of the
+/// heights it edits; even at zero flux, re-storing an algebraically identical texel
+/// walks it down one ULP per rewrite on a backend whose f32→f16 storage conversion
+/// truncates (D3D12 does), which brightens the coat by up to 28 levels. The dense
+/// record is appended to the log directly, exactly as the field repro's fitter
+/// produced it, rather than through the fitter.
+#[test]
+fn a_dense_bleed_scribble_over_flat_paint_is_a_no_op() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(
+        &mut engine,
+        RED,
+        80.0,
+        &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
+    );
+    let before = engine.render_to_image();
+
+    let mut doc = stark_model::DocumentFile::from_bytes(&engine.save_bytes().expect("save"))
+        .expect("parse own save");
+    let prev = doc.actions.last().expect("the coat stroke").id;
+    let mut brush = dyn_brush(
+        GREEN,
+        40.0,
+        BrushDynamics {
+            add: 0.0,
+            bleed: 0.95,
+            ..Default::default()
+        },
+    );
+    brush.drain = 0.0;
+    // A shallow 72 px arc over 200 knots — every span ~0.36 px, like the repro.
+    let path: Vec<stark_model::path::ControlPoint> = (0..200)
+        .map(|i| {
+            let ang = (i as f32 / 199.0 - 0.5) * 1.2;
+            let mut cp = stark_model::path::ControlPoint::at(Vec2::new(
+                ang.sin() * 60.0,
+                (ang.cos() - 1.0) * 60.0,
+            ));
+            cp.pressure = 0.5;
+            cp
+        })
+        .collect();
+    doc.actions.push(stark_model::document::Action {
+        id: stark_model::document::ActionId {
+            lamport: prev.lamport + 1,
+            actor: prev.actor,
+        },
+        kind: stark_model::document::ActionKind::CommitStroke(
+            stark_model::document::StrokeRecord {
+                layer: engine.observe().active_layer,
+                brush,
+                path,
+                seed: 7,
+                start: 0.0,
+                translation: stark_model::geom::IVec2::ZERO,
+            },
+        ),
+    });
+
+    let Some(mut replayed) = engine_or_skip() else {
+        return;
+    };
+    replayed
+        .load_bytes(&doc.to_bytes().expect("encode"))
+        .expect("load + replay");
+    let after = replayed.render_to_image();
+    assert!(
+        images_match(&before, &after, 2),
+        "a dense bleed-only scribble over flat paint must leave it flat"
+    );
+}
+
+/// A bleeding stroke must **preview as it commits** (§1.3).
+///
+/// The bleed cadence fires on crossings of absolute arc and each firing sweeps a
+/// window reaching back one quantum (`bleed_fires`). **The window's start is walked
+/// back along the crossing segment's own arc**, which needs no history at all. Looked
+/// up among the segments the piece being drawn happens to hold — clamped to the first
+/// of them — a window reaching further back than the range comes out short; a live
+/// tail always starts at a span boundary while the commit renders the whole stroke
+/// from zero, so the two would relax different amounts of paint at exactly that seam
+/// and a bleeding stroke would visibly change when the pointer came up.
+#[test]
+fn a_bleeding_stroke_previews_as_it_commits() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let b = dyn_brush(
+        RED,
+        26.0,
+        BrushDynamics {
+            add: 0.8,
+            bleed: 0.9,
+            ..Default::default()
+        },
+    );
+    engine.process(ViewCommand::set_brush(b));
+    let path: Vec<Vec2> = (0..140)
+        .map(|i| {
+            let t = i as f32 * 0.05;
+            Vec2::new(t * 20.0 - 60.0, (t * 1.1).sin() * 28.0)
+        })
+        .collect();
+    let mut it = path.iter();
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(*it.next().expect("a first sample")),
+        tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+    for &p in it {
+        engine.process(GestureCommand::To {
+            sample: InputSample::at(p),
+        });
+    }
+    engine.process(GestureCommand::End);
+    assert_eq!(
+        engine.strokes_reused(),
+        1,
+        "the commit did not take the preview"
+    );
+    let committed = engine.render_to_image();
+    // What landed is the preview's head-plus-tail render (`PreparedStroke`, §6.2);
+    // the whole render is the commit's replay, in one range from zero.
+    let rendered = whole_render(&mut engine);
+
+    // The same bound the untoothed split-preview test uses: a level or two of
+    // accumulated float rounding at the seam is fine, a visible discontinuity is not.
+    assert_eq!(
+        frac_exceeding(&committed, &rendered, 11),
+        0.0,
+        "a bleeding live preview visibly differs from the stroke rendered whole \
+         ({:.4}% of px over 2)",
+        frac_exceeding(&committed, &rendered, 2) * 100.0,
+    );
+}
+
+/// **A smear whose rates move nothing must leave the canvas bit-for-bit alone, however
+/// many segments the path is cut into.**
+///
+/// The loop is a read-modify-write over `rgba16float` storage textures, and a
+/// `textureStore` to one is not guaranteed to round: D3D12's f32 → binary16 conversion
+/// truncates toward zero (`lib/store.wesl`). Every segment whose sweep reaches a texel
+/// re-stores it, so a store that lands a hair below what is already there drops a whole
+/// f16 ULP — `2⁻¹¹` relative, one-directional, and therefore accumulating instead of
+/// cancelling.
+///
+/// At `lift = deposit = 1e−4` the physics is a no-op to five figures: `keep = exp(−k·e)`
+/// with `k·e ≈ 3e−6` per segment leaves the canvas 99.9997% of its height, and the
+/// deposit hands back what little it took. So everything this measures is arithmetic.
+///
+/// The **wiggly path is the whole point**, and it is why the existing rewrite guard was
+/// not enough: that guard fires only on exactly-zero rates, and what turns a half-ULP
+/// bias into a visible loss is the *number of re-stores a texel sees*, which is the
+/// number of segments whose sweep covers it. A straight 256 px drag is a handful; the
+/// same span walked as a 20-cycle wiggle is a hundred and more. Measured before the
+/// stores were snapped to the f16 lattice: −0.04% of the field's ink for the straight
+/// path, **−3.65%** for the wiggle — paint disappearing out of a stroke that by every
+/// term of the model did nothing at all, and the premultiplied latent walking down with
+/// the height, so the mark read both thinner and darker than the field it crossed.
+///
+/// The field is deliberately faint (`add = 0.02` under a broad tip): height only reaches
+/// the render while the paint is still short of opaque, so a thick coat would hide the
+/// very thing this is weighing.
+#[test]
+fn a_smear_that_transfers_nothing_leaves_the_canvas_alone() {
+    for wiggle in [0.0f32, 5.0] {
+        let Some(mut engine) = engine_or_skip() else {
+            return;
+        };
+        let mut field = brush(RED, 200.0);
+        field.drain = 0.0;
+        field.paint_mut().expect("a paint brush").flow = 0.02;
+        stroke_with(
+            &mut engine,
+            field,
+            &[Vec2::new(-260.0, 0.0), Vec2::new(260.0, 0.0)],
+        );
+        let before = engine.render_to_image();
+
+        // Rates far below anything the eye could resolve, but *nonzero* — so the
+        // deposit's rewrite guard does not fire and every segment stores every texel
+        // it covers, which is exactly the traffic the ratchet rode.
+        let smear = dyn_brush(
+            RED,
+            40.0,
+            BrushDynamics {
+                add: 0.0,
+                lift: 1e-4,
+                deposit: 1e-4,
+                ..Default::default()
+            },
+        );
+        let path: Vec<Vec2> = (0..128)
+            .map(|i| {
+                let t = i as f32 / 128.0;
+                Vec2::new(t * 200.0 - 100.0, wiggle * (128.0 * t).sin())
+            })
+            .collect();
+        stroke_with(&mut engine, smear, &path);
+        let after = engine.render_to_image();
+
+        let (b, a) = (total_ink(&before), total_ink(&after));
+        let drift = (a / b - 1.0) * 100.0;
+        assert!(
+            drift.abs() < 0.2,
+            "a smear at rates of 1e-4 (wiggle {wiggle}) moved {drift:+.2}% of the \
+             field's ink — the loop is re-encoding f16 state it did not change",
+        );
+    }
+}
+
+/// **The pen-up settle must not leave a crease across the middle of the last stamp.**
+///
+/// The settle's exposure is bounded by the pass on both sides — by what the tip still
+/// owed this texel and by what it had already given it (`dynamics.wesl`'s `settle`) —
+/// and those two bounds cross at the tip centre. Combined with a `min` the exposure is
+/// continuous there but its *slope* is not, and everything downstream is exponential in
+/// it, so the height field turns a corner along the line `xl = 0`. A corner in height is
+/// a step in the relief normal, and the media pass (§6.3) prints that as a hard line
+/// straight across the footprint, perpendicular to the travel — the one place in a
+/// stroke where the mark is not a smooth function of position.
+///
+/// Measured on the **lit** render, because that is the only pass that can see a
+/// derivative: as the worst step between adjacent texels along the travel axis through
+/// the tip centre, scaled against the same reading taken over the trail behind it, which
+/// has no settle in it and stands for what this brush's own texture costs. The `min`
+/// puts 106 levels through the crossover against the trail's 3; the smooth product
+/// combination puts 2.
+///
+/// **On the studio HDR**, and it has to be — this is the second test in the suite to
+/// need it (`golden_studio_environment` is the other), and for the one reason that
+/// justifies the exception. What is defective here is a *relief normal*, and a normal
+/// is only observable in the difference between the directions it can reflect. The
+/// reference light is procedural and near-uniform, so a specular reflection of it is
+/// almost independent of which way the paint faces: the same scene reads 2 levels
+/// against 1 under `Neutral` with the specular cranked to 1.0 — the crease is there,
+/// and the light has nothing to say about it. That is exactly why this hid from a suite
+/// that paints under the reference light, and it is why the bound has to be read under
+/// a sky with structure in it.
+#[test]
+fn the_settle_leaves_no_crease_across_the_last_stamp() {
+    let Some(mut engine) = engine_or_skip_studio() else {
+        return;
+    };
+    // Impasto: `height_strength` at full and a live specular are what turn a kink in
+    // the height field into something a byte can show.
+    engine.process(ViewCommand::SetMediaParams(stark_engine::MediaParams {
+        specular: 0.5,
+        height_strength: 1.0,
+        ..Default::default()
+    }));
+    // A thick bed to smear into, then a smaller tool dragged into the middle of it and
+    // lifted — so the last footprint sits well inside the paint, with trail on one side
+    // and untouched bed on the other.
+    //
+    // A **hard** tip (0.95) on both, and a mid-tone paint: the settle's exposure ramps
+    // across the whole radius, so what decides how sharply its corner registers is how
+    // steeply the tip's own optical depth falls at the shoulder.
+    let paint = [0.5, 0.0, 0.0];
+    let hard = BrushShape::Round { hardness: 0.95 };
+    let mut bed = brush(paint, 256.0);
+    bed.drain = 0.0;
+    bed.shape = hard;
+    bed.paint_mut().expect("a paint brush").flow = 2.0;
+    stroke_with(
+        &mut engine,
+        bed,
+        &[Vec2::new(-260.0, 0.0), Vec2::new(260.0, 0.0)],
+    );
+    let mut smear = dyn_brush(
+        paint,
+        64.0,
+        BrushDynamics {
+            add: 0.0,
+            lift: 0.5,
+            deposit: 0.95,
+            ..Default::default()
+        },
+    );
+    smear.drain = 0.0;
+    smear.shape = hard;
+    stroke_with(
+        &mut engine,
+        smear,
+        &[Vec2::new(-256.0, 0.0), Vec2::new(0.0, 0.0)],
+    );
+    let img = engine.render_to_image();
+
+    // The stroke ends at canvas x = 0, which is the middle of the viewport.
+    let (cx, cy) = (SIZE.width / 2, SIZE.height / 2);
+    let step = |x0: u32, x1: u32| {
+        (x0..x1)
+            .map(|x| (img.pixel(x + 1, cy)[0] as i32 - img.pixel(x, cy)[0] as i32).abs())
+            .max()
+            .expect("a non-empty span")
+    };
+    // ±12 px about the tip centre, which is where the two bounds cross…
+    let crossover = step(cx - 12, cx + 12);
+    // …against the trail, from a radius behind the last stamp back another two.
+    let trail = step(cx - 100, cx - 40);
+    assert!(
+        crossover <= trail.max(4) * 2,
+        "the last stamp steps {crossover} levels across one texel at its centre, \
+         against {trail} anywhere along the trail — the settle's exposure has a corner \
+         in it and the light is reading it",
+    );
+}
+
+/// **A drained smear must leave no ring at its lift end** — the artifact the retired
+/// `wick` pass existed to suppress, pinned as behaviour now that the pass is gone.
+///
+/// The disease (diagnosed 2026-07-31): `exchange` keys each reservoir cell's
+/// exposure on its own τ, which collapses over a hard tip's shoulder, so when
+/// `drain` ran the brush dry the interior emptied with the fading trail while the
+/// shoulder ring kept paint lifted hundreds of px back — and printed it as a rim
+/// outside a scraped groove, curving into a chevron at the stroke end. The wick (a
+/// lateral flux in the reservoir) treated the symptom; what actually cures it is
+/// the pen-up settle delivering the remaining pass's payout in the right order (the
+/// delivery integral, 2026-08-02) — the ring's slow payout *is* the visible trail,
+/// so once it is served correctly nothing is left stranded. Measured on the removal
+/// (2026-08-10, wick on vs off): no lateral rise above 1 level in either arm, fade
+/// past the stroke end monotone both ways, worst 4 levels anywhere in the frame.
+///
+/// Two metrics, both statements a stroke's cross-section must satisfy:
+/// - the **ring**: worst rise above a running minimum walking laterally away from
+///   the stroke axis, per column (paint may only fall off as you leave the axis;
+///   any rise is a rim outside a groove);
+/// - the **fade**: worst rise walking along the axis past the stroke end (the
+///   trail may only fade; a rise is a stranded ring printing past the end).
+#[test]
+fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
+    use stark_engine::Extent2;
+    const WIDE: Extent2 = Extent2 {
+        width: 1600,
+        height: 256,
+    };
+    let brush = BrushParams {
+        size: 80.0,
+        shape: BrushShape::Round { hardness: 0.95 },
+        // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
+        drain: 0.4,
+        // Black, as `BrushParams::default()` always painted here.
+        effect: BrushEffect::wet_with(
+            [0.0; 3],
+            BrushDynamics {
+                add: 1.0,
+                lift: 0.95,
+                deposit: 0.95,
+                ..BrushDynamics::default()
+            },
+        ),
+        ..BrushParams::default()
+    };
+    // Two regimes: the fifteen-radius stroke (the brush bone dry for
+    // most of the trail — the wick-removal measurement's constructed case), and the
+    // original golden's own 5.4-radius stroke (the brush
+    // just running dry at the end — the regime the chevron was first pinned in).
+    // Canvas x = pixel x − 800 at this viewport.
+    let cases: [(&str, [Vec2; 3], u32); 2] = [
+        (
+            "15-radius (bone dry)",
+            [
+                Vec2::new(-1000.0, 0.0),
+                Vec2::new(-400.0, 0.0),
+                Vec2::new(200.0, 0.0),
+            ],
+            1000,
+        ),
+        (
+            "5.4-radius (golden_lift_end_regression stroke 2)",
+            [
+                Vec2::new(-400.0, 0.0),
+                Vec2::new(0.0, 0.0),
+                Vec2::new(30.0, 0.0),
+            ],
+            830,
+        ),
+    ];
+
+    // Paint level per pixel against the pre-stroke render of the same engine, so the
+    // substrate's own structure cancels: red paint pulls the green channel down.
+    let level =
+        |before: &stark_engine::RgbaImage, after: &stark_engine::RgbaImage, x: u32, y: u32| {
+            (before.pixel(x, y)[1] as i32 - after.pixel(x, y)[1] as i32).max(0)
+        };
+
+    for (name, points, end_px) in cases {
+        let Some(mut engine) = engine_or_skip_sized(WIDE) else {
+            return;
+        };
+        let before = engine.render_to_image();
+        stroke_with(&mut engine, brush, &points);
+        let after = engine.render_to_image();
+
+        // Sanity: the stroke landed, and heavily. Sampled early in the body — at
+        // drain 0.4 per radius the brush is dry long before a long stroke's mid-trail.
+        let start_px = (points[0].x as i32 + 800).max(0) as u32;
+        let body = (start_px..start_px + 300)
+            .map(|x| level(&before, &after, x, WIDE.height / 2))
+            .max()
+            .expect("a row");
+        assert!(body > 100, "{name}: the smear did not land ({body} levels)");
+
+        let ring = |before: &stark_engine::RgbaImage, after: &stark_engine::RgbaImage| {
+            let axis = WIDE.height / 2;
+            let mut worst = (0i32, 0u32, 0u32);
+            for x in 0..WIDE.width {
+                for dir in [-1i32, 1] {
+                    let mut min = i32::MAX;
+                    let mut y = axis as i32;
+                    while y >= 0 && (y as u32) < WIDE.height {
+                        let l = level(before, after, x, y as u32);
+                        min = min.min(l);
+                        if l - min > worst.0 {
+                            worst = (l - min, x, y as u32);
+                        }
+                        y += dir;
+                    }
+                }
+            }
+            worst
+        };
+        let fade = |before: &stark_engine::RgbaImage, after: &stark_engine::RgbaImage| {
+            let y = WIDE.height / 2;
+            let mut min = i32::MAX;
+            let mut worst = (0i32, 0u32);
+            // From the stroke end out to the frame edge: the trail may only fade.
+            for x in end_px..WIDE.width {
+                let l = level(before, after, x, y);
+                min = min.min(l);
+                if l - min > worst.0 {
+                    worst = (l - min, x);
+                }
+            }
+            worst
+        };
+
+        // Measured at 4 and 0 on the adapter this was built on; the slack covers
+        // cross-adapter rounding, not a smaller ring — the artifact this pins was a
+        // visible rim (a band of surplus paint with a scraped groove inside it), not a
+        // level of noise. The rim reading moved from 1 to 4 with §6.6's tip, whose
+        // shoulder carries a different `κ` across it and so settles in a slightly
+        // different order; four levels is still two orders under what the wick pass
+        // existed to treat.
+        let (r, rx, ry) = ring(&before, &after);
+        assert!(
+            r <= 6,
+            "{name}: a rim rises {r} levels outside a groove at ({rx}, {ry}) — the \
+             lift-end ring is back; the settle is no longer delivering the shoulder's \
+             payout in order",
+        );
+        let (f, fx) = fade(&before, &after);
+        assert!(
+            f <= 1,
+            "{name}: the trail rises {f} levels at x {fx} past the stroke end — a \
+             stranded ring is printing beyond the lift",
+        );
+    }
+}
+
+/// **A bleeding stroke's live preview is its commit**, held to the tightest
+/// tolerance any dynamics stroke in the suite gets (the corpus `bleed` case allows
+/// 12 levels; this allows 2).
+///
+/// The family this guards: a firing's window is history-free on purpose — walked
+/// back along the crossing segment's own arc, up to one `BLEED_TRAVEL_QUANTUM`
+/// *before* the segment it fires after (`plan::bleed_fires`) — so for the first
+/// segment of a live-tail range it can write substrate behind everything the range's
+/// segments cover. Until 2026-08-11 the windows were absent from the region/tile
+/// accounting (the tile walk now spelled `region::cover`, and `chunk_segments`,
+/// walked only the segments,
+/// while `snapshot_size` did take the fires), and flux written there was silently
+/// clipped by the region's bounds check — where the commit, whose windows never
+/// reach before arc 0, clips only at its own piece boundaries. The accounting now
+/// takes the windows on both sides (`a_windows_reach_back_is_in_the_tiles_and_the_
+/// region` pins the geometry exactly); measured **before** that fix, this case's
+/// preview and commit already agreed to 1 level — a cut only lands inside the
+/// vulnerable quantum-wide band by tile-phase luck — so this test is the pin that
+/// the family stays closed, not the reproduction that motivated closing it.
+#[cfg(not(feature = "debug-unfrozen"))]
+#[test]
+fn a_bleeding_strokes_preview_is_its_commit() {
+    let Some(mut engine) = engine_or_skip_sized(stark_engine::Extent2 {
+        width: 1280,
+        height: 256,
+    }) else {
+        return;
+    };
+    // Two long parallel bands with a hard color step between them — structure for
+    // the diffusion to move, everywhere along the stroke.
+    for (color, y) in [(GREEN, -22.0f32), ([0.95, 0.85, 0.1], 22.0)] {
+        let mut b = brush(color, 26.0);
+        b.drain = 0.0;
+        stroke_with(&mut engine, b, &[Vec2::new(-620.0, y), Vec2::new(620.0, y)]);
+    }
+
+    // Pure lateral diffusion: no source, no vertical exchange — the loop runs for
+    // the bleed alone, so every visible difference is the flux. At the neutral
+    // flow, so the stated axis is the effective diffusivity.
+    let mut b = brush([0.0, 0.0, 0.0], 120.0);
+    b.drain = 0.0;
+    b.make_wet().flow = 1.0;
+    b.make_wet().dynamics.add = 0.0;
+    b.make_wet().dynamics.bleed = 1.0;
+    engine.process(ViewCommand::set_brush(b));
+
+    let samples: Vec<InputSample> = (0..200)
+        .map(|i| {
+            let t = i as f32 / 199.0;
+            InputSample::at(Vec2::new(t * 1120.0 - 560.0, (t * 20.0).sin() * 12.0))
+        })
+        .collect();
+    let (first, rest) = samples.split_first().expect("samples");
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: *first,
+        tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+    for s in rest {
+        engine.process(GestureCommand::To { sample: *s });
+    }
+    engine.process(GestureCommand::End);
+    let committed = engine.render_to_image();
+    let rendered = whole_render(&mut engine);
+
+    assert!(
+        images_match(&committed, &rendered, 2),
+        "the bleeding stroke's preview differs from the stroke rendered whole — a \
+         firing's window is being clipped at a range or piece boundary the \
+         accounting missed: worst {} levels",
+        diff_fraction(&committed, &rendered).1,
+    );
+}
+
+/// **An add-only wet brush tracks the swept deposit along a taper as it does along
+/// the body** (§6.2): the loop reduces to the swept path up to a constant gain, so the
+/// wet/paint column-height ratio must not move where the radius ramps. The tip is soft
+/// and wide enough for the coarse deposit (`extent_cell`), whose hoisted exposure has
+/// to be taken in the same ramped frame as its rim test.
+#[test]
+fn a_wet_tapers_coarse_deposit_tracks_the_swept_one() {
+    // A 750 px taper from x = -800; the columns sit where its tip is ~160 px and up,
+    // well past the 100 px the coarse deposit engages at, and short of the join.
+    let lay = |effect| -> Option<Vec<f64>> {
+        let mut engine = engine_or_skip()?;
+        let mut b = brush(RED, 250.0);
+        b.effect = effect;
+        b.shape = BrushShape::Round { hardness: 0.2 };
+        b.drain = 0.0;
+        b.start_taper_length = 3.0;
+        let run: Vec<Vec2> = (0..=120)
+            .map(|i| Vec2::new(-800.0 + 10.0 * i as f32, 0.0))
+            .collect();
+        stroke_with(&mut engine, b, &run);
+        Some(column_height(&engine, LayerId::ROOT, -450..-80))
+    };
+    let (Some(wet), Some(paint)) = (
+        lay(BrushEffect::wet_with(RED, BrushDynamics::default())),
+        lay(BrushEffect::painted(RED)),
+    ) else {
+        return;
+    };
+    assert!(
+        paint.iter().all(|&h| h > 0.0),
+        "the stroke does not cover the measured columns"
+    );
+    let (lo, hi) = wet
+        .iter()
+        .zip(&paint)
+        .map(|(w, p)| w / p)
+        .fold((f64::MAX, f64::MIN), |(lo, hi), r| (lo.min(r), hi.max(r)));
+    let spread = hi / lo - 1.0;
+    assert!(
+        spread < 0.01,
+        "along the taper the wet deposit strays {:.1}% from the swept one ({lo:.3}..{hi:.3}) \
+         — the coarse deposit is not in the ramped frame",
+        spread * 100.0
+    );
+}
+
+/// **What a wet deposit stores in alpha is a material, not a ratio** (§6.1): per-unit
+/// opacity is bounded by 1, and the tool's is `mean mass / mean height` — two separately
+/// cancelled differences of `bake`'s prefix sums, each clamped at zero on its own.
+///
+/// A wide, very soft tip on bare canvas is where those differences are smallest and the
+/// rim longest, and that is where the ratio used to invert: before `lay_parcel` took the
+/// `min`, this left texels at 1.00098 — one f16 ULP over — which the next `exchange`
+/// then lifted back onto the reservoir.
+#[test]
+fn a_wet_deposit_never_stores_an_opacity_over_one() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let mut b = dyn_brush(
+        GREEN,
+        140.0,
+        BrushDynamics {
+            add: 1.0,
+            lift: 0.95,
+            deposit: 0.95,
+            ..Default::default()
+        },
+    );
+    b.shape = BrushShape::Round { hardness: 0.0 };
+    b.drain = 0.0;
+    let run: Vec<Vec2> = (0..=40)
+        .map(|i| Vec2::new(-200.0 + 10.0 * i as f32, (i as f32 * 0.3).cos() * 80.0))
+        .collect();
+    stroke_with(&mut engine, b, &run);
+
+    let coords: Vec<_> = engine
+        .document()
+        .layer(LayerId::ROOT)
+        .and_then(|l| l.tiles())
+        .map(|t| t.keys().copied().collect::<Vec<_>>())
+        .unwrap_or_default();
+    assert!(!coords.is_empty(), "the stroke laid no tiles");
+    // Apron included: a texel over 1 is a defect wherever it sits, and the apron is
+    // some neighbour's interior (§6.4).
+    let (worst, over) = coords
+        .iter()
+        .filter_map(|c| engine.tile_channels(LayerId::ROOT, *c))
+        .flat_map(|ch| (0..ch.height.len()).map(move |i| ch.color[i * 4 + 3]))
+        .fold((0.0f32, 0usize), |(worst, over), op| {
+            (worst.max(op), over + usize::from(op > 1.0))
+        });
+    assert!(
+        worst <= 1.0,
+        "{over} texels store a per-unit opacity over 1, worst {worst} — an alpha above \
+         1 is not a material (§6.1)",
+    );
+    // With no drain the core mints at exactly 1, so a run that stays well under it
+    // never reached the regime the bound is about.
+    assert!(
+        worst > 0.99,
+        "the stroke's heaviest texel stores {worst}, so nothing here approached the cap",
+    );
+}
+
+/// Every tile of `layer` on `a` and `b`, compared **bitwise** lane by lane: `None`
+/// when they agree, else how many lanes differ, the largest difference and where.
+fn tiles_differ(
+    a: &stark_engine::Engine,
+    b: &stark_engine::Engine,
+    layer: LayerId,
+) -> Option<String> {
+    let keys = |e: &stark_engine::Engine| -> Vec<stark_model::geom::TileCoord> {
+        let mut k: Vec<_> = e
+            .document()
+            .layer(layer)
+            .and_then(|l| l.tiles())
+            .map(|t| t.keys().copied().collect())
+            .unwrap_or_default();
+        k.sort();
+        k
+    };
+    let (ka, kb) = (keys(a), keys(b));
+    if ka != kb {
+        return Some(format!(
+            "tile sets differ: {} against {}",
+            ka.len(),
+            kb.len()
+        ));
+    }
+    // (lanes differing, worst |Δ|, where: tile, channel, lane index)
+    let mut diff = (0usize, 0.0f32, None);
+    for c in &ka {
+        let (ta, tb) = (
+            a.tile_channels(layer, *c).expect("listed"),
+            b.tile_channels(layer, *c).expect("listed"),
+        );
+        let channels = [
+            ("color", ta.color, tb.color),
+            ("height", ta.height, tb.height),
+            (
+                "resid",
+                ta.resid.unwrap_or_default(),
+                tb.resid.unwrap_or_default(),
+            ),
+        ];
+        for (name, la, lb) in channels {
+            for (i, (x, y)) in la.iter().zip(&lb).enumerate() {
+                if x.to_bits() != y.to_bits() {
+                    diff.0 += 1;
+                    let d = (x - y).abs();
+                    if diff.2.is_none() || d > diff.1 {
+                        diff = (diff.0, d, Some((*c, name, i)));
+                    }
+                }
+            }
+        }
+    }
+    let (n, worst, at) = diff;
+    at.map(|(c, name, i)| {
+        format!(
+            "{n} lanes differ over {} tiles, worst {worst:e} in {name}[{i}] of {c:?}",
+            ka.len()
+        )
+    })
+}
+
+/// A wet stroke drawn live **near the canvas origin**, with fast commit off so its
+/// commit renders it whole, lands bit for bit what a fresh engine replaying the record
+/// lands (§1.3, §12.1). Near the origin a sweep's region-relative start
+/// (`sw.start - region_origin`) is not exact in f32, so this is where a render that
+/// depended on the engine's history rather than the record — a region origin, a
+/// scratch texture read before it is written — would first show.
+#[test]
+fn a_wet_stroke_near_the_origin_replays_bit_for_bit() {
+    let Some(mut live) = engine_or_skip() else {
+        return;
+    };
+    let layer = live.observe().active_layer;
+    live.process(ViewCommand::SetFastCommit(false));
+    paint(
+        &mut live,
+        RED,
+        30.0,
+        &[Vec2::new(-90.0, 3.3), Vec2::new(90.0, -2.1)],
+    );
+    live.process(ViewCommand::set_brush(dyn_brush(
+        GREEN,
+        18.0,
+        BrushDynamics {
+            add: 0.6,
+            lift: 0.8,
+            deposit: 0.8,
+            bleed: 0.4,
+            ..BrushDynamics::default()
+        },
+    )));
+    // Many reports, all within a region's width of the origin, at fractional positions.
+    let path: Vec<Vec2> = (0..150)
+        .map(|i| {
+            let t = i as f32 / 149.0;
+            Vec2::new(
+                -50.0 + 100.0 * t + 3.7 * (t * 13.0).sin(),
+                0.37 + 8.0 * (t * 7.0).sin(),
+            )
+        })
+        .collect();
+    live.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(path[0]),
+        tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+    for &p in &path[1..] {
+        live.process(GestureCommand::To {
+            sample: InputSample::at(p),
+        });
+        live.flush_live();
+    }
+    live.process(GestureCommand::End);
+    assert_eq!(
+        live.strokes_reused(),
+        0,
+        "the commit took the preview's tiles with fast commit off"
+    );
+
+    let Some(mut replayed) = engine_or_skip() else {
+        return;
+    };
+    replayed
+        .load_bytes(&live.save_bytes().expect("save"))
+        .expect("load + replay");
+    if let Some(diff) = tiles_differ(&live, &replayed, layer) {
+        panic!("the committed wet stroke and its replay disagree: {diff}");
+    }
+}

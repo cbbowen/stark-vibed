@@ -510,7 +510,7 @@ assert_golden!("oil_blend_01", png, tolerance);
   texture never leaves `tile.rs`; what leaves is the decoded texels, and `readback`
   keeps the row-padding arithmetic, which is the half that is genuinely its.
 - **The runner is `cargo nextest run`, and the GPU is a test group.** nextest
-  gives every test its own process, so `tests/common`'s shared device — a
+  gives every test its own process, so `tests/engine/common`'s shared device — a
   `OnceLock`, one per binary under `cargo test` — becomes one per *test*: ~340 ms
   of adapter, device and shader compiles, against ~22 ms on a device that already
   exists. Unbounded that is not just slower but contended, and the contention is
@@ -527,8 +527,9 @@ assert_golden!("oil_blend_01", png, tolerance);
   failure: so the first real one somebody writes is run rather than collected by
   nobody.
 
-The suite files, by subject. **Drawing:** `stroke`, `dynamics`, `corpus`, `erase`,
-`opacity`, `modulation`, `color_dynamics`, `tooth`, `assist`, `hover`, `guides`.
+The suite files, by subject (the engine's are the modules of `tests/engine/`).
+**Drawing:** `stroke`, `dynamics`, `corpus`, `erase`, `opacity`, `modulation`,
+`color_dynamics`, `tooth`, `assist`, `hover`, `guides`.
 **Compositing:** `golden`, `seam`, `composite`, `blend`, `filter`, `merge`, `matte`,
 `groups`, `layers`, `minify`, `reference`, `gradient`. **Editing:** `selection`,
 `fill`, `transform`, `place`, `pick`, `view`, `export`. **The log:** `footprint`,

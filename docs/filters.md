@@ -462,7 +462,7 @@ right shape.
   The LUT itself is the blend pass's, decoded once — both passes ask it the same
   question.
 
-### 21.8 Invariants worth a test (`tests/filter.rs`)
+### 21.8 Invariants worth a test (`tests/engine/filter.rs`)
 
 Three of these are about a filter doing **nothing**, and that is deliberate: a pass
 that runs over every texel has no coverage to hide behind, so the cases where it must
@@ -702,7 +702,7 @@ lightness the rest of the chapter already answers for — "desaturating keeps th
 lightness it found" is *measured* in it — and with `L` as the index the
 black→white ramp samples to `(L, 0, 0)`, which is precisely the color filter's
 saturation-0 greyscale. Two kinds, two code paths, one picture;
-`tests/filter.rs` pins the agreement, and with it the index, the interpolation
+`tests/engine/filter.rs` pins the agreement, and with it the index, the interpolation
 space and the stop packing in a single render.
 
 **The lerp is `Gradient::sample`'s, in Oklab, in every document.** The library
@@ -870,7 +870,7 @@ by the kernel's own sum — so the kernel is *never normalized at all*, for any
 shape, with no constant to tune — and at the viewport rim it renormalizes over
 the taps that exist, the same honesty the chromatic gather buys by clamping to
 the rim. Deep inside flat paint the filter is therefore provably the identity,
-and `tests/filter.rs` pins it on a fill-flat field to one 8-bit level: the one
+and `tests/engine/filter.rs` pins it on a fill-flat field to one 8-bit level: the one
 assertion a broken transform cannot pass.
 
 **Strength and clip are the gather's** (§21.4.1). Unclipped, the strength mix runs

@@ -150,7 +150,7 @@ impl PaintTiles {
     /// restores these same tiles under this same number. Rewinding past a *stroke*
     /// yields a fresh number rather than the pre-stroke one coming back: the sound
     /// direction, since a fresh key costs one re-render where a stale one would cost
-    /// a wrong picture. Both are pinned by `tests/layers.rs`.
+    /// a wrong picture. Both are pinned by `tests/engine/layers.rs`.
     pub fn revision(&self) -> u64 {
         self.revision
     }
@@ -229,7 +229,7 @@ pub struct CarriedBounds(CanvasBounds);
 ///   group, so they are vacuous there and are free to describe the group's own merge
 ///   outward: `merge()` with an empty backdrop is provably the `Normal` result, so
 ///   the slot could not express anything to begin with (`blend_common.wesl`, pinned
-///   to the byte by `tests/blend.rs`).
+///   to the byte by `tests/engine/blend.rs`).
 /// - **Intrinsic** — `visible`, `name`, which mean the same thing whatever is under
 ///   the layer.
 ///
@@ -350,7 +350,7 @@ impl Layer {
     /// A paint layer whose own extent is `bounds`, with no tiles behind it — for the
     /// tree-level bounds tests, which have no device to lay a tile with. Skips the
     /// map/box pairing [`PaintTiles::new`] derives, which the GPU suite pins
-    /// (`tests/layers.rs`).
+    /// (`tests/engine/layers.rs`).
     #[cfg(test)]
     pub(crate) fn spanning(id: LayerId, bounds: CanvasBounds) -> Self {
         let tiles = PaintTiles {

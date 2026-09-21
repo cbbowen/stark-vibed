@@ -1000,7 +1000,7 @@ press — and inherited rather than maintained, which is the whole design:
   trace's curvature would double down on the very quantity the tolerance makes
   noisiest, and "from here, this way" is all a press this instant can
   honestly be said to do. The probe holds a heading the raw staircase cannot
-  (`tests/hover.rs` fits a pixel-stepped shallow line to within a few degrees
+  (`tests/engine/hover.rs` fits a pixel-stepped shallow line to within a few degrees
   where the raw pair misses by thirty). Pressure is replaced with **full
   pressure** (a hovering pen, and a mouse, reports zero — which would
   honestly preview no mark at all), full rather than a middle weight so the
@@ -1034,7 +1034,7 @@ press — and inherited rather than maintained, which is the whole design:
   never carries it — the wire half reads only the real gesture slots — and
   `is_stroking` stays false.
 - **A hypothesis may never become work.** It commits nothing and moves no
-  revision (`tests/hover.rs` holds the probe against actually committing the
+  revision (`tests/engine/hover.rs` holds the probe against actually committing the
   gesture it predicts at *zero* tolerance, and the rest of the ledger with
   it). A `Rendered::Live` export takes the
   mark down before rendering — an export is not a moment the hand is painting
@@ -1063,7 +1063,7 @@ press — and inherited rather than maintained, which is the whole design:
   entry is *smoothed through* the press rather than pinned to one
   tolerance-quantized report: measured on a staircase drag, the entry at the
   marker reads 14.4° on a 14.04° line, 0.2 px off the press, against 12.4°
-  cold (`tests/hover.rs`). The marker rides presence per frame (it refines
+  cold (`tests/engine/hover.rs`). The marker rides presence per frame (it refines
   until the entry spans freeze, then is final before any cached head can bake
   it), a press nowhere near the trail takes no run-up to the bit, a stroke
   with no hover behind it carries marker 0 unchanged — and a click at the end
