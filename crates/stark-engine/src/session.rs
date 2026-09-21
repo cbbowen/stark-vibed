@@ -48,7 +48,8 @@ struct StrokeBuilder {
     /// the commit, the live fold and the wire cannot disagree about the frame.
     translation: stark_model::geom::IVec2,
     fitter: PathFitter,
-    /// What the frontend said this gesture's input resolves to (canvas px). Kept
+    /// What the frontend said this gesture's input resolves to (canvas px), held to
+    /// the fit's range ([`clamp_tolerance`](crate::path::clamp_tolerance)). Kept
     /// because the drawing assist prices its recognition in the same unit the fit
     /// does — see [`crate::assist`].
     tolerance: f32,
@@ -466,6 +467,9 @@ impl Session {
         rope: f32,
         translation: stark_model::geom::IVec2,
     ) {
+        // Held to the fit's range once, so the run-up, the fitter, the tow and the
+        // assist all read the same number.
+        let tolerance = crate::path::clamp_tolerance(tolerance);
         self.tool = tool;
         self.selecting = None;
         // The hover window becomes the stroke's **run-up** (§6.2,
@@ -767,4 +771,56 @@ fn path_in_frame(
         }
     }
     path
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::assist::Assisted;
+    use crate::path::clamp_tolerance;
+    use fixtures::{UNUSABLE_TOLERANCES, session};
+    use stark_model::document::ShapeAction;
+
+    /// The family a hold snaps a drag through `f`, sampled `n` times, to.
+    fn snapped(tolerance: f32, n: usize, f: impl Fn(f32) -> Vec2) -> Option<Assisted> {
+        let mut s = session(ShapeAction::default());
+        let at = |i: usize| InputSample::at(f(i as f32 / (n - 1) as f32));
+        s.start_stroke(
+            Tool::Brush,
+            at(0),
+            1,
+            tolerance,
+            0.0,
+            stark_model::geom::IVec2::ZERO,
+        );
+        for i in 1..n {
+            s.stroke_to(at(i));
+        }
+        s.assist_stroke(&Scaffold::default());
+        s.assisted()
+    }
+
+    /// Recognition is priced in the tolerance the fit uses, the clamped one: a raw 0
+    /// snapped a sub-pixel stroke, and a raw NaN put every loop out of reach.
+    #[test]
+    fn the_assist_reads_the_tolerance_the_fit_does() {
+        let speck = |t: f32| Vec2::new(0.4 * t, 0.0);
+        let hoop = |t: f32| {
+            let u = t * std::f32::consts::TAU;
+            Vec2::new(150.0 * u.cos(), 90.0 * u.sin())
+        };
+        for raw in UNUSABLE_TOLERANCES {
+            let held = clamp_tolerance(raw);
+            assert_eq!(
+                snapped(raw, 12, speck),
+                snapped(held, 12, speck),
+                "a 0.4 px line at tolerance {raw}"
+            );
+            assert_eq!(
+                snapped(raw, 90, hoop),
+                snapped(held, 90, hoop),
+                "a loop at tolerance {raw}"
+            );
+        }
+    }
 }

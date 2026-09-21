@@ -132,6 +132,9 @@ impl Session {
     /// it is within a tolerance of the last, where a resting pen's drift would buy a
     /// whole-window refit for nothing.
     pub fn hover_to(&mut self, sample: InputSample, tolerance: f32, reach: f32) -> bool {
+        // The fit's range, as `start_stroke` holds it: the run-up this window becomes
+        // is judged against the same number.
+        let tolerance = crate::path::clamp_tolerance(tolerance);
         if !self.hovering() || !sample.is_admissible() || !reach.is_finite() {
             return false;
         }
@@ -321,5 +324,48 @@ mod tests {
         assert!(!hover(&mut s, Vec2::new(20.0, 0.0)));
         assert_eq!(s.gesture_ordinal(), ordinal);
         assert!(!s.hover_held());
+    }
+
+    /// The window's drift gate, extent and run-up reach are priced in the tolerance
+    /// the fit uses, the clamped one: a raw NaN or 0 accepted every sub-pixel report,
+    /// and a raw NaN never handed a press its run-up.
+    #[test]
+    fn the_hover_reads_the_tolerance_the_fit_does() {
+        use crate::path::clamp_tolerance;
+        use crate::session::fixtures::UNUSABLE_TOLERANCES;
+
+        // Which reports the window accepted, and whether the press took a run-up.
+        let run = |tolerance: f32, gap: f32| {
+            let mut s = session(ShapeAction::default());
+            let mut x = 0.0;
+            let accepted: Vec<bool> = [0.0, 0.01, 0.5, 2.0, 30.0, 0.3, 5.0]
+                .into_iter()
+                .map(|step| {
+                    x += step;
+                    s.hover_to(InputSample::at(Vec2::new(x, 0.0)), tolerance, 50.0)
+                })
+                .collect();
+            let press = |dx: f32| InputSample::at(Vec2::new(x + gap + dx, 0.0));
+            s.start_stroke(
+                Tool::Brush,
+                press(0.0),
+                0,
+                tolerance,
+                0.0,
+                stark_model::geom::IVec2::ZERO,
+            );
+            s.stroke_to(press(30.0));
+            let run_up = s.preview_record().expect("in flight").start > 0.0;
+            (accepted, run_up)
+        };
+        for raw in UNUSABLE_TOLERANCES {
+            for gap in [0.5, 30.0] {
+                assert_eq!(
+                    run(raw, gap),
+                    run(clamp_tolerance(raw), gap),
+                    "tolerance {raw}, press {gap} px on"
+                );
+            }
+        }
     }
 }
