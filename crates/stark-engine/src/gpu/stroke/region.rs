@@ -12,7 +12,8 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 
-use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
+use stark_model::document::MAX_STROKE_TILES;
+use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, TileRect, Vec2};
 
 use super::budget::{MAX_REGION_DIM, MAX_STAMPS, REGION_BUDGET_DIM};
 use super::segments::{BleedFire, Segment, Sweep};
@@ -34,18 +35,10 @@ fn for_each_touched<'a>(
     sweeps: impl Iterator<Item = &'a Sweep>,
     mut f: impl FnMut(usize, TileCoord),
 ) -> Coverage {
-    let tile = TILE_SIZE as f32;
     let mut bounds = Coverage::default();
     for (i, s) in sweeps.enumerate() {
-        let (lo, hi) = segment_bounds(s);
-        bounds.lo = bounds.lo.min(lo);
-        bounds.hi = bounds.hi.max(hi);
-        let (x0, x1) = ((lo.x / tile).floor() as i32, (hi.x / tile).floor() as i32);
-        let (y0, y1) = ((lo.y / tile).floor() as i32, (hi.y / tile).floor() as i32);
-        for y in y0..=y1 {
-            for x in x0..=x1 {
-                f(i, TileCoord::new(x, y));
-            }
+        if let Some(rect) = bounds.add(s) {
+            rect.coords().for_each(|c| f(i, c));
         }
     }
     bounds
@@ -99,11 +92,19 @@ impl Default for Coverage {
 }
 
 impl Coverage {
-    /// Grow to hold one more sweep, apron included ([`segment_bounds`]).
-    fn add(&mut self, s: &Sweep) {
+    /// Grow to hold one more sweep, apron included ([`segment_bounds`]), and answer the
+    /// tiles it reaches.
+    ///
+    /// A sweep whose box cannot be quantized, or spans more than [`MAX_STROKE_TILES`],
+    /// is left out: `None`, and the box as it was. No drawn stroke makes one — every
+    /// sweep lies inside its record's `stroke_rect`, which `render_range` holds to the
+    /// same cap — so this only keeps the walk bounded whatever its caller did.
+    fn add(&mut self, s: &Sweep) -> Option<TileRect> {
         let (lo, hi) = segment_bounds(s);
+        let rect = TileRect::covering(lo, hi, 0).filter(|r| r.count() <= MAX_STROKE_TILES)?;
         self.lo = self.lo.min(lo);
         self.hi = self.hi.max(hi);
+        Some(rect)
     }
 
     /// This box grown by another, without disturbing either — what the chunker asks
@@ -127,13 +128,16 @@ impl Coverage {
     /// exactly: `min` over segments of `floor(lo.x / tile)` *is* `floor(min lo.x /
     /// tile)`. That identity is why [`Covered::rect`] can take its size from here while
     /// taking its halo from the set.
+    ///
+    /// Saturating: two walkable sweeps can lie further apart than a `u32` spans, and
+    /// such a union only has to measure as too large for a region.
     fn dims(&self) -> (u32, u32) {
         let tile = TILE_SIZE as f32;
-        let span = |a: f32, b: f32| ((b / tile).floor() - (a / tile).floor()) * tile;
-        (
-            span(self.lo.x, self.hi.x) as u32 + TILE_TEX,
-            span(self.lo.y, self.hi.y) as u32 + TILE_TEX,
-        )
+        let span = |a: f32, b: f32| {
+            let px = ((b / tile).floor() - (a / tile).floor()) * tile;
+            (px as u32).saturating_add(TILE_TEX)
+        };
+        (span(self.lo.x, self.hi.x), span(self.lo.y, self.hi.y))
     }
 }
 
@@ -255,9 +259,9 @@ pub(super) fn chunk_segments_within(
         // This segment and whatever fires after it, as one box: they are committed to a
         // piece together or not at all.
         let mut here = Coverage::default();
-        here.add(&s.sweep);
+        let _ = here.add(&s.sweep);
         while let Some(f) = pending.next_if(|f| f.after == i) {
-            here.add(&f.window);
+            let _ = here.add(&f.window);
         }
         let forced = cuts.next_if(|c| *c <= i).is_some_and(|c| c == i);
         let grown = run.union(here);
@@ -375,7 +379,7 @@ mod tests {
     // The endpoint shape of the shared fixtures (`segments::testing`): these cases are
     // about how the measurements combine boxes, so a sweep is named by where the tip
     // went, and every other axis is held at the fixture's neutral.
-    use super::super::segments::testing::{seg_between, sweep_between};
+    use super::super::segments::testing::{seg, seg_between, sweep_between};
     use super::*;
 
     // --- region measurement ----------------------------------------------
@@ -394,7 +398,7 @@ mod tests {
     fn measured(segments: &[Segment], fires: &[BleedFire]) -> Option<(u32, u32)> {
         let mut c = Coverage::default();
         for s in piece_sweeps(segments, fires) {
-            c.add(s);
+            let _ = c.add(s);
         }
         (!c.is_empty()).then(|| c.dims())
     }
@@ -661,5 +665,45 @@ mod tests {
             assert!(run.len() <= MAX_STAMPS, "piece {run:?} overruns the batch");
         }
         assert_eq!(next, segments.len(), "the pieces do not cover the stroke");
+    }
+
+    /// A sweep no drawable stroke can produce — 10⁹ px long, or reaching infinity —
+    /// costs the walk a bounded amount of work, not one callback per tile of its box.
+    #[test]
+    fn an_unbounded_sweep_is_not_walked() {
+        let cases = [
+            (
+                "a 1e9 px diagonal",
+                seg_between(Vec2::ZERO, Vec2::splat(1.0e9), 4.0),
+            ),
+            (
+                "an infinite run",
+                seg(Vec2::ZERO, Vec2::X, f32::INFINITY, 4.0, 0.0),
+            ),
+        ];
+        for (what, s) in cases {
+            let mut walked = 0u64;
+            let _ = for_each_touched(std::iter::once(&s.sweep), |_, _| {
+                walked += 1;
+                assert!(
+                    walked <= MAX_STROKE_TILES,
+                    "{what}: the walk ran past what any stroke may reach",
+                );
+            });
+            assert_eq!(walked, 0, "{what} was walked");
+        }
+    }
+
+    /// Two sweeps each small enough to walk but ~10¹¹ px apart: the extent between
+    /// them saturates rather than overflowing, and the chunker cuts between them.
+    #[test]
+    fn an_extent_past_u32_saturates() {
+        let far = 1.0e11;
+        let segments = [
+            seg_between(Vec2::new(-far, 0.0), Vec2::new(-far + 8.0, 0.0), 4.0),
+            seg_between(Vec2::new(far, 0.0), Vec2::new(far + 8.0, 0.0), 4.0),
+        ];
+        assert_eq!(measured(&segments, &[]).map(|(w, _)| w), Some(u32::MAX));
+        assert_eq!(chunk_segments(&segments, &[]), vec![0..1, 1..2]);
     }
 }

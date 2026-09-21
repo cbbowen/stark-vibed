@@ -557,6 +557,42 @@ fn a_stroke_committed_without_fast_commit_is_the_replay() {
     );
 }
 
+/// A live stroke that grows past `MAX_STROKE_TILES` is refused whole, exactly as its
+/// replay is — including the head the preview froze while the stroke was still small
+/// (`draw_long_stroke` freezes one). A preview or a commit that kept that head would
+/// show paint no peer replaying the record draws.
+#[cfg(not(feature = "debug-unfrozen"))]
+#[test]
+fn a_live_stroke_grown_past_the_cap_commits_what_its_replay_does() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let blank = engine.render_to_image();
+    draw_long_stroke(&mut engine);
+    assert!(
+        !images_match(&blank, &engine.render_to_image(), 0),
+        "the preview should show the stroke so far"
+    );
+
+    // One report 10⁶ px away puts the record's reach past the cap.
+    engine.process(GestureCommand::To {
+        sample: InputSample::at(Vec2::splat(1.0e6)),
+    });
+    assert!(
+        images_match(&blank, &engine.render_to_image(), 0),
+        "the preview kept paint the commit refuses"
+    );
+    engine.process(GestureCommand::End);
+    assert!(
+        images_match(&blank, &engine.render_to_image(), 0),
+        "the commit landed paint the record's replay refuses"
+    );
+    assert!(
+        images_match(&blank, &whole_render(&mut engine), 0),
+        "the replay drew a refused stroke"
+    );
+}
+
 /// The setting reaches the frontend as the engine's own value, so a dialog reading
 /// it back cannot disagree with what the engine believes (§4).
 #[test]

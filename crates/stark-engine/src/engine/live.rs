@@ -338,7 +338,7 @@ impl Preview {
         let frozen = crate::gpu::stroke::safe_frozen(rec, frozen);
         // Nothing cached, or the fit went backwards (a new stroke): start over from
         // the committed document, with a fresh (uncharged) brush.
-        let mut head = head.unwrap_or_else(|| FrozenHead {
+        let fresh = || FrozenHead {
             spans: 0,
             dist: 0.0,
             tool: None,
@@ -347,7 +347,14 @@ impl Preview {
             epoch: self.epoch,
             contested,
             dirty: BTreeSet::new(),
-        });
+        };
+        // A record the renderer refuses is refused whole by its commit and every
+        // replay, so its preview is the base alone — not a head frozen while the
+        // stroke was still small, which the commit would otherwise take.
+        if crate::gpu::stroke::too_large(rec) {
+            return (fresh(), base.clone());
+        }
+        let mut head = head.unwrap_or_else(fresh);
         if frozen > head.spans {
             head = advance_head(ctx, author, head, rec, frozen);
         }

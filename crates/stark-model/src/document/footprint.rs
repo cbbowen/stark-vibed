@@ -259,6 +259,16 @@ fn stroke_pad(brush: &BrushParams) -> f32 {
     brush.size * 1.5 * BrushParams::elongation(brush.stretch) + 4.0
 }
 
+/// Most tiles [`stroke_rect`] may span for a stroke to be drawn at all.
+///
+/// Nothing bounds a record's knots — a file or a peer can put two of them 10⁹ px apart,
+/// or one at infinity, which `stroke_rect` answers with [`TileRect::ALL`] — and a
+/// render walks tiles in proportion to the reach. A record past this is refused whole;
+/// the test reads only the record, so every peer refuses it alike. A million tiles is
+/// a box ~260 000 px on a side, several times what a drag across the largest screen
+/// spans at the furthest zoom-out.
+pub const MAX_STROKE_TILES: u64 = 1 << 20;
+
 /// The tile-aligned reach of a stroke: everything its render may read or write.
 ///
 /// Shared with the live-preview fold (§17.6), and deliberately the *same* answer the

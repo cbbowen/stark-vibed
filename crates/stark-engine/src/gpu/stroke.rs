@@ -36,7 +36,7 @@ use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
 use crate::noise::NOISE_TILE_PX;
 use crate::unpoisoned;
 use stark_model::Srgb;
-use stark_model::document::StrokeRecord;
+use stark_model::document::{MAX_STROKE_TILES, StrokeRecord, stroke_rect};
 use stark_shaders::Lane;
 
 mod accum;
@@ -137,6 +137,8 @@ enum Complaint {
     TipTooLarge,
     /// A segment wanting more bleed firings than the cap allows (`dynamics::bleed`).
     BleedCapped,
+    /// A record reaching past [`MAX_STROKE_TILES`], refused whole ([`too_large`]).
+    TooLarge,
 }
 
 impl Complaint {
@@ -335,6 +337,20 @@ impl StrokeRenderer {
         // adding one (`document::PreparedStroke`) — so a replay, a redo or a peer's
         // action is what a commit's entry here means.
         crate::timing::span!("stroke.range");
+        // Refused before anything is flattened or walked, from the record alone, so a
+        // live tail, its commit, a replay and every peer refuse it alike (§12.1).
+        if too_large(rec) {
+            if self.complained.say(rec.seed, Complaint::TooLarge) {
+                tracing::error!(
+                    max_tiles = MAX_STROKE_TILES,
+                    "stroke reaches further than any stroke may: refused",
+                );
+            }
+            return (
+                Painted::plain(scene.base.clone()),
+                StrokeCarry::unchanged(spans.dist()),
+            );
+        }
         // Which path the stroke takes — and how finely it flattens — is decided from
         // the record, never from the piece in hand. A live tail and the commit that
         // eventually replaces it have to make the same choice, or releasing the pointer
@@ -498,6 +514,13 @@ impl StrokeRenderer {
             jitter_seed: jitter_seed(rec.seed),
         }
     }
+}
+
+/// Whether `rec` reaches too far to be drawn at all: its [`stroke_rect`] is unbounded or
+/// spans more than [`MAX_STROKE_TILES`]. Nothing upstream bounds a record's knots, and
+/// every tile walk a render makes grows with the reach.
+pub(crate) fn too_large(rec: &StrokeRecord) -> bool {
+    stroke_rect(rec).count() > MAX_STROKE_TILES
 }
 
 /// The per-stroke quantities **both** render paths read, resolved once from the record

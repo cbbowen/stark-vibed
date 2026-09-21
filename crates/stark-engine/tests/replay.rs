@@ -239,3 +239,95 @@ fn a_scrub_past_a_layers_creation_leaves_the_brush_somewhere_to_paint() {
         "the selected layer must exist wherever the playhead lands"
     );
 }
+
+// --- Hostile records (§12.1) ----------------------------------------------------
+
+/// A stroke record whose knots reach far past anything a hand can draw — 10⁹ px out,
+/// at infinity, or NaN — arrives from a file or a peer as readily as any other. It is
+/// refused whole: the replay returns promptly, and the layer keeps exactly what it had,
+/// including the short run of spans near the origin a partial render would have drawn.
+#[test]
+#[expect(
+    clippy::disallowed_types,
+    reason = "a native-only test timing a replay"
+)]
+fn a_stroke_record_reaching_past_the_cap_is_refused_whole() {
+    use stark_model::document::{Action, ActionId, ActionKind, StrokeRecord};
+    use stark_model::path::ControlPoint;
+    use std::time::{Duration, Instant};
+
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    paint(&mut engine, RED, 20.0, STROKE_A);
+    let before = engine.render_to_image();
+    let layer = engine.observe().active_layer;
+    let tiles_of = |e: &stark_engine::Engine| -> Vec<_> {
+        let mut keys: Vec<_> = e
+            .document()
+            .layer(layer)
+            .and_then(|l| l.tiles())
+            .map(|t| t.keys().copied().collect())
+            .unwrap_or_default();
+        keys.sort();
+        keys
+    };
+
+    let mut doc = stark_model::DocumentFile::from_bytes(&engine.save_bytes().expect("save"))
+        .expect("parse own save");
+    let mut id = doc.actions.last().expect("the stroke").id;
+    // Each opens on three ordinary knots through the view, so a render that honoured
+    // the drawable spans and dropped the rest would leave a visible mark.
+    for (seed, far) in [
+        Vec2::splat(1.0e9),
+        Vec2::new(f32::INFINITY, 0.0),
+        Vec2::new(f32::NAN, 0.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        id = ActionId {
+            lamport: id.lamport + 1,
+            actor: id.actor,
+        };
+        let knots = [
+            Vec2::new(-40.0, 30.0),
+            Vec2::new(0.0, 30.0),
+            Vec2::new(40.0, 30.0),
+            far,
+        ];
+        doc.actions.push(Action {
+            id,
+            kind: ActionKind::CommitStroke(StrokeRecord {
+                layer,
+                brush: brush(GREEN, 20.0),
+                path: knots.into_iter().map(ControlPoint::at).collect(),
+                seed: seed as u64,
+                start: 0.0,
+                translation: stark_model::geom::IVec2::ZERO,
+            }),
+        });
+    }
+
+    let Some(mut replayed) = engine_or_skip() else {
+        return;
+    };
+    let began = Instant::now();
+    replayed
+        .load_bytes(&doc.to_bytes().expect("encode"))
+        .expect("load + replay");
+    assert!(
+        began.elapsed() < Duration::from_secs(60),
+        "replaying three refused strokes took {:?}",
+        began.elapsed(),
+    );
+    assert_eq!(
+        tiles_of(&replayed),
+        tiles_of(&engine),
+        "a refused stroke wrote tiles"
+    );
+    assert!(
+        images_match(&before, &replayed.render_to_image(), 0),
+        "a refused stroke changed the picture"
+    );
+}
