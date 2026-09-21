@@ -16,13 +16,14 @@ mod common;
 
 use common::palette::RED;
 use common::*;
-use stark_engine::command::DocCommand;
+use stark_engine::command::{DocCommand, GestureCommand, InputSample, Tool, ViewCommand};
+use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Engine, RgbaImage};
 use stark_model::Srgb;
 use stark_model::document::{
-    BrushEffect, BrushParams, BrushShape, FillOp, LiquifyEffect, SelectionShape,
+    BrushEffect, BrushParams, BrushShape, FillOp, LayerId, LiquifyEffect, SelectionShape,
 };
-use stark_model::geom::Vec2;
+use stark_model::geom::{TileCoord, Vec2};
 
 /// A liquify brush of the given strength — no pigment (the effect carries none),
 /// no drain, no jitter, so a test's claim is about the warp alone.
@@ -437,4 +438,119 @@ fn a_coarser_quality_carries_the_core_the_same_distance() {
         (fine - coarse).abs() <= 2,
         "the band's end lands at {fine} stepped finely and {coarse} stepped coarsely",
     );
+}
+
+/// `count` hard vertical stripes of bitwise-flat paint, 16 px wide every 64 px from
+/// `x0` — structure along the whole of a long drag for the field to move.
+fn stripes(engine: &mut Engine, x0: f32, count: u16) {
+    for i in 0..count {
+        let x = x0 + 64.0 * f32::from(i);
+        flat_fill(engine, Vec2::new(x, -60.0), Vec2::new(x + 16.0, 60.0));
+    }
+}
+
+/// Every tile of `layer` on `a` and `b`, compared **bitwise** channel by channel:
+/// `None` when they agree, else how many tiles differ and the first that does.
+fn tiles_differ(a: &Engine, b: &Engine, layer: LayerId) -> Option<String> {
+    let keys = |e: &Engine| -> Vec<TileCoord> {
+        let mut k: Vec<TileCoord> = e
+            .document()
+            .layer(layer)
+            .and_then(|l| l.tiles())
+            .map(|t| t.keys().copied().collect())
+            .unwrap_or_default();
+        k.sort();
+        k
+    };
+    let (ka, kb) = (keys(a), keys(b));
+    if ka != kb {
+        return Some(format!(
+            "tile sets differ: {} against {}",
+            ka.len(),
+            kb.len()
+        ));
+    }
+    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+    let mut first = None;
+    let mut differing = 0;
+    for c in &ka {
+        let (ta, tb) = (
+            a.tile_channels(layer, *c).expect("listed"),
+            b.tile_channels(layer, *c).expect("listed"),
+        );
+        let same = bits(&ta.color) == bits(&tb.color)
+            && bits(&ta.height) == bits(&tb.height)
+            && ta.resid.as_deref().map(bits) == tb.resid.as_deref().map(bits);
+        if !same {
+            differing += 1;
+            first.get_or_insert(*c);
+        }
+    }
+    first.map(|c| format!("{differing} of {} tiles differ, first {c:?}", ka.len()))
+}
+
+/// A drag whose accumulated pull passes the reach cap (512 px) re-bases its run
+/// mid-stroke (§6.13), and each re-base starts a piece that composites what the
+/// pieces before it wrote. Drawn live with fast commit off, the commit renders the
+/// stroke whole on an engine whose tile pool the preview has churned, and must land
+/// bit for bit what a fresh engine replaying the log lands: a piece reading a tile
+/// its last owner had already let go would read whatever the pool put there since.
+#[test]
+fn a_drag_that_rebases_mid_stroke_replays_bit_for_bit() {
+    let run_size = |e: &Engine, layer: LayerId| {
+        e.document()
+            .layer(layer)
+            .and_then(|l| l.liquify_run())
+            .map_or(0, |r| r.written())
+    };
+    let (Some(mut live), Some(mut weak)) = (engine_or_skip(), engine_or_skip()) else {
+        return;
+    };
+    let layer = live.observe().active_layer;
+    // 1500 px of travel along `y ≈ 0`, three times the cap at full strength.
+    let path: Vec<Vec2> = (0..=150)
+        .map(|i| {
+            let t = i as f32 / 150.0;
+            Vec2::new(-100.0 + 1500.0 * t, 12.0 * (t * 9.0).sin())
+        })
+        .collect();
+
+    live.process(ViewCommand::SetFastCommit(false));
+    stripes(&mut live, -150.0, 25);
+    live.process(ViewCommand::set_brush(liquify_brush(24.0, 1.0)));
+    live.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(path[0]),
+        tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+    for &p in &path[1..] {
+        live.process(GestureCommand::To {
+            sample: InputSample::at(p),
+        });
+        live.flush_live();
+    }
+    live.process(GestureCommand::End);
+
+    // The premise: the same drag at a fifth of the strength pulls 300 px in all and
+    // never re-bases, so its run holds every tile the drag reached — where the full
+    // drag's, re-based twice, holds only those written since its last re-base.
+    stripes(&mut weak, -150.0, 25);
+    stroke_with(&mut weak, liquify_brush(24.0, 0.2), &path);
+    assert!(
+        run_size(&live, layer) < run_size(&weak, layer),
+        "the drag kept a run of {} tiles against the unbroken run's {}: it never re-based",
+        run_size(&live, layer),
+        run_size(&weak, layer),
+    );
+
+    let Some(mut replayed) = engine_or_skip() else {
+        return;
+    };
+    replayed
+        .load_bytes(&live.save_bytes().expect("save"))
+        .expect("load + replay");
+    if let Some(diff) = tiles_differ(&live, &replayed, layer) {
+        panic!("the committed drag and its replay disagree: {diff}");
+    }
 }

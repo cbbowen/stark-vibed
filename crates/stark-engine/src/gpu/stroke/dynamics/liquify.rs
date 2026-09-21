@@ -117,8 +117,12 @@ impl StrokeRenderer {
         for piece in pieces {
             // A piece the walk re-bases at starts a run afresh from the picture the
             // pieces before it left — the base under the walk's post-reset bounds.
+            // The old run may be the only owner of tiles the previous piece's
+            // recorded, unsubmitted commands read and write, so the scope holds it
+            // until that submit rather than handing them back to the pool now.
             if walk.cuts.contains(&piece.start) {
-                draw.run = LiquifyRun::fresh();
+                let old = std::mem::replace(&mut draw.run, LiquifyRun::fresh());
+                draw.scope.hold(old);
                 if kept {
                     record_base(&mut draw.run, &map, within);
                 }
