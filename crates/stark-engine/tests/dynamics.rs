@@ -2270,3 +2270,135 @@ fn a_wet_deposit_never_stores_an_opacity_over_one() {
         "the stroke's heaviest texel stores {worst}, so nothing here approached the cap",
     );
 }
+
+/// Every tile of `layer` on `a` and `b`, compared **bitwise** lane by lane: `None`
+/// when they agree, else how many lanes differ, the largest difference and where.
+fn tiles_differ(
+    a: &stark_engine::Engine,
+    b: &stark_engine::Engine,
+    layer: LayerId,
+) -> Option<String> {
+    let keys = |e: &stark_engine::Engine| -> Vec<stark_model::geom::TileCoord> {
+        let mut k: Vec<_> = e
+            .document()
+            .layer(layer)
+            .and_then(|l| l.tiles())
+            .map(|t| t.keys().copied().collect())
+            .unwrap_or_default();
+        k.sort();
+        k
+    };
+    let (ka, kb) = (keys(a), keys(b));
+    if ka != kb {
+        return Some(format!(
+            "tile sets differ: {} against {}",
+            ka.len(),
+            kb.len()
+        ));
+    }
+    // (lanes differing, worst |Δ|, where: tile, channel, lane index)
+    let mut diff = (0usize, 0.0f32, None);
+    for c in &ka {
+        let (ta, tb) = (
+            a.tile_channels(layer, *c).expect("listed"),
+            b.tile_channels(layer, *c).expect("listed"),
+        );
+        let channels = [
+            ("color", ta.color, tb.color),
+            ("height", ta.height, tb.height),
+            (
+                "resid",
+                ta.resid.unwrap_or_default(),
+                tb.resid.unwrap_or_default(),
+            ),
+        ];
+        for (name, la, lb) in channels {
+            for (i, (x, y)) in la.iter().zip(&lb).enumerate() {
+                if x.to_bits() != y.to_bits() {
+                    diff.0 += 1;
+                    let d = (x - y).abs();
+                    if diff.2.is_none() || d > diff.1 {
+                        diff = (diff.0, d, Some((*c, name, i)));
+                    }
+                }
+            }
+        }
+    }
+    let (n, worst, at) = diff;
+    at.map(|(c, name, i)| {
+        format!(
+            "{n} lanes differ over {} tiles, worst {worst:e} in {name}[{i}] of {c:?}",
+            ka.len()
+        )
+    })
+}
+
+/// A wet stroke drawn live **near the canvas origin**, with fast commit off so its
+/// commit renders it whole, lands bit for bit what a fresh engine replaying the record
+/// lands (§1.3, §12.1). Near the origin a sweep's region-relative start
+/// (`sw.start - region_origin`) is not exact in f32, so this is where a render that
+/// depended on the engine's history rather than the record — a region origin, a
+/// scratch texture read before it is written — would first show.
+#[test]
+fn a_wet_stroke_near_the_origin_replays_bit_for_bit() {
+    let Some(mut live) = engine_or_skip() else {
+        return;
+    };
+    let layer = live.observe().active_layer;
+    live.process(ViewCommand::SetFastCommit(false));
+    paint(
+        &mut live,
+        RED,
+        30.0,
+        &[Vec2::new(-90.0, 3.3), Vec2::new(90.0, -2.1)],
+    );
+    live.process(ViewCommand::set_brush(dyn_brush(
+        GREEN,
+        18.0,
+        BrushDynamics {
+            add: 0.6,
+            lift: 0.8,
+            deposit: 0.8,
+            bleed: 0.4,
+            ..BrushDynamics::default()
+        },
+    )));
+    // Many reports, all within a region's width of the origin, at fractional positions.
+    let path: Vec<Vec2> = (0..150)
+        .map(|i| {
+            let t = i as f32 / 149.0;
+            Vec2::new(
+                -50.0 + 100.0 * t + 3.7 * (t * 13.0).sin(),
+                0.37 + 8.0 * (t * 7.0).sin(),
+            )
+        })
+        .collect();
+    live.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(path[0]),
+        tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+    for &p in &path[1..] {
+        live.process(GestureCommand::To {
+            sample: InputSample::at(p),
+        });
+        live.flush_live();
+    }
+    live.process(GestureCommand::End);
+    assert_eq!(
+        live.strokes_reused(),
+        0,
+        "the commit took the preview's tiles with fast commit off"
+    );
+
+    let Some(mut replayed) = engine_or_skip() else {
+        return;
+    };
+    replayed
+        .load_bytes(&live.save_bytes().expect("save"))
+        .expect("load + replay");
+    if let Some(diff) = tiles_differ(&live, &replayed, layer) {
+        panic!("the committed wet stroke and its replay disagree: {diff}");
+    }
+}
