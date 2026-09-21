@@ -239,9 +239,11 @@ fn encode_rise(rise: f32) -> u8 {
 /// at right angles — land in one bin from both directions instead of straddling an edge.
 fn tabulate_bearing(substrate: &[u8]) -> [[f32; 256]; BEARING_DIRS] {
     const HALF: usize = BEARING_DIRS / 2;
+    // `detmath`, not libm: the substrate is a replay input, and a direction a ulp off
+    // can move a texel across a bin edge (§6.4, §12.1).
     let dirs: [[f32; 2]; HALF] = std::array::from_fn(|k| {
-        let a = std::f32::consts::TAU * k as f32 / BEARING_DIRS as f32;
-        [a.cos(), a.sin()]
+        let (sin, cos) = crate::detmath::sin_cos_turns(k as f32 / BEARING_DIRS as f32);
+        [cos, sin]
     });
     let mut counts = [[0u32; 256]; BEARING_DIRS];
     let texels = substrate.as_chunks::<4>().0;
@@ -290,7 +292,8 @@ impl Bearing {
         if give >= 1.0 {
             return 1.0;
         }
-        let turns = dir[1].atan2(dir[0]) / std::f32::consts::TAU * BEARING_DIRS as f32;
+        let turns =
+            crate::detmath::atan2(dir[1], dir[0]) / std::f32::consts::TAU * BEARING_DIRS as f32;
         let lo = turns.floor();
         let f = turns - lo;
         let i0 = (lo as i32).rem_euclid(BEARING_DIRS as i32) as usize;

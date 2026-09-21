@@ -77,7 +77,9 @@ impl Stretch {
         // and that column is `v = A⁻¹t̂` — the direction the sweep is integrated along
         // once the stretch is taken out.
         let k = 1.0 / elongation;
-        let (sn, cs) = (orient * std::f32::consts::TAU).sin_cos();
+        // Trigonometry from `detmath`, not libm: the map is uniform data every peer
+        // deposits through (§12.1).
+        let (sn, cs) = crate::detmath::sin_cos_turns(orient);
         let a00 = 1.0 + (k - 1.0) * cs * cs;
         let a01 = (k - 1.0) * cs * sn;
         let a11 = 1.0 + (k - 1.0) * sn * sn;
@@ -92,7 +94,7 @@ impl Stretch {
             travel: m,
             shear: vx * a01 + vy * a11,
             lateral: k / m,
-            turns: -a01.atan2(a00) / std::f32::consts::TAU,
+            turns: -crate::detmath::atan2(a01, a00) / std::f32::consts::TAU,
         }
     }
 

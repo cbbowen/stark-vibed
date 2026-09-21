@@ -667,8 +667,10 @@ pub(super) fn orientation_turns(source: OrientationSource, dir: Vec2, tilt: Vec2
     match source {
         OrientationSource::FollowStroke => 0.0,
         OrientationSource::Pen => {
-            let alpha = tilt.y.atan2(tilt.x); // pen azimuth (0 when the pen is upright / mouse)
-            let phi = dir.y.atan2(dir.x); // travel direction
+            // Deterministic, since the answer picks the slice every peer deposits
+            // through (§12.1).
+            let alpha = crate::detmath::atan2(tilt.y, tilt.x); // pen azimuth (0 when the pen is upright / mouse)
+            let phi = crate::detmath::atan2(dir.y, dir.x); // travel direction
             ((alpha - phi) / std::f32::consts::TAU).rem_euclid(1.0)
         }
     }
