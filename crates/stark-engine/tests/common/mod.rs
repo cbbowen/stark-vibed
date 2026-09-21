@@ -20,11 +20,11 @@ use std::path::{Path, PathBuf};
 use stark_engine::Extent2;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
-use stark_engine::{Engine, RgbaImage};
-use stark_model::ColorSpaceId;
+use stark_engine::{Engine, EngineError, RgbaImage};
 use stark_model::document::LayerId;
 use stark_model::document::{BrushParams, BrushShape};
 use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, Vec2};
+use stark_model::{ColorSpaceId, DocError};
 
 pub const SIZE: Extent2 = Extent2 {
     width: 256,
@@ -118,7 +118,8 @@ fn shared_context() -> Option<&'static stark_engine::GpuContext> {
 }
 
 /// An engine of `size` in `space`, on this binary's shared device — or `None` where
-/// there is no adapter and `stark_engine::testing::ALLOW_NO_GPU` permits the skip.
+/// there is no adapter and `stark_engine::testing::ALLOW_NO_GPU` permits the skip, or
+/// where this build does not carry `space`. Any other construction error panics.
 ///
 /// The one constructor every helper below funnels through, so what "a test engine is"
 /// is stated once. The engine comes back on whatever environment it booted with — the
@@ -127,13 +128,18 @@ fn build(size: Extent2, space: ColorSpaceId) -> Option<Engine> {
     let ctx = shared_context()?;
     match Engine::new_with_color_space(ctx.clone(), TARGET, size, space) {
         Ok(e) => Some(e),
-        // Not an adapter problem — the device is already up. A space this build does
-        // not carry (Mixbox without the feature) is the only way here, and it is a
-        // legitimate skip rather than a failure.
-        Err(e) => {
-            eprintln!("skipping: {e}");
+        // The device is already up, so the one legitimate skip is a space this build
+        // does not carry (Mixbox without the feature). Anything else fails: a skip
+        // reports `ok` having rendered nothing.
+        Err(EngineError::Document(DocError::UnsupportedColorSpace(id))) => {
+            assert!(
+                !stark_engine::available(id),
+                "{id:?} is in this build, yet the engine refused it"
+            );
+            eprintln!("skipping: {id:?} is not in this build");
             None
         }
+        Err(e) => panic!("building a test engine failed: {e}"),
     }
 }
 
