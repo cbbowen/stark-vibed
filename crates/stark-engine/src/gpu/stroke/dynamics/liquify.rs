@@ -598,6 +598,7 @@ impl<'a> LiquifyDraw<'a> {
                 resid_tex: resid_tex.as_ref(),
             },
         );
+        let mut displaced = Vec::with_capacity(coords.len());
         for coord in coords {
             let field_tile = self
                 .scene
@@ -618,8 +619,10 @@ impl<'a> LiquifyDraw<'a> {
                 .cloned()
                 .expect("the slice wrote every covered tile");
             let bound = reach.get(coord).copied().unwrap_or(0.0);
-            self.run.record_written(*coord, picture, field_tile, bound);
+            displaced.push(self.run.record_written(*coord, picture, field_tile, bound));
         }
+        // The halo copy above read the field tiles these replace.
+        self.scope.hold(displaced);
         new_map
     }
 

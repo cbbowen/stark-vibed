@@ -121,16 +121,23 @@ impl LiquifyRun {
 
     /// Record what the run wrote at `c`: the picture tile the layer now holds there,
     /// the displacement tile under it, and the bound on that displacement.
+    ///
+    /// Answers the tiles it displaced. The piece that wrote `c` read them, and this
+    /// run may be their only owner, so the caller holds them until that piece is
+    /// submitted rather than handing them back to the pool under its commands.
+    #[must_use = "hold the displaced tiles until the piece that read them is submitted"]
     pub(crate) fn record_written(
         &mut self,
         c: TileCoord,
         picture: TilePairHandle,
         field: TexHandle,
         reach: f32,
-    ) {
+    ) -> (Option<TilePairHandle>, Option<TexHandle>) {
+        let displaced = (self.produced.get(&c).cloned(), self.field.get(&c).cloned());
         self.produced.insert_mut(c, picture);
         self.field.insert_mut(c, field);
         self.reach.insert_mut(c, reach);
+        displaced
     }
 
     /// Whether two runs are the same run — the change test the undo patch and the
