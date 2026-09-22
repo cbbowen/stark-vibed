@@ -98,12 +98,11 @@ impl InputSample {
     /// Whether this sample may be remembered — the gate a report has to pass
     /// before anything stateful is allowed to keep it.
     ///
-    /// **A sample arrives from outside and one NaN in it is a panic**, which is why
-    /// this is a property of the sample rather than a check at each consumer:
-    /// `PathFitter` parameterizes its samples by arc length, a NaN spreads from
-    /// `arc` into every curve parameter, and the normal equations it builds are then
-    /// unsolvable at *any* ridge — which `spline`'s solve reports by panicking,
-    /// because for admissible input it genuinely cannot happen.
+    /// **A sample arrives from outside, and one NaN in it would freeze the stroke for
+    /// good**, which is why this is a property of the sample rather than a check at
+    /// each consumer: `PathFitter` parameterizes its samples by arc length, a NaN
+    /// spreads from `arc` into every curve parameter, the normal equations go NaN and
+    /// no ridge factors them, so every later solve leaves the polygon where it was.
     ///
     /// Every channel, not just the position: `time` seeds the fitter's epoch, and
     /// `pressure` and `tilt` ride the same least-squares solve the geometry does.
