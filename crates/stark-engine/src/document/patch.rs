@@ -15,10 +15,11 @@ use std::rc::Rc;
 
 use rpds::Vector;
 
+use super::guides::GuideRoster;
 use super::layer::{Layer, PropValue};
 use super::liquify::LiquifyRun;
 use super::selection::Selection;
-use super::state::{DocState, Guide, LayerSite};
+use super::state::{DocState, LayerSite};
 use crate::gpu::substrate::Substrate;
 use crate::gpu::tile::TilePairHandle;
 use stark_model::Srgb;
@@ -68,7 +69,7 @@ enum PatchOp {
     /// resource for all five — the same correspondence `Structure` keeps with
     /// `StackOrder`. Cheap: the roster is a persistent vector, so capturing it whole
     /// is an `Arc` bump rather than a walk.
-    Guides(Vector<Guide>),
+    Guides(GuideRoster),
     /// A layer's liquify run (§6.13) — the run whole, by handle, because a run is
     /// replaced rather than edited and only a liquify stroke writes it
     /// (`document::liquify`). `None` is a layer no run stands behind.
@@ -356,6 +357,7 @@ mod tests {
     }
     use super::super::apply::{Folded, apply_pure};
     use super::super::audit::undeclared;
+    use super::super::guides::Guide;
     use stark_model::document::{Action, ActionId, ActionKind, ActionTag, GuideId};
     use stark_model::document::{BlendMode, Filter, MatteRegion, Place};
     use stark_model::{AssetId, SubstrateId, SubstrateScale};
@@ -664,7 +666,7 @@ mod tests {
     fn furnished() -> DocState {
         use stark_model::document::{ColorAdjust, Parcel, PerspectiveGuide};
         use stark_model::geom::Vec2;
-        flat()
+        let state = flat()
             .insert_matte(
                 MATTE,
                 None,
@@ -675,14 +677,17 @@ mod tests {
                 },
                 Parcel::Solid(Srgb::new([0.2, 0.4, 0.6])),
             )
-            .insert_filter(FILTER, None, None, Filter::Color(ColorAdjust::NEUTRAL))
-            .insert_guide(G1, PerspectiveGuide::default(), None, None)
-            .insert_guide(
-                G2,
-                PerspectiveGuide::default(),
-                Some(G1),
-                Some("horizon".into()),
-            )
+            .insert_filter(FILTER, None, None, Filter::Color(ColorAdjust::NEUTRAL));
+        let named = |id, name: Option<&str>| Guide {
+            id,
+            name: name.map(Into::into),
+            camera: PerspectiveGuide::default(),
+        };
+        let guides = state
+            .guides()
+            .insert(named(G1, None), None)
+            .insert(named(G2, Some("horizon")), Some(G1));
+        state.with_guides(guides)
     }
 
     /// One action of every kind in the roster, each payload aimed at [`furnished`].

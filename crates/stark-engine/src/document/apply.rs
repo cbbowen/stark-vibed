@@ -15,6 +15,7 @@ use stark_model::document::{
 };
 use stark_model::geom::{IVec2, TileRect};
 
+use super::guides::Guide;
 use super::layer::PropValue;
 use super::liquify::LiquifyRun;
 use super::selection::Selection;
@@ -835,13 +836,25 @@ pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> 
             guide,
             after,
             name,
-        } => state.insert_guide(*id, *guide, *after, name.as_deref().map(Arc::from)),
-        ActionKind::RemoveGuide(id) => state.remove_guide(*id),
-        ActionKind::SetGuide(id, guide) => state.set_guide(*id, *guide),
-        ActionKind::SetGuideName(id, name) => {
-            state.set_guide_name(*id, name.as_deref().map(Arc::from))
+        } => {
+            let guide = Guide {
+                id: *id,
+                name: name.as_deref().map(Arc::from),
+                camera: *guide,
+            };
+            state.with_guides(state.guides().insert(guide, *after))
         }
-        ActionKind::MoveGuide { id, after } => state.move_guide(*id, *after),
+        ActionKind::RemoveGuide(id) => state.with_guides(state.guides().remove(*id)),
+        ActionKind::SetGuide(id, camera) => {
+            state.with_guides(state.guides().set_camera(*id, *camera))
+        }
+        ActionKind::SetGuideName(id, name) => {
+            let name = name.as_deref().map(Arc::from);
+            state.with_guides(state.guides().set_name(*id, name))
+        }
+        ActionKind::MoveGuide { id, after } => {
+            state.with_guides(state.guides().move_after(*id, *after))
+        }
 
         // Move layers without moving a tile (§14.12): a property write, so it
         // belongs to this half — which is what makes its drag preview free.
@@ -1077,7 +1090,7 @@ mod tests {
     /// A paint layer, a framed matte, a filter and one guide — one of everything the
     /// ctx-free fold can refuse.
     fn furnished() -> DocState {
-        DocState::with_layer(A)
+        let state = DocState::with_layer(A)
             .insert_matte(
                 MATTE,
                 None,
@@ -1088,8 +1101,16 @@ mod tests {
                 },
                 Parcel::Solid(Srgb::new([0.2, 0.4, 0.6])),
             )
-            .insert_filter(FILTER, None, None, Filter::Color(ColorAdjust::NEUTRAL))
-            .insert_guide(G1, PerspectiveGuide::default(), None, None)
+            .insert_filter(FILTER, None, None, Filter::Color(ColorAdjust::NEUTRAL));
+        let guides = state.guides().insert(
+            Guide {
+                id: G1,
+                name: None,
+                camera: PerspectiveGuide::default(),
+            },
+            None,
+        );
+        state.with_guides(guides)
     }
 
     fn noop(kind: ActionKind, state: &DocState) -> bool {

@@ -20,8 +20,9 @@ use crate::view::Extent2;
 use crate::{Engine, Result};
 
 pub use crate::document::audit::undeclared;
+pub use crate::document::guides::Guide;
 pub use crate::document::layer::{CompositeParams, Layer, LayerContent, PropValue};
-pub use crate::document::state::{DocState, Guide};
+pub use crate::document::state::DocState;
 pub use crate::document::timeline::TimelineStats;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::gpu::tile::TileChannels;

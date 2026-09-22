@@ -11,6 +11,8 @@ pub(crate) mod apply;
 /// The §12.6 rule, checked on every fold of every debug build — see the module.
 pub(crate) mod audit;
 pub(crate) mod fill;
+/// The drawing-guide roster (§20.5) — see the module.
+pub(crate) mod guides;
 pub(crate) mod layer;
 pub(crate) mod liquify;
 pub(crate) mod merge;
@@ -23,7 +25,8 @@ pub(crate) mod transform;
 pub use state::{CanvasBounds, DEFAULT_SUBSTRATE_COLOR};
 
 pub(crate) use apply::{ApplyCtx, PreparedStroke};
+pub(crate) use guides::Guide;
 pub(crate) use layer::{CompositeParams, Layer, LayerContent};
 pub(crate) use selection::Selection;
-pub(crate) use state::{DEFAULT_SUBSTRATE, DocState, Guide};
+pub(crate) use state::{DEFAULT_SUBSTRATE, DocState};
 pub(crate) use timeline::{LinearTimeline, ReplicatedTimeline, Step, Stepped, Timeline};
