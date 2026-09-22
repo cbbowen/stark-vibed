@@ -129,7 +129,7 @@ fn build(size: Extent2, space: ColorSpaceId) -> Option<Engine> {
         // reports `ok` having rendered nothing.
         Err(EngineError::Document(DocError::UnsupportedColorSpace(id))) => {
             assert!(
-                !stark_engine::available(id),
+                !stark_engine::testing::available(id),
                 "{id:?} is in this build, yet the engine refused it"
             );
             eprintln!("skipping: {id:?} is not in this build");

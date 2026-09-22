@@ -114,8 +114,6 @@ pub(crate) fn unpoisoned<'a, T>(
 pub mod testing;
 
 pub use assist::Assisted;
-// A frontend asks these to decide which color spaces to offer.
-pub use colorspace::{all_available, available};
 pub use engine::{
     Background, DEFAULT_FAST_COMMIT, DEFAULT_HISTORY_BUDGET, Engine, EngineShared, ExportPlan,
     ExportScale, GuideInfo, Guides, LayerInfo, Layers, MatteInfo, ObservableState, PickOptions,

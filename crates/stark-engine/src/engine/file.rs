@@ -11,7 +11,7 @@ use stark_model::DocError;
 
 use super::{Authoring, Engine, ROOT_LAYER};
 use crate::Result;
-use crate::document::{DocState, LinearTimeline, Timeline, effective_actions};
+use crate::document::{DocState, LinearTimeline, Timeline};
 use crate::gpu::EnvironmentId;
 use crate::gpu::substrate::Substrate;
 use stark_model::AssetId;
@@ -19,7 +19,7 @@ use stark_model::AssetNeed;
 use stark_model::ColorSpaceId;
 use stark_model::DocumentFile;
 use stark_model::SubstrateId;
-use stark_model::document::Action;
+use stark_model::document::{Action, effective_actions};
 
 /// A [`DocumentFile`] whose color space **this build can honour** (§6.7) — the one
 /// question every adoption path has to settle before it touches the open document.

@@ -35,22 +35,20 @@ mod arclen;
 mod fit;
 mod flatten;
 
-pub use arc::{Arc, arc_at, arc_sagitta, fit_arc};
-// `KNOT_COST` and `KNOT_SPACING` are `pub` for their *doc links* alone (`assist::realize`
-// names the spacing, `path`'s own prose names the cost): a doc link cannot follow a
-// re-export the compiler has pruned as unused.
 pub use fit::{
-    DEFAULT_TOLERANCE, KNOT_COST, KNOT_SPACING, MAX_TOLERANCE, MIN_TOLERANCE, PathFitter,
-    clamp_tolerance, fit, fit_with_tolerance,
+    DEFAULT_TOLERANCE, MAX_TOLERANCE, MIN_TOLERANCE, PathFitter, fit, fit_with_tolerance,
 };
+pub use flatten::{
+    FLATTEN_TOLERANCE, FlattenTolerance, IntermediateSample, flatten, flatten_spans_from, point_at,
+    span_end,
+};
+
+pub(crate) use arc::{Arc, arc_at, arc_sagitta, fit_arc};
 // The pen-channel layout and its two conversions, for `assist::realize` — which fits
 // the same four channels onto the same control polygon and had its own copy of both.
 pub(crate) use arclen::{arc_profile, param_at};
-pub(crate) use fit::{CHANNELS, control_point_from};
-pub use flatten::{
-    FLATTEN_TOLERANCE, FlattenTolerance, IntermediateSample, flatten, flatten_spans,
-    flatten_spans_from, point_at, span_end,
-};
+pub(crate) use fit::{CHANNELS, clamp_tolerance, control_point_from};
+pub(crate) use flatten::flatten_spans;
 
 /// How many cubic spans the curve through `control_points` has.
 ///
@@ -83,7 +81,7 @@ pub fn span_count(control_points: usize) -> usize {
 /// holds because `frozen - 1 <= total - 1` and `span_count(total) = total + 1` for a
 /// curve. For `total < 2` there is no curve, `span_count` is 0, and no head range
 /// exists.
-pub fn frozen_spans_for(frozen: usize, total: usize) -> usize {
+pub(crate) fn frozen_spans_for(frozen: usize, total: usize) -> usize {
     let out = frozen.saturating_sub(1).min(span_count(total));
     debug_assert!(
         out < span_count(total) || span_count(total) == 0,

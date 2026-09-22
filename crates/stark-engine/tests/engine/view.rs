@@ -12,8 +12,9 @@ use crate::common::palette::{BLACK, BLUE_SOFT, GREEN, RED, WARM};
 use crate::common::*;
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, HoverReport, InputSample, ViewCommand};
-use stark_engine::document::{CanvasBounds, CompositeParams, Guide, Layer, LayerContent};
+use stark_engine::document::CanvasBounds;
 use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_engine::testing::{CompositeParams, Guide, Layer, LayerContent};
 use stark_engine::{Background, Engine, ExportScale, Offscreen, Rendered, RgbaImage};
 use stark_model::Srgb;
 use stark_model::document::{

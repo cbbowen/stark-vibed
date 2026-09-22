@@ -29,7 +29,7 @@ const ELLIPSE_ERROR: f32 = 0.4;
 /// Legs a snapped ellipse is built from, whatever [`ELLIPSE_ERROR`] asks for. The floor
 /// keeps a thumbnail ellipse from being a polygon; the ceiling keeps a canvas-wide one
 /// bounded — and it is not a real cost, since the fitter itself would spend *more*
-/// control points than this on a stroke that long ([`KNOT_SPACING`](crate::path::KNOT_SPACING)).
+/// control points than this on a stroke that long (`path::fit::KNOT_SPACING`).
 const MIN_LEGS: usize = 12;
 
 const MAX_LEGS: usize = 96;

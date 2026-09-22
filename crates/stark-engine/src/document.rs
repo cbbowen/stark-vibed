@@ -4,9 +4,8 @@
 //! planning that needs it. The actions themselves, and the vocabulary they are
 //! written in, are `stark-model`'s `document`.
 //!
-//! The submodules are **crate-private**; the re-exports below are the API. Inside
-//! the crate the module paths still work, which is what lets `gpu/` reach the
-//! `pub(crate)` planners (`fill::plan`, `selection::SelectionPlan`).
+//! The submodules are **crate-private**. A frontend needs the two names re-exported
+//! `pub` below; the suite reaches the state itself through [`testing`](crate::testing).
 
 pub(crate) mod apply;
 /// The §12.6 rule, checked on every fold of every debug build — see the module.
@@ -21,20 +20,10 @@ pub(crate) mod state;
 pub(crate) mod timeline;
 pub(crate) mod transform;
 
-pub use apply::ApplyCtx;
-// Not on the API: `PreparedStroke` is a message between the engine and one fold, and
-// this line exists for `engine::live`'s import alone.
-pub(crate) use apply::PreparedStroke;
-pub use layer::{CompositeParams, Layer, LayerContent, PaintTiles};
-pub use liquify::LiquifyRun;
-/// Merging a layer down onto the one beneath it (§14.11) — the rule for when that
-/// leaves the document looking the same, which is the whole of what a merge promises.
-pub use merge::MergePlan;
-pub use selection::Selection;
-pub use state::{
-    CanvasBounds, DEFAULT_SUBSTRATE, DEFAULT_SUBSTRATE_COLOR, DocState, Guide, LayerSite,
-};
-pub use timeline::{LinearTimeline, ReplicatedTimeline, Step, Stepped, Timeline, TimelineStats};
-// Re-exported from the model, where the undo algebra lives (§12.3) — `engine::file`
-// and the tests reach it by this path and need not learn that it moved.
-pub use stark_model::document::effective_actions;
+pub use state::{CanvasBounds, DEFAULT_SUBSTRATE_COLOR};
+
+pub(crate) use apply::{ApplyCtx, PreparedStroke};
+pub(crate) use layer::{CompositeParams, Layer, LayerContent};
+pub(crate) use selection::Selection;
+pub(crate) use state::{DocState, Guide};
+pub(crate) use timeline::{LinearTimeline, ReplicatedTimeline, Step, Stepped, Timeline};

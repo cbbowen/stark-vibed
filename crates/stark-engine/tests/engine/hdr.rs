@@ -231,7 +231,7 @@ fn a_new_document_keeps_the_display_and_the_lighting() {
     hdr.process(ViewCommand::SetOutput(output));
     let substrate = hdr.substrate();
     let first = hdr.observe().color_space;
-    for space in stark_engine::all_available().chain([first]) {
+    for space in stark_engine::testing::all_available().chain([first]) {
         hdr.new_document(space, substrate)
             .expect("a space this build carries");
         let obs = hdr.observe();

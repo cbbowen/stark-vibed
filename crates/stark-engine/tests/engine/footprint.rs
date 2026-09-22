@@ -44,8 +44,7 @@ use std::collections::BTreeSet;
 use crate::common::{Probe, engine_or_skip, paint};
 use stark_engine::Engine;
 use stark_engine::command::{DocCommand, InputCommand};
-use stark_engine::document::DocState;
-use stark_engine::testing::undeclared;
+use stark_engine::testing::{DocState, undeclared};
 use stark_model::AssetId;
 use stark_model::document::{
     ActionId, ActionKind, ActorId, BlendMode, ColorAdjust, FillOp, Filter, Footprint, MatteRegion,

@@ -249,7 +249,7 @@ pub enum DocCommand {
     ///
     /// Clamped to the range the timeline reports, and a no-op on a timeline that
     /// has no single playhead to move (a shared session — see
-    /// [`Timeline::scrub_range`](crate::document::Timeline::scrub_range)).
+    /// [`Engine::scrub_range`](crate::Engine::scrub_range)).
     Seek(usize),
 
     /// Add an empty paint layer to the stack carried by `carrier` (the

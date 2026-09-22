@@ -13,11 +13,13 @@ use stark_model::SubstrateId;
 use stark_model::document::LayerId;
 use stark_model::geom::{TileCoord, Vec2};
 
-use crate::document::DocState;
 use crate::view::Extent2;
 use crate::{Engine, Result, RgbaImage};
 
+pub use crate::colorspace::{all_available, available};
 pub use crate::document::audit::undeclared;
+pub use crate::document::layer::{CompositeParams, Layer, LayerContent};
+pub use crate::document::state::{DocState, Guide};
 pub use crate::document::timeline::TimelineStats;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::gpu::tile::TileChannels;
