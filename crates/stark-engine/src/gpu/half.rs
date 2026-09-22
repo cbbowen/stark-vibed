@@ -1,6 +1,9 @@
 //! IEEE-754 half-precision, both ways (§6.1, §9).
 //!
-//! The encoder is **signed**, because one of its callers is not radiance: a placed
+//! Three things are encoded here: an environment map's radiance (§6.3), a placed
+//! image's tile channels (§23) and a brush tip's depth map (§6.6).
+//!
+//! The encoder is **signed**, because one of those three is not radiance: a placed
 //! image's tile channels carry an Oklab latent whose `a` and `b` axes run either side of
 //! zero (§23), and clamping those to zero desaturates every imported photograph towards
 //! green — silently, in the one code path with no shader to read.
@@ -8,8 +11,8 @@
 /// Encode an `f32` to IEEE-754 half-precision bits (round-to-nearest-even).
 ///
 /// Magnitudes are clamped to the half-float max, so no input produces an infinity, and
-/// subnormals flush to zero — negligible at the scales either caller works at
-/// (radiance, and a color channel).
+/// subnormals flush to zero — negligible at the scales all three callers work at (a
+/// radiance sample, a color channel, an optical depth).
 pub(crate) fn f32_to_f16(x: f32) -> u16 {
     let sign = u16::from(x.is_sign_negative()) << 15;
     // The NaN case is tested rather than clamped: `clamp` *returns* the NaN, whose
@@ -58,24 +61,59 @@ pub(crate) fn f16_to_f32(h: u16) -> f32 {
 mod tests {
     use super::*;
 
+    /// The largest finite half, which every overflow lands on.
+    const MAX: u16 = 0x7bff;
+
+    /// **Every one of the 65 536 bit patterns**, by the class it belongs to.
+    ///
+    /// The pair is checked as a whole rather than at sampled values, because each class
+    /// fails differently and only at its own edge: a normal must come back bit for bit,
+    /// a subnormal must flush to a *signed* zero, an infinity must land on the largest
+    /// finite half rather than travel on, and a NaN must land on zero — the one answer a
+    /// channel or a radiance sample survives (see [`f32_to_f16`]).
     #[test]
-    fn f16_encoding_roundtrips() {
-        // Decode our f16 bits back to f32 and check a few representative radiance
-        // values land within half-float precision.
-        let half_to_f32 = |h: u16| -> f32 {
-            let exp = ((h >> 10) & 0x1f) as i32;
-            let mant = (h & 0x3ff) as f32;
-            if exp == 0 {
-                return 0.0;
+    fn every_half_pattern_decodes_and_re_encodes_by_its_class() {
+        for h in 0..=u16::MAX {
+            let (sign, exp, mant) = (h & 0x8000, (h >> 10) & 0x1f, h & 0x3ff);
+            let back = f32_to_f16(f16_to_f32(h));
+            match (exp, mant) {
+                // Subnormal (and zero): ±0 out, with the sign kept — the one thing a
+                // latent's `a`/`b` axis cannot afford to lose (§23).
+                (0, _) => assert_eq!(back, sign, "{h:#06x} did not flush to a signed zero"),
+                // ±∞: the encoder produces no infinity, so it clamps to the largest
+                // finite half.
+                (0x1f, 0) => assert_eq!(back, sign | MAX, "{h:#06x} left the finite range"),
+                (0x1f, _) => assert_eq!(back & !0x8000, 0, "{h:#06x} (a NaN) did not go to 0"),
+                // Every finite normal is exactly an `f32`, so the round trip is exact.
+                _ => assert_eq!(back, h, "{h:#06x} did not round-trip"),
             }
-            (1.0 + mant / 1024.0) * 2.0f32.powi(exp - 15)
-        };
-        for &v in &[0.0f32, 0.25, 1.0, 2.5, 18.0, 500.0] {
-            let back = half_to_f32(f32_to_f16(v));
-            assert!(
-                (back - v).abs() <= v.max(1.0) * 0.001 + 1e-3,
-                "f16({v}) -> {back}"
+        }
+    }
+
+    /// The rounding the encoder's doc claims: **nearest, ties to even**.
+    ///
+    /// Exhaustive over the midpoints, which is where the claim is decidable — every
+    /// other `f32` in a half's interval rounds by magnitude alone. A midpoint is exact in
+    /// `f32` (13 mantissa bits to spare), so this is arithmetic and not a tolerance.
+    #[test]
+    fn a_midpoint_between_two_halves_rounds_to_the_even_one() {
+        for h in 0..MAX {
+            let (lo, hi) = (f16_to_f32(h), f16_to_f32(h + 1));
+            // Only within one binade-or-not, both finite normals or subnormals; the
+            // subnormal steps flush to zero and have no midpoint to round.
+            if (h >> 10) & 0x1f == 0 {
+                continue;
+            }
+            let even = if h & 1 == 0 { h } else { h + 1 };
+            let mid = lo + (hi - lo) * 0.5;
+            assert_eq!(
+                f32_to_f16(mid),
+                even,
+                "the midpoint of {h:#06x} and {:#06x} did not round to even",
+                h + 1,
             );
+            // The magnitude path is signless, and this is what says so.
+            assert_eq!(f32_to_f16(-mid), 0x8000 | even, "and negated");
         }
     }
 
