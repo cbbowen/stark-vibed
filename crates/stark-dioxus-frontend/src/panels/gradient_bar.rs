@@ -161,7 +161,7 @@ fn open(state: AppState, ui: GradientUi) {
 fn show_axis(state: AppState, ui: &GradientUi) {
     match compose(state, ui) {
         Some(laid) => laid.show(state),
-        None => clear_preview(state, &ui.target),
+        None => preview::clear(state),
     }
 }
 
@@ -248,18 +248,6 @@ pub fn resume_from(state: AppState, ui: GradientUi) {
     open(state, ui);
 }
 
-/// Drop whichever preview a gesture aimed at `target` is showing.
-///
-/// The one place that answers "which preview does this target use" for the case
-/// where there is no [`Laid`] to ask — nothing composed yet, or the mode abandoned
-/// (`crate::modes`). Public for that second caller.
-pub fn clear_preview(state: AppState, target: &GradientTarget) {
-    match target {
-        GradientTarget::Fill { .. } => preview::FILL.clear(state),
-        GradientTarget::Matte { .. } => preview::MATTE_PAINT.clear(state),
-    }
-}
-
 /// What the current gesture would lay, or `None` before the drag has composed an
 /// axis (or with no ramp in the library to lay).
 fn compose(state: AppState, ui: &GradientUi) -> Option<Laid> {
@@ -292,7 +280,7 @@ pub fn finish(state: AppState) {
     if let Some(ui) = ui {
         match compose(state, &ui) {
             Some(laid) => laid.commit(state),
-            None => clear_preview(state, &ui.target),
+            None => preview::clear(state),
         }
     }
     // `leave_settled`, not `leave`: the commit above supersedes the preview, and

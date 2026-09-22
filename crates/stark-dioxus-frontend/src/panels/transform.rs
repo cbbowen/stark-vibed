@@ -131,7 +131,7 @@ pub fn finish(state: AppState) {
         return;
     };
     if ui.is_identity() {
-        preview::TRANSFORM.clear(state);
+        preview::clear(state);
     } else {
         // The commit clears the preview itself, so there is no intermediate
         // frame showing the untransformed document.

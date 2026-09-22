@@ -98,7 +98,7 @@ impl PickMove {
         // the old one was previewing has to come down first or it is shown by
         // nobody and cleared by nothing.
         if (*self.drag.peek()).is_some_and(|d| d.shown.is_some()) {
-            crate::preview::TRANSLATE.clear(self.state);
+            crate::preview::clear(self.state);
         }
         let mut presses = self.presses;
         let press = *presses.peek() + 1;
@@ -223,7 +223,7 @@ impl PickMove {
             // The float, if one was made, stands: it is a committed action, and
             // withdrawing it here would be the chrome undoing document state on
             // its own authority. What is dropped is the unlogged translation.
-            crate::preview::TRANSLATE.clear(self.state);
+            crate::preview::clear(self.state);
         }
     }
 
@@ -252,7 +252,7 @@ impl PickMove {
         }
         match want {
             Some(frame) => crate::preview::TRANSLATE.show(self.state, frame),
-            None => crate::preview::TRANSLATE.clear(self.state),
+            None => crate::preview::clear(self.state),
         }
         flight.shown = want;
         flight
@@ -281,7 +281,7 @@ impl PickMove {
             // undo step saying so.
             Settle::Nothing => {
                 if flight.shown.is_some() {
-                    crate::preview::TRANSLATE.clear(self.state);
+                    crate::preview::clear(self.state);
                 }
             }
         }

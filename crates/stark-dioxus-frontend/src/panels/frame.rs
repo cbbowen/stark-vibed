@@ -558,7 +558,7 @@ pub fn FrameOverlay() -> Element {
                             },
                             onpointercancel: move |_| {
                                 if drag.take().is_some() {
-                                    preview::MATTE_RECT.clear(state);
+                                    preview::clear(state);
                                 }
                             },
                         }

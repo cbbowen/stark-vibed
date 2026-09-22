@@ -189,24 +189,15 @@ pub fn leave(state: AppState) {
     // dispatch each arm makes is the borrow panic `crate::state` warns about.
     let dropped = live.write().take();
     match dropped {
-        Some(Composing::Transform(_)) => crate::preview::TRANSFORM.clear(state),
-        // A guide is document state (§20.5), so its drag previews and commits
-        // like the transform above rather than being live — and leaving has to
-        // drop what a drag still in the hand was showing, or the pose the artist
-        // abandoned stays on the canvas with no commit ever coming to supersede
-        // it.
-        Some(Composing::GuideEdit(_)) => crate::preview::GUIDE.clear(state),
+        // Each previews what it composes — a guide too, being document state
+        // (§20.5) — and leaving has to drop it, or what the artist abandoned stays
+        // on the canvas with no commit ever coming to supersede it.
+        Some(Composing::Transform(_) | Composing::GuideEdit(_) | Composing::GradientFill(_)) => {
+            crate::preview::clear(state)
+        }
         // Nothing to drop: a trace previews nothing, and its path lives in its
         // own overlay, which unmounts with the mode.
-        Some(Composing::GradientTrace) => {}
-        // Which preview the fill was showing depends on what it was aimed at
-        // (§22.4) — and the module that composes it is the one that answers,
-        // rather than a second `match` here that had to be kept in step with the
-        // two over there.
-        Some(Composing::GradientFill(ui)) => {
-            crate::panels::gradient_bar::clear_preview(state, &ui.target)
-        }
-        None => {}
+        Some(Composing::GradientTrace) | None => {}
     }
 
     // And the gradient bar a trace set aside to be handed back

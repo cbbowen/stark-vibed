@@ -32,6 +32,17 @@ use stark_model::document::{
 };
 use stark_model::geom::Vec2;
 
+/// Drop whatever is being shown, laying nothing — whichever row showed it, since the
+/// engine holds one preview at a time.
+///
+/// What an abandoned composition needs (`crate::modes`), and what a control whose
+/// gesture ended with nothing to lay needs. Deliberately not a commit of a neutral
+/// value: dropping the preview restores the document, while committing a neutral would
+/// be an edit that says the artist chose it.
+pub fn clear(state: AppState) {
+    dispatch(state, ViewCommand::Preview(None));
+}
+
 /// One control's edit: what the value it holds becomes, shown on the canvas without
 /// logging it or laid down.
 ///
@@ -66,16 +77,6 @@ impl<T: 'static> Preview<T> {
     /// Show `value` on the canvas, logging nothing.
     pub fn show(self, state: AppState, value: T) {
         dispatch(state, ViewCommand::Preview(Some((self.edit)(value))));
-    }
-
-    /// Drop whatever is being shown, laying nothing.
-    ///
-    /// What an abandoned composition needs (`crate::modes`), and what a control
-    /// whose gesture ended with nothing to lay needs. Deliberately not `commit`
-    /// with a neutral value: dropping the preview restores the document, while
-    /// committing a neutral would be an edit that says the artist chose it.
-    pub fn clear(self, state: AppState) {
-        dispatch(state, ViewCommand::Preview(None));
     }
 
     /// Lay `value` down — one logged action, one undo step.
