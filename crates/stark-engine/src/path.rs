@@ -50,6 +50,11 @@ pub use flatten::{
 pub use tolerance::{DEFAULT_TOLERANCE, MAX_TOLERANCE, MIN_TOLERANCE};
 
 pub(crate) use arc::{Arc, arc_at, arc_sagitta, fit_arc};
+// The arc series' domain and the half-turn it caps, for the one guard that ties them
+// to the bleed walk-back that widened the domain — which lives in `gpu::stroke`,
+// since this module sits below it and cannot name either of that term's factors.
+#[cfg(test)]
+pub(crate) use arc::{MAX_ARC_TURN, MAX_HALF_TURN_SIN};
 pub(crate) use arclen::{arc_profile, param_at, polyline_length};
 pub use arclen::{cumulative_lengths, locate};
 pub(crate) use fit::fit_at;

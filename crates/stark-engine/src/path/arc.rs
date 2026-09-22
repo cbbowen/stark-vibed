@@ -27,15 +27,17 @@ const MIN_SAGITTA: f32 = 0.01;
 /// quality knob: past it the [`detmath`](crate::detmath) series stop being the right
 /// approximation, and so does the annular sector the shaders rasterize a curved sweep
 /// as.
-const MAX_HALF_TURN_SIN: f32 = 0.2;
+pub(crate) const MAX_HALF_TURN_SIN: f32 = 0.2;
 
 /// The widest turn `κ·s` [`arc_at`] is asked to walk, and so the domain its `detmath`
 /// series are measured over (`the_series_stay_within_their_measured_bounds`).
 ///
 /// A whole edge [`fit_arc`] bent turns `2·asin(MAX_HALF_TURN_SIN)` ≈ 0.4027 at most,
 /// and a bleed firing walks back up to one quantum past its segment's start, a further
-/// `κ·r·BLEED_TRAVEL_QUANTUM ≤ MAX_TIP_TURN / 4` = 0.025: 0.4277, rounded up.
-const MAX_ARC_TURN: f32 = 0.428;
+/// `κ·r·BLEED_TRAVEL_QUANTUM`: 0.4277, rounded up. That second term is named by two
+/// constants this module sits below and cannot see, so the sum is asserted from up
+/// there instead (`gpu::stroke::dynamics::bleed`).
+pub(crate) const MAX_ARC_TURN: f32 = 0.428;
 
 /// Below this speed a curve's derivative names no tangent, and [`fit_arc`] sends the
 /// edge straight. Unsquared: far narrower than `flatten::turn`'s own stationary test
@@ -194,10 +196,6 @@ mod tests {
     #[test]
     fn the_series_stay_within_their_measured_bounds() {
         let turn = f64::from(MAX_ARC_TURN);
-        assert!(
-            2.0 * f64::from(MAX_HALF_TURN_SIN).asin() + 0.025 <= turn,
-            "MAX_ARC_TURN no longer covers an edge's whole turn and a bleed walk-back"
-        );
         let rel = |got: f32, want: f64| ((f64::from(got) - want) / want).abs();
         let (mut sin, mut versin, mut asin) = (0.0f64, 0.0f64, 0.0f64);
         const N: i32 = 400_000;

@@ -527,6 +527,29 @@ mod tests {
         }
     }
 
+    /// A firing's walk-back stays inside the domain `path::arc`'s series are measured
+    /// over ([`MAX_ARC_TURN`]).
+    ///
+    /// A window is walked back one [`BLEED_TRAVEL_QUANTUM`] of its segment's own arc
+    /// ([`bleed_fires`]), at a curvature the flattener caps at [`MAX_TIP_TURN`] per
+    /// radius — so it asks `arc_at` for that much turn on top of the whole edge
+    /// [`fit_arc`](crate::path::fit_arc) bent. Here rather than beside `MAX_ARC_TURN`
+    /// because this is the only place both factors are in scope: `path` sits below
+    /// `gpu::stroke` and can name neither, so the product was written out there as a
+    /// literal that nothing tied back to them.
+    #[test]
+    fn a_firings_walk_back_stays_inside_the_arc_series_domain() {
+        use crate::gpu::stroke::budget::MAX_TIP_TURN;
+        use crate::path::{MAX_ARC_TURN, MAX_HALF_TURN_SIN};
+        let edge = 2.0 * f64::from(MAX_HALF_TURN_SIN).asin();
+        let walk_back = f64::from(MAX_TIP_TURN * BLEED_TRAVEL_QUANTUM);
+        assert!(
+            edge + walk_back <= f64::from(MAX_ARC_TURN),
+            "MAX_ARC_TURN no longer covers an edge's whole turn ({edge}) and a bleed \
+             walk-back ({walk_back})",
+        );
+    }
+
     /// The firings of a curved segment **tile it**, a quantum each, and every one of
     /// them lies on the path rather than on a chord across it.
     ///
