@@ -443,18 +443,16 @@ fn a_trace_through_a_multiply_and_a_filter_is_a_pick_at_every_end() {
 /// the way down contributes nothing, so sampling it answers "nothing here" — the same
 /// answer bare canvas gives — rather than reporting paint that is switched off.
 ///
-/// **What actually changed, stated exactly**: not the color, but where the pick
-/// answers at all. The pick divides by the coverage it sums, so a layer's opacity
-/// always cancelled out of the *color* — the ordinary settings below would have
-/// passed before the slider was dropped, and they are here as a pin rather than as a
-/// regression. What the opacity did not cancel out of is `PICK_MIN_OPACITY`, the
-/// floor beneath which a patch is called empty: it scaled the coverage towards that
-/// floor, so far enough down, solid paint reported nothing at all.
+/// **What the opacity reaches is not the color but where the pick answers at all.**
+/// The pick divides by the coverage it sums, so a layer's opacity cancels out of the
+/// *color*, and the ordinary settings below are a pin. What it does not cancel out of
+/// is `PICK_MIN_OPACITY`, the floor beneath which a patch is called empty: scaling the
+/// coverage towards that floor would, far enough down, make solid paint report
+/// nothing at all.
 ///
-/// `0.001` is where that bites for paint this thick, and it is the case that fails
-/// without the change. It is deliberately an extreme value: the boundary is what is
-/// under test, and quoting a realistic one that happened to sit above the floor would
-/// be a test that passes either way — which the first draft of this one was.
+/// `0.001` is where that bites for paint this thick. It is deliberately an extreme
+/// value: the boundary is what is under test, and a realistic one that happened to
+/// sit above the floor would pass either way.
 #[test]
 fn one_layer_ignores_its_own_opacity_until_it_reaches_zero() {
     let Some(mut engine) = engine_or_skip() else {

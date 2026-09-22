@@ -307,9 +307,7 @@ fn a_stroke_record_reaching_past_the_cap_is_refused_whole() {
         });
     }
 
-    let Some(mut replayed) = engine_or_skip() else {
-        return;
-    };
+    let mut replayed = engine_or_skip().expect("the adapter answered once already");
     let began = Instant::now();
     replayed
         .load_bytes(&doc.to_bytes().expect("encode"))

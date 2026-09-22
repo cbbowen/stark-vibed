@@ -249,8 +249,8 @@ fn a_placement_whose_picture_is_missing_leaves_an_empty_layer() {
 
 /// **A placement onto a layer id the document already holds is refused**, as every
 /// other minting action's is (§17.9). No action this engine mints can say it, but a
-/// log off a file or a wire can; it used to rename the layer it landed on and
-/// replace its paint.
+/// log off a file or a wire can, and accepting it would rename the layer it landed on
+/// and replace its paint.
 #[test]
 fn a_placement_onto_a_held_id_is_refused() {
     let Some(mut engine) = engine_or_skip_blue() else {

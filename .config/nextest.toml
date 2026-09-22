@@ -53,7 +53,7 @@ test-group = 'gpu'
 filter = 'package(stark-net) and kind(test)'
 test-group = 'gpu'
 
-# And the unit tests under `gpu::`, of which only `gpu::context` and `gpu::submit`
+# And the unit tests under `gpu::`, of which only `gpu::context` and `gpu::scratch`
 # actually build a context today. The module tree rather than those two, because the
 # two costs are not symmetric: a pure-arithmetic test swept in holds a slot for the
 # microsecond it takes to run, while one left out asks the driver for a device from

@@ -542,9 +542,7 @@ fn a_drag_that_rebases_mid_stroke_replays_bit_for_bit() {
         run_size(&weak, layer),
     );
 
-    let Some(mut replayed) = engine_or_skip() else {
-        return;
-    };
+    let mut replayed = engine_or_skip().expect("the adapter answered once already");
     replayed
         .load_bytes(&live.save_bytes().expect("save"))
         .expect("load + replay");

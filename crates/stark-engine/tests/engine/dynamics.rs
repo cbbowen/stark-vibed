@@ -1690,9 +1690,7 @@ fn a_dense_bleed_scribble_over_flat_paint_is_a_no_op() {
         ),
     });
 
-    let Some(mut replayed) = engine_or_skip() else {
-        return;
-    };
+    let mut replayed = engine_or_skip().expect("the adapter answered once already");
     replayed
         .load_bytes(&doc.to_bytes().expect("encode"))
         .expect("load + replay");
@@ -2393,9 +2391,7 @@ fn a_wet_stroke_near_the_origin_replays_bit_for_bit() {
         "the commit took the preview's tiles with fast commit off"
     );
 
-    let Some(mut replayed) = engine_or_skip() else {
-        return;
-    };
+    let mut replayed = engine_or_skip().expect("the adapter answered once already");
     replayed
         .load_bytes(&live.save_bytes().expect("save"))
         .expect("load + replay");
