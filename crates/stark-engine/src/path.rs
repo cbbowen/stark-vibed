@@ -30,9 +30,9 @@
 //! and the arc run *after* it, at every replay and on every peer, so they fall under
 //! §12.1's bit-agreement rule — which is why they use `detmath` and not libm.
 //!
-//! [`span_count`] and [`frozen_spans_for`] sit here rather than in one of the three
-//! submodules because they belong to none of them: a span count is a statement about
-//! a control *polygon*, which the fit produces and the flattener consumes.
+//! [`span_count`] and [`frozen_spans_for`] sit here rather than in a submodule because
+//! they belong to none of them: a span count is a statement about a control *polygon*,
+//! which the fit produces and the flattener consumes.
 
 mod arc;
 mod arclen;
@@ -40,23 +40,24 @@ mod arclen;
 mod fingerprint;
 mod fit;
 mod flatten;
+mod tolerance;
 
-pub use fit::{
-    DEFAULT_TOLERANCE, MAX_TOLERANCE, MIN_TOLERANCE, PathFitter, fit, fit_with_tolerance,
-};
+pub use fit::{PathFitter, fit, fit_with_tolerance};
 pub use flatten::{
     FLATTEN_TOLERANCE, FlattenTolerance, IntermediateSample, flatten, flatten_spans_from, point_at,
     span_end,
 };
+pub use tolerance::{DEFAULT_TOLERANCE, MAX_TOLERANCE, MIN_TOLERANCE};
 
 pub(crate) use arc::{Arc, arc_at, arc_sagitta, fit_arc};
 pub(crate) use arclen::{arc_profile, param_at, polyline_length};
 pub use arclen::{cumulative_lengths, locate};
-pub(crate) use fit::clamp_tolerance;
+pub(crate) use fit::fit_at;
 // The pen-channel layout, for `assist::realize`, which fits the same channels onto the
 // same control polygon.
 pub(crate) use fit::{CHANNELS, control_points, pen_row};
 pub(crate) use flatten::flatten_spans;
+pub(crate) use tolerance::InputTolerance;
 
 /// How many cubic spans the curve through `control_points` has.
 ///

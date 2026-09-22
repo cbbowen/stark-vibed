@@ -4,7 +4,7 @@
 
 use super::{Session, path_in_frame};
 use crate::command::InputSample;
-use crate::path::fit_with_tolerance;
+use crate::path::{InputTolerance, fit_at};
 use crate::peer::{GestureView, LiveGesture};
 use stark_model::document::{ActorId, StrokeRecord};
 use stark_model::geom::Vec2;
@@ -118,27 +118,27 @@ impl Session {
     /// it is within a tolerance of the last, where a resting pen's drift would buy a
     /// whole-window refit for nothing.
     pub fn hover_to(&mut self, sample: InputSample, tolerance: f32, reach: f32) -> bool {
-        // The fit's range, as `start_stroke` holds it: the run-up this window becomes
-        // is judged against the same number.
-        let tolerance = crate::path::clamp_tolerance(tolerance);
+        // Held as `start_stroke` holds it: the run-up this window becomes is judged
+        // against the same number.
+        let tolerance = InputTolerance::new(tolerance);
         if !self.hovering() || !sample.is_admissible() || !reach.is_finite() {
             return false;
         }
         if let Some(h) = self.hover.as_ref()
             && let Some(last) = h.window.last()
-            && (last.pos == sample.pos || last.pos.distance(sample.pos) < tolerance)
+            && (last.pos == sample.pos || last.pos.distance(sample.pos) < tolerance.get())
         {
             return false;
         }
         let mut window = self.hover.take().map(|h| h.window).unwrap_or_default();
         window.push(sample);
-        prune_window(&mut window, WINDOW_ARC_TOLERANCES * tolerance);
+        prune_window(&mut window, WINDOW_ARC_TOLERANCES * tolerance.get());
         // The estimator: the window's smoothed trace, wanted only for where it
         // is going. Finished, so the heading is the one a pen-up would have
         // settled on rather than the mid-solve one.
-        let trace = fit_with_tolerance(window.iter().copied(), tolerance);
+        let trace = fit_at(window.iter().copied(), tolerance);
         let path = match probe_heading(&trace) {
-            Some(dir) => fit_with_tolerance(
+            Some(dir) => fit_at(
                 [
                     sample,
                     InputSample {
@@ -151,7 +151,7 @@ impl Session {
             // One report, or a trace too tangled to carry a heading: the honest
             // prediction of a press with no motion behind it is a click's — a
             // lone knot, which deposits nothing, exactly as the click would.
-            None => fit_with_tolerance([sample], tolerance),
+            None => fit_at([sample], tolerance),
         };
         self.gesture_ordinal += 1;
         self.hover = Some(HoverStroke {
@@ -173,14 +173,19 @@ impl Session {
     /// farther from the press than the window's own scale ([`WINDOW_ARC_TOLERANCES`]
     /// tolerances) is history from somewhere else, and evidence about nothing this
     /// stroke does.
-    pub(super) fn take_hover_context(&mut self, press: Vec2, tolerance: f32) -> Vec<InputSample> {
+    pub(super) fn take_hover_context(
+        &mut self,
+        press: Vec2,
+        tolerance: InputTolerance,
+    ) -> Vec<InputSample> {
         let Some(h) = self.hover.take() else {
             return Vec::new();
         };
+        let scale = WINDOW_ARC_TOLERANCES * tolerance.get();
         let near = h
             .window
             .last()
-            .is_some_and(|last| last.pos.distance(press) <= WINDOW_ARC_TOLERANCES * tolerance);
+            .is_some_and(|last| last.pos.distance(press) <= scale);
         if near { h.window } else { Vec::new() }
     }
 
@@ -316,7 +321,6 @@ mod tests {
     /// and a raw NaN never handed a press its run-up.
     #[test]
     fn the_hover_reads_the_tolerance_the_fit_does() {
-        use crate::path::clamp_tolerance;
         use crate::session::fixtures::UNUSABLE_TOLERANCES;
 
         // Which reports the window accepted, and whether the press took a run-up.
@@ -346,7 +350,7 @@ mod tests {
             for gap in [0.5, 30.0] {
                 assert_eq!(
                     run(raw, gap),
-                    run(clamp_tolerance(raw), gap),
+                    run(InputTolerance::new(raw).get(), gap),
                     "tolerance {raw}, press {gap} px on"
                 );
             }

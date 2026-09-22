@@ -4,6 +4,7 @@
 //! sits between the three.
 
 use super::arclen::{ARC_SAMPLES_PER_SPAN, arc_profile_into, param_at};
+use super::tolerance::InputTolerance;
 use super::{frozen_spans_for, span_count};
 use crate::command::InputSample;
 use crate::spline::{CubicBSpline, Observations, SplineIndex};
@@ -49,8 +50,9 @@ fn frozen_at(m: usize) -> usize {
 /// number decides both how detailed the curve is and how promptly the stroke settles
 /// behind the pointer.
 ///
-/// Measured on the six recorded strokes at [`DEFAULT_TOLERANCE`] — worst *live* error
-/// and control-point count:
+/// Measured on the six recorded strokes at
+/// [`DEFAULT_TOLERANCE`](super::DEFAULT_TOLERANCE) — worst *live* error and
+/// control-point count:
 ///
 /// | price | C        | hairpin  | loop     | spiral   | big-C    | fast     |
 /// |-------|----------|----------|----------|----------|----------|----------|
@@ -78,43 +80,6 @@ pub(super) const KNOT_COST: f32 = 0.06;
 /// over a certain number of *input reports* — canvas px say nothing about how many of
 /// those a stretch of stroke holds.
 pub(super) const KNOT_SPACING: f32 = 64.0;
-
-/// The input tolerance assumed when a caller does not supply one: one canvas px,
-/// which is a mouse over a 1:1 view — what the two prices above were measured
-/// against.
-pub const DEFAULT_TOLERANCE: f32 = 1.0;
-
-/// Bounds a supplied tolerance is held to.
-///
-/// Zero (or negative) would make a control point free and every sample worth one.
-/// The ceiling is 64 canvas px per input px — past the most zoomed-out view
-/// [`ViewTransform`](crate::view::ViewTransform) allows — and is what keeps the
-/// window advancing, and so the per-sample work bounded, rather than letting a
-/// stroke never grow a control point at all.
-///
-/// `pub` so the tolerance sweep in `benches/path.rs`, which holds the fit's cost flat
-/// *to the top of this range*, can name the bound rather than restate it.
-pub const MIN_TOLERANCE: f32 = 1.0 / 64.0;
-
-/// See [`MIN_TOLERANCE`].
-pub const MAX_TOLERANCE: f32 = 64.0;
-
-/// A caller's declared input resolution held to the bounds above, with
-/// [`DEFAULT_TOLERANCE`] for a non-finite one — **the** statement of what a
-/// tolerance may be.
-///
-/// One function rather than a clamp at each door, because two stages of the input path
-/// read the tolerance and have to agree about it: the fit prices its two thresholds in
-/// it ([`PathFitter::with_tolerance`]), and the towed tip measures against it how far
-/// its own bend is still worth sampling (§6.11). Two copies of the bounds would let a
-/// rope be measured against a tolerance the fitter had already clamped away.
-pub(crate) fn clamp_tolerance(tolerance: f32) -> f32 {
-    if tolerance.is_finite() {
-        tolerance.clamp(MIN_TOLERANCE, MAX_TOLERANCE)
-    } else {
-        DEFAULT_TOLERANCE
-    }
-}
 
 /// Curvature penalty on the control polygon, as a fraction of the data's own pull
 /// (see [`SplineIndex::fit_into`](crate::spline::SplineIndex::fit_into)).
@@ -215,8 +180,8 @@ pub struct PathFitter {
     settled_profile: Vec<f32>,
     /// Arc at which the polygon last gained a control point.
     grown_at: f32,
-    /// The input's own positional resolution, in canvas px (see [`Self::with_tolerance`]).
-    tolerance: f32,
+    /// The input's own positional resolution (see [`Self::with_tolerance`]).
+    tolerance: InputTolerance,
     /// Absolute time of the first sample; channel times are relative to it.
     t0: f64,
     /// Arc at the stroke's own first sample — the press, which the run-up
@@ -318,10 +283,10 @@ impl Default for PathFitter {
 
 impl PathFitter {
     pub fn new() -> Self {
-        Self::with_tolerance(DEFAULT_TOLERANCE)
+        Self::with_tolerance(InputTolerance::DEFAULT)
     }
 
-    /// A fitter for input whose positional resolution is `tolerance` **canvas px**.
+    /// A fitter for input whose positional resolution is `tolerance`.
     ///
     /// The one thing about the input the fit cannot work out for itself: how far apart
     /// two reports have to be before the difference means anything. Canvas px are the
@@ -329,10 +294,7 @@ impl PathFitter {
     /// as zoomed out, and a pen digitizer resolves far finer than a mouse at either —
     /// so the caller that owns the view transform states it, and the fit's two prices
     /// ([`KNOT_COST`], [`KNOT_SPACING`]) are denominated in it.
-    ///
-    /// Clamped to `[1/64, 64]`; a non-finite tolerance falls back to
-    /// [`DEFAULT_TOLERANCE`].
-    pub(crate) fn with_tolerance(tolerance: f32) -> Self {
+    pub(crate) fn with_tolerance(tolerance: InputTolerance) -> Self {
         Self {
             pts: Vec::new(),
             runup: Vec::new(),
@@ -342,7 +304,7 @@ impl PathFitter {
             arc: 0.0,
             settled_profile: Vec::new(),
             grown_at: 0.0,
-            tolerance: clamp_tolerance(tolerance),
+            tolerance,
             t0: 0.0,
             start_arc: None,
             start_param: 0.0,
@@ -491,8 +453,9 @@ impl PathFitter {
         // Both prices are quoted in the input's own units rather than in canvas px —
         // the error one squared, since it is compared against a mean square. See
         // `KNOT_COST` and `KNOT_SPACING`.
-        let price = KNOT_COST * self.tolerance * self.tolerance;
-        let spacing = KNOT_SPACING * self.tolerance;
+        let tolerance = self.tolerance.get();
+        let price = KNOT_COST * tolerance * tolerance;
+        let spacing = KNOT_SPACING * tolerance;
         let earns_it = err_as_is - err_grown > price || self.arc - self.grown_at > spacing;
         if earns_it {
             self.grown_at = self.arc;
@@ -1128,19 +1091,29 @@ fn grow_rows<const E: usize>(
     out
 }
 
-/// Fit a whole sample sequence in one call at [`DEFAULT_TOLERANCE`] — the batch form
-/// of [`PathFitter`], for tests and benches. Identical output to feeding the same
-/// samples one at a time and finishing.
+/// Fit a whole sample sequence in one call at
+/// [`DEFAULT_TOLERANCE`](super::DEFAULT_TOLERANCE) — the batch form of [`PathFitter`],
+/// for tests and benches. Identical output to feeding the same samples one at a time
+/// and finishing.
 pub fn fit(samples: &[InputSample]) -> Vec<ControlPoint> {
-    fit_with_tolerance(samples.iter().copied(), DEFAULT_TOLERANCE)
+    fit_at(samples.iter().copied(), InputTolerance::DEFAULT)
 }
 
-/// [`fit`] for input of a stated resolution (see [`PathFitter::with_tolerance`]):
+/// [`fit`] for input of a stated resolution (see [`PathFitter::with_tolerance`]), held
+/// to [`MIN_TOLERANCE`](super::MIN_TOLERANCE)`..=`[`MAX_TOLERANCE`](super::MAX_TOLERANCE):
 /// the path `End` would adopt for these samples, which is what makes anything built
 /// from it the commit's own pixels.
 pub fn fit_with_tolerance(
     samples: impl IntoIterator<Item = InputSample>,
     tolerance: f32,
+) -> Vec<ControlPoint> {
+    fit_at(samples, InputTolerance::new(tolerance))
+}
+
+/// [`fit_with_tolerance`] for a tolerance already held.
+pub(crate) fn fit_at(
+    samples: impl IntoIterator<Item = InputSample>,
+    tolerance: InputTolerance,
 ) -> Vec<ControlPoint> {
     let mut f = PathFitter::with_tolerance(tolerance);
     for s in samples {
@@ -1156,7 +1129,7 @@ mod tests {
     use crate::path::test_support::{
         RECORDED, bits, fit_incrementally, max_deviation, sample, split_runup, with_pen,
     };
-    use crate::path::{FLATTEN_TOLERANCE, flatten, flatten_spans, point_at};
+    use crate::path::{DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, flatten, flatten_spans, point_at};
     use proptest::prelude::*;
 
     /// Largest distance (canvas px) from any input sample to the fitted curve.

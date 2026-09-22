@@ -19,7 +19,7 @@ pub(crate) use shape::ShapeResult;
 use crate::assist::{AssistShape, PenProfile};
 use crate::command::InputSample;
 use crate::command::Tool;
-use crate::path::PathFitter;
+use crate::path::{InputTolerance, PathFitter};
 use crate::peer::{GestureView, Identity, LiveGesture};
 use crate::presence::{GestureSource, PresenceTx};
 use crate::tow::{Tow, TowString};
@@ -48,11 +48,10 @@ struct StrokeBuilder {
     /// the commit, the live fold and the wire cannot disagree about the frame.
     translation: stark_model::geom::IVec2,
     fitter: PathFitter,
-    /// What the frontend said this gesture's input resolves to (canvas px), held to
-    /// the fit's range ([`clamp_tolerance`](crate::path::clamp_tolerance)). Kept
-    /// because the drawing assist prices its recognition in the same unit the fit
-    /// does — see [`crate::assist`].
-    tolerance: f32,
+    /// What the frontend said this gesture's input resolves to. Kept because the
+    /// drawing assist prices its recognition in the same unit the fit does — see
+    /// [`crate::assist`].
+    tolerance: InputTolerance,
     /// Set once the gesture has been **held** and snapped to a shape (§6.9). From
     /// there the fitter stops being fed and this decides the path.
     assist: Option<Assist>,
@@ -451,7 +450,8 @@ impl Session {
     ///
     /// `seed` is the engine's, so it can be derived deterministically (§6.2).
     /// `tolerance` is what the frontend says its input resolves to, in canvas px
-    /// ([`PathFitter::with_tolerance`]). `rope` is the stroke-smoothing string length,
+    /// ([`PathFitter::with_tolerance`]), held to its range here (`InputTolerance`) and
+    /// nowhere else. `rope` is the stroke-smoothing string length,
     /// also canvas px (§6.11); `0` or anything unusable constructs no tow and feeds
     /// the fitter the raw samples. `translation` is the active layer's translation at
     /// the press (§14.12), pinned here so a translate landing mid-stroke cannot shear
@@ -464,9 +464,7 @@ impl Session {
         rope: f32,
         translation: stark_model::geom::IVec2,
     ) {
-        // Held to the fit's range once, so the run-up, the fitter, the tow and the
-        // assist all read the same number.
-        let tolerance = crate::path::clamp_tolerance(tolerance);
+        let tolerance = InputTolerance::new(tolerance);
         self.tool = Tool::Brush;
         self.selecting = None;
         // The hover window becomes the stroke's **run-up** (§6.2,
@@ -780,7 +778,6 @@ fn path_in_frame(
 mod tests {
     use super::*;
     use crate::assist::Assisted;
-    use crate::path::clamp_tolerance;
     use fixtures::{UNUSABLE_TOLERANCES, session};
     use stark_model::document::ShapeAction;
 
@@ -806,7 +803,7 @@ mod tests {
             Vec2::new(150.0 * u.cos(), 90.0 * u.sin())
         };
         for raw in UNUSABLE_TOLERANCES {
-            let held = clamp_tolerance(raw);
+            let held = InputTolerance::new(raw).get();
             assert_eq!(
                 snapped(raw, 12, speck),
                 snapped(held, 12, speck),

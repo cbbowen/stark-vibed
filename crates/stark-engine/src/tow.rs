@@ -30,6 +30,7 @@
 //! rules reach only what is derived *from* the record.
 
 use crate::command::InputSample;
+use crate::path::InputTolerance;
 use stark_model::geom::Vec2;
 
 /// Emission spacing while the tip is being dragged, as a fraction of the rope,
@@ -53,9 +54,9 @@ const EMIT_SPACING: f32 = 0.25;
 /// The bound is read off the tractrix rather than picked. The tip's offset from its
 /// straight asymptote is `2·rope·t/√(1+t²) ≤ 2·rope·t`, and the half-angle decays as
 /// `t = t₀·exp(−Δs/rope)` with `t₀ ≤ 1` — so the bend is under the input's own tolerance,
-/// and therefore invisible to the fit that tolerance prices ([`clamp_tolerance`](crate::path::clamp_tolerance)),
-/// after `rope · ln(2·rope/tolerance)`. Past it the run's final emission is the only one
-/// that carries anything.
+/// and therefore invisible to the fit that tolerance prices, after
+/// `rope · ln(2·rope/tolerance)`. Past it the run's final emission is the only one that
+/// carries anything.
 ///
 /// Two properties follow, and both are the point:
 ///
@@ -66,8 +67,8 @@ const EMIT_SPACING: f32 = 0.25;
 /// * **A rope at or under half the tolerance reaches zero**, so the tow emits exactly one
 ///   sample per report: the same rate as no tow at all, which is the right answer for
 ///   a string shorter than the pointer can resolve.
-fn bend_reach(rope: f32, tolerance: f32) -> f32 {
-    (2.0 * rope / tolerance).ln().max(0.0) * rope
+fn bend_reach(rope: f32, tolerance: InputTolerance) -> f32 {
+    (2.0 * rope / tolerance.get()).ln().max(0.0) * rope
 }
 
 /// The in-flight string, for the frontend's overlay (§6.11): drawn from the
@@ -91,11 +92,10 @@ pub struct TowString {
 #[derive(Clone, Debug)]
 pub(crate) struct Tow {
     rope: f32,
-    /// The input's own positional resolution, in canvas px — the same tolerance the
-    /// fit prices its thresholds in (`PathFitter::with_tolerance`), held to the
-    /// same bounds. What it decides here is how far the emission grid runs: see
-    /// [`bend_reach`].
-    tolerance: f32,
+    /// The input's own positional resolution — the same tolerance the fit prices its
+    /// thresholds in (`PathFitter::with_tolerance`). What it decides here is how far
+    /// the emission grid runs: see [`bend_reach`].
+    tolerance: InputTolerance,
     tip: Vec2,
     /// The last raw report — the target the string runs to. Kept whole (not
     /// just the position) because a run's emissions interpolate the pen
@@ -104,32 +104,28 @@ pub(crate) struct Tow {
 }
 
 impl Tow {
-    /// A tow of `rope` canvas px over input that resolves to `tolerance` canvas px,
-    /// tip parked on the first report.
+    /// A tow of `rope` canvas px over input that resolves to `tolerance`, tip parked on
+    /// the first report. `tolerance` is the one thing the tow cannot work out for
+    /// itself, and the same one the fitter is built with.
     ///
     /// Callers gate construction on `rope > 0` — a rope of zero is no tow, and the
     /// session feeds the fitter directly. A rope that is merely *small* needs no gate
     /// of its own: [`bend_reach`] takes it to one emission a report, which is that
     /// same rate.
     ///
-    /// `tolerance` is the caller's declared input resolution — the one thing the tow
-    /// cannot work out for itself, and the same number the fitter is built with — so
-    /// it is held to the same bounds by the same function
-    /// ([`clamp_tolerance`](crate::path::clamp_tolerance)).
-    ///
     /// # Panics
     ///
     /// In debug, on a `rope` that is not positive and finite. Substituting some
     /// positive rope here would put a smoothing the artist switched off back into the
     /// stroke, so the gate stays the caller's.
-    pub(crate) fn new(rope: f32, tolerance: f32, first: InputSample) -> Self {
+    pub(crate) fn new(rope: f32, tolerance: InputTolerance, first: InputSample) -> Self {
         debug_assert!(
             rope.is_finite() && rope > 0.0,
             "a tow of {rope} is not a tow; the caller gates on rope > 0"
         );
         Self {
             rope,
-            tolerance: crate::path::clamp_tolerance(tolerance),
+            tolerance,
             tip: first.pos,
             target: first,
         }
@@ -254,11 +250,7 @@ mod tests {
     /// `Engine::replay_stroke` declares and the coarsest tolerance any of these ropes
     /// meets.
     fn run(rope: f32, pts: &[Vec2]) -> (Tow, Vec<Vec2>) {
-        let mut tow = Tow::new(
-            rope,
-            crate::path::DEFAULT_TOLERANCE,
-            InputSample::at(pts[0]),
-        );
+        let mut tow = Tow::new(rope, InputTolerance::DEFAULT, InputSample::at(pts[0]));
         let mut out = Vec::new();
         for &p in &pts[1..] {
             tow.to(InputSample::at(p), &mut |s| out.push(s.pos));
@@ -369,11 +361,7 @@ mod tests {
         let pts: Vec<Vec2> = (0..12)
             .map(|i| Vec2::new(i as f32 * 80.0, if i % 2 == 0 { 0.0 } else { 120.0 }))
             .collect();
-        let mut tow = Tow::new(
-            rope,
-            crate::path::DEFAULT_TOLERANCE,
-            InputSample::at(pts[0]),
-        );
+        let mut tow = Tow::new(rope, InputTolerance::DEFAULT, InputSample::at(pts[0]));
         for pair in pts.windows(2) {
             let (a, b) = (pair[0], pair[1]);
             tow.to(InputSample::at(b), &mut |s| {
@@ -416,7 +404,11 @@ mod tests {
                     if rope <= 0.0 {
                         continue;
                     }
-                    let mut tow = Tow::new(rope, tolerance_in(res, zoom), sample(0.0, 0.0));
+                    let mut tow = Tow::new(
+                        rope,
+                        InputTolerance::new(tolerance_in(res, zoom)),
+                        sample(0.0, 0.0),
+                    );
                     // Reports 4 canvas px apart at this zoom: an unhurried hand at a
                     // few hundred hertz, which is the case a per-report walk costs
                     // seconds on.
@@ -445,7 +437,7 @@ mod tests {
     /// cliff into it at some threshold.
     #[test]
     fn a_rope_under_the_grain_emits_once_a_report() {
-        let mut tow = Tow::new(0.4, 1.0, sample(0.0, 0.0));
+        let mut tow = Tow::new(0.4, InputTolerance::new(1.0), sample(0.0, 0.0));
         for i in 1..=20 {
             let mut n = 0usize;
             tow.to(sample(i as f32 * 4.0, 0.0), &mut |_| n += 1);
@@ -466,11 +458,11 @@ mod tests {
     #[test]
     fn cutting_the_grid_short_does_not_move_the_tip() {
         // One report covering 4000 px at a 4 px rope: the grid covers the bend only.
-        let mut long = Tow::new(4.0, 1.0, sample(0.0, 0.0));
+        let mut long = Tow::new(4.0, InputTolerance::new(1.0), sample(0.0, 0.0));
         long.to(sample(4000.0, 0.0), &mut |_| {});
         // The same travel delivered in reports short enough that the grid covers
         // every one of them.
-        let mut fine = Tow::new(4.0, 1.0, sample(0.0, 0.0));
+        let mut fine = Tow::new(4.0, InputTolerance::new(1.0), sample(0.0, 0.0));
         for i in 1..=1000 {
             fine.to(sample(i as f32 * 4.0, 0.0), &mut |_| {});
         }
@@ -486,7 +478,7 @@ mod tests {
         use crate::path::PathFitter;
         let mut fitter = PathFitter::new();
         let first = sample(0.0, 0.0);
-        let mut tow = Tow::new(25.0, crate::path::DEFAULT_TOLERANCE, first);
+        let mut tow = Tow::new(25.0, InputTolerance::DEFAULT, first);
         fitter.push(first);
         for i in 1..=60 {
             let s = sample(i as f32 * 4.0, (i as f32 * 0.1).sin() * 3.0);

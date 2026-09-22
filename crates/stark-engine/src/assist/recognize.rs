@@ -7,7 +7,7 @@
 //! circle in it (§20.7): this is where a guide is *read*.
 
 use super::{AssistShape, Frame, Winding};
-use crate::path::{cumulative_lengths, locate, polyline_length};
+use crate::path::{InputTolerance, cumulative_lengths, locate, polyline_length};
 use stark_model::document::{AxisPencil, AxisPlane, Scaffold};
 use stark_model::geom::{Ellipse, Vec2, principal_axis};
 use std::f32::consts::TAU;
@@ -130,12 +130,16 @@ const PARAM_BINS: usize = 32;
 /// shape, never instead: only then does the grid get to say *which* line, or on which
 /// plane the ellipse is a circle. A curve that happens to bow along a fan line is still
 /// a curve, and the two bars cannot be traded against each other.
-pub(crate) fn recognize(trace: &[Vec2], tolerance: f32, guides: &Scaffold) -> Option<AssistShape> {
+pub(crate) fn recognize(
+    trace: &[Vec2],
+    tolerance: InputTolerance,
+    guides: &Scaffold,
+) -> Option<AssistShape> {
     if trace.len() < MIN_SAMPLES {
         return None;
     }
-    let min_size = MIN_SIZE * tolerance;
-    let floor = RESIDUAL_FLOOR * tolerance;
+    let min_size = MIN_SIZE * tolerance.get();
+    let floor = RESIDUAL_FLOOR * tolerance.get();
 
     if is_closed(trace)
         && let Some(fit) = fit_ellipse(trace)
@@ -516,7 +520,7 @@ mod tests {
     use stark_model::geom::Ellipse;
     use std::f32::consts::TAU;
 
-    const TOL: f32 = 1.0;
+    const TOL: InputTolerance = InputTolerance::DEFAULT;
 
     /// The recognizer with no guides on the screen — what every test but the §20.6
     /// and §20.7 ones is asking about.

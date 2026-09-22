@@ -18,7 +18,7 @@ pub(super) fn session(action: ShapeAction) -> Session {
     s
 }
 
-/// Input tolerances the fit would not use as given ([`crate::path::clamp_tolerance`]):
+/// Input tolerances the fit would not use as given ([`crate::path::InputTolerance`]):
 /// a pen past 16× zoom is under the floor, and the rest are one bad division away.
 pub(super) const UNUSABLE_TOLERANCES: [f32; 5] = [f32::NAN, 0.0, 1e-6, -1.0, f32::INFINITY];
 
