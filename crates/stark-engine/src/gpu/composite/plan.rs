@@ -15,9 +15,8 @@
 use std::ops::Range;
 
 use crate::gpu::tile::TilePairHandle;
-use stark_model::document::BlendMode;
 
-use super::blend::{self, BlendUniform};
+use super::blend::{BlendUniform, blend_uniform};
 use super::group::{CompositeGroup, CompositeItem, FilterDraw, GroupContent};
 use super::tiles::{Instance, MatteInstance, Ramp};
 
@@ -309,23 +308,6 @@ impl<'a> Plan<'a> {
             draws: start..self.draws.len(),
             clear,
         });
-    }
-}
-
-/// The blend pass's uniform for one merge (§18.0.4).
-///
-/// **The one place it is assembled**, screen and merge alike: `gpu::merge` runs this
-/// very pipeline on tile-sized targets (§14.11).
-///
-/// `opacity` is the caller's because the two mean different things by it: the screen
-/// folds the group's slider in here, where a merge has already folded the source
-/// layer's into its expansion and has nothing left to fade.
-pub(crate) fn blend_uniform(mode: BlendMode, clip: bool, opacity: f32) -> BlendUniform {
-    BlendUniform {
-        mode: blend::blend_code(mode),
-        k: mode.drago_k(),
-        clip: u32::from(clip),
-        opacity,
     }
 }
 

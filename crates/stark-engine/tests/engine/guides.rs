@@ -526,7 +526,8 @@ fn the_rays_are_drawn_where_the_camera_says_they_are() {
         assert!(changed > 100, "{lens:?}: only {changed} texels drew a ray");
         assert!(
             cut_away > 100,
-            "{lens:?}: only {cut_away} texels lie past a vanishing point, so this              pose does not exercise the cut at all",
+            "{lens:?}: only {cut_away} texels lie past a vanishing point, so this \
+             pose does not exercise the cut at all",
         );
 
         // Left as this client found it, so the next lens starts from one guide.

@@ -52,7 +52,5 @@ pub use substrate::{Substrate, SubstrateMap};
 /// browser has no thread to block.
 #[cfg(not(target_arch = "wasm32"))]
 pub use tile::TileChannels;
-pub use tile::{
-    AllocSource, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, MASK_TEX, TilePool, mask_tex_origin,
-};
+pub use tile::{AllocSource, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TilePool, mask_tex_origin};
 pub use transform::TransformRenderer;

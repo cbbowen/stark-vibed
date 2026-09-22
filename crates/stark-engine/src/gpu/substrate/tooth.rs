@@ -466,7 +466,8 @@ mod tests {
             let (c, f) = (row_mean(&coarse, 0, give), row_mean(&fine, 0, give));
             assert!(
                 c > f * 1.05,
-                "at give {give} the substrate laid coarser bore on {c} of the substrate and                  the finer one on {f} — the scale is not reaching the bake"
+                "at give {give} the substrate laid coarser bore on {c} of the substrate and \
+                 the finer one on {f} — the scale is not reaching the bake"
             );
         }
     }

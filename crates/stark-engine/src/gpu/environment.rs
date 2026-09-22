@@ -9,8 +9,6 @@
 //! (the engine embeds none); decoding and prefiltering happen here, on the CPU, once per
 //! environment.
 
-use serde::{Deserialize, Serialize};
-
 use crate::gpu::context::GpuContext;
 use crate::gpu::half::f32_to_f16;
 
@@ -21,7 +19,7 @@ use hdr::decode_hdr;
 /// Which environment a document is lit by. A view setting (not historized): it
 /// changes how the canvas *looks*, never the stored pixels. The set is open —
 /// future uploaded HDRs slot in here.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
 pub enum EnvironmentId {
     /// The procedural **reference** light: achromatic, generated on the fly, no HDR
     /// file. A soft overhead key over an ambient dome — enough directionality that

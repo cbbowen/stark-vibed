@@ -41,7 +41,7 @@
 //! answer, the adjustment being nonlinear, so filtering the stops is not filtering the
 //! ramp.
 
-use super::layer::{CompositeParams, Layer, LayerContent};
+use super::layer::{CompositeParams, Layer};
 use super::state::DocState;
 use stark_model::document::LayerId;
 
@@ -204,7 +204,7 @@ pub(crate) fn plan_at(site: &MergeSite<'_>) -> Option<MergePlan> {
         if !backdrop_is_dest || f.resamples() {
             return None;
         }
-        if !d.content_is_paint() || (!site.dest_is_carrier && d.is_group()) {
+        if !d.is_paintable() || (!site.dest_is_carrier && d.is_group()) {
             return None;
         }
         return Some(MergePlan {
@@ -230,7 +230,7 @@ pub(crate) fn plan_at(site: &MergeSite<'_>) -> Option<MergePlan> {
         // all three survive untouched and the base merges at full strength. The source
         // may carry **any** mode: the group's isolated content is
         // `merge_source(base, source)` either way.
-        if !d.content_is_paint() {
+        if !d.is_paintable() {
             return None;
         }
         d.composite
@@ -276,17 +276,10 @@ pub(crate) fn plan_at(site: &MergeSite<'_>) -> Option<MergePlan> {
 }
 
 /// Paint that carries nothing: the only shape either side of a merge may take today.
+/// A **matte** is neither merged nor merged into (§14.11), and a filter is merged but
+/// never merged into (§14.11.7), having no tiles to rewrite.
 fn is_plain_paint(l: &Layer) -> bool {
-    l.content_is_paint() && !l.is_group()
-}
-
-impl Layer {
-    /// Whether this layer's own content is painted tiles — a **matte** is neither
-    /// merged nor merged into (§14.11), and a filter is merged but never merged into
-    /// (§14.11.7), having no tiles to rewrite.
-    fn content_is_paint(&self) -> bool {
-        matches!(self.content, LayerContent::Paint(_))
-    }
+    l.is_paintable() && !l.is_group()
 }
 
 #[cfg(test)]

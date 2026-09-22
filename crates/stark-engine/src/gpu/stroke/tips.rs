@@ -709,7 +709,8 @@ mod tests {
                     let bound = if y.abs() <= 0.9 { 4e-3 } else { 3e-2 };
                     assert!(
                         (laid - want).abs() < bound,
-                        "hardness {hardness} at strength {a}: at y = {y:.4} the sweep                          lays {laid:.5}, not the {want:.5} its profile names",
+                        "hardness {hardness} at strength {a}: at y = {y:.4} the sweep \
+                         lays {laid:.5}, not the {want:.5} its profile names",
                     );
                 }
             }
@@ -742,7 +743,8 @@ mod tests {
                 // percent either side.
                 assert!(
                     tau <= super::super::budget::TAU_PER_PASS * 1.01,
-                    "hardness {hardness}: a pass lays {tau}, past the one pass every                      budget is priced in",
+                    "hardness {hardness}: a pass lays {tau}, past the one pass every \
+                     budget is priced in",
                 );
             }
         }
@@ -757,7 +759,8 @@ mod tests {
                 let tau = swept_tau(&depth, RES, row);
                 assert!(
                     tau <= core + 1e-2,
-                    "hardness {hardness}: row {row} lays {tau}, more than the                      centreline's {core}",
+                    "hardness {hardness}: row {row} lays {tau}, more than the \
+                     centreline's {core}",
                 );
             }
         }

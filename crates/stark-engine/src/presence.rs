@@ -243,8 +243,8 @@ impl PresenceTx {
         }
     }
 
-    /// This client's display name, as peers see it. Empty when none has been set, in
-    /// which case peers show [`default_name`] instead.
+    /// This client's display name, as peers see it.
+    #[cfg(test)]
     pub(crate) fn name(&self) -> &str {
         &self.name
     }

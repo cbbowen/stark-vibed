@@ -34,13 +34,30 @@ pub(crate) use stark_shaders::mirror::blend_common::Blend as BlendUniform;
 ///
 /// `Normal` reaches the pass only when the group is **clipped** or carries an opacity
 /// of its own (§14.4); an ordinary normal layer is the absence of a pass.
-pub(super) fn blend_code(mode: BlendMode) -> u32 {
+fn blend_code(mode: BlendMode) -> u32 {
     use stark_shaders::mirror::blend_common as bc;
     match mode {
         BlendMode::Normal => bc::MODE_NORMAL,
         BlendMode::Reinhard => bc::MODE_REINHARD,
         BlendMode::Drago { .. } => bc::MODE_DRAGO,
         BlendMode::Multiply => bc::MODE_MULTIPLY,
+    }
+}
+
+/// The blend pass's uniform for one merge (§18.0.4).
+///
+/// **The one place it is assembled**, screen and merge alike: `gpu::merge` runs this
+/// very pipeline on tile-sized targets (§14.11).
+///
+/// `opacity` is the caller's because the two mean different things by it: the screen
+/// folds the group's slider in here, where a merge has already folded the source
+/// layer's into its expansion and has nothing left to fade.
+pub(crate) fn blend_uniform(mode: BlendMode, clip: bool, opacity: f32) -> BlendUniform {
+    BlendUniform {
+        mode: blend_code(mode),
+        k: mode.drago_k(),
+        clip: u32::from(clip),
+        opacity,
     }
 }
 

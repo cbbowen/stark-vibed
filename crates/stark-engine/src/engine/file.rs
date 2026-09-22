@@ -187,7 +187,8 @@ impl Engine {
         if !missing.is_empty() {
             tracing::warn!(
                 ?missing,
-                "joining a session whose content has not arrived yet; the waitlist                  holds anything that depends on it"
+                "joining a session whose content has not arrived yet; the waitlist \
+                 holds anything that depends on it"
             );
         }
         // The empty document is on the log's initial substrate, so bind it — a timelapse

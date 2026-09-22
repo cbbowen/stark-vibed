@@ -8,9 +8,6 @@ use thiserror::Error;
 /// Errors produced by the engine and its GPU subsystem.
 #[derive(Debug, Error)]
 pub enum EngineError {
-    #[error("no suitable GPU adapter found")]
-    NoAdapter,
-
     #[error("failed to create GPU device: {0}")]
     RequestDevice(#[from] wgpu::RequestDeviceError),
 
@@ -56,7 +53,7 @@ pub enum EngineError {
     /// file that will not decode, a space this build lacks, content it was never
     /// given (§2). Folded in so a caller holding the engine still catches everything
     /// in one place, while `stark-net` and any other log-only consumer can match on
-    /// [`DocError`](stark_model::DocError) alone and never see `NoAdapter`.
+    /// [`DocError`](stark_model::DocError) alone and never see a GPU failure.
     #[error(transparent)]
     Document(#[from] stark_model::DocError),
 }

@@ -31,8 +31,8 @@ use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 
 // —— the tile texture's geometry, as the shaders address it ——————————————————
 //
-// These are the engine's, not the document's: a UV bias, a mask tile's edge length
-// and where its texture starts are all questions about how a pass samples a texture.
+// These are the engine's, not the document's: a UV bias and where a mask tile's
+// texture starts are both questions about how a pass samples a texture.
 // Nothing in the model reads any of them — a footprint quantizes against `TILE_SIZE`
 // and pads by `TILE_APRON`, which is the whole of what a *log* is addressed in.
 
@@ -42,9 +42,6 @@ use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 /// the interior edge then fall into the apron (neighbor content), not a clamp.
 pub const INTERIOR_UV_SCALE: f32 = TILE_SIZE as f32 / TILE_TEX as f32;
 pub const INTERIOR_UV_BIAS: f32 = TILE_APRON as f32 / TILE_TEX as f32;
-
-/// The mask tile's edge length, for the shaders that place it in a region.
-pub const MASK_TEX: u32 = TILE_TEX;
 
 /// The tile geometry a mask tile is rasterized over: its texture's top-left in canvas
 /// px (the interior origin, shifted out by the apron — §6.4).

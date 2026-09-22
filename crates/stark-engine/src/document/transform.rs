@@ -7,6 +7,16 @@
 
 use std::collections::BTreeMap;
 
+use stark_model::document::{
+    Homography, Lattice, MAX_TRANSFORM_TILES, TransformMap, affine_usable, cell_point, rect_corners,
+};
+use stark_model::geom::{
+    Affine2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, TileRect, Vec2, tile_box, tiles_of,
+};
+
+use super::selection::Selection;
+use crate::gpu::tile::TileMap;
+
 /// How the author's selection stands over one populated tile.
 #[derive(Copy, Clone, PartialEq, Eq)]
 enum Class {
@@ -33,16 +43,6 @@ fn classify(selection: &Selection, coord: TileCoord) -> Class {
         None => Class::Untouched,
     }
 }
-
-use stark_model::document::{
-    Homography, Lattice, MAX_TRANSFORM_TILES, TransformMap, affine_usable, cell_point, rect_corners,
-};
-use stark_model::geom::{
-    Affine2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, TileRect, Vec2, tile_box, tiles_of,
-};
-
-use super::selection::Selection;
-use crate::gpu::tile::TileMap;
 
 /// Ceiling on candidate destination tiles *examined*, before the exact quad-vs-tile
 /// test: a pathological affine's bounding box can cover astronomically many tiles the
@@ -216,11 +216,7 @@ fn cover_of(
     // — the granularity `gate_for` binds at — so the cover is the keys themselves,
     // not their apron neighbourhoods.
     if translation == stark_model::geom::IVec2::ZERO {
-        let mut out: Vec<TileCoord> = keys
-            .filter(|c| {
-                c.x >= rect.min.0 && c.x <= rect.max.0 && c.y >= rect.min.1 && c.y <= rect.max.1
-            })
-            .collect();
+        let mut out: Vec<TileCoord> = keys.filter(|c| rect.contains(*c)).collect();
         out.sort();
         out.dedup();
         return out;
@@ -242,10 +238,10 @@ fn cover_of(
                 let (Ok(x), Ok(y)) = (i32::try_from(dx), i32::try_from(dy)) else {
                     continue;
                 };
-                if x < rect.min.0 || x > rect.max.0 || y < rect.min.1 || y > rect.max.1 {
-                    continue;
+                let c = TileCoord::new(x, y);
+                if rect.contains(c) {
+                    out.push(c);
                 }
-                out.push(TileCoord::new(x, y));
             }
         }
     }

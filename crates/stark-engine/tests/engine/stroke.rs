@@ -516,7 +516,8 @@ fn a_stroke_commits_the_tiles_it_previewed() {
     let fresh = replayed.render_to_image();
     assert!(
         images_match(&committed, &fresh, 4),
-        "the previewed render and a whole render of the same stroke disagree by          more than the seam bound: worst {} levels",
+        "the previewed render and a whole render of the same stroke disagree by \
+         more than the seam bound: worst {} levels",
         diff_fraction(&committed, &fresh).1
     );
 }

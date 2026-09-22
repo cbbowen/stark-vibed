@@ -356,20 +356,23 @@ impl Engine {
         // its id from `id` is caught here and not by two peers disagreeing about which
         // layer a stroke landed on. Both halves of the id: the shared action id makes
         // them this action's, and `k` makes a duplicate's two layers each other's.
-        let minted: Vec<LayerId> = kind.minted_layers().collect();
-        debug_assert!(
-            minted.iter().all(|layer| layer.action == id),
-            "{} mints a layer id that is not this action's",
-            kind.label(),
-        );
-        debug_assert!(
-            minted
-                .iter()
-                .enumerate()
-                .all(|(i, l)| !minted[..i].contains(l)),
-            "{} mints one layer id twice",
-            kind.label(),
-        );
+        #[cfg(debug_assertions)]
+        {
+            let minted: Vec<LayerId> = kind.minted_layers().collect();
+            assert!(
+                minted.iter().all(|layer| layer.action == id),
+                "{} mints a layer id that is not this action's",
+                kind.label(),
+            );
+            assert!(
+                minted
+                    .iter()
+                    .enumerate()
+                    .all(|(i, l)| !minted[..i].contains(l)),
+                "{} mints one layer id twice",
+                kind.label(),
+            );
+        }
         self.commit_with_id(id, kind);
         id
     }

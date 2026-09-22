@@ -163,10 +163,10 @@ fn view_groups(p: &CompositorPipeline) -> ViewGroups<'_> {
     }
 }
 
+pub(crate) use blend::blend_uniform;
 pub use group::{CompositeGroup, CompositeItem, FilterDraw, MatteDraw};
 pub use media::MediaParams;
 pub use overlay::SelectionOutline;
-pub(crate) use plan::blend_uniform;
 pub(crate) use view::view_uniform;
 
 /// What [`Streams::upload`] hands the encoder: the per-tile bind groups, and the

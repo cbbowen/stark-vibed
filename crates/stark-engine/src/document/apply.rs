@@ -123,7 +123,6 @@ impl Clone for ApplyCtx {
 ///
 /// Kept for one push rather than cached: the tiles hold every fresh tile the stroke
 /// wrote, so a slot that outlived its commit would pin a stroke's worth of GPU memory.
-#[derive(Clone)]
 pub(crate) struct PreparedStroke {
     /// The record the tiles are a render of — compared whole, because the commit
     /// re-derives its record from the fitter at pen-up and sanitizes it on the way
@@ -485,7 +484,7 @@ impl Materialize for DocState {
     fn unfold(&mut self, action: &Action, footprint: &Footprint, previous: &DocState) {
         #[cfg(debug_assertions)]
         let before = self.clone();
-        *self = super::patch::unapply(action, footprint, previous, self);
+        *self = super::patch::unapply(footprint, previous, self);
         #[cfg(debug_assertions)]
         super::audit::audit(&before, self, action, footprint);
     }

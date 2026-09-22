@@ -42,6 +42,10 @@ use crate::gpu::tile::{TexHandle, TileMap, TilePairHandle};
 use stark_model::geom::{TileCoord, TileRect};
 
 /// The state a sequence of liquify strokes composes through — see the module.
+///
+/// `Default` is the run that has read and written nothing: the identity over the
+/// picture as it stands, which is what a stroke starts from when the layer has no run
+/// or its run has gone stale under it.
 #[derive(Clone, Default)]
 pub struct LiquifyRun {
     base: HashTrieMap<TileCoord, Option<TilePairHandle>>,
@@ -51,13 +55,6 @@ pub struct LiquifyRun {
 }
 
 impl LiquifyRun {
-    /// A run that has read and written nothing: the identity over the picture as it
-    /// stands, which is what a stroke starts from when the layer has no run or its
-    /// run has gone stale under it.
-    pub(crate) fn fresh() -> Self {
-        Self::default()
-    }
-
     /// Whether the layer's tiles are what this run expects everywhere it has read or
     /// written **inside `within`** — the stroke's declared read rect, and the only
     /// tiles it may consult (§12.6).
@@ -98,12 +95,6 @@ impl LiquifyRun {
     /// written nothing.
     pub(crate) fn reach_at(&self, c: TileCoord) -> f32 {
         self.reach.get(&c).copied().unwrap_or(0.0)
-    }
-
-    /// Whether the run has written anything at all — a run that has not is the
-    /// identity, and costs nothing to keep.
-    pub fn is_identity(&self) -> bool {
-        self.field.is_empty()
     }
 
     /// How many tiles the run has written.

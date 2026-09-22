@@ -23,10 +23,10 @@ use std::sync::{Arc, OnceLock};
 use crate::document::selection::Selection;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
-use crate::gpu::{MASK_TEX, mask_tex_origin};
+use crate::gpu::mask_tex_origin;
 use crate::view::Extent2;
 use stark_model::document::{SelectionOp, SelectionShape};
-use stark_model::geom::{TileCoord, Vec2};
+use stark_model::geom::{TILE_TEX, TileCoord, Vec2};
 
 /// The lasso's closed edge list, as `selection.wesl` reads it: one texel per edge
 /// holding `(a.xy, b.xy)` in canvas px. Empty for a polygon that cannot enclose area.
@@ -373,7 +373,7 @@ impl SelectionRenderer {
         // Leased for the same reason the target is: a live stroke re-gathers this per
         // piece per pointer move.
         let u = RegionUniform {
-            a: [w as f32, h as f32, MASK_TEX as f32, 0.0],
+            a: [w as f32, h as f32, TILE_TEX as f32, 0.0],
         };
         let ubuf = scope.take_piece_buffer(BufKey {
             size: std::mem::size_of_val(&u) as u64,
@@ -483,7 +483,7 @@ impl SelectionRenderer {
             .map(|coord| {
                 let origin = mask_tex_origin(*coord);
                 MaskUniform {
-                    a: [origin.x, origin.y, 2.0 / MASK_TEX as f32, feather],
+                    a: [origin.x, origin.y, 2.0 / TILE_TEX as f32, feather],
                     b,
                     c,
                 }

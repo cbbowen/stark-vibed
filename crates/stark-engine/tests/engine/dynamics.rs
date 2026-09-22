@@ -786,7 +786,8 @@ fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
     let growth = after / before;
     assert!(
         growth <= 1.0,
-        "a conservative smear left {:.1}% more height on the canvas than it found          — the tool is minting paint",
+        "a conservative smear left {:.1}% more height on the canvas than it found \
+         — the tool is minting paint",
         (growth - 1.0) * 100.0
     );
 }
@@ -1160,7 +1161,9 @@ fn a_carried_stroke_is_independent_of_how_the_path_was_cut() {
     eprintln!("length-independence: {worst} levels max, {rms:.2} rms");
     assert!(
         worst <= 4,
-        "the same visible stretch of stroke came out {worst} levels apart ({rms:.2} rms)          depending on where the pen went afterwards — the exchange's transport error is          tracking the segment cadence"
+        "the same visible stretch of stroke came out {worst} levels apart ({rms:.2} rms) \
+         depending on where the pen went afterwards — the exchange's transport error is \
+         tracking the segment cadence"
     );
 }
 

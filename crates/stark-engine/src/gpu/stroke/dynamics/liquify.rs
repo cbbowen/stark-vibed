@@ -93,7 +93,7 @@ impl StrokeRenderer {
         let kept = within.count() <= MAX_RUN_TILES;
         let mut run = match scene.liquify {
             Some(run) if kept && run.is_fresh(scene.base, within) => (**run).clone(),
-            _ => LiquifyRun::fresh(),
+            _ => LiquifyRun::default(),
         };
         // Recorded for **every** tile of the declared reach rather than for the tiles
         // this range's pieces happen to composite: the base's domain is then a function
@@ -121,7 +121,7 @@ impl StrokeRenderer {
             // recorded, unsubmitted commands read and write, so the scope holds it
             // until that submit rather than handing them back to the pool now.
             if walk.cuts.contains(&piece.start) {
-                let old = std::mem::replace(&mut draw.run, LiquifyRun::fresh());
+                let old = std::mem::take(&mut draw.run);
                 draw.scope.hold(old);
                 if kept {
                     record_base(&mut draw.run, &map, within);
@@ -142,7 +142,7 @@ impl StrokeRenderer {
         let run = draw.finish();
         // A run past the tile cap is not kept: the tiles ride out under the identity,
         // and the next stroke resamples the picture as this one did.
-        let run = if kept { run } else { LiquifyRun::fresh() };
+        let run = if kept { run } else { LiquifyRun::default() };
         (
             Painted {
                 tiles: map,

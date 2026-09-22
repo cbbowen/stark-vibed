@@ -660,7 +660,8 @@ fn the_loop_lays_the_pen_driven_ceiling_the_fast_path_lays() {
     // ceiling that stopped varying; it does not measure the fit.
     assert!(
         apart(bore, eased) > 10,
-        "the pressure ramp did not reach the ceiling ({bore:?} against {eased:?}), so this          test measured nothing"
+        "the pressure ramp did not reach the ceiling ({bore:?} against {eased:?}), so this \
+         test measured nothing"
     );
 }
 

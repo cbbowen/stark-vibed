@@ -22,8 +22,8 @@ use super::selection::Selection;
 use super::state::{DocState, Guide, LayerSite};
 use crate::gpu::tile::TilePairHandle;
 use stark_model::Srgb;
+use stark_model::document::ActorId;
 use stark_model::document::Filter;
-use stark_model::document::{Action, ActorId};
 use stark_model::document::{BlendMode, LayerId, MatteRegion};
 use stark_model::document::{Footprint, Prop, Resource};
 use stark_model::geom::{TileCoord, TileRect};
@@ -138,80 +138,43 @@ impl PatchOp {
     }
 }
 
-/// `state` with every resource `action` writes restored to the value it holds
+/// `state` with every resource `footprint` writes restored to the value it holds
 /// in `previous` — the state the action was originally applied to. Valid
-/// exactly when every action applied between the two commutes with `action`
+/// exactly when every action applied between the two commutes with that action
 /// (the `Action::inverse` contract, which the history's commutation gate
-/// upholds).
-pub fn unapply(
-    action: &Action,
-    footprint: &Footprint,
-    previous: &DocState,
-    state: &DocState,
-) -> DocState {
-    StatePatch::capture(action, footprint, previous, state).restore(state)
-}
-
-/// The written resources of one action, with the values they held in a chosen
-/// state — apply with [`restore`](StatePatch::restore) to put those values back.
-struct StatePatch {
-    ops: Vec<PatchOp>,
-}
-
-impl StatePatch {
-    /// The patch that rewrites what `action` writes back to the values `to`
-    /// holds, diffed against `from` so untouched entries cost nothing.
-    ///
-    /// **Driven by the footprint's own write list**, resource for resource, rather
-    /// than by a second match on [`ActionKind`](stark_model::document::ActionKind) —
-    /// which is what makes "a patch restores exactly what the action declared" true by
-    /// construction instead of by inspection. A kind whose footprint grows a resource
-    /// grows the op that puts it back in the same edit.
-    ///
-    /// `Undo` falls out rather than needing an arm: it is never materialized, which
-    /// is why its footprint is empty, so it captures nothing.
-    fn capture(
-        action: &Action,
-        footprint: &Footprint,
-        to: &DocState,
-        from: &DocState,
-    ) -> StatePatch {
-        let mut ops = Vec::new();
-        // **Existence first**, whatever order a footprint happens to list its writes
-        // in. A layer has to be back in the tree before anything can put its tiles,
-        // its properties or the tree's shape right — `restore_structure` in
-        // particular arranges records it does not create, and drops a layer the shape
-        // names but the state has lost. Partitioning here rather than relying on the
-        // footprints being written that way is what keeps that from being a rule
-        // `footprint.rs` has to remember.
-        //
-        // `action` is unread: a patch is built from *what was written*, and the
-        // cached footprint beside it is the whole of that. The parameter stays
-        // because `Materialize::unfold` hands both down.
-        let _ = action;
-        let (existence, rest): (Vec<&Resource>, Vec<&Resource>) = footprint
-            .writes
-            .iter()
-            .partition(|r| matches!(r, Resource::Existence(_)));
-        for resource in existence.into_iter().chain(rest) {
-            capture_resource(resource, to, from, &mut ops);
-        }
-        StatePatch { ops }
+/// upholds). Entries `state` already agrees on cost nothing.
+///
+/// **Driven by the footprint's own write list**, resource for resource, rather
+/// than by a second match on [`ActionKind`](stark_model::document::ActionKind) —
+/// which is what makes "a patch restores exactly what the action declared" true by
+/// construction instead of by inspection. A kind whose footprint grows a resource
+/// grows the op that puts it back in the same edit.
+///
+/// `Undo` falls out rather than needing an arm: it is never materialized, which
+/// is why its footprint is empty, so it restores nothing.
+pub fn unapply(footprint: &Footprint, previous: &DocState, state: &DocState) -> DocState {
+    let mut ops = Vec::new();
+    // **Existence first**, whatever order a footprint happens to list its writes
+    // in. A layer has to be back in the tree before anything can put its tiles,
+    // its properties or the tree's shape right — `restore_structure` in
+    // particular arranges records it does not create, and drops a layer the shape
+    // names but the state has lost. Partitioning here rather than relying on the
+    // footprints being written that way is what keeps that from being a rule
+    // `footprint.rs` has to remember.
+    let (existence, rest): (Vec<&Resource>, Vec<&Resource>) = footprint
+        .writes
+        .iter()
+        .partition(|r| matches!(r, Resource::Existence(_)));
+    for resource in existence.into_iter().chain(rest) {
+        capture_resource(resource, previous, state, &mut ops);
     }
-
-    /// Write the captured values back into `state`.
-    fn restore(&self, state: &DocState) -> DocState {
-        let mut state = state.clone();
-        for op in &self.ops {
-            state = op.restore(&state);
-        }
-        state
-    }
+    ops.iter()
+        .fold(state.clone(), |state, op| op.restore(&state))
 }
 
 /// Record what `to` holds for one written resource — the map from the [`Footprint`]
 /// vocabulary to the [`PatchOp`] that puts that resource back, and the whole of the
-/// correspondence [`StatePatch::capture`] rests on.
+/// correspondence [`unapply`] rests on.
 ///
 /// Silence is a real answer here and it means "nothing of this action's to restore":
 /// a layer absent on both sides (the action no-oped), a `Matte` prop on something
@@ -219,11 +182,11 @@ impl StatePatch {
 fn capture_resource(resource: &Resource, to: &DocState, from: &DocState, ops: &mut Vec<PatchOp>) {
     match resource {
         Resource::Paint(layer, rect) => tile_diff(*layer, *rect, to, from, ops),
-        Resource::Existence(id) => match (to.site_of(*id), from.contains_layer(*id)) {
+        Resource::Existence(id) => match (to.locate(*id), from.contains_layer(*id)) {
             (None, true) => ops.push(PatchOp::Absent(*id)),
-            (Some(site), false) => ops.push(PatchOp::Present {
+            (Some((layer, site)), false) => ops.push(PatchOp::Present {
                 site,
-                layer: to.layer(*id).expect("sited layer exists").clone(),
+                layer: layer.clone(),
             }),
             // Present or absent on both sides: the action no-oped.
             _ => {}
@@ -422,7 +385,7 @@ mod tests {
     /// a test builds a bare `Action`, so this is where it is derived — in one helper,
     /// so a test cannot hand `unapply` a footprint that is not this action's.
     fn undo(action: &Action, before: &DocState, after: &DocState) -> DocState {
-        unapply(action, &compute_footprint(action), before, after)
+        unapply(&compute_footprint(action), before, after)
     }
 
     /// The action folded into `state` — **the fold itself**, through the half of
@@ -440,7 +403,7 @@ mod tests {
     use super::super::apply::{Folded, apply_pure};
     use super::super::audit::undeclared;
     use stark_model::document::Place;
-    use stark_model::document::{ActionId, ActionKind, ActionTag, GuideId};
+    use stark_model::document::{Action, ActionId, ActionKind, ActionTag, GuideId};
     use stark_model::{AssetId, SubstrateId, SubstrateScale};
 
     const A: LayerId = LayerId::ROOT;
@@ -593,7 +556,7 @@ mod tests {
             "the undone action's own write has to be restored",
         );
         assert_eq!(
-            back.layer_name(C),
+            back.layer(C).and_then(|l| l.name.as_deref()),
             Some("sky"),
             "a commuting edit in the gap has to survive the restore",
         );
@@ -654,7 +617,7 @@ mod tests {
         let back = undo(&action, &before, &after);
         assert_eq!(shape(&back), shape(&before), "the move came back out");
         assert_eq!(
-            back.layer_name(C),
+            back.layer(C).and_then(|l| l.name.as_deref()),
             Some("sky"),
             "the rebuild keeps the record it finds, not the one the shape was taken with",
         );
@@ -991,7 +954,7 @@ mod tests {
                 Vec::<String>::new(),
                 "{what}: the fold changed state its footprint does not declare",
             );
-            let back = unapply(&action, &footprint, &before, &after);
+            let back = unapply(&footprint, &before, &after);
             assert_eq!(
                 undeclared(&before, &back, &Footprint::default()),
                 Vec::<String>::new(),

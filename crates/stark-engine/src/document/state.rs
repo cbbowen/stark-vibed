@@ -479,7 +479,7 @@ impl DocState {
     /// **The one search this module does.** [`layer`](Self::layer),
     /// [`site_of`](Self::site_of) and [`carrier_of`](Self::carrier_of) are projections
     /// of it, and a duplicate needs both halves at once.
-    fn locate(&self, id: LayerId) -> Option<(&Layer, LayerSite)> {
+    pub(super) fn locate(&self, id: LayerId) -> Option<(&Layer, LayerSite)> {
         fn walk(
             layers: &Vector<Layer>,
             id: LayerId,
@@ -540,12 +540,6 @@ impl DocState {
         let mut top = 0;
         self.visit(&mut |l: &Layer, _| top = top.max(l.number.unwrap_or(0)));
         top.saturating_add(1)
-    }
-
-    /// What the layer with the given id is called, or `None` if it is unnamed —
-    /// or absent, which reads the same way here: neither has a name to give.
-    pub fn layer_name(&self, id: LayerId) -> Option<&str> {
-        self.layer(id).and_then(|l| l.name.as_deref())
     }
 
     /// Which layer carries `id`, or `None` when it sits in the root stack (or
@@ -738,26 +732,25 @@ impl DocState {
     /// [`Self::insert_guide`] make, and reachable from an ordinary undo rather than
     /// only from a crafted log: undoing a group's removal captures one
     /// `Resource::Layer` per layer in the subtree, and the group's own op puts the
-    /// whole subtree back before its children's ops are read (`patch::capture`).
+    /// whole subtree back before its children's ops are read (`patch::unapply`).
     pub(crate) fn restore_layer(&self, site: &LayerSite, layer: Layer) -> Self {
         if self.contains_layer(layer.id) {
             return self.clone();
         }
         let at = |stack: &Vector<Layer>| site.index.min(stack.len());
+        let on_top = || insert_at(&self.layers, self.layers.len(), &layer);
         let layers = match site.carrier {
-            None => Some(insert_at(&self.layers, at(&self.layers), &layer)),
+            None => insert_at(&self.layers, at(&self.layers), &layer),
             // A site whose carrier has become a filter (a crafted log — no action
             // this engine mints can produce one, see `cannot_carry`) falls back
             // exactly as a removed carrier does: restored rather than lost.
-            Some(_) if self.cannot_carry(site.carrier) => {
-                Some(insert_at(&self.layers, self.layers.len(), &layer))
-            }
+            Some(_) if self.cannot_carry(site.carrier) => on_top(),
             Some(c) => map_in(&self.layers, c, &mut |l: &Layer| {
                 l.with_carries(insert_at(&l.carries, at(&l.carries), &layer))
             })
-            .or_else(|| Some(insert_at(&self.layers, self.layers.len(), &layer))),
+            .unwrap_or_else(on_top),
         };
-        self.with_layers(layers.expect("restore always produces a stack"))
+        self.with_layers(layers)
     }
 
     /// Rewrite a layer's **content**, where `f` accepts it — the shape every content

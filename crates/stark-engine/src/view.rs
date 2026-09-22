@@ -847,7 +847,8 @@ mod tests {
                 let tile = tile_at(canvas);
                 assert!(
                     rect.contains(tile),
-                    "screen {screen:?} shows canvas {canvas:?}, in {tile:?}, which                      the cull dropped",
+                    "screen {screen:?} shows canvas {canvas:?}, in {tile:?}, which \
+                     the cull dropped",
                 );
             }
         }

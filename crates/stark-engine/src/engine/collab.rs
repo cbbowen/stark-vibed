@@ -381,9 +381,4 @@ impl Engine {
     pub fn peers(&self) -> impl Iterator<Item = &Peer> {
         self.peers.iter()
     }
-
-    /// This client's display name, as peers see it.
-    pub fn name(&self) -> &str {
-        self.session.name()
-    }
 }

@@ -410,7 +410,7 @@ pub(super) fn generate_segments_in(
     let end_dist = pts.last().map_or(dist0, |p| p.dist);
     // One segment per flattened edge at least; the taper only ever cuts an edge into
     // more. Reserved rather than grown from nothing because a commit's stroke runs to
-    // thousands of these, each ~100 bytes, on the interactive path.
+    // thousands of these on the interactive path.
     let mut segs = Vec::with_capacity(pts.len().saturating_sub(1));
     if pts.is_empty() {
         return (segs, end_dist);
@@ -1627,11 +1627,5 @@ mod tests {
             "the segment budget moved (update the counts if this was deliberate):\n{}",
             moved.join("\n")
         );
-    }
-    /// The reservation in `generate_segments_in` is sized on "each ~100 bytes"; this
-    /// is the number, so the comment cannot drift from the struct a second time.
-    #[test]
-    fn a_segment_is_the_size_the_reservation_assumes() {
-        assert_eq!(std::mem::size_of::<Segment>(), 104);
     }
 }

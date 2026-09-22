@@ -793,7 +793,8 @@ fn merging_a_neutral_filter_is_exact() {
     assert_eq!(
         rev(&engine),
         before_rev,
-        "a neutral filter merge rewrote the destination's tiles, so every thumbnail          keyed on them is stale for nothing",
+        "a neutral filter merge rewrote the destination's tiles, so every thumbnail \
+         keyed on them is stale for nothing",
     );
 }
 

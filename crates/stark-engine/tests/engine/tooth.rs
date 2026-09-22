@@ -678,7 +678,9 @@ fn a_toothed_transfer_delivers_the_whole_glob() {
     // same place as the un-toothed one and the difference would simply be gone.
     assert!(
         toothed > 0.025,
-        "the toothed glob ran out where the un-toothed one did ({toothed:.3} of its          ink past the two-thirds mark) — the tool is draining at the ungated rate          while the canvas accepts the gated share, so the difference is destroyed"
+        "the toothed glob ran out where the un-toothed one did ({toothed:.3} of its \
+         ink past the two-thirds mark) — the tool is draining at the ungated rate \
+         while the canvas accepts the gated share, so the difference is destroyed"
     );
 }
 

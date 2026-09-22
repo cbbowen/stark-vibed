@@ -326,12 +326,6 @@ impl Session {
     // What only the session knows — the active layer, the gesture in flight and its
     // ordinal — is handed over per call.
 
-    /// This client's display name, as peers see it. Empty when none has been set, in
-    /// which case peers show [`default_name`](crate::peer::default_name) instead.
-    pub fn name(&self) -> &str {
-        self.presence.name()
-    }
-
     /// Set the display name the user chose. **Sticky**: hosting or joining a session
     /// mints this client a new actor id, and
     /// [`adopt_identity`](Self::adopt_identity) will not overwrite a name set

@@ -77,7 +77,7 @@ impl CompositeItem {
 /// Deliberately **not** a `Filter`: the shader reads a code and two uniform lanes of
 /// floats, and which code a filter is numbered is a fact about `filter_common.wesl`
 /// rather than about the document (the split
-/// [`blend_code`](super::blend::blend_code) makes for a blend mode).
+/// [`blend_uniform`](super::blend::blend_uniform) makes for a blend mode).
 ///
 /// **Both [`CompositeParams`] a filter reads live here** rather than on the enclosing
 /// [`CompositeGroup`], because a filter merges nothing outward for them to describe

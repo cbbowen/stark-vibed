@@ -200,20 +200,24 @@ fn a_half_erase_is_the_half_covered_fill() {
         let (e, a) = (texel(&erased_img, p), texel(&asked_img, p));
         assert!(
             apart(e, a) <= 2,
-            "at {p:?} the half-erased bed {e:?} must be the half-covered fill              {a:?} — the dial is not landing in the coverage domain"
+            "at {p:?} the half-erased bed {e:?} must be the half-covered fill \
+             {a:?} — the dial is not landing in the coverage domain"
         );
         let (eh, eo) = paint_at(&erased, LayerId::ROOT, p).expect("the erased bed has a tile here");
         let (ah, ao) = paint_at(&asked, LayerId::ROOT, p).expect("the filled bed has a tile here");
         assert!(
             (eo - ao).abs() <= 0.01,
-            "at {p:?} the half-erased bed's per-unit opacity {eo} must be the              half-covered fill's {ao} — the dial left the coverage domain, which a              render at this height cannot show"
+            "at {p:?} the half-erased bed's per-unit opacity {eo} must be the \
+             half-covered fill's {ao} — the dial left the coverage domain, which a \
+             render at this height cannot show"
         );
         // Loose against the two, because the claim is `exp(−OPAQUE_MASS)` and not
         // equality: what the eraser leaves is a bed thin enough to be transparent at
         // that opacity, not the same slab.
         assert!(
             (eh - ah).abs() <= 0.05 * ah.max(1.0),
-            "at {p:?} the half-erased height {eh} is nowhere near the half-covered              fill's {ah}"
+            "at {p:?} the half-erased height {eh} is nowhere near the half-covered \
+             fill's {ah}"
         );
     }
 }
