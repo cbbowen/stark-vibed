@@ -1035,10 +1035,11 @@ fn arc_weights(pts: &[Accepted], idx: &[usize], out: &mut Vec<f32>) {
 ///
 /// **64 is 16 observations per free control point** — the window solves for four —
 /// which is ample for least squares over input whose whole problem is jitter. Set from
-/// what the fit needs, not from what leaves the goldens alone: the accuracy it trades
-/// is under 0.1% (`thinning_the_window_does_not_cost_the_fit_its_accuracy`), and the
-/// cost of a report is linear in this number, so a larger budget gives back most of the
-/// win on exactly the dense strokes that were quadratic.
+/// what the fit needs, not from what leaves the goldens alone: what it trades is a
+/// growth decision now and then, measured within half a px of the unthinned fit
+/// (`thinning_the_window_does_not_cost_the_fit_its_accuracy`), and the cost of a report
+/// is linear in this number, so a larger budget gives back most of the win on exactly
+/// the dense strokes that were quadratic.
 ///
 /// [`window_indices`] is the identity under budget and `arc_weights` then reduces to
 /// the plain rule, so a stroke whose window fits is bit-identical to an unbounded fit.
@@ -1529,54 +1530,56 @@ mod tests {
     }
 
     /// **Thinning the window does not cost the fit its accuracy** — the one risk the
-    /// bound carries.
+    /// bound carries ([`MAX_WINDOW_SAMPLES`]).
     ///
-    /// Measured against every report, *including the ones no solve ever saw*: if a
-    /// survivor list let the curve wander off the stretches it skipped, this is where
-    /// it would show. At 3200 reports the window is thinned throughout; at 200 it is
-    /// under budget and untouched.
+    /// Every report, *including the ones no solve ever saw*, has to sit within a couple
+    /// of tolerances of the fitted curve: a survivor list that let the curve wander off
+    /// the stretches it skipped would show here. One bar at every rate, over a 32× range
+    /// of density whose dense end is thinned, so accuracy that degraded as the reports
+    /// got denser would cross it there first.
     ///
-    /// Both bars are calibrated from measurement, thinned against unthinned. The
-    /// absolute one catches a selection that lost the curve outright; the ratio
-    /// catches accuracy that degrades as the reports get denser, which is what
-    /// thinning too hard looks like. Measured, thinning moves the fit by under 0.1% at
-    /// every rate, and the ~12% spread across the rates is the density policy's own
-    /// smoothing, which `KNOT_COST` owns.
-    ///
-    /// The deviations are large in absolute terms because this curve is far coarser
-    /// than [`DEFAULT_TOLERANCE`] is asked to trace (90 px of amplitude over 400 px,
-    /// against a knot every 64 px): the fit is *meant* to smooth it.
+    /// Measured worst 1.27 px (the sine at 800 reports), and within 0.5 px of the same fit
+    /// unthinned at every rate; the bar is about twice the worst.
     #[test]
     fn thinning_the_window_does_not_cost_the_fit_its_accuracy() {
-        let curve = |t: f32| Vec2::new(t * 400.0, (t * 2.2).sin() * 90.0);
-        let deviation = |n: usize| -> f32 {
-            let pts: Vec<InputSample> = (0..n)
-                .map(|i| {
-                    let p = curve(i as f32 / (n - 1) as f32);
-                    sample(p.x, p.y)
-                })
-                .collect();
-            let poly = flatten(&fit(&pts), FLATTEN_TOLERANCE);
-            pts.iter()
-                .map(|r| {
-                    poly.iter()
-                        .map(|s| (s.pos - r.pos).length())
-                        .fold(f32::MAX, f32::min)
-                })
-                .fold(0.0f32, f32::max)
-        };
-        let sparse = deviation(200);
-        for n in [200usize, 800, 3200] {
-            let worst = deviation(n);
-            assert!(
-                worst < 35.0,
-                "{n} reports fitted {worst:.2}px off the curve they came from",
-            );
-            assert!(
-                worst < sparse * 1.25,
-                "{n} reports fitted {worst:.2}px off, against {sparse:.2}px unthinned \
-                 — thinning is costing accuracy as the rate rises",
-            );
+        // Where a curve is a fraction `t` of the way along it.
+        type Curve = fn(f32) -> Vec2;
+        let curves: [(&str, Curve); 2] = [
+            // 90 px of amplitude over 400 px, against a knot every 64 px or so.
+            ("sine", |t| Vec2::new(t * 400.0, (t * 2.2).sin() * 90.0)),
+            // Most of a turn of 150 px radius: tighter for the same knot spacing.
+            ("circle", |t| {
+                Vec2::new((t * 6.0).cos() * 150.0, (t * 6.0).sin() * 150.0)
+            }),
+        ];
+        for (name, curve) in curves {
+            for n in [200usize, 800, 3200, 6400] {
+                let pts: Vec<InputSample> = (0..n)
+                    .map(|i| {
+                        let p = curve(i as f32 / (n - 1) as f32);
+                        sample(p.x, p.y)
+                    })
+                    .collect();
+                let mut f = PathFitter::new();
+                let mut thinned = false;
+                for s in &pts {
+                    f.push(*s);
+                    let w = &f.scratch.get_mut().windows[0];
+                    thinned |= !w.idx.is_empty() && w.idx.len() < f.pts.len() - w.lo;
+                }
+                f.finish();
+                // The premise: without it this is a claim about the unthinned fit.
+                assert!(
+                    thinned || n < 6400,
+                    "{name}: {n} reports never thinned a window"
+                );
+                let poly = flatten(&f.path(), FLATTEN_TOLERANCE);
+                let worst = max_deviation(pts.iter().map(|s| s.pos), &poly);
+                assert!(
+                    worst < 2.5 * DEFAULT_TOLERANCE,
+                    "{name}, {n} reports: one sits {worst:.2}px off the fitted curve",
+                );
+            }
         }
     }
 
