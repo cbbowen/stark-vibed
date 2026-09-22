@@ -29,13 +29,15 @@
 //! [`SubmitScope`] is also what the renderers that rewrite whole tiles record
 //! through — the transform, the merge, the fill, the selection. Those four take
 //! their working tiles from [`TilePool`](crate::gpu::tile::TilePool) rather than from
-//! here; what they get from this type is the ordering.
+//! here; what they get from this type is the ordering, and the leased buffers their
+//! per-operation uniforms are staged into ([`SubmitScope::run_slots`]).
 //!
 //! Contents are **not** zeroed on reuse, and no consumer may rely on the
 //! zero-initialization a fresh texture gets. Every key taken here is audited against
 //! that: each target either loads with a clear, is fully copied into, or is fully
 //! rewritten before anything reads it.
 
+use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
 /// How many tiles a scope records before it submits what it has and releases the
@@ -61,6 +63,7 @@ pub(crate) const FLUSH_TILES: usize = 256;
 
 use crate::gpu::channels::Targets;
 use crate::gpu::context::GpuContext;
+use crate::gpu::uniforms::{Slot, stage_slots};
 use stark_model::geom::TILE_TEX;
 
 use crate::unpoisoned;
@@ -176,6 +179,15 @@ impl BufKey {
     fn interchangeable(&self, other: &BufKey) -> bool {
         self.usage == other.usage && self.bucket() == other.bucket()
     }
+
+    /// A uniform buffer of `size` bytes, written through [`SubmitScope::write_lease`].
+    fn uniform(size: u64, label: &'static str) -> Self {
+        Self {
+            size,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            label,
+        }
+    }
 }
 
 /// A texture checkout: the texture and the whole-texture view onto it, pooled together
@@ -185,6 +197,49 @@ impl BufKey {
 pub(crate) struct LeasedTex {
     pub(crate) tex: wgpu::Texture,
     pub(crate) view: wgpu::TextureView,
+}
+
+/// Uniforms staged into a buffer a scope leased, laid out by [`Slot`]: bound through
+/// [`window`](Self::window), each draw selecting its own by [`offset`](Self::offset).
+///
+/// What [`SubmitScope::run_uniform`], [`piece_uniform`](SubmitScope::piece_uniform)
+/// and [`run_slots`](SubmitScope::run_slots) hand back. Never empty: staging nothing
+/// is `None` at `run_slots`.
+pub(crate) struct LeasedSlots<T> {
+    buf: wgpu::Buffer,
+    len: u32,
+    _uniform: PhantomData<T>,
+}
+
+impl<T: bytemuck::Pod> LeasedSlots<T> {
+    fn new(buf: wgpu::Buffer, len: u32) -> Self {
+        Self {
+            buf,
+            len,
+            _uniform: PhantomData,
+        }
+    }
+
+    /// How many slots were staged.
+    pub(crate) fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    /// The dynamic offset slot `i` binds at ([`Slot::offset`]).
+    ///
+    /// # Panics
+    /// If no slot `i` was staged. A lease is not zeroed, so a draw past the last slot
+    /// would read another operation's bytes rather than fail.
+    pub(crate) fn offset(&self, i: usize) -> u32 {
+        assert!(i < self.len(), "slot {i} of the {} staged", self.len);
+        // Lossless: below `len`, which is a `u32`.
+        Slot::<T>::offset(i as u32)
+    }
+
+    /// Slot 0 as a binding, one uniform wide ([`Slot::window`]).
+    pub(crate) fn window(&self) -> wgpu::BindingResource<'_> {
+        Slot::<T>::window(&self.buf)
+    }
 }
 
 /// One checked-out resource and the key it was created for, which is also what it
@@ -236,7 +291,7 @@ struct Inner {
 /// **The stroke path and the whole-tile renderers beside it hold the same one.** The
 /// latter take only the scope — their working textures come from `TilePool` through
 /// `Channels::scratch` — so what the pool buys them is the submit-then-release
-/// ordering (§7).
+/// ordering (§7), and their uniforms' buffers.
 #[derive(Clone, Default)]
 pub(crate) struct ScratchPool(Arc<Mutex<Inner>>);
 
@@ -534,6 +589,56 @@ impl SubmitScope {
         buf
     }
 
+    /// Stage `value` into a leased uniform buffer for the whole run — a per-operation
+    /// uniform every tile's pass binds, so it outlives each [`flush`](Self::flush).
+    pub(crate) fn run_uniform<T: bytemuck::Pod>(
+        &mut self,
+        label: &'static str,
+        value: &T,
+    ) -> LeasedSlots<T> {
+        let buf = self.take_run_buffer(BufKey::uniform(size_of::<T>() as u64, label));
+        self.write_lease(&buf, bytemuck::bytes_of(value));
+        LeasedSlots::new(buf, 1)
+    }
+
+    /// [`run_uniform`](Self::run_uniform) for the piece being recorded, released at
+    /// its submit like everything else the piece takes.
+    pub(crate) fn piece_uniform<T: bytemuck::Pod>(
+        &mut self,
+        label: &'static str,
+        value: &T,
+    ) -> LeasedSlots<T> {
+        let buf = self.take_piece_buffer(BufKey::uniform(size_of::<T>() as u64, label));
+        self.write_lease(&buf, bytemuck::bytes_of(value));
+        LeasedSlots::new(buf, 1)
+    }
+
+    /// Stage `uniforms` one per [`Slot`] into a leased buffer for the whole run — an
+    /// operation's per-tile or per-draw uniforms.
+    ///
+    /// **All of them, before anything is recorded against them.** A slot has to be
+    /// written before the submit that reads it and the scope may flush at any
+    /// [`tile_done`](Self::tile_done), while a buffer grown mid-recording would move
+    /// out from under the offsets already recorded.
+    ///
+    /// `None` for none: no draw will bind it, and staging opens the piece, so an
+    /// operation that records nothing would otherwise submit for nothing.
+    pub(crate) fn run_slots<T: bytemuck::Pod>(
+        &mut self,
+        label: &'static str,
+        uniforms: &[T],
+    ) -> Option<LeasedSlots<T>> {
+        if uniforms.is_empty() {
+            return None;
+        }
+        let len = u32::try_from(uniforms.len()).expect("an operation's draws are capped");
+        let mut staged = Vec::new();
+        stage_slots(uniforms, &mut staged);
+        let buf = self.take_run_buffer(BufKey::uniform(staged.len() as u64, label));
+        self.write_lease(&buf, &staged);
+        Some(LeasedSlots::new(buf, len))
+    }
+
     /// Stage `bytes` into a **leased** buffer, opening the piece.
     ///
     /// **The one way to write a lease.** `queue.write_buffer` does not write anything:
@@ -682,6 +787,26 @@ mod tests {
             scope.tile_done();
         }
         assert!(!scope.piece_open, "nothing was recorded");
+        scope.finish();
+    }
+
+    /// **Staging nothing opens nothing**: an operation with no draws leases no uniform
+    /// buffer, so it still submits nothing. Staging anything opens the piece, since
+    /// the write is handed over only at the next submit and the lease must not reach
+    /// the free list before it.
+    #[test]
+    fn staging_opens_the_piece_and_staging_nothing_does_not() {
+        type U = [f32; 4];
+        let Some(ctx) = context_or_skip() else { return };
+        let mut scope = ScratchPool::default().scope(&ctx, "stark submit test staging");
+        assert!(scope.run_slots::<U>("stark submit test", &[]).is_none());
+        assert!(!scope.piece_open, "nothing was staged");
+        let slots = scope
+            .run_slots::<U>("stark submit test", &[[1.0; 4]; 3])
+            .expect("three were staged");
+        assert!(scope.piece_open, "a staged write opens the piece");
+        assert_eq!(slots.len(), 3);
+        assert_eq!(slots.offset(2), Slot::<U>::offset(2));
         scope.finish();
     }
 

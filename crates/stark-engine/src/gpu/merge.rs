@@ -18,8 +18,6 @@
 //! Like the other renderers this holds only immutable GPU objects, so it is cheap to
 //! `Clone` and rides in the `Action::Context` (§5).
 
-use wgpu::util::DeviceExt;
-
 use std::sync::Arc;
 
 use crate::colorspace::ColorSpace;
@@ -28,9 +26,8 @@ use crate::gpu::channels::{ChannelFormats, Channels, Targets};
 use crate::gpu::composite::{BlendPass, BlendUniform, FilterDraw, FilterPass, FilterUniform};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
-use crate::gpu::scratch::{ScratchPool, SubmitScope};
+use crate::gpu::scratch::{LeasedSlots, ScratchPool, SubmitScope};
 use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
-use crate::gpu::uniforms::UniformSlots;
 use crate::view::ViewTransform;
 use stark_model::document::BlendMode;
 
@@ -199,57 +196,31 @@ impl MergeRenderer {
     /// sets that the document already holds.
     pub(crate) fn apply(&self, pool: &TilePool, scene: MergeScene<'_>) -> TileMap {
         let MergeScene {
-            lower,
-            upper,
-            blend,
-            clip,
+            lower, upper, clip, ..
         } = scene;
 
-        // Uniforms, written once for the whole merge rather than once per tile: every
-        // tile of one merge runs the same law on the same two sliders.
-        let direct_uniform = self.uniform(
-            "stark merge uniform",
-            &MergeUniform {
-                p: [lower.opacity, upper.opacity, f32::from(u8::from(clip)), 0.0],
-            },
-        );
-        let expand_lower = self.uniform("stark slab expand", &slab_uniform(lower.opacity));
-        let expand_upper = self.uniform("stark slab expand", &slab_uniform(upper.opacity));
-        // `store` folds no slider — it writes tiles at opacity 1 and leaves the fade to
-        // the surviving layer — so its slot is the identity.
-        let store_uniform = self.uniform("stark slab store", &slab_uniform(1.0));
-        // The blend pass reads a **dynamic-offset** slot, so its buffer is one slot
-        // wide and this merge binds the first. The layer's own opacity is already
-        // inside the expansion, so the merge itself runs at 1.
-        let blend_uniform = self.blend_uniform(blend, clip);
-
-        // The five uniforms above are per *merge* and outlive every flush below,
-        // which is what lets the recording be cut at any tile boundary.
         let mut scope = self.scratch.scope(&self.ctx, "stark merge");
         let mut tiles = lower.tiles.clone();
-        for coord in self.rewritten(&scene) {
-            let src = upper.tiles.get(&coord);
-            let dst = lower.tiles.get(&coord);
-            let out = self.acquire(pool, AllocSource::MergeDestination);
-            if scene.is_direct() {
-                self.encode_direct(&mut scope, &direct_uniform, dst, src, &out);
-            } else {
-                self.encode_blended(
-                    &mut scope,
-                    pool,
-                    Uniforms {
-                        expand: (&expand_lower, &expand_upper),
-                        store: &store_uniform,
-                        blend: &blend_uniform,
-                    },
-                    (dst, src),
-                    &out,
-                );
+        let rewritten = self.rewritten(&scene);
+        // Staged only when a tile is: staging opens the scope, and a lopsided merge that
+        // passes every tile by handle should submit nothing (§14.11).
+        if !rewritten.is_empty() {
+            let law = self.law(&mut scope, &scene);
+            for coord in rewritten {
+                let src = upper.tiles.get(&coord);
+                let dst = lower.tiles.get(&coord);
+                let out = self.acquire(pool, AllocSource::MergeDestination);
+                match &law {
+                    Law::Direct(uniform) => {
+                        self.encode_direct(&mut scope, uniform, dst, src, &out);
+                    }
+                    Law::Blended(u) => self.encode_blended(&mut scope, pool, u, (dst, src), &out),
+                }
+                tiles = tiles.insert(coord, out.into_tile());
+                // Everything this tile needs is recorded, so this is the one point at
+                // which the scratch behind it is safe to hand back.
+                scope.tile_done();
             }
-            tiles = tiles.insert(coord, out.into_tile());
-            // Everything this tile needs is recorded, so this is the one point at
-            // which the scratch behind it is safe to hand back.
-            scope.tile_done();
         }
 
         // A layer over an empty backdrop is that layer whatever its mode — the
@@ -294,8 +265,12 @@ impl MergeRenderer {
             "a resampling filter cannot be merged (§14.11.7) — `merge::plan` declines \
              it, because no apron makes a gather a function of canvas position (§6.4)",
         );
-        let uniform = self.filter_uniform(draw);
+        // Before the uniform is staged, which would open the scope for nothing.
+        if dest.is_empty() {
+            return dest.clone();
+        }
         let mut scope = self.scratch.scope(&self.ctx, "stark merge filter");
+        let uniform = self.filter_uniform(&mut scope, draw);
         let mut tiles = dest.clone();
         for (coord, handle) in dest.iter() {
             let out = self.acquire(pool, AllocSource::MergeDestination);
@@ -321,7 +296,7 @@ impl MergeRenderer {
     fn encode_filter(
         &self,
         scope: &mut SubmitScope,
-        uniform: &UniformSlots<FilterUniform>,
+        uniform: &LeasedSlots<FilterUniform>,
         tile: &TilePairHandle,
         out: &Channels,
     ) {
@@ -331,7 +306,7 @@ impl MergeRenderer {
         // reads.
         let bg = self.filter.bind_group(
             &self.ctx.device,
-            uniform.resource(),
+            uniform.window(),
             tile.targets(),
             self.blend.pigment.as_ref(),
             None,
@@ -340,20 +315,24 @@ impl MergeRenderer {
             scope,
             "stark merge filter",
             &self.filter.tile,
-            desc::Bound::new(&bg, &[0]),
+            desc::Bound::new(&bg, &[uniform.offset(0)]),
             out,
         );
     }
 
-    /// The filter pass's uniform, in a buffer of one slot.
-    fn filter_uniform(&self, draw: &FilterDraw) -> UniformSlots<FilterUniform> {
+    /// The filter pass's uniform, staged for the whole merge.
+    fn filter_uniform(
+        &self,
+        scope: &mut SubmitScope,
+        draw: &FilterDraw,
+    ) -> LeasedSlots<FilterUniform> {
         // The compositor's own assembly, at the identity view. The one lane that is a
         // fact about the *view* is the chromatic gather's dispersion, in screen px
         // (§21.10), and a merge has no view: `merge::plan` refuses the chromatic
         // filter outright, since a filter baked into a tile cannot depend on how the
         // tile is being looked at (§14.11.7). So a view that disperses by nothing is
         // not a stand-in here, it is the only one that means anything.
-        self.slot(
+        scope.run_uniform(
             "stark merge filter uniform",
             &crate::gpu::composite::filter_uniform(
                 draw,
@@ -362,11 +341,45 @@ impl MergeRenderer {
         )
     }
 
+    /// The uniforms `scene` binds, for the law its blend mode takes — staged once for
+    /// the whole merge, since every tile runs the same law on the same two sliders.
+    fn law(&self, scope: &mut SubmitScope, scene: &MergeScene<'_>) -> Law {
+        let MergeScene {
+            lower,
+            upper,
+            blend,
+            clip,
+        } = *scene;
+        if scene.is_direct() {
+            return Law::Direct(scope.run_uniform(
+                "stark merge uniform",
+                &MergeUniform {
+                    p: [lower.opacity, upper.opacity, f32::from(u8::from(clip)), 0.0],
+                },
+            ));
+        }
+        let mut expand = |opacity| scope.run_uniform("stark slab expand", &slab_uniform(opacity));
+        let expand = (expand(lower.opacity), expand(upper.opacity));
+        Law::Blended(Uniforms {
+            expand,
+            // `store` folds no slider — it writes tiles at opacity 1 and leaves the fade
+            // to the surviving layer — so its uniform is the identity.
+            store: scope.run_uniform("stark slab store", &slab_uniform(1.0)),
+            // The compositor's own assembly. The source layer's own opacity is folded in
+            // by its expansion, which is what pass A would have done to its tiles — so
+            // the merge itself has nothing left to fade.
+            blend: scope.run_uniform(
+                "stark merge blend uniform",
+                &crate::gpu::composite::blend_uniform(blend, clip, 1.0),
+            ),
+        })
+    }
+
     /// The direct tile-space law: one pass, `merge.wesl` (§14.11).
     fn encode_direct(
         &self,
         scope: &mut SubmitScope,
-        uniform: &wgpu::Buffer,
+        uniform: &LeasedSlots<MergeUniform>,
         dst: Option<&TilePairHandle>,
         src: Option<&TilePairHandle>,
         out: &Channels,
@@ -382,7 +395,7 @@ impl MergeRenderer {
         let bg = self
             .direct_bindings
             .group(&self.ctx.device, "stark merge bg", |b| match b {
-                m::M => uniform.as_entire_binding(),
+                m::M => uniform.window(),
                 m::LOWER_COLOR => view(lower.color),
                 m::LOWER_AUX => view(lower.aux),
                 m::UPPER_COLOR => view(upper.color),
@@ -411,7 +424,7 @@ impl MergeRenderer {
         &self,
         scope: &mut SubmitScope,
         pool: &TilePool,
-        u: Uniforms<'_>,
+        u: &Uniforms,
         (dst, src): (Option<&TilePairHandle>, Option<&TilePairHandle>),
         out: &Channels,
     ) {
@@ -420,10 +433,10 @@ impl MergeRenderer {
         let lower = self.scratch(scope, pool, AllocSource::MergeScratch);
         let upper = self.scratch(scope, pool, AllocSource::MergeScratch);
         let blended = self.scratch(scope, pool, AllocSource::MergeScratch);
-        self.encode_slab(scope, &self.expand, u.expand.0, self.views_of(dst), &lower);
-        self.encode_slab(scope, &self.expand, u.expand.1, self.views_of(src), &upper);
-        self.encode_blend(scope, u.blend, &lower, &upper, &blended);
-        self.encode_slab(scope, &self.store, u.store, blended.targets(), out);
+        self.encode_slab(scope, &self.expand, &u.expand.0, self.views_of(dst), &lower);
+        self.encode_slab(scope, &self.expand, &u.expand.1, self.views_of(src), &upper);
+        self.encode_blend(scope, &u.blend, &lower, &upper, &blended);
+        self.encode_slab(scope, &self.store, &u.store, blended.targets(), out);
     }
 
     /// One direction of the slab law over one tile (`slab.wesl`).
@@ -431,14 +444,14 @@ impl MergeRenderer {
         &self,
         scope: &mut SubmitScope,
         pipeline: &wgpu::RenderPipeline,
-        uniform: &wgpu::Buffer,
+        uniform: &LeasedSlots<SlabUniform>,
         input: Targets<'_>,
         out: &Channels,
     ) {
         let bg = self
             .slab_bindings
             .group(&self.ctx.device, "stark slab bg", |b| match b {
-                sl::S => uniform.as_entire_binding(),
+                sl::S => uniform.window(),
                 sl::IN_COLOR => view(input.color),
                 sl::IN_AUX => view(input.aux),
                 sl::IN_RESID => view(input.resid.expect("a residual build has one")),
@@ -462,7 +475,7 @@ impl MergeRenderer {
     fn encode_blend(
         &self,
         scope: &mut SubmitScope,
-        uniform: &UniformSlots<BlendUniform>,
+        uniform: &LeasedSlots<BlendUniform>,
         back: &Channels,
         src: &Channels,
         out: &Channels,
@@ -472,7 +485,7 @@ impl MergeRenderer {
         // algebra (§14.11).
         let bg = self.blend.bind_group(
             &self.ctx.device,
-            uniform.resource(),
+            uniform.window(),
             back.targets(),
             src.targets(),
         );
@@ -480,7 +493,7 @@ impl MergeRenderer {
             scope,
             "stark merge blend",
             &self.blend.pipeline,
-            desc::Bound::new(&bg, &[0]),
+            desc::Bound::new(&bg, &[uniform.offset(0)]),
             out,
         );
     }
@@ -498,43 +511,6 @@ impl MergeRenderer {
     /// with the scope, so it outlives the submit by construction.
     fn scratch(&self, scope: &mut SubmitScope, pool: &TilePool, source: AllocSource) -> Channels {
         Channels::scratch(scope, pool, self.formats, source)
-    }
-
-    fn uniform<T: bytemuck::Pod>(&self, label: &str, value: &T) -> wgpu::Buffer {
-        self.ctx
-            .device
-            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(label),
-                contents: bytemuck::bytes_of(value),
-                usage: wgpu::BufferUsages::UNIFORM,
-            })
-    }
-
-    /// The blend pass's uniform, in a buffer wide enough for its dynamic-offset slot.
-    fn blend_uniform(&self, blend: BlendMode, clip: bool) -> UniformSlots<BlendUniform> {
-        // The compositor's own assembly. The source layer's own opacity is folded in
-        // by its expansion, which is what pass A would have done to its tiles — so the
-        // merge itself has nothing left to fade.
-        self.slot(
-            "stark merge blend uniform",
-            &crate::gpu::composite::blend_uniform(blend, clip, 1.0),
-        )
-    }
-
-    /// One uniform in a buffer of exactly one slot.
-    ///
-    /// The layouts a merge borrows are the screen's and declare a dynamic offset, so
-    /// the slot has to be one — [`UniformSlots`] takes its stride from the uniform
-    /// rather than from a constant. A merge has one merge in flight, so the count is
-    /// one and the offset is always the first.
-    fn slot<T: bytemuck::Pod>(&self, label: &'static str, uniform: &T) -> UniformSlots<T> {
-        let mut slots = UniformSlots::new(&self.ctx.device, label, 1);
-        slots.write(
-            &self.ctx.device,
-            &self.ctx.queue,
-            std::slice::from_ref(uniform),
-        );
-        slots
     }
 
     /// The coordinates a pass has to be encoded for: everything both sides touch,
@@ -592,14 +568,21 @@ fn pass(
     scope.fullscreen_pass(label, pipeline, bound, out.targets(), desc::CLEAR);
 }
 
-/// The four uniform slots one blended merge binds, so `encode_blended` takes one
+/// The uniforms one merge binds, for the law its blend mode takes (§14.11.3).
+enum Law {
+    /// `merge.wesl`'s one pass.
+    Direct(LeasedSlots<MergeUniform>),
+    /// The slab law out, the compositor's blend, and the slab law back.
+    Blended(Uniforms),
+}
+
+/// The four uniforms one blended merge binds, so `encode_blended` takes one
 /// parameter rather than four that could be passed in the wrong order.
-#[derive(Copy, Clone)]
-struct Uniforms<'a> {
+struct Uniforms {
     /// The two expansions', lower then upper — the one place the two sides differ.
-    expand: (&'a wgpu::Buffer, &'a wgpu::Buffer),
-    store: &'a wgpu::Buffer,
-    blend: &'a UniformSlots<BlendUniform>,
+    expand: (LeasedSlots<SlabUniform>, LeasedSlots<SlabUniform>),
+    store: LeasedSlots<SlabUniform>,
+    blend: LeasedSlots<BlendUniform>,
 }
 
 fn slab_uniform(opacity: f32) -> SlabUniform {

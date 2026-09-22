@@ -70,7 +70,6 @@ use stark_shaders::mirror::selection::decl as sd;
 
 use crate::gpu::scratch::{BufKey, Key, LeasedTex, ScratchPool, SubmitScope};
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TilePool};
-use crate::gpu::uniforms::UniformSlots;
 
 // Generated from the two shaders' own declarations (§6.7). `selection.wesl` and
 // `slice.wesl` both call theirs `Params`, which is why the mirrors are namespaced by
@@ -377,20 +376,15 @@ impl SelectionRenderer {
         let device = &self.ctx.device;
         // Leased for the same reason the target is: a live stroke re-gathers this per
         // piece per pointer move.
-        let u = RegionUniform {
-            a: [w as f32, h as f32, TILE_TEX as f32, 0.0],
-        };
-        let ubuf = scope.take_piece_buffer(BufKey {
-            size: std::mem::size_of_val(&u) as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            label: "stark selection region uniform",
-        });
-        scope.write_lease(&ubuf, bytemuck::bytes_of(&u));
+        let u = scope.piece_uniform(
+            "stark selection region uniform",
+            &RegionUniform {
+                a: [w as f32, h as f32, TILE_TEX as f32, 0.0],
+            },
+        );
         let view_bg =
             self.region_view_bindings
-                .group(device, "stark selection region view bg", |_| {
-                    ubuf.as_entire_binding()
-                });
+                .group(device, "stark selection region view bg", |_| u.window());
 
         let mut origins: Vec<MaskInstance> = Vec::new();
         let mut tile_bgs: Vec<&wgpu::BindGroup> = Vec::new();
@@ -471,9 +465,8 @@ impl SelectionRenderer {
             return Selection::from_parts(base, outside, level, opacity, hull);
         }
         let device = &self.ctx.device;
-        // The lasso's edge texture and the shape's parameters both belong to the
-        // whole rasterize and outlive every flush; only the per-tile uniform below
-        // is scoped to one submit.
+        // The lasso's edge texture and the per-tile parameters both belong to the whole
+        // rasterize, so both are leased for the run.
         let mut scope = self.scratch.scope(&self.ctx, "stark selection edit");
         let edge_lease;
         let edges: &wgpu::TextureView = if edges.is_empty() {
@@ -482,7 +475,6 @@ impl SelectionRenderer {
             edge_lease = self.edge_texture(&mut scope, edges);
             &edge_lease
         };
-        // One slot per tile, all written before the first submit (`UniformSlots`).
         let params: Vec<MaskUniform> = coords
             .iter()
             .map(|coord| {
@@ -494,9 +486,9 @@ impl SelectionRenderer {
                 }
             })
             .collect();
-        let mut slots =
-            UniformSlots::<MaskUniform>::new(device, "stark selection params", coords.len());
-        slots.write(device, &self.ctx.queue, &params);
+        let slots = scope
+            .run_slots("stark selection params", &params)
+            .expect("a rasterize that reaches here has a tile to draw");
 
         let mut tiles = base;
 
@@ -506,7 +498,7 @@ impl SelectionRenderer {
             let bg = self
                 .rasterize_bindings
                 .group(device, "stark selection bg", |i| match i {
-                    sb::P => slots.resource(),
+                    sb::P => slots.window(),
                     sb::PREV => wgpu::BindingResource::TextureView(prev_view.view()),
                     sb::EDGES => wgpu::BindingResource::TextureView(edges),
                     other => unreachable!("the rasterize group holds no binding {other}"),
@@ -520,7 +512,7 @@ impl SelectionRenderer {
                         ..Default::default()
                     });
                 pass.set_pipeline(&self.rasterize_pipeline);
-                pass.set_bind_group(0, &bg, &[UniformSlots::<MaskUniform>::offset(i as u32)]);
+                pass.set_bind_group(0, &bg, &[slots.offset(i)]);
                 pass.draw(0..3, 0..1);
             }
             tiles = tiles.insert(*coord, dst);

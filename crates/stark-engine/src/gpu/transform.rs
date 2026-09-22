@@ -41,10 +41,9 @@ use crate::gpu::channels::Zeroes;
 use crate::gpu::channels::{ChannelFormats, Channels};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
-use crate::gpu::scratch::{BufKey, ScratchPool, SubmitScope};
+use crate::gpu::scratch::{LeasedSlots, ScratchPool, SubmitScope};
 use crate::gpu::selection::{MaskSource, SelectionRenderer, outside_clear};
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TileMap, TilePool, mask_tex_origin};
-use crate::gpu::uniforms::{UniformSlots, stage_slots};
 use stark_model::document::{Homography, TransformMap};
 use stark_model::geom::{Affine2, Mat2, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 use stark_shaders::Stages;
@@ -153,76 +152,51 @@ fn combine_uniform(dest: TileCoord, gate: Option<(Vec2, Vec2)>, opacity: f32) ->
     }
 }
 
-/// Every group-0 uniform of one kind that an `apply` draws with, as **one** leased
-/// buffer of dynamic-offset slots ([`UniformSlots::STRIDE`]).
+/// Every group-0 uniform of one kind that an `apply` draws with, staged in full before
+/// anything is submitted ([`SubmitScope::run_slots`]), and a cursor handing the draws
+/// their slots in the order they were staged.
 ///
-/// **Staged in full before anything is submitted.** The scope flushes every
-/// [`FLUSH_TILES`](crate::gpu::scratch::FLUSH_TILES) destinations and a slot has to be
-/// written before the submit that reads it, while a buffer grown mid-recording would
-/// move out from under the offsets already recorded against it. So a transform walks
-/// its plan twice: [`stage_quads`] and its siblings build the uniforms in draw order,
-/// and [`Self::take`] hands the draws their slots in that same order. The two walks
-/// agree exactly when they visit the same `(destination, source)` pairs — a source the
-/// draw skips (no tile at that coord) still takes its slot — and the plan's shape is
-/// what both read, so the count is known before a command is encoded
+/// So a transform walks its plan twice: [`stage_quads`] and its siblings build the
+/// uniforms in draw order, and [`Self::take`] hands them back in that same order. The
+/// two walks agree exactly when they visit the same `(destination, source)` pairs — a
+/// source the draw skips (no tile at that coord) still takes its slot — and the plan's
+/// shape is what both read, so the count is known before a command is encoded
 /// ([`slot_count`]).
 struct Slots<T> {
-    /// `None` when nothing was staged: no draw will ask, and a lease nobody writes
-    /// would open the scope for an empty submit.
-    buf: Option<wgpu::Buffer>,
-    next: u32,
-    count: u32,
-    _uniform: std::marker::PhantomData<T>,
+    /// `None` when nothing was staged, and then no draw will ask.
+    staged: Option<LeasedSlots<T>>,
+    next: usize,
 }
 
 impl<T: bytemuck::Pod> Slots<T> {
-    /// Lease a run buffer of `uniforms.len()` slots from `scope` and write them all.
     fn stage(scope: &mut SubmitScope, label: &'static str, uniforms: &[T]) -> Self {
-        let count = u32::try_from(uniforms.len()).expect("a transform's draws are capped (§16.1)");
-        let buf = (!uniforms.is_empty()).then(|| {
-            let mut staged = Vec::new();
-            stage_slots(uniforms, &mut staged);
-            let buf = scope.take_run_buffer(BufKey {
-                size: staged.len() as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                label,
-            });
-            scope.write_lease(&buf, &staged);
-            buf
-        });
         Self {
-            buf,
+            staged: scope.run_slots(label, uniforms),
             next: 0,
-            count,
-            _uniform: std::marker::PhantomData,
         }
     }
 
     /// The next draw's dynamic offset.
     fn take(&mut self) -> u32 {
-        assert!(
-            self.next < self.count,
-            "a transform draw past the {} slots its plan staged",
-            self.count
-        );
-        let offset = UniformSlots::<T>::offset(self.next);
+        let offset = self.staged().offset(self.next);
         self.next += 1;
         offset
     }
 
     /// Whether every staged slot was taken — the two walks agreed to the end.
     fn spent(&self) -> bool {
-        self.next == self.count
+        self.next == self.staged.as_ref().map_or(0, LeasedSlots::len)
     }
 
     /// One slot's binding, which each draw displaces by its [`Self::take`].
-    fn resource(&self) -> wgpu::BindingResource<'_> {
-        let buffer = self.buf.as_ref().expect("a draw was staged for it");
-        wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-            buffer,
-            offset: 0,
-            size: wgpu::BufferSize::new(std::mem::size_of::<T>() as u64),
-        })
+    fn window(&self) -> wgpu::BindingResource<'_> {
+        self.staged().window()
+    }
+
+    fn staged(&self) -> &LeasedSlots<T> {
+        self.staged
+            .as_ref()
+            .expect("a transform draw past the slots its plan staged")
     }
 }
 
@@ -1025,8 +999,8 @@ impl TransformRenderer {
     }
 
     /// The group-0 slots of one pass family for this `apply`, and the one bind group
-    /// its draws share: `uniforms` in one leased buffer at `at` (`Q` or `QG`), the
-    /// sampler beside it ([`Slots`]).
+    /// its draws share: `uniforms` at `at` (`Q` or `QG`), the sampler beside it
+    /// ([`Slots`]).
     fn group<T: bytemuck::Pod>(
         &self,
         scope: &mut SubmitScope,
@@ -1036,9 +1010,9 @@ impl TransformRenderer {
         uniforms: &[T],
     ) -> Group<T> {
         let slots = Slots::stage(scope, label, uniforms);
-        let bg = slots.buf.is_some().then(|| {
+        let bg = slots.staged.as_ref().map(|staged| {
             bindings.group(&self.ctx.device, label, |i| match i {
-                i if i == at => slots.resource(),
+                i if i == at => staged.window(),
                 t::SAMP => wgpu::BindingResource::Sampler(&self.sampler),
                 other => unreachable!("neither quad group holds binding {other}"),
             })
@@ -1272,7 +1246,7 @@ impl TransformRenderer {
                 t::BASE_MASK => wgpu::BindingResource::TextureView(base_mask.view()),
                 t::PARCEL_COLOR => wgpu::BindingResource::TextureView(carried.color),
                 t::PARCEL_AUX => wgpu::BindingResource::TextureView(carried.aux),
-                t::QC => combines.resource(),
+                t::QC => combines.window(),
                 t::BASE_RESID => wgpu::BindingResource::TextureView(
                     under.resid.expect("a residual build has one"),
                 ),

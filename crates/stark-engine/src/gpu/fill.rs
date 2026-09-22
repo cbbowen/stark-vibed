@@ -17,8 +17,6 @@
 use crate::gpu::tile::TilePairHandle;
 use std::sync::Arc;
 
-use wgpu::util::DeviceExt;
-
 use crate::colorspace::ColorSpace;
 use crate::document::fill::plan;
 use crate::document::selection::Selection;
@@ -30,7 +28,6 @@ use crate::gpu::scratch::ScratchPool;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::tile::mask_tex_origin;
 use crate::gpu::tile::{AllocSource, TileMap, TilePool};
-use crate::gpu::uniforms::UniformSlots;
 use stark_model::document::{FillOp, GradientAxis, Parcel};
 use stark_model::document::{SelectionMode, SelectionOp, SelectionShape};
 
@@ -85,8 +82,8 @@ impl FillRenderer {
         let fill = stark_shaders::fill(color_space.resid());
         let shader = desc::Module::new(device, "stark fill", fill);
         // `TILE` is the one thing the shader does not decide: `f` and `tile` are both
-        // `var<uniform>`, and the difference is that the first is one buffer for the
-        // whole fill while the second is a per-tile slot of one (`UniformSlots`).
+        // `var<uniform>`, and the difference is that the first is one uniform for the
+        // whole fill while the second is a per-tile slot of one (`uniforms::Slot`).
         let bindings = desc::Bindings::of(
             device,
             "stark fill bgl",
@@ -182,16 +179,7 @@ impl FillRenderer {
                 }
             }
         }
-        // Per *fill*, and so deliberately not registered with the scope: it is
-        // bound by every tile below and has to outlive each of their submits.
-        let ubuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("stark fill uniform"),
-            contents: bytemuck::bytes_of(&uniform),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-
-        // One slot per tile, all written before the first submit — see
-        // [`UniformSlots`] for why they cannot share a single rewritten buffer.
+        let fill = scope.run_uniform("stark fill uniform", &uniform);
         let origins: Vec<TileUniform> = coords
             .iter()
             .map(|coord| {
@@ -203,9 +191,9 @@ impl FillRenderer {
                 }
             })
             .collect();
-        let mut tile_slots =
-            UniformSlots::<TileUniform>::new(device, "stark fill tile", coords.len());
-        tile_slots.write(device, &self.ctx.queue, &origins);
+        let tile_slots = scope
+            .run_slots("stark fill tile", &origins)
+            .expect("a fill that reaches here has a tile to rewrite");
 
         let mut tiles = base.clone();
         for (i, coord) in coords.iter().enumerate() {
@@ -218,7 +206,7 @@ impl FillRenderer {
             let gate_mask = self.selection.mask_for(gate, *coord);
             let dst = Channels::acquire(pool, self.formats, AllocSource::FillDestination);
             let bg = self.bindings.group(device, "stark fill bg", |b| match b {
-                f::F => ubuf.as_entire_binding(),
+                f::F => fill.window(),
                 f::BASE_COLOR => wgpu::BindingResource::TextureView(under.color),
                 f::BASE_AUX => wgpu::BindingResource::TextureView(under.aux),
                 f::REGION => wgpu::BindingResource::TextureView(region_mask.view()),
@@ -226,10 +214,10 @@ impl FillRenderer {
                 f::BASE_RESID => wgpu::BindingResource::TextureView(
                     under.resid.expect("a residual build has a base residual"),
                 ),
-                f::TILE => tile_slots.resource(),
+                f::TILE => tile_slots.window(),
                 other => unreachable!("`FILL_SLOTS` lists no binding {other}"),
             });
-            let offsets = [UniformSlots::<TileUniform>::offset(i as u32)];
+            let offsets = [tile_slots.offset(i)];
             scope.fullscreen_pass(
                 "stark fill tile",
                 &self.pipeline,

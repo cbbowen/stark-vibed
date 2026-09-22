@@ -1,5 +1,5 @@
-//! Buffers a pass grows to **what this frame holds**, in the two shapes a draw reads
-//! them: [`UniformSlots`] for what varies across the draws of one submit, and
+//! The uniform slot law, [`Slot`], and the buffers a pass grows to **what this frame
+//! holds**: [`UniformSlots`] for what varies across the draws of one submit, and
 //! [`InstanceStream`] for the per-instance records beside it (§6.2).
 //!
 //! # The rule the slots exist for
@@ -7,14 +7,14 @@
 //! `write_buffer` is a *queue* operation, so N rewrites of one buffer before a single
 //! submit leave every pass reading the last value written. Anything that varies per
 //! draw therefore needs either a buffer per draw — a rate of small WebGPU allocations
-//! JS GC cannot keep up with — or one buffer of **dynamic-offset slots**, which is
-//! [`UniformSlots`].
+//! JS GC cannot keep up with — or one buffer of **dynamic-offset slots**.
 //!
-//! **`gpu::stroke` takes the stride and not the buffer**, the one deliberate departure.
-//! Its two dynamic-offset uniforms take their stride from [`UniformSlots::STRIDE`]
-//! (`XFORM_STRIDE`, `STAMP_STRIDE`) so the law is stated once, but their buffers are
-//! *leased* from the stroke scratch pool (`gpu::scratch`), which recycles across strokes
-//! and releases only behind the submit of the commands that named them.
+//! **Only the compositor grows its own.** Its per-frame uniforms live as long as the
+//! compositor does, so a [`UniformSlots`] keeps one buffer at the high-water mark. An
+//! *operation's* uniforms — a fill's, a merge's, a stroke's — are leased instead,
+//! through the `SubmitScope` in `gpu::scratch` (`run_slots` and its siblings), from a
+//! pool that recycles them across operations and releases each only behind the submit
+//! that names it. Both lay their slots out by [`Slot`].
 //!
 //! # Why the vertex side lives here too
 //!
@@ -25,22 +25,67 @@
 
 /// The dynamic-offset alignment every backend accepts
 /// (`min_uniform_buffer_offset_alignment` is 256 on the strictest) — the quantum a
-/// [`UniformSlots`] stride is rounded up to. Exported for the merge renderer, whose
-/// single blend uniform buffer is one such slot wide.
+/// [`Slot::STRIDE`] is rounded up to, and the floor of the scratch pool's buffer
+/// buckets.
 pub(crate) const UNIFORM_SLOT: u64 = 256;
 
-/// A grow-on-demand buffer of uniform slots, one per pass — the blend pass's per-merge
-/// uniforms and the filter pass's per-layer ones.
+/// The slot law for uniform `T`: slot `i` of a buffer starts at `i · STRIDE`, and a draw
+/// binds the buffer through a [`window`](Self::window) one `T` wide at offset 0,
+/// displaced by the slot's dynamic [`offset`](Self::offset).
 ///
-/// A slot per pass rather than one buffer rewritten between passes: `write_buffer` is a
-/// *queue* operation, so N rewrites before a single submit would leave every pass
-/// reading the last value written. Two blend groups — or two filters — in one document
-/// is not an edge case, so a buffer holds them all and each pass binds its own offset.
+/// **Typed**, and the stride is the type's (§21.11): `T`'s own size rounded up to
+/// [`UNIFORM_SLOT`], so a uniform that outgrows one alignment quantum widens its own
+/// buffer's slots and nobody else's, and a buffer can no more be written with the wrong
+/// shape than offset by the wrong stride.
+pub(crate) struct Slot<T>(std::marker::PhantomData<T>);
+
+impl<T: bytemuck::Pod> Slot<T> {
+    /// One slot's width: `T`'s size, padded to the alignment.
+    pub(crate) const STRIDE: u64 =
+        (std::mem::size_of::<T>() as u64).div_ceil(UNIFORM_SLOT) * UNIFORM_SLOT;
+
+    /// The dynamic offset slot `i` binds at.
+    pub(crate) fn offset(i: u32) -> u32 {
+        i * Self::STRIDE as u32
+    }
+
+    /// Slot 0 of `buf` as a binding — one `T` wide, which each draw displaces by its
+    /// [`offset`](Self::offset).
+    ///
+    /// **Never the whole buffer**: displaced by any offset but 0, a window that wide
+    /// runs off the buffer's end, and a pooled buffer is a bucket whose tail holds
+    /// whatever its last lease left there (`gpu::scratch`).
+    pub(crate) fn window(buf: &wgpu::Buffer) -> wgpu::BindingResource<'_> {
+        wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            buffer: buf,
+            offset: 0,
+            size: wgpu::BufferSize::new(std::mem::size_of::<T>() as u64),
+        })
+    }
+}
+
+/// Lay `uniforms` out one per [`Slot::STRIDE`] into `into` — the bytes a single
+/// `write_buffer` uploads for a whole pass. Padding is zeroed; nothing reads it.
+pub(crate) fn stage_slots<'a, T: bytemuck::Pod>(
+    uniforms: impl IntoIterator<Item = &'a T, IntoIter: ExactSizeIterator>,
+    into: &mut Vec<u8>,
+) {
+    let uniforms = uniforms.into_iter();
+    let stride = Slot::<T>::STRIDE as usize;
+    into.clear();
+    into.resize(uniforms.len() * stride, 0);
+    for (slot, uniform) in into.chunks_exact_mut(stride).zip(uniforms) {
+        slot[..std::mem::size_of::<T>()].copy_from_slice(bytemuck::bytes_of(uniform));
+    }
+}
+
+/// A grow-on-demand buffer of uniform [`Slot`]s, one per pass — the compositor's
+/// per-frame uniforms: the blend pass's per-merge ones, the filter pass's per-layer
+/// ones.
 ///
-/// **Typed**, and the stride is the type's: [`Self::STRIDE`] is the uniform's own size
-/// rounded up to [`UNIFORM_SLOT`] (§21.11), so a uniform that outgrows one alignment
-/// quantum widens its own buffer's slots and nobody else's, and a buffer can no more be
-/// written with the wrong shape than offset by the wrong stride.
+/// A slot per pass rather than one buffer rewritten between passes: two blend groups —
+/// or two filters — in one document is not an edge case, so a buffer holds them all
+/// and each pass binds its own offset.
 ///
 /// A buffer per pass, since the uniforms are different shapes; what is shared is the
 /// allocation, the growth policy, and the write-every-slot-before-the-submit rule.
@@ -65,21 +110,9 @@ pub(crate) struct UniformSlots<T> {
     _uniform: std::marker::PhantomData<T>,
 }
 
-/// Lay `uniforms` out one per [`UniformSlots::STRIDE`] into `into` — the bytes a single
-/// `write_buffer` uploads for a whole pass. Padding is zeroed; nothing reads it.
-pub(crate) fn stage_slots<T: bytemuck::Pod>(uniforms: &[T], into: &mut Vec<u8>) {
-    let stride = UniformSlots::<T>::STRIDE as usize;
-    into.clear();
-    into.resize(uniforms.len() * stride, 0);
-    for (slot, uniform) in into.chunks_exact_mut(stride).zip(uniforms) {
-        slot[..std::mem::size_of::<T>()].copy_from_slice(bytemuck::bytes_of(uniform));
-    }
-}
-
 impl<T: bytemuck::Pod> UniformSlots<T> {
-    /// One slot's width for this uniform: its size, padded to the alignment.
-    pub(crate) const STRIDE: u64 =
-        (std::mem::size_of::<T>() as u64).div_ceil(UNIFORM_SLOT) * UNIFORM_SLOT;
+    /// [`Slot::STRIDE`].
+    pub(crate) const STRIDE: u64 = Slot::<T>::STRIDE;
 
     pub(crate) fn new(device: &wgpu::Device, label: &'static str, count: usize) -> Self {
         Self {
@@ -94,22 +127,15 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
 
     /// A bind group over these slots, built by `make` on first ask after each growth.
     ///
-    /// `make` is handed the slot as a [`BindingResource`](wgpu::BindingResource) —
-    /// offset 0, one uniform wide — which each draw then displaces by its own
-    /// [`offset`](Self::offset). It is not handed `self`: what it may name is the thing
-    /// whose replacement invalidates the group.
+    /// `make` is handed the slot's [`window`](Slot::window), which each draw then
+    /// displaces by its own [`offset`](Self::offset). It is not handed `self`: what it
+    /// may name is the thing whose replacement invalidates the group.
     pub(crate) fn group(
         &mut self,
         make: impl FnOnce(wgpu::BindingResource<'_>) -> wgpu::BindGroup,
     ) -> &wgpu::BindGroup {
         let Self { buf, group, .. } = self;
-        group.get_or_insert_with(|| {
-            make(wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: buf,
-                offset: 0,
-                size: wgpu::BufferSize::new(std::mem::size_of::<T>() as u64),
-            }))
-        })
+        group.get_or_insert_with(|| make(Slot::<T>::window(buf)))
     }
 
     /// The group [`group`](Self::group) built, for a reader that cannot take `&mut`.
@@ -151,19 +177,15 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
         moved
     }
 
-    /// The dynamic offset slot `slot` binds at.
+    /// [`Slot::offset`].
     pub(crate) fn offset(slot: u32) -> u32 {
-        slot * Self::STRIDE as u32
+        Slot::<T>::offset(slot)
     }
 
-    /// The same slot as a bare resource, for a group whose builder supplies the
-    /// binding index itself (`desc::Bindings::group`).
+    /// The slot's [`window`](Slot::window) as a bare resource, for a group whose
+    /// builder supplies the binding index itself (`desc::Bindings::group`).
     pub(crate) fn resource(&self) -> wgpu::BindingResource<'_> {
-        wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-            buffer: &self.buf,
-            offset: 0,
-            size: wgpu::BufferSize::new(std::mem::size_of::<T>() as u64),
-        })
+        Slot::<T>::window(&self.buf)
     }
 
     fn alloc(device: &wgpu::Device, label: &'static str, count: usize) -> wgpu::Buffer {
@@ -244,10 +266,19 @@ mod tests {
     #[test]
     fn slots_are_staged_at_stride_apart() {
         type U = [f32; 4];
-        const STRIDE: usize = UniformSlots::<U>::STRIDE as usize;
+        const STRIDE: usize = Slot::<U>::STRIDE as usize;
         let uniforms: [U; 3] = [[1.0, 2.0, 3.0, 4.0], [5.0; 4], [-1.0, 0.0, 0.5, 9.0]];
         let mut staged = vec![0xAAu8; 7];
         stage_slots(&uniforms, &mut staged);
+        // Uniforms carried inside a caller's own records stage the same bytes as the
+        // bare slice: the law is the uniform's, not the container's.
+        let records = uniforms.map(|u| (0u32, u));
+        let mut projected = Vec::new();
+        stage_slots(records.iter().map(|(_, u)| u), &mut projected);
+        assert_eq!(
+            projected, staged,
+            "a projected stream stages the same slots"
+        );
         assert_eq!(
             staged.len(),
             3 * STRIDE,
