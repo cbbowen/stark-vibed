@@ -15,8 +15,11 @@
 use std::ops::Range;
 
 use crate::gpu::tile::TilePairHandle;
+use crate::view::ViewTransform;
 
 use super::blend::{BlendUniform, ScratchNeeds, blend_uniform};
+use super::blur::Kernel;
+use super::filter::{FilterUniform, filter_uniform};
 use super::group::{CompositeGroup, CompositeItem, FilterDraw, GroupContent};
 use super::tiles::{Instance, MatteInstance, Ramp};
 
@@ -73,6 +76,9 @@ pub(super) enum Step {
         out: Slot,
         slot: u32,
         phase: Phase,
+        /// Whether the layer is a focal blur, whose convolution runs ahead of its
+        /// fullscreen pass (§21.12).
+        convolves: bool,
     },
 }
 
@@ -126,7 +132,7 @@ pub(super) struct Plan<'a> {
     /// kept as uniforms: the chromatic filter's dispersion is stated by the document
     /// in canvas terms and read by the pass in accumulator texels (§21.10), so its
     /// uniform cannot be built until the sample count — chosen from this plan's own
-    /// [`Self::scratch`] (§6.4) — has settled.
+    /// [`Self::scratch`] (§6.4) — has settled ([`Self::for_view`]).
     pub(super) filters: Vec<&'a FilterDraw>,
 
     /// The scratch every `Swap` and `Iso` a step names lives in.
@@ -149,6 +155,36 @@ impl<'a> Plan<'a> {
         };
         plan.stack(groups, Slot::Target, 0);
         plan
+    }
+
+    /// Whether any filter layer convolves — the frame then holds the focal blur's
+    /// planes, the largest scratch there is (§21.12).
+    pub(super) fn convolves(&self) -> bool {
+        self.steps.iter().any(|s| {
+            matches!(
+                s,
+                Step::Filter {
+                    convolves: true,
+                    ..
+                }
+            )
+        })
+    }
+
+    /// The half of pass A that is a function of `view` — the view a frame is drawn at,
+    /// supersampled — shared by the frame and the pick: each filter layer's uniform,
+    /// in slot order, and each focal blur's kernel (§21.10, §21.12).
+    pub(super) fn for_view(&self, view: ViewTransform) -> (Vec<FilterUniform>, Vec<Kernel>) {
+        let uniforms = self
+            .filters
+            .iter()
+            .map(|f| filter_uniform(f, view))
+            .collect();
+        let kernels = (0..)
+            .zip(&self.filters)
+            .filter_map(|(slot, f)| Kernel::of(slot, f, view))
+            .collect();
+        (uniforms, kernels)
     }
 
     /// Composite one stack's members into `target`, bottom-to-top (§14.7).
@@ -223,6 +259,7 @@ impl<'a> Plan<'a> {
                         level,
                         back_is_swap: cur == swap,
                     },
+                    convolves: f.is_focal_blur(),
                 });
                 std::mem::swap(&mut cur, &mut alt);
                 continue;
@@ -351,6 +388,17 @@ mod tests {
         use stark_model::document::{ColorAdjust, Filter};
         CompositeGroup::filter(FilterDraw::new(
             Filter::Color(ColorAdjust::NEUTRAL),
+            CompositeParams::IDENTITY,
+        ))
+    }
+
+    fn focal_blur() -> CompositeGroup {
+        use stark_model::document::{Aperture, Filter, FocalBlur};
+        CompositeGroup::filter(FilterDraw::new(
+            Filter::FocalBlur(FocalBlur {
+                radius: 4.0,
+                aperture: Aperture::Disc { obstruction: 0.0 },
+            }),
             CompositeParams::IDENTITY,
         ))
     }
@@ -575,6 +623,36 @@ mod tests {
         assert_eq!(filters, vec![0, 1]);
         assert_eq!(plan.blends.len(), 2);
         assert_eq!(plan.filters.len(), 2);
+        check(&plan);
+    }
+
+    /// Only a focal blur convolves, and it is the one filter the view gives a kernel —
+    /// at its own slot, whatever filter sits beside it.
+    #[test]
+    fn only_a_focal_blur_convolves() {
+        let flat = vec![plain(), filter()];
+        assert!(!Plan::build(&flat).convolves());
+
+        let groups = vec![plain(), filter(), focal_blur()];
+        let plan = Plan::build(&groups);
+        let filters: Vec<(u32, bool)> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                Step::Filter {
+                    slot, convolves, ..
+                } => Some((*slot, *convolves)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(filters, [(0, false), (1, true)]);
+        assert!(plan.convolves());
+
+        let (uniforms, kernels) =
+            plan.for_view(ViewTransform::identity(crate::view::Extent2::new(64, 64)));
+        assert_eq!(uniforms.len(), 2, "one uniform per filter layer");
+        let slots: Vec<u32> = kernels.iter().map(|k| k.slot).collect();
+        assert_eq!(slots, [1], "one kernel, at the blur's own slot");
         check(&plan);
     }
 

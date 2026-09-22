@@ -185,12 +185,7 @@ impl ResolvePass {
             &ss.buf,
             0,
             bytemuck::bytes_of(&ResolveUniform {
-                n: [
-                    scene.n as f32,
-                    scene.dither_step,
-                    scene.transfer.lane(),
-                    0.0,
-                ],
+                n: [ss.n as f32, scene.dither_step, scene.transfer.lane(), 0.0],
             }),
         );
         desc::fullscreen_pass(
@@ -205,8 +200,6 @@ impl ResolvePass {
 
 /// What one resolve needs beyond the supersampled set (§6.4).
 pub(super) struct ResolveScene {
-    /// Samples per axis.
-    pub(super) n: u32,
     /// One code of the target's encoding, or 0 (`media::dither_step`, §6.5).
     pub(super) dither_step: f32,
     /// The transfer the media pass wrote the supersampled texels in, so the decode
@@ -217,21 +210,25 @@ pub(super) struct ResolveScene {
 /// Where passes B–D write when the view is zoomed out, and what pass E reads it back
 /// through (§6.4).
 ///
-/// One value because the three are meaningless apart: the bind group names the view,
-/// and the uniform holds the very `n` that decided the view's size. Absent at 1:1,
-/// which returns the memory the moment the artist zooms back in to paint.
+/// One value because they are meaningless apart: the bind group names the view, and
+/// the uniform holds the very `n` that decided the view's size. Absent at 1:1, which
+/// returns the memory the moment the artist zooms back in to paint.
 pub(super) struct Supersampled {
+    /// Samples per axis.
+    n: u32,
     /// What passes B–D draw into, `n` times the caller's target on each axis.
     target: super::Attachment,
     bg: wgpu::BindGroup,
-    /// `n` itself. This consumer's, because the sample count is a function of *this*
-    /// target's zoom — see [`ResolvePass`].
+    /// The resolve's uniform. This consumer's, because the sample count is a function
+    /// of *this* target's zoom — see [`ResolvePass`].
     buf: wgpu::Buffer,
 }
 
 impl Supersampled {
+    /// `n` samples per axis of a target, `size` being the supersampled extent.
     pub(super) fn new(
         device: &wgpu::Device,
+        n: u32,
         size: Extent2,
         format: wgpu::TextureFormat,
         bgl: &Bindings,
@@ -248,7 +245,7 @@ impl Supersampled {
             rb::SRC => wgpu::BindingResource::TextureView(target.view()),
             other => unreachable!("the resolve group has no binding {other}"),
         });
-        Self { target, bg, buf }
+        Self { n, target, bg, buf }
     }
 
     /// What passes B–D attach — the caller's target, supersampled.

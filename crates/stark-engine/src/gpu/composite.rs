@@ -1,7 +1,7 @@
 //! Compositing and the media/lighting pass (§6.3, §6.4).
 //!
-//! Five passes, one per module, each owning its pipeline, the constants only it
-//! reads, **and its own encoding**:
+//! The passes, one per module, each owning its pipeline, the constants only it reads,
+//! **and its own encoding**:
 //!
 //! | Pass | Module | What it does |
 //! |---|---|---|
@@ -16,24 +16,9 @@
 //! Beside them, [`plan`] decides what pass A *does* — one walk of the group tree
 //! producing a flat list of steps — so that no part of this file walks it again.
 //!
-//! What is left here is the part no single pass owns: the two structs the passes hang
-//! off, and the order the passes run in.
-//!
-//! # Two types, split along one line: does it depend on the target?
-//!
-//! [`CompositorPipeline`] is everything that does not — the pipelines, the layouts,
-//! the pigment LUT, and the view settings the media pass reads. A [`Compositor`] is
-//! one target's worth of what does: pass A's offscreen attachments, the media bind
-//! group over them, the blend scratch, the instance streams, and every uniform a
-//! render writes (what it is looking at, how it is lit, how many samples it took).
-//!
-//! More than one thing gets drawn from the same document at different sizes — the
-//! substrate every frame, and beside it an export or the navigator's miniature — and
-//! one `Compositor` shared between them rebuilds *both* sizes' attachments per
-//! alternation. So each keeps its own and they share the expensive half by reference.
-//! What they must not each keep a copy of is the view settings: two consumers
-//! disagreeing about the canvas substrate or the lighting would be a bug visible only
-//! in the smaller picture, so those live in the pipeline, read at every render.
+//! What is left here is the part no single pass owns: the types the passes hang off —
+//! [`CompositorPasses`], one engine's [`CompositorPipeline`] over them, and a
+//! [`Compositor`] per target drawn into — and the order the passes run in.
 
 mod attachment;
 pub(crate) mod blend;
@@ -64,7 +49,7 @@ use attachment::Attachment;
 
 pub(crate) use blend::{BlendPass, BlendUniform};
 use blend::{Bounce, ScratchLevel, ScratchNeeds, ScratchTargets};
-use blur::{BlurFrame, BlurPass};
+use blur::{BlurFrame, BlurPass, Kernel};
 pub(crate) use display::export_format;
 use display::is_eight_bit;
 pub use display::{Output, Transfer};
@@ -180,6 +165,19 @@ pub(crate) use view::view_uniform;
 struct PreparedStreams<'a> {
     tile_bgs: Vec<&'a wgpu::BindGroup>,
     matte_ramp_bg: Option<wgpu::BindGroup>,
+}
+
+/// Everything one encode of pass A draws from ([`Streams::encode_plan`]): a plan, what
+/// was uploaded for it, and the scratch and blur planes sized to the target it lands
+/// in — the render path's off its [`Frame`], the pick's off its [`PreparedPick`].
+#[derive(Copy, Clone)]
+struct PassA<'a> {
+    plan: &'a Plan<'a>,
+    streams: &'a PreparedStreams<'a>,
+    /// `None` only when the plan bounces nowhere ([`ScratchTargets::ensure`]).
+    scratch: Option<&'a ScratchTargets>,
+    /// Present exactly when the plan convolves.
+    blur: Option<&'a BlurFrame>,
 }
 
 /// What one render draws, as against *where and how* it draws it (the target and the
@@ -394,6 +392,17 @@ pub(crate) struct PreparedPick<'a> {
     blur: Option<BlurFrame>,
 }
 
+impl PreparedPick<'_> {
+    fn pass_a(&self) -> PassA<'_> {
+        PassA {
+            plan: &self.plan,
+            streams: &self.streams,
+            scratch: self.scratch.as_ref(),
+            blur: self.blur.as_ref(),
+        }
+    }
+}
+
 /// The view settings a [`CompositorPipeline`] holds as plain values: how the media
 /// pass lights the paint and which display the screen is presented on. Neither
 /// depends on the color space, so a rebuild for a new one is seeded with the old
@@ -411,15 +420,9 @@ pub(crate) struct ViewSettings {
 }
 
 /// Everything about compositing that does not depend on *what is being drawn into*:
-/// the passes ([`CompositorPasses`], reached through `Deref`) and the view settings
-/// the media pass reads.
-///
-/// Split from [`Compositor`] so several of them can share one of these. Each renders
-/// into a target of its own size and therefore keeps its own attachments; what they
-/// must *not* keep their own of is the pipelines, because they are expensive (every
-/// pass compiled, plus a decoded Mixbox LUT), and the view settings, because two
-/// consumers disagreeing about the canvas substrate or the lighting would be a bug
-/// that shows only in the smaller picture.
+/// the passes ([`CompositorPasses`], reached through `Deref`) and one engine's view
+/// settings — shared by every [`Compositor`] the engine renders through (see there
+/// for why).
 ///
 /// Not immutable: the view settings change, through `&mut self` on this type. It
 /// holds no GPU-visible state that a render writes — every uniform a render fills in
@@ -471,10 +474,14 @@ fn next_stamp() -> u64 {
 /// there is to draw and written per render. Two fields rather than one struct so a
 /// render can hold the [`Frame`] it was handed while it still writes the streams.
 ///
-/// One per thing being drawn into — the substrate, and (with its own) anything that
-/// renders beside it: an export, the navigator's miniature. Sharing one across
+/// **One per thing being drawn into** — the substrate, and (with its own) anything
+/// that renders beside it: an export, the navigator's miniature. Sharing one across
 /// targets of different sizes means each render resizes the attachments the other
-/// just built, so the cost is paid twice per alternation rather than once ever.
+/// just built, so the cost is paid twice per alternation rather than once ever. What
+/// they share instead, by reference, is the [`CompositorPipeline`]: the passes, which
+/// are expensive (every pass compiled, plus a decoded Mixbox LUT), and the view
+/// settings, which two consumers must not disagree about — a substrate or a light that
+/// differed would be a bug visible only in the smaller picture.
 ///
 /// **It answers to one set of passes.** Every half of it names them — the streams'
 /// bind groups their layouts, the attachments their formats — so a compositor that
@@ -503,6 +510,17 @@ struct TargetKey {
     ss: u32,
     /// The target format the supersampled intermediate carries (§6.4).
     format: wgpu::TextureFormat,
+}
+
+impl TargetKey {
+    /// A `target`-sized render at `ss` samples per axis into `format`.
+    fn new(target: Extent2, ss: u32, format: wgpu::TextureFormat) -> Self {
+        Self {
+            size: Extent2::new(target.width * ss, target.height * ss),
+            ss,
+            format,
+        }
+    }
 }
 
 /// The attachments one render sized, with the key they answer to. Absent until the
@@ -787,11 +805,10 @@ impl CompositorPipeline {
 }
 
 impl TargetSized {
-    /// Bring the attachments in line with what is about to be drawn — a target of
-    /// `target_size` rendered at `ss` samples per axis into `format`, against the
-    /// pipeline's current substrate and light, with the scratch levels `needs` and
-    /// the blur `kernels` the frame's plan asks for — and hand back what to draw
-    /// into.
+    /// Bring the attachments in line with what is about to be drawn — the render `key`
+    /// names, against the pipeline's current substrate and light, with the scratch
+    /// `needs` and the blur `kernels` the frame's plan asks for — and hand back what to
+    /// draw into.
     ///
     /// Called at the top of every render, so a resized target, a zoom that crossed a
     /// supersampling threshold, a swapped canvas substrate and a swapped light all
@@ -813,29 +830,18 @@ impl TargetSized {
     /// scratch's cached bind groups name was replaced; a blur frame built, resized or
     /// dropped stales them the same way. Both are answered here because this is the
     /// one place that holds the scratch.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "every argument is a distinct piece of what one frame is sized by"
-    )]
     fn ensure_targets(
         &mut self,
         p: &CompositorPipeline,
-        target_size: Extent2,
-        ss: u32,
-        format: wgpu::TextureFormat,
+        key: TargetKey,
         needs: &ScratchNeeds,
-        kernels: &[(u32, f32, blur::Aperture)],
+        kernels: &[Kernel],
         buffers_moved: bool,
     ) -> Frame<'_> {
-        let wanted = TargetKey {
-            size: Extent2::new(target_size.width * ss, target_size.height * ss),
-            ss,
-            format,
-        };
         // Taken rather than matched through `&mut`: a guard's borrow of the hit
         // outlives a miss under NLL, and the miss arm has to replace the slot.
         let built = match self.built.take() {
-            Some(mut built) if built.key == wanted => {
+            Some(mut built) if built.key == key => {
                 // The cheap half: the attachments stand, and only the group naming the
                 // substrate and the light has to be rebuilt. Every undo across a
                 // `SetSubstrate`, every scale commit and every light switch lands here.
@@ -854,15 +860,16 @@ impl TargetSized {
                 self.scratch = None;
                 self.blur = None;
                 drop(stale);
-                let accum = p.accumulator(wanted.size);
+                let accum = p.accumulator(key.size);
                 // Allocated only where it is written into. A 1:1 view leaves it `None`,
                 // which is what returns the memory the moment the artist zooms back in
                 // to paint.
-                let ss_target = (ss > 1).then(|| {
-                    Supersampled::new(&p.ctx.device, wanted.size, format, &p.layouts.resolve)
+                let ss_target = (key.ss > 1).then(|| {
+                    let resolve = &p.layouts.resolve;
+                    Supersampled::new(&p.ctx.device, key.ss, key.size, key.format, resolve)
                 });
                 Built {
-                    key: wanted,
+                    key,
                     // The rebuild names the current pair by construction.
                     bindings: p.bindings,
                     accum,
@@ -939,13 +946,13 @@ impl Streams {
     /// lay theirs down differently: a frame writes one before its single submit, and a
     /// pick writes every point's before recording any of them
     /// ([`ViewBindings::write`](view::ViewBindings::write)); `encode_plan` takes the
-    /// slot. `view` is still needed here for the one uniform that is a function of it
-    /// — the chromatic filter's dispersion, measured in screen px (§21.10).
+    /// slot. What of the plan depends on the view arrives already built, as `filters`
+    /// ([`Plan::for_view`]).
     fn upload<'a>(
         &mut self,
         p: &CompositorPipeline,
-        view: ViewTransform,
         plan: &Plan<'a>,
+        filters: &[FilterUniform],
     ) -> (PreparedStreams<'a>, bool) {
         let device = &p.ctx.device;
         let queue = &p.ctx.queue;
@@ -983,18 +990,8 @@ impl Streams {
         // single submit — see `UniformSlots` for why they cannot share one. The
         // *order* is the plan's, and each step carries the index it binds, so a
         // filter and a blend group side by side cannot count each other's slots.
-        //
-        // The filter uniforms are built here rather than in the plan for one lane: the
-        // chromatic dispersion is stated in canvas terms by the document and sampled
-        // in accumulator texels by the pass, and `view` is supersampled by now
-        // (§21.10).
         let blend_moved = self.blend_uniforms.write(device, queue, &plan.blends);
-        let filters: Vec<FilterUniform> = plan
-            .filters
-            .iter()
-            .map(|f| filter_uniform(f, view))
-            .collect();
-        let filter_moved = self.filter_uniforms.write(device, queue, &filters);
+        let filter_moved = self.filter_uniforms.write(device, queue, filters);
         // A frame with more merges (or more filters) than the buffer holds **replaces**
         // those buffers rather than resizing them, so the bind groups the scratch is
         // holding name a buffer too small for the offsets they are about to be given
@@ -1010,31 +1007,27 @@ impl Streams {
         )
     }
 
-    /// Encode pass A: every step of `plan`, in order, into `target`.
-    ///
-    /// `scratch` is the extra target sets the frame's bounces need, sized to match
-    /// `target`. It may be `None` only when `plan.scratch` is empty — which
-    /// [`ScratchTargets::ensure`] guarantees, having been given those very needs.
+    /// Encode pass A: every step of `pass`'s plan, in order, into `target` — which its
+    /// scratch is sized to match.
     ///
     /// `view_slot` is which of the views the last
     /// [`ViewBindings::write`](view::ViewBindings::write) laid down this plan draws
     /// through — 0 for a frame, which has one, and the point's own index for the
     /// eyedropper, whose whole trace is recorded into one encoder.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "every argument is a distinct piece of what one encode names"
-    )]
     fn encode_plan(
         &self,
         p: &CompositorPipeline,
         encoder: &mut wgpu::CommandEncoder,
         target: Targets<'_>,
-        plan: &Plan<'_>,
-        streams: &PreparedStreams<'_>,
-        scratch: Option<&ScratchTargets>,
-        blur: Option<&BlurFrame>,
+        pass: PassA<'_>,
         view_slot: usize,
     ) {
+        let PassA {
+            plan,
+            streams,
+            scratch,
+            blur,
+        } = pass;
         // The parity claim, checked where it is relied on: whatever the plan did, the
         // accumulator ends in the caller's own targets — which is what lets the media
         // pass keep one bind group across every document and the eyedropper read back
@@ -1106,32 +1099,110 @@ impl Streams {
                     out,
                     slot,
                     phase,
-                } => {
-                    // A focal blur's convolution runs ahead of its fullscreen
-                    // pass (§21.12); every other kind takes the pass alone.
-                    let convolve = plan.filters[*slot as usize]
-                        .is_focal_blur()
-                        .then_some(&p.blur);
-                    p.filter.encode(
-                        &p.ctx,
-                        encoder,
-                        bounce(*back, *out, *slot, *phase),
-                        &self.filter_uniforms,
-                        blur,
-                        convolve,
-                    );
-                }
+                    convolves,
+                } => p.filter.encode(
+                    &p.ctx,
+                    encoder,
+                    bounce(*back, *out, *slot, *phase),
+                    &self.filter_uniforms,
+                    blur,
+                    convolves.then_some(&p.blur),
+                ),
             }
+        }
+    }
+
+    /// Encode passes B–E of a frame: the lit image over the substrate, the outlines,
+    /// the guides, and — zoomed out — the resolve down to `target` (§6.3, §6.4).
+    ///
+    /// `view` is the supersampled one pass A drew through; `target` is the caller's,
+    /// at the real size, and picks the passes by its format.
+    fn encode_target_passes(
+        &mut self,
+        p: &CompositorPipeline,
+        encoder: &mut wgpu::CommandEncoder,
+        frame: &Frame<'_>,
+        target: &wgpu::TextureView,
+        view: ViewTransform,
+        scene: &CompositeScene<'_>,
+    ) {
+        let format = target.texture().format();
+        let tp = p.target_passes(format);
+        let transfer = scene.output.transfer();
+        // What the lit image, the outlines and the guides are drawn into: the
+        // supersampled target when there is one, else the caller's directly. Chrome
+        // goes through the same resolve as the paint, so the marching ants and the
+        // perspective grid come out antialiased.
+        let draw_target = frame.ss_target.map_or(target, Supersampled::view);
+        // One code of the target's encoding for both walks down to it — the
+        // supersampled intermediate carries the target's own format (§6.4) — and 0
+        // when this consumer's params ask for the undithered reference (§6.5).
+        let dither_step = if p.settings.media.dither {
+            media::dither_step(format)
+        } else {
+            0.0
+        };
+
+        // Pass B: normals off the height field, lit, tonemapped, over the substrate.
+        tp.media.encode(
+            &p.ctx,
+            encoder,
+            frame.accum,
+            draw_target,
+            media::MediaScene {
+                params: p.settings.media,
+                environment: &p.environment,
+                substrate_uv_scale: scene.substrate_uv_scale,
+                view,
+                substrate: scene.substrate,
+                transparent: scene.transparent,
+                dither_step,
+                output: scene.output,
+            },
+        );
+        // Pass C: the selection outlines, over the lit image (§17.3).
+        tp.overlay.encode(
+            &p.ctx,
+            encoder,
+            &mut self.overlay_instances,
+            overlay::OverlayScene {
+                outlines: scene.outlines,
+                view_bg: &self.view.overlay,
+                view_offset: view::ViewBindings::offset(0),
+                target: draw_target,
+                visible: view.visible_tiles(),
+            },
+        );
+        // Pass D: the drawing guides, over the lit image and the outlines — the
+        // perspective grid is chrome the whole canvas is read *through*, so it is the
+        // topmost thing drawn (§20.4).
+        tp.guides.encode(
+            &p.ctx,
+            encoder,
+            &mut self.guide_uniforms,
+            guides::GuideDraw {
+                scenes: scene.guides,
+                view,
+                transfer,
+                target: draw_target,
+            },
+        );
+        // Pass E: everything above, box-averaged in light down to the caller's target
+        // (§6.4). Absent at 1:1, where `draw_target` *is* the caller's target.
+        if let Some(ss_target) = frame.ss_target {
+            let scene = resolve::ResolveScene {
+                dither_step,
+                transfer,
+            };
+            tp.resolve.encode(&p.ctx, encoder, ss_target, scene, target);
         }
     }
 }
 
 impl Compositor {
     /// The instance streams, uniforms and view bindings for one consumer, against the
-    /// shared `pipeline`. Cheap: everything expensive (the passes' pipelines, their
-    /// layouts, the decoded pigment LUT) lives in the pipeline and is only borrowed,
-    /// and everything *sized* waits for the first render, which is the only thing that
-    /// knows the zoom.
+    /// shared `pipeline`. Cheap: everything *sized* waits for the first render, which
+    /// is the only thing that knows the zoom.
     pub(crate) fn new(pipeline: &CompositorPipeline) -> Self {
         Self {
             generation: pipeline.generation,
@@ -1181,7 +1252,8 @@ impl Compositor {
     ) -> PreparedPick<'a> {
         self.follow(p);
         let plan = Plan::build(groups);
-        let (streams, buffers_moved) = self.streams.upload(p, view, &plan);
+        let (filters, kernels) = plan.for_view(view);
+        let (streams, buffers_moved) = self.streams.upload(p, &plan, &filters);
         // The screen's cache, not this pick's: the two share the uniform buffers,
         // so a pick with more merges than the buffer holds stales the groups the
         // screen's scratch holds (`Streams::upload`).
@@ -1214,12 +1286,7 @@ impl Compositor {
         // patches for the same reason: each patch's decode and round trip rewrite the
         // planes before its resolve reads them.
         let mut blur = None;
-        p.blur.prepare(
-            &p.ctx,
-            &mut blur,
-            view.viewport,
-            &blur::blur_kernels(&plan.filters, view),
-        );
+        p.blur.prepare(&p.ctx, &mut blur, view.viewport, &kernels);
         PreparedPick {
             plan,
             streams,
@@ -1270,16 +1337,8 @@ impl Compositor {
         if let Some(scratch) = prepared.scratch.as_mut() {
             scratch.invalidate_bind_groups();
         }
-        self.streams.encode_plan(
-            p,
-            encoder,
-            into,
-            &prepared.plan,
-            &prepared.streams,
-            prepared.scratch.as_ref(),
-            prepared.blur.as_ref(),
-            slot,
-        );
+        self.streams
+            .encode_plan(p, encoder, into, prepared.pass_a(), slot);
     }
 
     /// Composite `scene`'s layers, light the result into `target` under `view`, and
@@ -1301,87 +1360,41 @@ impl Compositor {
         scene: CompositeScene<'_>,
     ) {
         self.follow(p);
-        let CompositeScene {
-            substrate,
-            substrate_uv_scale,
-            groups,
-            outlines,
-            transparent,
-            guides,
-            output,
-        } = scene;
         let format = target.texture().format();
-        let tp = p.target_passes(format);
-        let output = if is_eight_bit(format) {
-            Output::new(output.transfer(), 1.0)
-        } else {
-            output
+        let scene = CompositeScene {
+            output: if is_eight_bit(format) {
+                Output::new(scene.output.transfer(), 1.0)
+            } else {
+                scene.output
+            },
+            ..scene
         };
         // Everything this frame's pass A does, decided once (§14.7). First, because
         // the sample count below is chosen from what it costs: the scratch is most of
         // a zoomed-out frame's memory — two viewport-sized trios per isolating level —
         // so the group tree has to be walked *before* the attachments are sized (§6.4).
-        //
-        // Deliberately free of the view, which is why it can be built here at all: the
-        // one view-dependent number in pass A is a filter's dispersion, filled in at
-        // `Streams::upload` once `ss` has settled (§21.10).
-        let plan = Plan::build(groups);
+        let plan = Plan::build(scene.groups);
         // How hard this view is minifying, and therefore how many samples per output
         // pixel it takes to stop the paint, the substrate and the impasto relief
         // aliasing (§6.4). 1 at 1:1 and closer, where the rest of this is a no-op. The
         // scratch is charged at this frame's needs; a deeper set the cache kept is
         // memory already resident, not memory this decision would add.
-        let ss = supersample(
-            view.viewport,
-            view.zoom,
-            p.max_dim,
-            resolve::attachment_bytes(
-                p.formats,
-                format,
-                &plan.scratch,
-                plan.filters.iter().any(|f| f.is_focal_blur()),
-            ),
-        );
-        // From here down, `view` is the supersampled one and `target_size` (with
-        // `target`) is the only thing that still knows the real size — which is
-        // exactly the split the resolve at the bottom closes.
-        let target_size = view.viewport;
+        let bytes = resolve::attachment_bytes(p.formats, format, &plan.scratch, plan.convolves());
+        let ss = supersample(view.viewport, view.zoom, p.max_dim, bytes);
+        let key = TargetKey::new(view.viewport, ss, format);
+        // From here down, `view` is the supersampled one and `target` is the only thing
+        // that still knows the real size — which is exactly the split the resolve at
+        // the bottom closes.
         let view = view.supersampled(ss);
         // The frame's one view, in slot 0 — the only slot anything on this path
         // binds (`ViewBindings`).
-        self.streams.write_views(p, &[view], output.transfer());
-        let (streams, buffers_moved) = self.streams.upload(p, view, &plan);
-        // The focal blur's apertures and radii carried into accumulator texels
-        // (§21.12) — `view` is already supersampled, which is the whole reason this
-        // waits for it.
-        let kernels = blur::blur_kernels(&plan.filters, view);
-        // This compositor's attachments, brought in line with what is about to be
-        // drawn. Nobody else's: a render into another target — an export, the
-        // navigator's miniature — goes through a `Compositor` of its own, so the
-        // substrate's attachments are never resized out from under it.
-        let frame = self.sized.ensure_targets(
-            p,
-            target_size,
-            ss,
-            format,
-            &plan.scratch,
-            &kernels,
-            buffers_moved,
-        );
-        // What the lit image, the outlines and the guides are drawn into: the
-        // supersampled target when there is one, else the caller's directly. Chrome
-        // goes through the same resolve as the paint, so the marching ants and the
-        // perspective grid come out antialiased.
-        let draw_target = frame.ss_target.map_or(target, Supersampled::view);
-
-        // One code of the target's encoding for both walks down to it — the
-        // supersampled intermediate carries the target's own format (§6.4) — and 0
-        // when this consumer's params ask for the undithered reference (§6.5).
-        let dither_step = if p.settings.media.dither {
-            media::dither_step(format)
-        } else {
-            0.0
-        };
+        self.streams
+            .write_views(p, &[view], scene.output.transfer());
+        let (filters, kernels) = plan.for_view(view);
+        let (streams, buffers_moved) = self.streams.upload(p, &plan, &filters);
+        let frame = self
+            .sized
+            .ensure_targets(p, key, &plan.scratch, &kernels, buffers_moved);
 
         let mut encoder = p
             .ctx
@@ -1389,85 +1402,19 @@ impl Compositor {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("stark composite encoder"),
             });
-
         // Pass A: every step of the plan into the offscreen channels. Its parity
         // guarantees the result lands in these very views however many bounces ran,
-        // so the media bind group below never has to be rebuilt.
-        self.streams.encode_plan(
-            p,
-            &mut encoder,
-            frame.accum.targets(),
-            &plan,
-            &streams,
-            frame.scratch,
-            frame.blur,
-            0,
-        );
-
-        // Pass B: normals off the height field, lit, tonemapped, over the substrate.
-        tp.media.encode(
-            &p.ctx,
-            &mut encoder,
-            frame.accum,
-            draw_target,
-            media::MediaScene {
-                params: p.settings.media,
-                environment: &p.environment,
-                substrate_uv_scale,
-                view,
-                substrate,
-                transparent,
-                dither_step,
-                output,
-            },
-        );
-
-        // Pass C: the selection outlines, over the lit image (§17.3).
-        tp.overlay.encode(
-            &p.ctx,
-            &mut encoder,
-            &mut self.streams.overlay_instances,
-            overlay::OverlayScene {
-                outlines,
-                view_bg: &self.streams.view.overlay,
-                view_offset: view::ViewBindings::offset(0),
-                target: draw_target,
-                visible: view.visible_tiles(),
-            },
-        );
-
-        // Pass D: the drawing guides, over the lit image and the outlines — the
-        // perspective grid is chrome the whole canvas is read *through*, so it is the
-        // topmost thing drawn (§20.4).
-        tp.guides.encode(
-            &p.ctx,
-            &mut encoder,
-            &mut self.streams.guide_uniforms,
-            guides::GuideDraw {
-                scenes: guides,
-                view,
-                transfer: output.transfer(),
-                target: draw_target,
-            },
-        );
-
-        // Pass E: everything above, box-averaged in light down to the caller's target
-        // (§6.4). Absent at 1:1, where `draw_target` *is* the caller's target and the
-        // picture is already the size it was asked for.
-        if let Some(ss_target) = frame.ss_target {
-            tp.resolve.encode(
-                &p.ctx,
-                &mut encoder,
-                ss_target,
-                resolve::ResolveScene {
-                    n: ss,
-                    dither_step,
-                    transfer: output.transfer(),
-                },
-                target,
-            );
-        }
-
+        // so the media bind group never has to be rebuilt.
+        let pass = PassA {
+            plan: &plan,
+            streams: &streams,
+            scratch: frame.scratch,
+            blur: frame.blur,
+        };
+        self.streams
+            .encode_plan(p, &mut encoder, frame.accum.targets(), pass, 0);
+        self.streams
+            .encode_target_passes(p, &mut encoder, &frame, target, view, &scene);
         p.ctx.queue.submit([encoder.finish()]);
     }
 }

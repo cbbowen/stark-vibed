@@ -45,12 +45,9 @@ enum Chrome {
     Hidden,
 }
 
-/// Which [`Compositor`](crate::gpu::composite::Compositor) a render's offscreen attachments come
-/// from.
-///
-/// Pass-A attachments are the size of the target, so *whose* they are decides who
-/// pays for a resize: the screen's are kept from frame to frame, and anything
-/// rendered beside them brings its own rather than resizing the screen's away.
+/// Which [`Compositor`](crate::gpu::composite::Compositor) a render's offscreen
+/// attachments come from: the screen's own, or the caller's — one per target, since
+/// sharing one would resize the other's away.
 enum Attachments<'a> {
     /// The screen's own, cached across frames ([`Engine::compositor`]).
     Screen,

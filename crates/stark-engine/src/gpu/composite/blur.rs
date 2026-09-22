@@ -116,24 +116,21 @@ impl BlurPass {
     }
 
     /// Bring `frame` in line with what this render is about to blur: the planes for an
-    /// accumulator of `accum`, the dispatch plan for `kernels` — one
-    /// `(filter slot, radius in accumulator texels, aperture)` per focal-blur layer, in
-    /// slot order — and every per-dispatch uniform written. Empty `kernels` drops the
-    /// frame whole, since the planes are the largest scratch there is.
+    /// accumulator of `accum`, the dispatch plan for `kernels` — one per focal-blur
+    /// layer, in slot order — and every per-dispatch uniform written. Empty `kernels`
+    /// drops the frame whole, since the planes are the largest scratch there is.
     ///
     /// **Returns whether the planes the filter bind group names changed** — created,
     /// resized or dropped — because those groups are cached per scratch level
     /// (`ScratchLevel::filter_bg`) and the caller must invalidate them. A moved uniform
     /// buffer is *not* part of that answer: the only groups naming it are this module's
     /// own, rebuilt here.
-    // `pub(super)`: both callers are `composite`'s, and `Aperture` — this module's
-    // own — is in the signature, so a wider one would leak it.
     pub(super) fn prepare(
         &self,
         ctx: &GpuContext,
         frame: &mut Option<BlurFrame>,
         accum: Extent2,
-        kernels: &[(u32, f32, Aperture)],
+        kernels: &[Kernel],
     ) -> bool {
         if kernels.is_empty() {
             return frame.take().is_some();
@@ -267,23 +264,30 @@ impl Aperture {
     }
 }
 
-/// What each focal-blur layer asks the convolution for this frame, in filter-slot
-/// order: its slot, its radius in accumulator texels, and its aperture.
-pub(super) fn blur_kernels(
-    filters: &[&FilterDraw],
-    view: ViewTransform,
-) -> Vec<(u32, f32, Aperture)> {
-    filters
-        .iter()
-        .enumerate()
-        .filter_map(|(slot, f)| {
-            let FilterOp::FocalBlur(b) = &f.op else {
-                return None;
-            };
-            let aperture = Aperture::of(b.aperture).turned(view);
-            Some((slot as u32, texel_radius(b, view), aperture))
+/// What one focal-blur layer asks the convolution for this frame (§21.12).
+#[derive(Copy, Clone, Debug)]
+pub(super) struct Kernel {
+    /// The layer's filter slot, which its [`Job`] answers for.
+    pub(super) slot: u32,
+    /// Its radius in accumulator texels ([`texel_radius`]).
+    pub(super) radius: f32,
+    /// Its aperture, turned into the accumulator's frame ([`Aperture::turned`]).
+    pub(super) aperture: Aperture,
+}
+
+impl Kernel {
+    /// What the filter layer at `slot` asks for under `view` — `None` unless it is a
+    /// focal blur.
+    pub(super) fn of(slot: u32, f: &FilterDraw, view: ViewTransform) -> Option<Self> {
+        let FilterOp::FocalBlur(b) = &f.op else {
+            return None;
+        };
+        Some(Self {
+            slot,
+            radius: texel_radius(b, view),
+            aperture: Aperture::of(b.aperture).turned(view),
         })
-        .collect()
+    }
 }
 
 /// The widest radius the convolution runs at full resolution, in convolution
@@ -609,7 +613,7 @@ struct Layer {
 /// (an accumulator near the limit on a device whose cap is not a power of two), the
 /// **radius** gives way to the guard the clamp left — a smaller blur rather than a
 /// wrapped one.
-fn layers(accum: Extent2, kernels: &[(u32, f32, Aperture)], max_dim: u32) -> Vec<Layer> {
+fn layers(accum: Extent2, kernels: &[Kernel], max_dim: u32) -> Vec<Layer> {
     // The largest power of two the device can hold. Every real adapter's limit
     // is itself one; the floor is for a hypothetical that is not.
     let cap = if max_dim.is_power_of_two() {
@@ -619,8 +623,8 @@ fn layers(accum: Extent2, kernels: &[(u32, f32, Aperture)], max_dim: u32) -> Vec
     };
     kernels
         .iter()
-        .map(|&(slot, r_texels, aperture)| {
-            let (s, r) = decimation(r_texels);
+        .map(|k| {
+            let (s, r) = decimation(k.radius);
             let guard = r.ceil() as u32;
             let axis = |d: u32| {
                 let scaled = d.div_ceil(s).max(2);
@@ -637,10 +641,10 @@ fn layers(accum: Extent2, kernels: &[(u32, f32, Aperture)], max_dim: u32) -> Vec
                 .min(left(conv.width, accum.width) as f32)
                 .min(left(conv.height, accum.height) as f32);
             Layer {
-                slot,
+                slot: k.slot,
                 conv,
                 radius,
-                aperture,
+                aperture: k.aperture,
             }
         })
         .collect()
@@ -847,10 +851,18 @@ mod tests {
             }),
             crate::document::CompositeParams::IDENTITY,
         );
-        let [(_, _, aperture)] = blur_kernels(&[&draw], view)[..] else {
-            panic!("one focal-blur layer asks for one kernel");
-        };
-        aperture
+        Kernel::of(0, &draw, view)
+            .expect("a focal-blur layer asks for a kernel")
+            .aperture
+    }
+
+    /// Slot 0's kernel at an on-screen `radius`.
+    fn kernel(radius: f32, aperture: Aperture) -> Kernel {
+        Kernel {
+            slot: 0,
+            radius,
+            aperture,
+        }
     }
 
     /// **The inverse transform lands in set A**, whatever the extent — the parity fact
@@ -1062,7 +1074,7 @@ mod tests {
     #[test]
     fn decimation_rescales_the_radius_and_leaves_the_shape_alone() {
         let ring = Aperture { param: 0.5, ..DISC };
-        let l = layers(Extent2::new(2560, 1440), &[(0, 2800.0, ring)], 8192);
+        let l = layers(Extent2::new(2560, 1440), &[kernel(2800.0, ring)], 8192);
         assert_eq!(l[0].radius, 2800.0 / 32.0, "the radius survives, rescaled");
         assert_eq!(l[0].aperture, ring, "a fraction of the radius is still it");
     }
@@ -1099,14 +1111,14 @@ mod tests {
     fn zooming_in_cannot_balloon_the_transform() {
         let accum = Extent2::new(2560, 1440);
         // Radius 44 canvas px at 64× zoom, say: ~2800 accumulator texels.
-        let l = layers(accum, &[(0, 2800.0, DISC)], 8192);
+        let l = layers(accum, &[kernel(2800.0, DISC)], 8192);
         assert_eq!(l[0].conv, Extent2::new(256, 256), "decimated to affordable");
         assert_eq!(l[0].radius, 2800.0 / 32.0, "the radius survives, rescaled");
 
         // Absurd and hostile radii stay bounded rather than saturating.
-        let l = layers(accum, &[(0, 1e6, DISC)], 8192);
+        let l = layers(accum, &[kernel(1e6, DISC)], 8192);
         assert!(l[0].conv.width <= 512 && l[0].conv.height <= 512);
-        let l = layers(accum, &[(0, f32::NAN, DISC)], 8192);
+        let l = layers(accum, &[kernel(f32::NAN, DISC)], 8192);
         assert!(
             l[0].conv.width <= 4096,
             "a non-finite radius decimates to a point"
@@ -1114,7 +1126,7 @@ mod tests {
 
         // And at working zooms nothing changed: the guard band pads at full
         // resolution, exactly as before.
-        let l = layers(Extent2::new(300, 200), &[(0, 10.0, DISC)], 8192);
+        let l = layers(Extent2::new(300, 200), &[kernel(10.0, DISC)], 8192);
         assert_eq!(l[0].conv, Extent2::new(512, 256));
         assert_eq!(l[0].radius, 10.0);
     }
@@ -1123,7 +1135,7 @@ mod tests {
     /// does the radius itself give way — a smaller blur, never a wrapped one.
     #[test]
     fn the_device_cap_binds_last_and_costs_radius() {
-        let l = layers(Extent2::new(200, 200), &[(0, 60.0, DISC)], 256);
+        let l = layers(Extent2::new(200, 200), &[kernel(60.0, DISC)], 256);
         assert_eq!(l[0].conv, Extent2::new(256, 256), "capped by the device");
         assert_eq!(l[0].radius, 28.0, "the guard the cap left: (256 − 200) / 2");
     }
