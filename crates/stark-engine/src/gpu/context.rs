@@ -48,11 +48,21 @@ impl std::fmt::Display for DeviceFailure {
     }
 }
 
-/// Whether the device is still usable, shared by every clone of a [`GpuContext`].
+/// What this device has suffered, shared by every clone of a [`GpuContext`].
 ///
-/// **The first failure is the one kept.** A lost device produces a cascade — every
-/// subsequent operation fails too — and the first report is the one that says what
-/// actually happened; the rest are its echoes.
+/// **The first failure is the one kept, except that a loss supersedes it.** A lost
+/// device produces a cascade — every subsequent operation fails too — and the first
+/// report is the one that says what happened where the rest are its echoes. But
+/// [`FailureKind::Invalid`] is not terminal: the device stays perfectly usable after
+/// one, so a validation bug at startup would otherwise sit in this cell and describe
+/// the driver reset that came an hour later. A loss takes the cell and carries the
+/// earlier report in its own detail.
+///
+/// Which makes "has anything failed" and "is the device gone" two questions, answered
+/// separately ([`has_failed`](Self::has_failed), [`is_lost`](Self::is_lost)): every
+/// failure means the operation that hit it produced nothing and the frontend should
+/// stop and offer to save (§5), while only a loss means recovery needs a whole new
+/// device.
 #[derive(Clone, Default)]
 pub struct GpuHealth(Arc<Mutex<Option<DeviceFailure>>>);
 
@@ -62,18 +72,52 @@ impl GpuHealth {
         self.lock().clone()
     }
 
-    /// Whether the device is still usable.
-    pub fn is_ok(&self) -> bool {
-        self.lock().is_none()
+    /// Whether anything has failed — terminal or not.
+    ///
+    /// The question a caller that is deciding whether to keep issuing work asks: an
+    /// out-of-memory or a validation error produced nothing, so the frame it was part
+    /// of is already wrong.
+    pub fn has_failed(&self) -> bool {
+        self.lock().is_some()
     }
 
-    /// Record a failure, unless one is already recorded.
+    /// Whether the **device itself** is gone, so nothing will work on it again.
+    ///
+    /// The narrower question, for a caller that would do something different about it
+    /// — building a new device, or telling the artist to reload rather than reporting
+    /// a bug. [`has_failed`](Self::has_failed) is true whenever this is.
+    pub fn is_lost(&self) -> bool {
+        matches!(
+            self.lock().as_ref(),
+            Some(DeviceFailure {
+                kind: FailureKind::Lost,
+                ..
+            })
+        )
+    }
+
+    /// Record a failure: the first one, or a loss over a failure that was not one.
     fn report(&self, failure: DeviceFailure) {
         let mut slot = self.lock();
-        if slot.is_none() {
-            tracing::error!(failure = %failure, "GPU device failure");
-            *slot = Some(failure);
-        }
+        let held = slot.as_ref();
+        let terminal = failure.kind == FailureKind::Lost;
+        let superseded = match held {
+            None => None,
+            // A loss over a non-terminal report: the earlier one was a bug this build
+            // has, and it rides along as context rather than being dropped — the
+            // detail is for a human, and nothing branches on it.
+            Some(first) if terminal && first.kind != FailureKind::Lost => Some(first.to_string()),
+            Some(_) => return,
+        };
+        let failure = match superseded {
+            None => failure,
+            Some(first) => DeviceFailure {
+                detail: format!("{} (after {first})", failure.detail),
+                ..failure
+            },
+        };
+        tracing::error!(failure = %failure, "GPU device failure");
+        *slot = Some(failure);
     }
 
     /// One `Option`, moved in whole — [`crate::unpoisoned`]'s own argument, which is
@@ -315,7 +359,7 @@ mod tests {
     #[test]
     fn a_gpu_error_reaches_the_health_cell() {
         let Some(ctx) = context_or_skip() else { return };
-        assert!(ctx.health().is_ok(), "a fresh device is healthy");
+        assert!(!ctx.health().has_failed(), "a fresh device is healthy");
 
         // One texel past what this device will allow. Refused by validation, and with
         // no error scope pushed it goes to the uncaptured handler — which, without
@@ -342,6 +386,10 @@ mod tests {
              should have recorded it",
         );
         assert_eq!(failure.kind, FailureKind::Invalid);
+        // A validation error is a bug in the request, not a fact about the machine —
+        // so something has failed and the device is not gone.
+        assert!(ctx.health().has_failed());
+        assert!(!ctx.health().is_lost());
 
         // Reported once and kept: a failing device fails everything after it, and the
         // first report is the cause where the rest are its echoes.
@@ -367,6 +415,13 @@ mod tests {
         );
     }
 
+    fn failure(kind: FailureKind, detail: &str) -> DeviceFailure {
+        DeviceFailure {
+            kind,
+            detail: detail.into(),
+        }
+    }
+
     /// The cell's own rule, with no GPU in it: the **first** failure is the one kept.
     ///
     /// Separate from the test above because it has to hold on every machine, including
@@ -375,22 +430,50 @@ mod tests {
     #[test]
     fn the_first_failure_is_the_one_kept() {
         let health = GpuHealth::default();
-        assert!(health.is_ok());
+        assert!(!health.has_failed());
+        assert!(!health.is_lost());
         assert_eq!(health.failure(), None);
 
-        let cause = DeviceFailure {
-            kind: FailureKind::Lost,
-            detail: "the cause".into(),
-        };
+        let cause = failure(FailureKind::Lost, "the cause");
         health.report(cause.clone());
         // Every operation after a lost device fails too, so the reports that follow
         // are symptoms. Keeping the first is what makes the message name the driver
         // reset rather than the buffer map that noticed it.
-        health.report(DeviceFailure {
-            kind: FailureKind::Invalid,
-            detail: "an echo".into(),
-        });
-        assert!(!health.is_ok());
+        health.report(failure(FailureKind::Invalid, "an echo"));
+        health.report(failure(FailureKind::Lost, "a second loss"));
+        assert!(health.has_failed());
+        assert!(health.is_lost());
         assert_eq!(health.failure(), Some(cause));
+    }
+
+    /// **A loss supersedes a failure that was not one**, and keeps it as context.
+    ///
+    /// The case "first wins" got wrong on its own: `Invalid` leaves the device
+    /// perfectly usable, so a validation bug at startup would hold the cell and every
+    /// later reader — the readback's error, the frontend's report — would describe
+    /// that instead of the driver reset the artist actually hit.
+    #[test]
+    fn a_loss_supersedes_a_failure_that_left_the_device_usable() {
+        for earlier in [FailureKind::Invalid, FailureKind::OutOfMemory] {
+            let health = GpuHealth::default();
+            health.report(failure(earlier, "a bug in the request"));
+            assert!(health.has_failed());
+            assert!(
+                !health.is_lost(),
+                "{earlier:?} does not take the device away"
+            );
+
+            health.report(failure(FailureKind::Lost, "DeviceRemoved"));
+            let held = health.failure().expect("a loss was reported");
+            assert_eq!(held.kind, FailureKind::Lost);
+            assert!(health.is_lost());
+            // The superseded report is carried rather than dropped: it is the bug this
+            // build has, and the detail is for a human.
+            assert!(
+                held.detail.contains("DeviceRemoved") && held.detail.contains("a bug in the"),
+                "{}",
+                held.detail,
+            );
+        }
     }
 }

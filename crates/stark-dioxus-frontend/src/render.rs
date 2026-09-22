@@ -380,15 +380,20 @@ impl Renderer {
         self.resize(width, height);
     }
 
-    /// Whether the device is still usable — the `&self` request form of what
+    /// Whether nothing has failed on the device — the `&self` request form of what
     /// [`ObservableState::gpu_failure`](stark_engine::ObservableState::gpu_failure)
     /// projects (§5).
+    ///
+    /// **Any failure, not only a lost device.** An out-of-memory or a validation error
+    /// means the operation that hit it produced nothing, so the frame this would paint
+    /// is already wrong; `GpuHealth::is_lost` is the narrower question and nothing here
+    /// asks it.
     ///
     /// For the one caller that has no projection to hand: the paint loop
     /// (`state::schedule_paint`). Everything else asks the projection, which is
     /// what the chrome mounts its report on — see [`crate::failure`].
     pub fn gpu_healthy(&self) -> bool {
-        self.desk.engine().gpu().health().is_ok()
+        !self.desk.engine().gpu().health().has_failed()
     }
 
     /// Whether the GPU still owes the work of [`MAX_FRAMES_IN_FLIGHT`] painted
