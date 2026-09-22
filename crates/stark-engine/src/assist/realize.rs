@@ -8,8 +8,8 @@
 
 use super::AssistShape;
 use crate::path::{
-    CHANNELS, FLATTEN_TOLERANCE, arc_profile, control_points, flatten_spans_from, param_at,
-    pen_row, span_count,
+    CHANNELS, FLATTEN_TOLERANCE, arc_profile, control_points, cumulative_lengths,
+    flatten_spans_from, locate, param_at, pen_row, span_count,
 };
 use crate::spline::{CubicBSpline, Observations, SplineIndex};
 use nalgebra::{Const, Dyn, OMatrix};
@@ -59,8 +59,9 @@ const TARGETS_PER_KNOT: usize = 4;
 /// smoothed, de-jittered version of the same signal, and it is what the stroke would
 /// have been drawn with had nothing snapped.
 pub(crate) struct PenProfile {
-    /// `(fraction along, pen row)`, in order.
-    at: Vec<(f32, [f32; CHANNELS])>,
+    /// Fraction along the stroke of each row, in order.
+    at: Vec<f32>,
+    rows: Vec<[f32; CHANNELS]>,
 }
 
 impl PenProfile {
@@ -73,30 +74,29 @@ impl PenProfile {
         let poly = flatten_spans_from(path, start, spans, 0.0, FLATTEN_TOLERANCE);
         let total = poly.last().map_or(0.0, |s| s.dist);
         let inv = if total > 1e-6 { 1.0 / total } else { 0.0 };
-        Self {
-            at: poly
-                .iter()
-                .map(|s| (s.dist * inv, pen_row(s.pressure, s.tilt, s.time)))
-                .collect(),
-        }
+        let (at, rows) = poly
+            .iter()
+            .map(|s| (s.dist * inv, pen_row(s.pressure, s.tilt, s.time)))
+            .unzip();
+        Self { at, rows }
     }
 
     /// The channels `f` of the way along the drawn stroke, `f ∈ [0, 1]`.
     fn sample(&self, f: f32) -> [f32; CHANNELS] {
-        let Some(&(_, first)) = self.at.first() else {
+        let (Some(&first), Some(&last)) = (self.rows.first(), self.rows.last()) else {
             // Nothing was drawn: a pen at rest.
             return pen_row(1.0, Vec2::ZERO, 0.0);
         };
         let f = f.clamp(0.0, 1.0);
-        let i = self.at.partition_point(|&(x, _)| x < f);
-        if i == 0 {
+        // The ends are held, not extrapolated — a NaN reads the first.
+        if f.is_nan() || f <= self.at[0] {
             return first;
         }
-        let Some(&(hi, b)) = self.at.get(i) else {
-            return self.at[self.at.len() - 1].1;
-        };
-        let (lo, a) = self.at[i - 1];
-        let u = if hi > lo { (f - lo) / (hi - lo) } else { 0.0 };
+        if f > self.at[self.at.len() - 1] {
+            return last;
+        }
+        let (i, u) = locate(&self.at, f);
+        let (a, b) = (self.rows[i], self.rows[i + 1]);
         std::array::from_fn(|d| a[d] + (b[d] - a[d]) * u)
     }
 }
@@ -212,14 +212,7 @@ fn realize(
 
 /// Cumulative chord length along `pts`, normalized to `[0, 1]`.
 fn arc_fractions(pts: &[Vec2]) -> Vec<f32> {
-    let mut cum = Vec::with_capacity(pts.len());
-    let mut acc = 0.0;
-    let mut prev = pts.first().copied().unwrap_or(Vec2::ZERO);
-    for p in pts {
-        acc += prev.distance(*p);
-        cum.push(acc);
-        prev = *p;
-    }
+    let cum = cumulative_lengths(pts);
     match cum.last() {
         Some(&total) if total > 1e-6 => cum.iter().map(|c| c / total).collect(),
         _ => spread_scalar(pts.len()),

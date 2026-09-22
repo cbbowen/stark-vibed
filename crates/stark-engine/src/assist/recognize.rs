@@ -6,6 +6,7 @@
 //! drawn on a plane becomes a circle in it (§20.7): this is where a guide is *read*.
 
 use super::AssistShape;
+use crate::path::{cumulative_lengths, locate, polyline_length};
 use stark_model::document::{AxisPencil, AxisPlane, Scaffold};
 use stark_model::geom::{Ellipse, Vec2, principal_axis};
 use std::f32::consts::TAU;
@@ -244,7 +245,7 @@ fn is_closed(trace: &[Vec2]) -> bool {
     let (Some(first), Some(last)) = (trace.first(), trace.last()) else {
         return false;
     };
-    let length: f32 = trace.windows(2).map(|w| w[0].distance(w[1])).sum();
+    let length = polyline_length(trace);
     length > 0.0 && first.distance(*last) * TAU <= CLOSE_GAP * length
 }
 
@@ -550,16 +551,7 @@ fn resample(trace: &[Vec2], n: usize) -> Option<Vec<Vec2>> {
     if trace.len() < 2 || n < 3 {
         return None;
     }
-    let cum = {
-        let mut acc = 0.0;
-        let mut out = Vec::with_capacity(trace.len());
-        out.push(0.0);
-        for w in trace.windows(2) {
-            acc += w[0].distance(w[1]);
-            out.push(acc);
-        }
-        out
-    };
+    let cum = cumulative_lengths(trace);
     let total = *cum.last()?;
     if !(total.is_finite() && total > 0.0) {
         return None;
@@ -567,15 +559,8 @@ fn resample(trace: &[Vec2], n: usize) -> Option<Vec<Vec2>> {
     Some(
         (0..n)
             .map(|i| {
-                let want = total * i as f32 / (n - 1) as f32;
-                let k = cum.partition_point(|&c| c < want).clamp(1, trace.len() - 1);
-                let (lo, hi) = (cum[k - 1], cum[k]);
-                let u = if hi > lo {
-                    (want - lo) / (hi - lo)
-                } else {
-                    0.0
-                };
-                trace[k - 1].lerp(trace[k], u)
+                let (k, u) = locate(&cum, total * i as f32 / (n - 1) as f32);
+                trace[k].lerp(trace[k + 1], u)
             })
             .collect(),
     )

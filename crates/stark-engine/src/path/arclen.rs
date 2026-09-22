@@ -1,15 +1,17 @@
 //! **Arc length ↔ curve parameter**: the map a fit and a realized shape both place
-//! their samples through (§6.2).
+//! their samples through (§6.2), and the cumulative table and lookup under it.
 //!
 //! Two independent consumers, and it belongs to neither:
 //! [`PathFitter`](super::PathFitter) builds it to assign each pointer report a place
 //! on the curve; `assist::realize` builds it to spread a recognized shape's targets
-//! along one.
+//! along one. Recognition and realization also walk plain polylines by the same table
+//! ([`cumulative_lengths`], [`locate`]).
 //!
 //! Nothing here knows what is being fitted. It is a curve and a list of settled
 //! lengths.
 
 use crate::spline::CubicBSpline;
+use stark_model::geom::Vec2;
 
 /// Samples per span used to measure a curve's own arc length (see `arc_profile`).
 pub(super) const ARC_SAMPLES_PER_SPAN: usize = 4;
@@ -68,13 +70,48 @@ pub(crate) fn param_at(profile: &[f32], spans: f32, f: f32) -> f32 {
     if total <= 1e-6 || profile.len() < 2 {
         return f.clamp(0.0, 1.0) * spans;
     }
-    let want = f.clamp(0.0, 1.0) * total;
-    let i = profile
-        .partition_point(|&c| c < want)
-        .clamp(1, profile.len() - 1);
-    let (a, b) = (profile[i - 1], profile[i]);
-    let u = if b > a { (want - a) / (b - a) } else { 0.0 };
-    (((i - 1) as f32 + u) / ARC_SAMPLES_PER_SPAN as f32).min(spans)
+    let (i, u) = locate(profile, f.clamp(0.0, 1.0) * total);
+    ((i as f32 + u) / ARC_SAMPLES_PER_SPAN as f32).min(spans)
+}
+
+/// The distance along the polyline `pts` to each of its points: `0` at the first, and
+/// one entry per point — empty for none.
+///
+/// `pub` for `benches/path.rs`, which resamples recorded strokes by it.
+pub fn cumulative_lengths(pts: &[Vec2]) -> Vec<f32> {
+    let mut out = Vec::with_capacity(pts.len());
+    if !pts.is_empty() {
+        out.push(0.0);
+    }
+    let mut acc = 0.0f32;
+    out.extend(pts.windows(2).map(|w| {
+        acc += w[0].distance(w[1]);
+        acc
+    }));
+    out
+}
+
+/// The length of the polyline `pts` — [`cumulative_lengths`]' last entry, summed in the
+/// same order.
+pub(crate) fn polyline_length(pts: &[Vec2]) -> f32 {
+    pts.windows(2).fold(0.0, |acc, w| acc + w[0].distance(w[1]))
+}
+
+/// Where `want` falls along the non-decreasing table `cum`: `(i, u)`, `u` of the way
+/// from entry `i` to entry `i + 1`, and 0 across a step of no length.
+///
+/// Before the first entry or past the last it reads the end interval, extrapolated;
+/// a caller that must hold the ends instead tests them first.
+///
+/// # Panics
+///
+/// If `cum` has fewer than two entries: there is no interval to fall in.
+///
+/// `pub` for `benches/path.rs`, which resamples recorded strokes by it.
+pub fn locate(cum: &[f32], want: f32) -> (usize, f32) {
+    let i = cum.partition_point(|&c| c < want).clamp(1, cum.len() - 1);
+    let (a, b) = (cum[i - 1], cum[i]);
+    (i - 1, if b > a { (want - a) / (b - a) } else { 0.0 })
 }
 
 #[cfg(test)]
@@ -97,6 +134,29 @@ mod tests {
                 (cum, spans as f32)
             })
         })
+    }
+
+    /// One entry per point from 0, the total as the last, and a lookup that lands where
+    /// the table says.
+    #[test]
+    fn a_polyline_table_reads_its_own_lengths() {
+        let pts = [
+            Vec2::ZERO,
+            Vec2::new(3.0, 4.0),
+            Vec2::new(3.0, 4.0),
+            Vec2::new(3.0, 14.0),
+        ];
+        let cum = cumulative_lengths(&pts);
+        assert_eq!(cum, [0.0, 5.0, 5.0, 15.0]);
+        assert_eq!(polyline_length(&pts), 15.0);
+        assert!(cumulative_lengths(&[]).is_empty());
+        assert_eq!(cumulative_lengths(&pts[..1]), [0.0]);
+        assert_eq!(locate(&cum, 2.5), (0, 0.5));
+        // The flat step is skipped: 5.0 is the end of the first leg, not the dwell.
+        assert_eq!(locate(&cum, 5.0), (0, 1.0));
+        assert_eq!(locate(&cum, 10.0), (2, 0.5));
+        // Past the last entry, the last interval extrapolated.
+        assert_eq!(locate(&cum, 20.0), (2, 1.5));
     }
 
     proptest! {

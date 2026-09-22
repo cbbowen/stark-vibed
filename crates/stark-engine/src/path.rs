@@ -46,7 +46,8 @@ pub use flatten::{
 };
 
 pub(crate) use arc::{Arc, arc_at, arc_sagitta, fit_arc};
-pub(crate) use arclen::{arc_profile, param_at};
+pub(crate) use arclen::{arc_profile, param_at, polyline_length};
+pub use arclen::{cumulative_lengths, locate};
 pub(crate) use fit::clamp_tolerance;
 // The pen-channel layout, for `assist::realize`, which fits the same channels onto the
 // same control polygon.

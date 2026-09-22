@@ -75,27 +75,16 @@ const SWEEP_STROKE: &[[f32; 2]] = stark_testdata::LOOP_STROKE;
 /// not draw — a 4× resample is the same curve, reported four times as often, which
 /// is exactly the thing being varied.
 fn resampled(pts: &[InputSample], n: usize) -> Vec<InputSample> {
-    let arcs: Vec<f32> = pts
-        .iter()
-        .scan((0.0f32, None::<Vec2>), |(acc, prev), s| {
-            if let Some(p) = *prev {
-                *acc += (s.pos - p).length();
-            }
-            *prev = Some(s.pos);
-            Some(*acc)
-        })
-        .collect();
+    let pos: Vec<Vec2> = pts.iter().map(|s| s.pos).collect();
+    let arcs = path::cumulative_lengths(&pos);
     let total = *arcs.last().unwrap_or(&0.0);
     if total <= 0.0 || n < 2 {
         return pts.to_vec();
     }
     (0..n)
         .map(|i| {
-            let want = i as f32 / (n - 1) as f32 * total;
-            let k = arcs.partition_point(|&a| a < want).clamp(1, pts.len() - 1);
-            let (a, b) = (arcs[k - 1], arcs[k]);
-            let u = if b > a { (want - a) / (b - a) } else { 0.0 };
-            InputSample::at(pts[k - 1].pos.lerp(pts[k].pos, u))
+            let (k, u) = path::locate(&arcs, i as f32 / (n - 1) as f32 * total);
+            InputSample::at(pos[k].lerp(pos[k + 1], u))
         })
         .collect()
 }
