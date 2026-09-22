@@ -467,12 +467,76 @@ impl Module {
     }
 
     /// Fail unless `entry` is one this module declares.
+    ///
+    /// **Every pipeline crosses this**, vertex, fragment and compute alike, which is
+    /// why the coverage recorder hangs off it rather than off the three constructors.
     fn declares(&self, label: &str, entry: EntryPoint) {
         assert_eq!(
             self.artifact, entry.artifact,
             "`{label}` builds a stage from `{}`'s `{}`, over `{}`'s module",
             entry.artifact, entry.name, self.artifact,
         );
+        #[cfg(test)]
+        record::built(entry);
+    }
+}
+
+/// Which entry points the engine actually builds pipelines from
+/// ([`pipeline_coverage`](crate::gpu::pipeline_coverage)).
+///
+/// Per thread and only while a [`Recording`](record::Recording) is open, so what comes
+/// back is what *this* test built rather than whatever else the binary has compiled.
+#[cfg(test)]
+pub(crate) mod record {
+    use std::cell::RefCell;
+    use std::collections::BTreeSet;
+
+    use stark_shaders::EntryPoint;
+
+    /// An entry point as the recorder identifies it: the artifact it belongs to and its
+    /// name, which together are unique — and which stay comparable across the two
+    /// builds of a shader, where the names alone would not be.
+    pub(crate) type Built = (&'static str, &'static str);
+
+    thread_local! {
+        static OPEN: RefCell<Option<BTreeSet<Built>>> = const { RefCell::new(None) };
+    }
+
+    /// Records every entry point a pipeline is built from on this thread until
+    /// [`take`](Self::take) — or until it is dropped, which discards the recording.
+    pub(crate) struct Recording(());
+
+    impl Recording {
+        /// # Panics
+        /// If one is already open on this thread: two overlapping recordings would
+        /// each be missing whatever the other took.
+        pub(crate) fn open() -> Self {
+            OPEN.with(|open| {
+                let mut open = open.borrow_mut();
+                assert!(open.is_none(), "a recording is already open on this thread");
+                *open = Some(BTreeSet::new());
+            });
+            Self(())
+        }
+
+        pub(crate) fn take(self) -> BTreeSet<Built> {
+            OPEN.with(|open| open.borrow_mut().take())
+                .expect("the recording is open until it is taken")
+        }
+    }
+
+    impl Drop for Recording {
+        fn drop(&mut self) {
+            OPEN.with(|open| *open.borrow_mut() = None);
+        }
+    }
+
+    pub(super) fn built(entry: EntryPoint) {
+        OPEN.with(|open| {
+            if let Some(set) = open.borrow_mut().as_mut() {
+                set.insert((entry.artifact, entry.name));
+            }
+        });
     }
 }
 
