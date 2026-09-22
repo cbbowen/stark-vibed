@@ -502,13 +502,19 @@ impl Engine {
         }
     }
 
-    /// Rebind the current substrate in the media pass — the only thing that samples
-    /// it. No pipeline or pool rebuild, no document reset, and **no reallocation of
-    /// the compositor's attachments**: what a swap costs is one bind group, which is
-    /// what the binding stamp beside the generation buys (`CompositorPipeline`).
+    /// The substrate in use was rebuilt: rebind it in the media pass, and invalidate
+    /// the live preview, whose heads — and the tiles a stroke's commit takes from them
+    /// (`PreparedStroke`, §6.2) — bit the old one's tooth. Here rather than at each
+    /// caller, since bytes arriving for the substrate in use rebuild it as surely as a
+    /// switch does.
+    ///
+    /// No pipeline or pool rebuild, no document reset, and **no reallocation of the
+    /// compositor's attachments**: what a swap costs is one bind group, which is what
+    /// the binding stamp beside the generation buys (`CompositorPipeline`).
     fn apply_substrate(&mut self) {
         self.compositor_pipeline
             .set_substrate(self.shared.apply.substrates.current());
+        self.preview.invalidate();
     }
 
     /// The current lighting environment (§6.3).

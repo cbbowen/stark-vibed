@@ -186,3 +186,42 @@ fn the_pen_bake_paints_what_the_follow_stroke_bake_does_at_zero_angle() {
          — the padded volume is not standing for the same tip"
     );
 }
+
+/// **A brush shape arriving mid-stroke is drawn by the stroke's commit** (§6.6, §6.2).
+///
+/// A stroke whose shape has not loaded is deferred rather than drawn, so its preview
+/// is the bare layer. The commit takes the preview's tiles, and must not take those
+/// once the shape is here: every replay draws the stroke.
+#[test]
+fn a_brush_shape_arriving_mid_stroke_is_drawn_by_its_commit() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let png = blob_png(160, 160);
+    let id = stark_assetid::coverage(&png).expect("a valid shape").id();
+    let mut b = brush(RED_SOFT, 24.0);
+    b.shape = BrushShape::Stamp(id);
+    engine.process(ViewCommand::set_brush(b));
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(Vec2::new(-70.0, 0.0)),
+        tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+    for i in 1..=8 {
+        engine.process(GestureCommand::To {
+            sample: InputSample::at(Vec2::new(-70.0 + 17.5 * i as f32, 0.0)),
+        });
+        let _ = engine.render_to_image();
+    }
+    engine.import_brush(&png).expect("import");
+    engine.process(GestureCommand::End);
+
+    let committed = engine.render_to_image();
+    let rendered = whole_render(&mut engine);
+    assert!(
+        images_match(&committed, &rendered, SEAM_LEVELS),
+        "the commit is not the stroke rendered whole: worst {} levels",
+        diff_fraction(&committed, &rendered).1
+    );
+}

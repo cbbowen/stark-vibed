@@ -288,7 +288,7 @@ impl Preview {
                             && h.spans <= frozen
                     });
                     let root = if contested { &out } else { &base };
-                    let (head, tail_state) = self.render_live_stroke(
+                    let (head, tail_state, drawn) = self.render_live_stroke(
                         ctx,
                         LiveTail {
                             author: actor,
@@ -321,11 +321,13 @@ impl Preview {
                     };
                     heads.insert(actor, head);
                     // The tail state is the document this stroke's commit will
-                    // produce — provided it is this client's stroke, drawn over the
-                    // committed document alone (not a drag's stand-in, not another
-                    // stroke's paint) and in its own color rather than the
-                    // diagnostic's.
-                    let lands_at_commit = actor == local
+                    // produce — provided it is this client's stroke, drawn at all
+                    // (not deferred for a brush shape still in flight, which the
+                    // commit may find here), over the committed document alone (not a
+                    // drag's stand-in, not another stroke's paint) and in its own
+                    // color rather than the diagnostic's.
+                    let lands_at_commit = drawn
+                        && actor == local
                         && !contested
                         && self.doc().is_none()
                         && !cfg!(feature = "debug-unfrozen");
@@ -353,7 +355,9 @@ impl Preview {
     }
 
     /// Advance one stroke's frozen head and render its live tail, returning the head
-    /// to keep and the state the tail left behind.
+    /// to keep, the state the tail left behind, and whether the stroke was drawn —
+    /// `false` for a record refused whole and for a tail deferred because the brush's
+    /// shape has not arrived (`Progress::Deferred`), whose state is the bare base.
     ///
     /// Uses the same entry point a commit does (`StrokeRenderer::render_range`), so
     /// the live preview and the `Action::apply` that replaces it draw the same pixels.
@@ -364,7 +368,7 @@ impl Preview {
         base: &DocState,
         rec: &StrokeRecord,
         head: Option<FrozenHead>,
-    ) -> (FrozenHead, DocState) {
+    ) -> (FrozenHead, DocState, bool) {
         let LiveTail {
             author,
             gesture,
@@ -394,7 +398,7 @@ impl Preview {
         // replay, so its preview is the base alone — not a head frozen while the
         // stroke was still small, which the commit would otherwise take.
         if crate::gpu::stroke::too_large(rec) {
-            return (fresh(), base.clone());
+            return (fresh(), base.clone(), false);
         }
         let mut head = head.unwrap_or_else(fresh);
         if frozen > head.spans {
@@ -428,10 +432,17 @@ impl Preview {
         // overlay.
         let (state, carry) =
             render_span_range(ctx, author, &head.state, tail_rec, tail, head.tool.as_ref());
-        if let Progress::Finished { dirty, .. } = carry.progress {
-            head.dirty.extend(dirty);
-        }
-        (head, state)
+        // A deferred tail means the head is bare too: a shape is never unloaded, so one
+        // missing now was missing for every range before, and a deferred range is
+        // never frozen (`advance_head`).
+        let drawn = match carry.progress {
+            Progress::Finished { dirty, .. } => {
+                head.dirty.extend(dirty);
+                true
+            }
+            Progress::Deferred => false,
+        };
+        (head, state, drawn)
     }
 }
 

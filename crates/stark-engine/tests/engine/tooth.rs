@@ -910,3 +910,61 @@ fn a_toothed_smear_previews_as_it_commits() {
         frac_exceeding(&committed, &rendered, 2) * 100.0,
     );
 }
+
+/// **A substrate's bytes arriving mid-stroke are what the stroke's commit bites**
+/// (§6.4, §6.2).
+///
+/// A document can move onto a substrate before its height map is here — a peer's
+/// `SetSubstrate` does (§12.4) — and until the bytes land the registry stands the flat
+/// builtin in, which the live stroke bites. The commit takes the preview's tiles, so a
+/// preview kept across the arrival lands the stand-in's tooth where every replay bites
+/// the real one.
+#[test]
+fn a_substrate_arriving_mid_stroke_is_the_one_its_commit_bites() {
+    use stark_engine::command::{GestureCommand, InputSample, Tool, ViewCommand};
+
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let canonical = stark_assetid::height(&stark_testdata::assets::rough())
+        .expect("the rough height map decodes");
+    let id = SubstrateId::Image(canonical.id());
+    engine.process(DocCommand::SetSubstrate(id));
+
+    engine.process(ViewCommand::set_brush(toothed(0.2)));
+    let path: Vec<Vec2> = (0..60)
+        .map(|i| {
+            let t = i as f32 * 0.1;
+            Vec2::new(t * 40.0 - 120.0, (t * 1.3).sin() * 26.0)
+        })
+        .collect();
+    engine.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(path[0]),
+        tolerance: stark_engine::path::DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+    for &p in &path[1..] {
+        engine.process(GestureCommand::To {
+            sample: InputSample::at(p),
+        });
+        let _ = engine.render_to_image();
+    }
+    let bytes = canonical
+        .encode()
+        .expect("the canonical height map encodes");
+    engine
+        .accept_substrate(id, &bytes)
+        .expect("rough's own bytes are accepted under its id");
+    engine.process(GestureCommand::End);
+
+    let committed = engine.render_to_image();
+    let rendered = whole_render(&mut engine);
+    assert_eq!(
+        frac_exceeding(&committed, &rendered, 11),
+        0.0,
+        "the commit bit a different substrate from the stroke rendered whole \
+         ({:.4}% of px over 2)",
+        frac_exceeding(&committed, &rendered, 2) * 100.0,
+    );
+}
