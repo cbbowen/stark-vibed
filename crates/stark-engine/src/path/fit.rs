@@ -219,7 +219,6 @@ pub struct PathFitter {
     settled_profile: Vec<f32>,
     /// Arc at which the polygon last gained a control point.
     grown_at: f32,
-    smoothing: f32,
     /// The input's own positional resolution, in canvas px (see [`Self::with_tolerance`]).
     tolerance: f32,
     /// Absolute time of the first sample; channel times are relative to it.
@@ -347,7 +346,6 @@ impl PathFitter {
             arc: 0.0,
             settled_profile: Vec::new(),
             grown_at: 0.0,
-            smoothing: SMOOTHING,
             tolerance: clamp_tolerance(tolerance),
             t0: 0.0,
             start_arc: None,
@@ -421,15 +419,23 @@ impl PathFitter {
     /// **Dropping it is the only total answer.** A NaN position spreads into `arc`,
     /// out of `arc` into every sample's curve parameter, and from there into the
     /// normal equations, which are then singular at every ridge — a state
-    /// [`spline`](crate::spline)'s solve reports by panicking, because for admissible
-    /// input it cannot arise. Repairing the sample instead would mean inventing a
-    /// position the hand never visited; refusing it leaves exactly the stroke the
-    /// admissible reports describe.
+    /// [`spline`](crate::spline)'s solve can only answer by leaving the polygon where
+    /// it was, because for admissible input it cannot arise. Repairing the sample
+    /// instead would mean inventing a position the hand never visited; refusing it
+    /// leaves exactly the stroke the admissible reports describe.
     ///
     /// [`InputSample::is_admissible`]: crate::command::InputSample::is_admissible
     pub fn push(&mut self, s: InputSample) {
+        if self.accept(s) {
+            self.grow_or_hold();
+        }
+    }
+
+    /// Take `s` into the accepted reports, or drop it; `true` when there is a curve to
+    /// refit — a report was appended, and there are at least two.
+    fn accept(&mut self, s: InputSample) -> bool {
         if self.finished || !s.is_admissible() {
-            return;
+            return false;
         }
         if self.pts.is_empty() {
             // The stroke's own first report: the clock every channel time is
@@ -453,7 +459,7 @@ impl PathFitter {
                 if pressed {
                     self.start_arc = Some(self.arc);
                 }
-                return;
+                return false;
             }
             self.arc += step;
         }
@@ -465,16 +471,16 @@ impl PathFitter {
         if pressed {
             self.start_arc = Some(self.arc);
         }
-        if self.pts.len() < 2 {
-            return;
-        }
+        self.pts.len() >= 2
+    }
+
+    /// Fit as we are, and fit with one more control point. Keeping the better of the
+    /// two *is* the growth rule, and adopting the larger one is what freezes the
+    /// control point it pushes out of the window.
+    fn grow_or_hold(&mut self) {
         if self.geom.nrows() < 2 {
             self.grow_to(2);
         }
-
-        // Fit as we are, and fit with one more control point. Keeping the better of
-        // the two *is* the growth rule, and adopting the larger one is what freezes
-        // the control point it pushes out of the window.
         let m = self.geom.nrows();
         let mut scratch = std::mem::take(self.scratch.get_mut());
         let Scratch {
@@ -684,7 +690,7 @@ impl PathFitter {
             &mut fit.geom,
             frozen,
             1,
-            self.smoothing,
+            SMOOTHING,
         );
 
         // The pen channels ride the same knots at the same parameters, so they are
@@ -710,11 +716,7 @@ impl PathFitter {
     /// the window *around* them. Samples map onto the curve's domain by distance
     /// travelled, which puts the first and last exactly on the two ends.
     fn seed_candidate(&self, m: usize) -> Fit {
-        let mut geom = grow_rows(&self.geom, m, |j, d| {
-            let p = self.at_fraction(j, m).pos;
-            if d == 0 { p.x } else { p.y }
-        });
-        let mut attr = grow_rows(&self.attr, m, |j, d| self.at_fraction(j, m).channels[d]);
+        let Fit { mut geom, mut attr } = self.grown(m);
         let first = self.pts[0];
         let last = *self.pts.last().expect("a sample");
         set_row(&mut geom, 0, [first.pos.x, first.pos.y]);
@@ -875,12 +877,26 @@ impl PathFitter {
             .extend_from_slice(&w.profile[..(settled + 1).min(w.profile.len())]);
     }
 
+    /// Lengthen the polygon to `m` control points in place: the first two, before the
+    /// first solve. Not left to the candidates' own seeding — the larger candidate then
+    /// keeps row 1 where this seeded it instead of seeding it afresh a third of the way
+    /// along, and a seed is the ridge's prior, so part of what the solve lands on.
     fn grow_to(&mut self, m: usize) {
-        self.geom = grow_rows(&self.geom, m, |j, d| {
-            let p = self.at_fraction(j, m).pos;
-            if d == 0 { p.x } else { p.y }
-        });
-        self.attr = grow_rows(&self.attr, m, |j, d| self.at_fraction(j, m).channels[d]);
+        let Fit { geom, attr } = self.grown(m);
+        self.geom = geom;
+        self.attr = attr;
+    }
+
+    /// The polygon lengthened to `m` control points, each new one seeded at its share of
+    /// the way along the stroke ([`Self::at_fraction`]).
+    fn grown(&self, m: usize) -> Fit {
+        Fit {
+            geom: grow_rows(&self.geom, m, |j, d| {
+                let p = self.at_fraction(j, m).pos;
+                if d == 0 { p.x } else { p.y }
+            }),
+            attr: grow_rows(&self.attr, m, |j, d| self.at_fraction(j, m).channels[d]),
+        }
     }
 
     /// The sample `j / (m - 1)` of the way along the stroke — where a new control

@@ -27,6 +27,19 @@ const DEGREE: usize = 3;
 /// dimension of the basis matrix.
 pub(crate) const ORDER: usize = DEGREE + 1;
 
+/// What the proximal ridge is multiplied by after each factorization that fails
+/// ([`solve_free_block`]).
+const RIDGE_GROWTH: f32 = 10.0;
+
+/// Factorizations the ridge escalates through before the solve keeps its prior.
+const RIDGE_TRIES: usize = 64;
+
+/// Where the ridge starts, per unit of data weight: `√ε`. A function only because
+/// `f32::sqrt` is not `const`.
+fn ridge_start() -> f32 {
+    f32::EPSILON.sqrt()
+}
+
 /// The **index structure** of a clamped cardinal cubic B-spline over `m` control
 /// points: how many spans it has, which backing row each conceptual knot reads, and
 /// where a parameter falls.
@@ -63,7 +76,7 @@ pub(crate) struct Observations<'a, const E: usize> {
     pub ts: &'a [f32],
     pub values: &'a [[f32; E]],
     /// **How much of the thing being fitted each value stands for** — see
-    /// `SplineIndex::solve_window` for why a fit over sampled values needs one at all.
+    /// [`Self::weight`] for why a fit over sampled values needs one at all.
     ///
     /// Empty means one each: the plain sum-over-values fit, right where the values are
     /// already an even sampling of their subject. Otherwise the same length as
@@ -78,6 +91,24 @@ impl<'a, const E: usize> Observations<'a, E> {
             ts,
             values,
             weights: &[],
+        }
+    }
+
+    /// The total weight the values carry: their count, for an even sampling.
+    ///
+    /// **One each is a claim rather than a neutral default.** A plain sum minimizes the
+    /// error *per value supplied*, which is the right objective only where the values
+    /// are an even sampling of whatever is being fitted; where they are not, the fit is
+    /// to the sampling and not to the subject, and the sampling wins on sheer count.
+    /// `weights` is how a caller states what each value stands for (see
+    /// `path::arc_weights`), and this sum is what the two knobs scaled by the data —
+    /// the smoothing's average pull and the ridge's floor — are scaled by, so they go on
+    /// meaning what they meant (§6.2).
+    fn weight(&self) -> f32 {
+        if self.weights.is_empty() {
+            self.values.len() as f32
+        } else {
+            self.weights.iter().sum()
         }
     }
 }
@@ -198,19 +229,13 @@ impl SplineIndex {
     /// length. The geometry decides `ts` alone and the channels solve against it.
     ///
     /// The first `frozen` rows and the last `tail` rows of `values` come back
-    /// unchanged; only the window between them is solved for. `smoothing` charges the
-    /// control polygon for curvature (see `Self::solve_window`).
+    /// unchanged; only the window between them is solved for, ridge-regularized towards
+    /// the rows it arrives holding. `smoothing` charges the control polygon for
+    /// curvature ([`add_bending`]).
     ///
     /// In place because returning an owned result costs a copy of the whole polygon
     /// per fit, four times a pointer report, while the system being solved stays at
     /// `FREE_CONTROL_POINTS` unknowns — the reason the index is a type of its own.
-    ///
-    /// **In-place is sound rather than merely convenient.** The rows the solve writes
-    /// are exactly `frozen..m - tail`, and every row it *reads* as a prior is outside
-    /// that range or is read into the right-hand side before anything is written: the
-    /// frozen block and the tail feed `rhs` up front, and the ridge target for each
-    /// free row is folded in before the Cholesky runs. A failed factorization
-    /// escalates and re-reads the same untouched rows.
     ///
     /// # Panics
     ///
@@ -246,22 +271,8 @@ impl SplineIndex {
         self.solve_window(obs, values, frozen, tail, smoothing);
     }
 
-    /// The least-squares solve itself: normal equations over the free window, ridge-
-    /// regularized towards the values `control` arrives holding, solved by Cholesky.
-    ///
-    /// **`control` is read and then written**, and both halves matter: the rows it
-    /// arrives with are the ridge's target — where each free control point is pulled
-    /// back towards when the data does not determine it — and the window
-    /// `frozen..m - tail` is overwritten with the solution.
-    ///
-    /// **Every value carries a weight, and one each is a claim rather than a neutral
-    /// default.** A plain sum minimizes the error *per value supplied*, which is the
-    /// right objective only where the values are an even sampling of whatever is being
-    /// fitted; where they are not, the fit is to the sampling and not to the subject,
-    /// and the sampling wins on sheer count. `weights` is how a caller states what each
-    /// value stands for (see `path::arc_weights`), and `n` becomes their sum, so the
-    /// two knobs scaled by it below — the smoothing's average data pull, the ridge's
-    /// floor — go on meaning what they meant (§6.2).
+    /// The least-squares solve itself: normal equations over the window the free rows
+    /// reach, the free block of them solved into `control`.
     fn solve_window<const E: usize>(
         self,
         obs: Observations<'_, E>,
@@ -270,49 +281,63 @@ impl SplineIndex {
         tail: usize,
         smoothing: f32,
     ) {
-        let Observations {
-            ts,
-            values: points,
-            weights,
-        } = obs;
-        let basis = Self::basis_matrix();
         let m = control.nrows();
-        // The weight the system carries, which is the point count exactly when the
-        // weights are the implicit ones.
-        let n: f32 = if weights.is_empty() {
-            points.len() as f32
-        } else {
-            weights.iter().sum()
-        };
-        if frozen + tail >= m || points.is_empty() {
-            // Nothing left to solve for, or nothing to solve against. With no points
-            // the normal equations are all ridge, whose solution is `control` exactly,
-            // so in place there is nothing to do. The branch also keeps `lambda`
-            // (scaled by `n`) off zero, which it could never escalate away from.
+        if frozen + tail >= m || obs.values.is_empty() {
+            // Nothing left to solve for, or nothing to solve against. With no values the
+            // normal equations are all ridge, whose solution is `control` exactly, so in
+            // place there is nothing to do. The branch also keeps the ridge (scaled by
+            // the data's weight) off zero, which it could never escalate away from.
             return;
         }
-        // The normal equations are assembled over a **window**, not the whole polygon.
-        //
-        // Only rows `frozen..m - tail` are solved for, and a cubic B-spline's basis is
-        // local: a point in span `k` touches rows `k - 2 ..= k + 1`, so any point that
-        // reaches a free row touches nothing below `frozen - (ORDER - 1)`. Everything
-        // before that is a frozen row coupled to no free one, contributing zero. An
-        // `m x m` matrix would therefore be nearly all structural zeros — 160KB of them
-        // at 200 control points, cleared four times per sample — and the per-update
-        // cost would grow with the length of the whole stroke rather than the window.
+        let n = obs.weight();
+        // A value reaching a free row touches nothing below this (`normal_equations`).
         let base = frozen.saturating_sub(ORDER - 1);
-        let w = m - base;
+        let (mut btb, btp) = self.normal_equations(obs, base, frozen);
+        if smoothing > 0.0 && m >= 3 {
+            // Weighted against the *average* data pull per control point, so the knob
+            // means the same thing whatever the point count and polygon length are.
+            // Ratio in f64 then narrowed — see the note in `basis_matrix`.
+            add_bending(
+                &mut btb,
+                base,
+                m,
+                smoothing * ((n as f64 / m as f64) as f32),
+            );
+        }
+        let prior = control.rows(base, m - base).into_owned();
+        // `None` keeps `control` as it arrived — see `solve_free_block`.
+        if let Some(solved) = solve_free_block(&btb, &btp, &prior, frozen - base, tail, n) {
+            control.rows_mut(frozen, solved.nrows()).copy_from(&solved);
+        }
+    }
+
+    /// The normal equations `BᵀQB` and `BᵀQP` over the window `base..m`, for the design
+    /// matrix `B` of `obs`'s parameters and the diagonal `Q` of its weights.
+    ///
+    /// A window rather than the whole polygon because a cubic's basis is local: a value in
+    /// span `k` touches rows `k - 2 ..= k + 1`, so one that reaches a row from `frozen` on
+    /// touches nothing below `frozen - (ORDER - 1)`, and one that reaches none is skipped.
+    /// The rows before the window would be structural zeros — 160KB of them at 200
+    /// control points, cleared four times per report — and the cost of a solve would
+    /// grow with the stroke rather than with the window.
+    fn normal_equations<const E: usize>(
+        self,
+        obs: Observations<'_, E>,
+        base: usize,
+        frozen: usize,
+    ) -> (OMatrix<f32, Dyn, Dyn>, OMatrix<f32, Dyn, Const<E>>) {
+        let basis = Self::basis_matrix();
+        let w = self.m - base;
         let mut btb = OMatrix::<f32, Dyn, Dyn>::zeros(w, w);
         let mut btp = OMatrix::<f32, Dyn, Const<E>>::zeros_generic(Dyn(w), Const::<E>);
-        for (i, (&t, p)) in ts.iter().zip(points).enumerate() {
+        for (i, (&t, p)) in obs.ts.iter().zip(obs.values).enumerate() {
             let (k, u) = self.span_and_local(t);
-            // Cannot reach a free row, so contributes nothing to what is solved.
             if self.knot_row(k + ORDER - 1) < frozen {
                 continue;
             }
             // Scales this value's whole row of the design matrix, which is what a
             // weighted least squares is: `Σ qᵢ‖residualᵢ‖²`.
-            let q = weights.get(i).copied().unwrap_or(1.0);
+            let q = obs.weights.get(i).copied().unwrap_or(1.0);
             let wts = *basis * Self::u_powers(u);
             for a in 0..ORDER {
                 let ra = self.knot_row(k + a) - base;
@@ -324,72 +349,76 @@ impl SplineIndex {
                 }
             }
         }
-        // Bending energy `Σ ‖P₍ⱼ₋₁₎ − 2Pⱼ + P₍ⱼ₊₁₎‖²`, weighted against the *average*
-        // data pull per control point so the knob means the same thing whatever the
-        // point count and polygon length are. Quadratic in the control points, so it
-        // is just another symmetric band added to the normal matrix — and its target
-        // is zero curvature, so the right-hand side is untouched.
-        //
-        // This is what stops the curve wandering where no point is assigned. It lands
-        // in `btb` *before* the frozen block is folded into the right-hand side below,
-        // so it also couples the first free control point to the frozen ones — which is
-        // what makes the free tail continue smoothly out of the committed prefix. Only
-        // the triples that touch a solved row are in the window.
-        if smoothing > 0.0 && m >= 3 {
-            // Ratio in f64 then narrowed — see the note in `basis_matrix`.
-            let sw = smoothing * ((n as f64 / m as f64) as f32);
-            let c = [1.0f32, -2.0, 1.0];
-            for j in (base + 1).max(1)..m - 1 {
-                let idx = [j - 1 - base, j - base, j + 1 - base];
-                for (a, &ca) in c.iter().enumerate() {
-                    for (b, &cb) in c.iter().enumerate() {
-                        btb[(idx[a], idx[b])] += sw * ca * cb;
-                    }
-                }
-            }
-        }
-        // The free block of the system, with the frozen rows' contribution moved to
-        // the right-hand side. With `frozen == 0` this is the whole system, unchanged.
-        let free = m - frozen - tail;
-        let mut lambda = n * f32::EPSILON.sqrt();
-        for _ in 0..64 {
-            let f0 = frozen - base;
-            let mut lhs = btb.view((f0, f0), (free, free)).into_owned();
-            let mut rhs = btp.rows(f0, free).into_owned();
-            if f0 > 0 {
-                rhs -= btb.view((f0, 0), (free, f0)) * control.rows(base, f0);
-            }
-            if tail > 0 {
-                rhs -= btb.view((f0, w - tail), (free, tail)) * control.rows(m - tail, tail);
-            }
-            for j in 0..free {
-                lhs[(j, j)] += lambda;
-                for d in 0..E {
-                    rhs[(j, d)] += control[(frozen + j, d)] * lambda;
-                }
-            }
-            if let Some(chol) = Cholesky::new(lhs) {
-                let solved = chol.solve(&rhs);
-                // The one write, and why reading the same buffer above was safe: every
-                // row outside `frozen..frozen + free` is left as it was, and every row
-                // inside it was read into `rhs` before this point.
-                control.rows_mut(frozen, free).copy_from(&solved);
-                return;
-            }
-            lambda *= 10.0;
-        }
-        // Unreachable for admissible input — a ridge-regularized normal matrix is
-        // positive definite, and `lambda` escalates until it dominates. What reaches
-        // here is a non-finite entry, which `InputSample::is_admissible` refuses at the
-        // fitter's door (C2); but `fit_into` is `pub` and the shape
-        // assist reaches them from `AssistShape` geometry (`assist::realize`), which no
-        // sample ever passed that door.
-        //
-        // So this answers instead of panicking, and the answer is the *correct* one
-        // rather than a fallback: with the system unsolvable at every ridge, what the
-        // ridge alone determines is `control` exactly — the same answer, for the same
-        // reason, as the `frozen + tail >= m` branch above.
+        (btb, btp)
     }
+}
+
+/// Adds the bending energy `sw · Σ ‖P₍ⱼ₋₁₎ − 2Pⱼ + P₍ⱼ₊₁₎‖²` over a polygon of `m` control
+/// points to the normal matrix of its window `base..m`, for the triples that touch it.
+///
+/// This is what stops the curve wandering where no value is assigned. Quadratic in the
+/// control points with a target of zero curvature, so it is a band on the matrix and
+/// leaves the right-hand side alone. It lands *before* the frozen block moves to the
+/// right-hand side ([`solve_free_block`]), so it also couples the first free control
+/// point to the frozen ones — which is what makes the free tail continue smoothly out of
+/// the committed prefix.
+fn add_bending(btb: &mut OMatrix<f32, Dyn, Dyn>, base: usize, m: usize, sw: f32) {
+    let c = [1.0f32, -2.0, 1.0];
+    for j in (base + 1).max(1)..m - 1 {
+        let idx = [j - 1 - base, j - base, j + 1 - base];
+        for (a, &ca) in c.iter().enumerate() {
+            for (b, &cb) in c.iter().enumerate() {
+                btb[(idx[a], idx[b])] += sw * ca * cb;
+            }
+        }
+    }
+}
+
+/// Solves the free block of a window's normal equations — its rows `f0..w - tail`, with
+/// the `f0` frozen rows before them and the `tail` held rows after moved to the
+/// right-hand side — by Cholesky, **ridge-regularized** towards `prior`, the window as
+/// it arrived: a free row the data does not determine is pulled back to where it was.
+///
+/// The ridge starts at `n ·` [`ridge_start`] for data of total weight `n` and grows by
+/// [`RIDGE_GROWTH`] per failed factorization. `None` after [`RIDGE_TRIES`] of them is
+/// unreachable for admissible input — a ridge-regularized normal matrix is positive
+/// definite, and the ridge escalates until it dominates. What reaches it is a non-finite
+/// entry, which `InputSample::is_admissible` refuses at the fitter's door (C2) but which
+/// the shape assist can bring from `AssistShape` geometry no sample passed through
+/// (`assist::realize`). Keeping `prior` is then the correct answer rather than a
+/// fallback: unsolvable at every ridge, what the ridge alone determines is the prior.
+fn solve_free_block<const E: usize>(
+    btb: &OMatrix<f32, Dyn, Dyn>,
+    btp: &OMatrix<f32, Dyn, Const<E>>,
+    prior: &OMatrix<f32, Dyn, Const<E>>,
+    f0: usize,
+    tail: usize,
+    n: f32,
+) -> Option<OMatrix<f32, Dyn, Const<E>>> {
+    let w = prior.nrows();
+    let free = w - f0 - tail;
+    let mut lambda = n * ridge_start();
+    for _ in 0..RIDGE_TRIES {
+        let mut lhs = btb.view((f0, f0), (free, free)).into_owned();
+        let mut rhs = btp.rows(f0, free).into_owned();
+        if f0 > 0 {
+            rhs -= btb.view((f0, 0), (free, f0)) * prior.rows(0, f0);
+        }
+        if tail > 0 {
+            rhs -= btb.view((f0, w - tail), (free, tail)) * prior.rows(w - tail, tail);
+        }
+        for j in 0..free {
+            lhs[(j, j)] += lambda;
+            for d in 0..E {
+                rhs[(j, d)] += prior[(f0 + j, d)] * lambda;
+            }
+        }
+        if let Some(chol) = Cholesky::new(lhs) {
+            return Some(chol.solve(&rhs));
+        }
+        lambda *= RIDGE_GROWTH;
+    }
+    None
 }
 
 impl<'a, const D: usize> CubicBSpline<'a, D> {
