@@ -23,7 +23,7 @@ use stark_engine::path::{
     DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, IntermediateSample, flatten, flatten_spans_from,
     span_count,
 };
-use stark_engine::testing::Session;
+use stark_engine::testing::{LiveGesture, Outline, Session};
 use stark_model::document::{LayerId, PerspectiveGuide, Scaffold, StrokeRecord};
 use stark_model::geom::{Ellipse, Vec2};
 
@@ -45,6 +45,17 @@ fn nothing() -> Scaffold {
     Scaffold::default()
 }
 
+/// The record a release commits. A brush gesture can end on nothing else, which is
+/// what one [`LiveGesture`] out of `end_gesture` leaves it free to say (§6.8).
+fn committed(session: &mut Session) -> Option<StrokeRecord> {
+    match session.end_gesture()? {
+        LiveGesture::Stroke(rec) => Some(rec),
+        LiveGesture::Selection(_) | LiveGesture::Fill { .. } => {
+            panic!("a brush gesture committed a region")
+        }
+    }
+}
+
 /// Drag a stroke out through `f`, sampled `n` times, without ending it.
 fn drag(session: &mut Session, n: usize, f: impl Fn(f32) -> Vec2) {
     session.start_stroke(
@@ -55,7 +66,7 @@ fn drag(session: &mut Session, n: usize, f: impl Fn(f32) -> Vec2) {
         stark_model::geom::IVec2::ZERO,
     );
     for i in 1..n {
-        session.stroke_to(InputSample::at(f(i as f32 / (n - 1) as f32)));
+        session.gesture_to(InputSample::at(f(i as f32 / (n - 1) as f32)));
     }
 }
 
@@ -137,7 +148,7 @@ fn a_held_gesture_steers_instead_of_extending() {
     // being *extended* would grow a corner and keep everything before it.
     let moved = Vec2::new(200.0, 160.0);
     for i in 1..=10 {
-        session.stroke_to(InputSample::at(b.lerp(moved, i as f32 / 10.0)));
+        session.gesture_to(InputSample::at(b.lerp(moved, i as f32 / 10.0)));
     }
     let bowed = bow(&session);
     assert!(
@@ -150,7 +161,7 @@ fn a_held_gesture_steers_instead_of_extending() {
         "the held end {last} did not follow the pointer to {moved}"
     );
 
-    let record = session.end_stroke().expect("a stroke to commit");
+    let record = committed(&mut session).expect("a stroke to commit");
     assert_eq!(
         record.path.last().expect("control points").pos,
         last,
@@ -180,7 +191,7 @@ fn holding_on_a_squiggle_changes_nothing() {
     );
 
     // ...and the gesture carries on through the fitter exactly as before.
-    session.stroke_to(InputSample::at(Vec2::new(320.0, 0.0)));
+    session.gesture_to(InputSample::at(Vec2::new(320.0, 0.0)));
     assert!(session.preview_record().expect("in flight").path.len() >= before.len());
 }
 
@@ -257,7 +268,7 @@ fn a_held_line_takes_the_axis_of_a_visible_guide() {
     });
     assert!(session.assist_stroke(&up), "a rough drag is a line");
 
-    let record = session.end_stroke().expect("a stroke to commit");
+    let record = committed(&mut session).expect("a stroke to commit");
     let (a, b) = (record.path[0].pos, record.path.last().unwrap().pos);
     assert!(a.distance(start) < 4.0, "the drawn start moved to {a}");
     let (u, to_vp) = ((b - a).normalize(), (vp - a).normalize());
@@ -279,7 +290,7 @@ fn the_same_drag_without_a_guide_keeps_its_own_direction() {
     });
     assert!(session.assist_stroke(&nothing()));
 
-    let record = session.end_stroke().expect("a stroke to commit");
+    let record = committed(&mut session).expect("a stroke to commit");
     let (a, b) = (record.path[0].pos, record.path.last().unwrap().pos);
     assert!(
         (b - a).normalize().perp_dot(aim).abs() < 0.02,
@@ -314,10 +325,10 @@ fn steering_an_axis_line_stays_on_the_axis() {
     // Swing the pointer a long way off the line, as a hand steering the far end does.
     let moved = end + Vec2::new(60.0, 220.0);
     for i in 1..=10 {
-        session.stroke_to(InputSample::at(end.lerp(moved, i as f32 / 10.0)));
+        session.gesture_to(InputSample::at(end.lerp(moved, i as f32 / 10.0)));
     }
 
-    let record = session.end_stroke().expect("a stroke to commit");
+    let record = committed(&mut session).expect("a stroke to commit");
     let (a, b) = (record.path[0].pos, record.path.last().unwrap().pos);
     let to_vp = (vp - a).normalize();
     assert!(
@@ -375,7 +386,7 @@ fn a_held_loop_becomes_a_circle_on_a_visible_plane() {
     });
     assert!(session.assist_stroke(&up), "a rough loop is an ellipse");
 
-    let record = session.end_stroke().expect("a stroke to commit");
+    let record = committed(&mut session).expect("a stroke to commit");
     let poly = flatten(&record.path, FLATTEN_TOLERANCE);
     let flat: Vec<Vec2> = poly
         .iter()
@@ -428,7 +439,7 @@ fn a_hidden_plane_leaves_the_loop_alone() {
     assert!(session.assist_stroke(&up));
 
     // Still the drawn ellipse: 200×90, not something a plane chose.
-    let record = session.end_stroke().expect("a stroke to commit");
+    let record = committed(&mut session).expect("a stroke to commit");
     let poly = flatten(&record.path, FLATTEN_TOLERANCE);
     let worst = poly
         .iter()
@@ -494,7 +505,7 @@ fn a_run_up_does_not_shift_the_snapped_pen() {
         stark_model::geom::IVec2::ZERO,
     );
     for i in 1..n {
-        session.stroke_to(at(i));
+        session.gesture_to(at(i));
     }
     let drawn = session.preview_record().expect("in flight");
     assert!(drawn.start > 0.0, "the hover did not become a run-up");
@@ -530,11 +541,12 @@ fn a_hold_with_nothing_in_flight_is_a_no_op() {
     // A shape gesture builds no stroke, and an exact marquee has nothing to snap to.
     session.start_selection(
         Tool::SelectRect,
+        Outline::Rect,
         Vec2::ZERO,
         false,
         stark_model::geom::IVec2::ZERO,
     );
-    session.selection_to(Vec2::new(60.0, 60.0));
+    session.gesture_to(InputSample::at(Vec2::new(60.0, 60.0)));
     assert!(!session.assist_stroke(&nothing()));
     assert!(session.is_selecting(), "the marquee survived the hold");
 }

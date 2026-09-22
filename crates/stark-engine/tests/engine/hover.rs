@@ -380,7 +380,7 @@ fn a_pixel_staircase_holds_its_heading() {
     let Some(GestureView {
         gesture: LiveGesture::Stroke(rec),
         ..
-    }) = session.hover_view(ActorId::SOLO, 0, stark_model::geom::IVec2::ZERO)
+    }) = session.live_view(ActorId::SOLO, 0, stark_model::geom::IVec2::ZERO)
     else {
         panic!("a fed hover offers no view");
     };
@@ -429,7 +429,7 @@ fn the_run_up_conditions_the_strokes_entry() {
     use stark_engine::Extent2;
     use stark_engine::ViewTransform;
     use stark_engine::path::{point_at, span_count, span_end};
-    use stark_engine::testing::Session;
+    use stark_engine::testing::{LiveGesture, Session};
     use stark_model::document::LayerId;
 
     let session = || {
@@ -474,9 +474,13 @@ fn the_run_up_conditions_the_strokes_entry() {
             stark_model::geom::IVec2::ZERO,
         );
         for m in stair(20, press, 1, after_hover + 0.016) {
-            s.stroke_to(m);
+            s.gesture_to(m);
         }
-        s.end_stroke().expect("the drag commits a stroke")
+        match s.end_gesture() {
+            Some(LiveGesture::Stroke(rec)) => rec,
+            // A brush gesture can end on nothing else.
+            other => panic!("the drag commits a stroke, not {other:?}"),
+        }
     };
     // The entry's heading: where the deposit begins to where the curve is one
     // span later — the stretch the stroke actually opens with.

@@ -739,13 +739,13 @@ mod tests {
         assert_eq!(stroke.start, 0.25);
     }
 
-    use crate::command::InputSample;
+    use crate::command::{InputSample, Tool};
     use crate::path::DEFAULT_TOLERANCE;
     use crate::peer::{Peer, Peers};
-    use crate::session::Session;
+    use crate::session::{Outline, Session};
     use crate::view::{Extent2, ViewTransform};
     use stark_model::MAX_NAME;
-    use stark_model::document::{ActorId, BrushParams, LayerId};
+    use stark_model::document::{ActorId, BrushParams, LayerId, ShapeAction};
     use stark_model::geom::Vec2;
     use stark_model::peer::PeerFrame;
 
@@ -809,7 +809,7 @@ mod tests {
                 );
                 for step in 1..40u32 {
                     let t = f32::from(step as u16);
-                    session.stroke_to(InputSample::at(Vec2::new(
+                    session.gesture_to(InputSample::at(Vec2::new(
                         t * 3.0,
                         f32::from(gesture as u16) * 10.0 + (t * 0.7).sin() * 12.0,
                     )));
@@ -831,7 +831,7 @@ mod tests {
                     }
                     check(&session, &peers, actor, &mut watermark);
                 }
-                session.end_stroke();
+                session.end_gesture();
                 now += 0.033;
                 if let Some(frame) = session.publish(now) {
                     inflight.push(frame);
@@ -958,6 +958,133 @@ mod tests {
         assert_eq!(presence.name(), default_name(ActorId(9)));
         let bye = presence.publish_leaving(LayerId::ROOT);
         assert_eq!(bye.boot, 5, "the run counter is the newest identity's");
+    }
+
+    /// **What a gesture puts on the wire, pinned** — the fingerprint the sending half
+    /// may not move (§17.5).
+    ///
+    /// A gossip message carries no schema (§8), so reshaping anything the presence
+    /// channel touches means bumping the ALPN. Two records, because they fail for
+    /// different reasons: [`WIRE_SHAPE`] is the protocol's own behaviour — which
+    /// frames carry a head, where each delta starts, how many points it holds — and
+    /// [`WIRE_PAYLOAD`] is one hash over every byte in every frame, which catches a
+    /// value that moved inside a shape that did not.
+    ///
+    /// **Re-blessing either is only correct when the wire was meant to move**, and
+    /// the ALPN moves with it.
+    #[test]
+    fn the_wire_a_gesture_puts_out_is_unchanged() {
+        let (shape, payload) = published_gestures();
+        assert_eq!(shape, WIRE_SHAPE, "the frames a gesture published changed");
+        assert_eq!(payload, WIRE_PAYLOAD, "a frame's contents changed");
+    }
+
+    /// Every gesture frame a scripted stroke, lasso and fill published, as
+    /// [`the_wire_a_gesture_puts_out_is_unchanged`] records them.
+    const WIRE_SHAPE: &[&str] = &[
+        "stroke id=1 head=true from=0 n=2",
+        "stroke id=1 head=false from=1 n=1",
+        "stroke id=1 head=false from=1 n=2",
+        "stroke id=1 head=false from=1 n=3",
+        "stroke id=1 head=false from=1 n=4",
+        "stroke id=1 head=false from=1 n=5",
+        "stroke id=1 head=false from=2 n=4",
+        "stroke id=1 head=false from=2 n=5",
+        "stroke id=1 head=false from=3 n=4",
+        "stroke id=1 head=false from=3 n=4",
+        "stroke id=1 head=false from=3 n=5",
+        "cleared",
+        "select id=2",
+        "select id=2",
+        "cleared",
+        "fill id=3",
+        "fill id=3",
+        "fill id=3",
+        "cleared",
+    ];
+
+    /// blake3 over all of those frames' contents, same run.
+    const WIRE_PAYLOAD: &str = "817764edfcb6697fc3f27a32e29300f23c43a9d9c90d9b4c0ce9a9e15336206d";
+
+    /// Drive a stroke, a lasso and a fill through a real [`Session`], publishing on a
+    /// tick, and report what went out: one line per frame naming what it carries, and
+    /// one hash over the whole run.
+    fn published_gestures() -> (Vec<String>, String) {
+        let mut session =
+            Session::new(ViewTransform::identity(Extent2::new(64, 64)), LayerId::ROOT);
+        let mut now = 0.0;
+        let mut shape = Vec::new();
+        let mut payload = blake3::Hasher::new();
+        let mut tick = |session: &mut Session, shape: &mut Vec<String>| {
+            now += 0.033;
+            let Some(frame) = session.publish(now) else {
+                return;
+            };
+            payload.update(format!("{:?}", frame.gesture).as_bytes());
+            // A frame carrying no gesture is the one that *clears* one, which is as
+            // much a part of the protocol as the deltas before it.
+            let Some(gesture) = frame.gesture else {
+                shape.push("cleared".to_owned());
+                return;
+            };
+            shape.push(match &gesture {
+                GestureFrame::Stroke {
+                    id,
+                    head,
+                    from,
+                    points,
+                    ..
+                } => format!(
+                    "stroke id={id} head={} from={from} n={}",
+                    head.is_some(),
+                    points.len()
+                ),
+                GestureFrame::Selection { id, .. } => format!("select id={id}"),
+                GestureFrame::Fill { id, .. } => format!("fill id={id}"),
+            });
+        };
+
+        session.start_stroke(
+            InputSample::at(Vec2::ZERO),
+            7,
+            DEFAULT_TOLERANCE,
+            0.0,
+            stark_model::geom::IVec2::ZERO,
+        );
+        for step in 1..12u32 {
+            let t = f32::from(step as u16);
+            session.gesture_to(InputSample::at(Vec2::new(t * 5.0, (t * 0.4).sin() * 20.0)));
+            tick(&mut session, &mut shape);
+        }
+        session.end_gesture();
+        tick(&mut session, &mut shape);
+
+        for (action, tool, outline) in [
+            (
+                ShapeAction::default(),
+                Tool::SelectLasso,
+                Outline::Lasso(Vec::new()),
+            ),
+            (ShapeAction::Fill, Tool::SelectRect, Outline::Rect),
+        ] {
+            session.shape_action = action;
+            session.start_selection(
+                tool,
+                outline,
+                Vec2::ZERO,
+                false,
+                stark_model::geom::IVec2::ZERO,
+            );
+            for step in 1..4u32 {
+                let t = f32::from(step as u16);
+                session.gesture_to(InputSample::at(Vec2::new(t * 9.0, t * t * 3.0)));
+                tick(&mut session, &mut shape);
+            }
+            session.end_gesture();
+            tick(&mut session, &mut shape);
+        }
+
+        (shape, payload.finalize().to_hex().to_string())
     }
 
     /// Invariant 3, isolated: **one resync frame repairs a receiver that has missed

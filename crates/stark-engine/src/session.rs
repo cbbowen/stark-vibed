@@ -1,9 +1,9 @@
 //! Session: ephemeral, non-historized state (§3).
 //!
-//! The current tool/brush, the pan/zoom view, and the in-flight stroke being
-//! dragged out. None of it is undoable — switching tools or panning never creates a
-//! history step. The session interprets pointer commands and, on `EndStroke`, hands
-//! the [`Engine`](crate::Engine) a finished [`StrokeRecord`] to commit.
+//! The current tool/brush, the pan/zoom view, and the gesture being dragged out. None
+//! of it is undoable — switching tools or panning never creates a history step. The
+//! session interprets pointer commands and, on [`end_gesture`](Session::end_gesture),
+//! hands the [`Engine`](crate::Engine) what the release commits.
 //!
 //! Three of its subjects have a file of their own: the shape gesture ([`shape`]),
 //! the hover mark ([`hover`]), and the half published to collaborators
@@ -14,6 +14,7 @@ mod fixtures;
 mod hover;
 mod shape;
 
+pub use shape::Outline;
 pub(crate) use shape::ShapeResult;
 
 use crate::assist::{AssistShape, PenProfile};
@@ -33,6 +34,53 @@ use stark_model::peer::{PeerFrame, StrokeHead};
 use hover::HoverStroke;
 use shape::ShapeDrag;
 
+/// What the hand is doing — **at most one thing at a time**, which is the whole of why
+/// this is an enum (§3).
+///
+/// The four states were three `Option` fields, kept mutually exclusive by hand at every
+/// door: a press nulled the other two, the hover door refused unless both were empty,
+/// and a cancel nulled all three. Those nullings are now the assignment.
+///
+/// **There is one of these**, the field of the one [`Session`] the engine owns, so the
+/// enum's width is a fixed cost in that struct rather than a per-value one — and the
+/// boxing clippy asks for would buy it back with an allocation at every press and an
+/// indirection on the fitter's per-report push. [`Trace`] answers the lint the same
+/// way, for the same reason.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one value exists, and its widest arm is the hot one"
+)]
+#[derive(Default)]
+enum Hand {
+    #[default]
+    Idle,
+    /// The hover mark (§18.1.10): the stroke a drag begun this instant would open.
+    /// It never commits, never publishes and never sets
+    /// [`is_stroking`](Session::is_stroking) — a real gesture outranks it, which this
+    /// enum states rather than each reader re-deriving.
+    ///
+    /// **Only ever held with a tool that paints.** [`Session::hover_to`] refuses the
+    /// report otherwise, and every door that arms a selection tool
+    /// ([`Session::set_tool`], [`Session::start_selection`]) empties the hand first.
+    Hovering(HoverStroke),
+    Stroking(StrokeBuilder),
+    Dragging(ShapeDrag),
+}
+
+impl Hand {
+    /// Take the hover mark, leaving any other hand exactly where it was — `Option::take`
+    /// on the slot this enum replaced.
+    fn take_hover(&mut self) -> Option<HoverStroke> {
+        match std::mem::take(self) {
+            Hand::Hovering(h) => Some(h),
+            other => {
+                *self = other;
+                None
+            }
+        }
+    }
+}
+
 /// Accumulates the stroke currently being drawn.
 ///
 /// Pointer samples are fitted to control points *as they arrive* (§6.2), so a new
@@ -47,19 +95,29 @@ struct StrokeBuilder {
     /// [`to_record`](Self::to_record) is the one door out and the one conversion, so
     /// the commit, the live fold and the wire cannot disagree about the frame.
     translation: stark_model::geom::IVec2,
-    fitter: PathFitter,
     /// What the frontend said this gesture's input resolves to. Kept because the
     /// drawing assist prices its recognition in the same unit the fit does — see
     /// [`crate::assist`].
     tolerance: InputTolerance,
-    /// Set once the gesture has been **held** and snapped to a shape (§6.9). From
-    /// there the fitter stops being fed and this decides the path.
-    assist: Option<Assist>,
-    /// The towed tip (§6.11) — `Some` when the gesture started with a rope.
-    /// Feeds **the fitter only**: it sits between the raw samples and
-    /// [`PathFitter::push`], and a snapped gesture's steering reads the raw
-    /// pointer (through [`Assist::shift`]) rather than a towed one.
-    tow: Option<Tow>,
+    trace: Trace,
+}
+
+/// Where the stroke's path comes from — fitted from the reports, or, once the gesture
+/// has been **held**, the ideal shape it snapped to (§6.9).
+///
+/// A snap **drops** the fitter and the tow rather than leaving them running beside a
+/// path nothing reads them for: from there the shape decides the path, and its steering
+/// reads the raw pointer.
+#[expect(clippy::large_enum_variant, reason = "see `Hand`")]
+enum Trace {
+    Fitting {
+        fitter: PathFitter,
+        /// The towed tip (§6.11) — `Some` when the gesture started with a rope.
+        /// Feeds **the fitter only**: it sits between the raw samples and
+        /// [`PathFitter::push`].
+        tow: Option<Tow>,
+    },
+    Snapped(Assist),
 }
 
 /// A stroke that has snapped to an ideal shape, and is now being steered rather than
@@ -151,17 +209,7 @@ pub struct Session {
     /// looking at.
     visible_guides: std::collections::HashSet<GuideId>,
 
-    in_flight: Option<StrokeBuilder>,
-    selecting: Option<ShapeDrag>,
-    /// The hover mark (§18.1.10): the stroke a drag begun this instant would open,
-    /// laid from the cursor along the hover's extrapolated heading. `None` when the
-    /// pointer is elsewhere or the hand is doing something other than hovering.
-    ///
-    /// Deliberately not [`in_flight`](Self::in_flight): this one never commits, never
-    /// publishes ([`gesture_source`](Self::gesture_source) reads only the two slots
-    /// above) and never sets [`is_stroking`](Self::is_stroking), and a real gesture
-    /// always outranks it ([`hover_view`](Self::hover_view)).
-    hover: Option<HoverStroke>,
+    hand: Hand,
     /// Bumped on every gesture start, so a peer can tell a restart from a continuation
     /// without a clock, and on every hover update, so the renderer's per-actor head
     /// cache cannot mistake one hover's render for the next's. **One counter for both
@@ -189,9 +237,7 @@ impl Session {
             shape_opacity: 1.0,
             show_peer_selections: false,
             visible_guides: std::collections::HashSet::new(),
-            in_flight: None,
-            selecting: None,
-            hover: None,
+            hand: Hand::Idle,
             gesture_ordinal: 0,
             presence: PresenceTx::new(),
         }
@@ -372,7 +418,7 @@ impl Session {
     /// an idle session costs the pump nothing: it may say yes where `publish` then
     /// returns `None`, but never no where `publish` would have produced a frame.
     pub(crate) fn publish_due(&self, now: f64) -> bool {
-        let in_gesture = self.in_flight.is_some() || self.selecting.is_some();
+        let in_gesture = matches!(self.hand, Hand::Stroking(_) | Hand::Dragging(_));
         self.presence
             .publish_due(now, self.active_layer, in_gesture)
     }
@@ -385,14 +431,15 @@ impl Session {
 
     /// The gesture in flight, in the form the encoder reads it — a window onto the
     /// live fitter, not a copy of it. `None` when nothing is being dragged out (which
-    /// includes a selection gesture that so far encloses nothing).
+    /// includes a selection gesture that so far encloses nothing, and a hand that is
+    /// only hovering: a hypothesis never publishes).
     ///
     /// Only frozen control points are reported as settled; the provisional tail is
     /// resent every frame because it can still move (§6.2) — the renderer's
     /// `FrozenHead` partition, spent on the wire instead of on the GPU.
     fn gesture_source(&self) -> Option<GestureSource> {
-        match self.in_flight.as_ref() {
-            Some(b) => {
+        match &self.hand {
+            Hand::Stroking(b) => {
                 let (path, start) = b.fitted();
                 Some(GestureSource::Stroke {
                     head: Box::new(StrokeHead {
@@ -405,18 +452,11 @@ impl Session {
                     // carries what a receiver's fold renders, so the two convert in
                     // the same place or not at all.
                     path: path_in_frame(path, b.translation),
-                    // A snapped stroke has **no settled prefix**: steering moves every
-                    // control point at once, so the whole path rides every frame. The
-                    // ordinal bump in `assist_stroke` is what lets the watermark drop
-                    // back to zero without walking backwards inside a gesture (§17.5).
-                    frozen: b
-                        .assist
-                        .as_ref()
-                        .map_or_else(|| b.fitter.frozen_points(), |_| 0),
+                    frozen: b.frozen_points(),
                     start,
                 })
             }
-            None => self.preview_shape().map(|r| match r {
+            Hand::Dragging(_) => self.preview_shape().map(|r| match r {
                 ShapeResult::Select(op) => GestureSource::Selection(op),
                 // The wire's fill rides `PeerFrame::active_layer` for its target
                 // (§17.5); the pinned layer travels only in-process, so a peer's
@@ -431,13 +471,22 @@ impl Session {
                     translation: frame,
                 },
             }),
+            Hand::Idle | Hand::Hovering(_) => None,
         }
     }
 
-    // --- the in-flight stroke (§6.2) --------------------------------------------
+    // --- the gesture in flight (§6.2, §6.8) -------------------------------------
 
     pub fn is_stroking(&self) -> bool {
-        self.in_flight.is_some()
+        self.stroke().is_some()
+    }
+
+    /// The stroke in flight, if that is what the hand is making.
+    fn stroke(&self) -> Option<&StrokeBuilder> {
+        match &self.hand {
+            Hand::Stroking(b) => Some(b),
+            Hand::Idle | Hand::Hovering(_) | Hand::Dragging(_) => None,
+        }
     }
 
     /// The ordinal of the gesture in flight — bumped on every start, so a cached
@@ -446,7 +495,7 @@ impl Session {
         self.gesture_ordinal
     }
 
-    /// Begin a brush stroke, replacing any abandoned in-flight one.
+    /// Begin a brush stroke, replacing whatever the hand was doing.
     ///
     /// `seed` is the engine's, so it can be derived deterministically (§6.2).
     /// `tolerance` is what the frontend says its input resolves to, in canvas px
@@ -466,7 +515,6 @@ impl Session {
     ) {
         let tolerance = InputTolerance::new(tolerance);
         self.tool = Tool::Brush;
-        self.selecting = None;
         // The hover window becomes the stroke's **run-up** (§6.2,
         // `PathFitter::seed_runup`): real leading samples the fitted curve extends
         // back through, with the record's marker saying where the stroke itself
@@ -479,55 +527,52 @@ impl Session {
         let mut fitter = PathFitter::with_tolerance(tolerance);
         fitter.seed_runup(&runup);
         fitter.push(sample);
-        self.in_flight = Some(StrokeBuilder {
+        self.hand = Hand::Stroking(StrokeBuilder {
             brush: self.brush,
             layer: self.active_layer,
             seed,
             translation,
-            fitter,
             tolerance,
-            assist: None,
-            // A non-finite first report anchors nothing — the tip would park on it
-            // and no later report could pull the string off — so the gesture runs
-            // untowed rather than towed from nowhere.
-            tow: (rope.is_finite() && rope > 0.0 && sample.is_admissible())
-                .then(|| Tow::new(rope, tolerance, sample)),
+            trace: Trace::Fitting {
+                fitter,
+                // A non-finite first report anchors nothing — the tip would park on it
+                // and no later report could pull the string off — so the gesture runs
+                // untowed rather than towed from nowhere.
+                tow: (rope.is_finite() && rope > 0.0 && sample.is_admissible())
+                    .then(|| Tow::new(rope, tolerance, sample)),
+            },
         });
     }
 
-    /// Extend the in-flight stroke with another sample — or, once it has snapped,
-    /// **steer** the shape it snapped to (§6.9). One entry point for both halves of
-    /// the gesture, so the frontend sends the same `To` for every pointer move either
-    /// way.
+    /// Extend the gesture in flight with another pointer report — one entry point for
+    /// every kind, so the frontend sends the same `To` for a stroke, for a stroke that
+    /// has snapped and is now being **steered** (§6.9), and for a shape drag.
     ///
-    /// A report carrying a non-finite number is dropped here, before it reaches
-    /// anything that would *remember* it: [`Tow`] keeps the tip and the target across
-    /// reports, so one NaN parks the string where no later report can pull it back
-    /// from, and [`Assist::steer`] folds the position into a shape that outlives it.
-    /// Refusing at the door costs one report rather than the rest of the gesture.
+    /// A hand that is idle or merely hovering takes nothing from it: a hover is fed
+    /// through its own door ([`hover_to`](Self::hover_to)), which is not free.
     ///
-    /// [`Assist::steer`]: crate::assist::AssistShape::adjust
-    pub fn stroke_to(&mut self, sample: InputSample) {
-        if !sample.is_admissible() {
-            return;
-        }
-        if let Some(b) = self.in_flight.as_mut() {
-            let StrokeBuilder {
-                assist,
-                tow,
-                fitter,
-                ..
-            } = b;
-            match assist.as_mut() {
-                Some(assist) => assist.steer(sample.pos),
-                // The towed tip (§6.11) sits between the raw stream and the
-                // fitter — and only there, which is why the steer above reads
-                // the raw position.
-                None => match tow.as_mut() {
-                    Some(tow) => tow.to(sample, &mut |s| fitter.push(s)),
-                    None => fitter.push(sample),
-                },
+    /// **The two live halves gate the report differently, because they remember
+    /// different amounts of it.** A stroke keeps the report's channels across reports
+    /// — [`Tow`] holds the tip and the target, and [`AssistShape::adjust`] folds the
+    /// position into a shape that outlives it — so one unusable number would park the
+    /// gesture where no later report could pull it back from, and the whole sample has
+    /// to be admissible. A shape drag reads only the position, and the marquees would
+    /// carry a bad corner only until the next move; the lasso is what makes even that
+    /// matter, since it keeps every point it is given and one would sit in the logged
+    /// polyline for the rest of the gesture.
+    pub fn gesture_to(&mut self, sample: InputSample) {
+        match &mut self.hand {
+            Hand::Stroking(b) => {
+                if sample.is_admissible() {
+                    b.extend(sample);
+                }
             }
+            Hand::Dragging(d) => {
+                if sample.pos.is_finite() {
+                    d.push(sample.pos);
+                }
+            }
+            Hand::Idle | Hand::Hovering(_) => {}
         }
     }
 
@@ -552,34 +597,12 @@ impl Session {
     /// guide (§20.5): the roster is `DocState`'s, the open eye is this session's —
     /// [`Session::shown_guides`] is the filter, `Engine::scaffold` applies it.
     pub fn assist_stroke(&mut self, guides: &Scaffold) -> bool {
-        let Some(b) = self.in_flight.as_mut() else {
+        let Hand::Stroking(b) = &mut self.hand else {
             return false;
         };
-        if b.assist.is_some() {
+        if !b.snap(guides) {
             return false;
         }
-        let Some(base) = crate::assist::recognize(&b.fitter.trace(), b.tolerance, guides) else {
-            return false;
-        };
-        let drawn = b.fitter.path();
-        // From the marker on, as `trace` is: the run-up is not part of the shape.
-        let pen = PenProfile::of(&drawn, b.fitter.start());
-        let knots = drawn.len();
-        b.assist = Some(Assist {
-            base,
-            grip: base.grip(),
-            shape: base,
-            path: base.to_path(&pen, knots),
-            pen,
-            knots,
-            // A towed gesture snapped from its towed trace; the raw pointer is
-            // up to a rope beyond it, and this is what keeps the first steer
-            // from applying that gap as a jump (§6.11).
-            shift: b.tow.as_ref().map_or(Vec2::ZERO, |t| {
-                let s = t.string();
-                s.tip - s.target
-            }),
-        });
         self.gesture_ordinal += 1;
         true
     }
@@ -590,36 +613,44 @@ impl Session {
     /// The family rather than the shape (`assist::Assisted`): all that is asked from
     /// outside the crate is whether a hold landed, and whether it landed on a line.
     pub fn assisted(&self) -> Option<crate::assist::Assisted> {
-        self.in_flight
-            .as_ref()
-            .and_then(|b| b.assist.as_ref())
-            .map(|a| a.shape.family())
+        self.stroke().and_then(StrokeBuilder::assisted)
     }
 
     /// This client's gesture in flight as the preview fold wants it, authored by
-    /// `actor` — the same shape [`Peer::gesture_view`](crate::peer::Peer::gesture_view)
-    /// produces for everyone else, so the fold treats them alike without either being
-    /// stored in the other's form.
-    pub(crate) fn gesture_view(&self, actor: ActorId) -> Option<GestureView> {
-        let (gesture, frozen_spans) = match self.preview_record() {
-            Some(rec) => (LiveGesture::Stroke(rec), self.frozen_spans()),
+    /// `actor` — the same [`GestureView`] [`Peer::gesture_view`] produces for everyone
+    /// else, so the fold treats them alike without either being stored in the other's
+    /// form.
+    ///
+    /// A hand that is only *hovering* offers the §18.1.10 mark instead: the stroke its
+    /// recent reports would have committed, in the same shape, so the fold cannot tell
+    /// it from a real gesture and `hover == committed` is inherited rather than
+    /// maintained. One value out, because an actor folds at most one gesture and a
+    /// fact outranks a hypothesis — which [`Hand`] now says rather than a `match` at
+    /// the fold.
+    ///
+    /// `seed` and `translation` are the hover's alone: a probe has no press to pin
+    /// them at.
+    ///
+    /// [`Peer::gesture_view`]: crate::peer::Peer::gesture_view
+    pub fn live_view(
+        &self,
+        actor: ActorId,
+        seed: u64,
+        translation: stark_model::geom::IVec2,
+    ) -> Option<GestureView> {
+        let (gesture, frozen_spans) = match &self.hand {
+            Hand::Stroking(b) => (LiveGesture::Stroke(b.to_record()), b.frozen_spans()),
             // A marquee has no settled prefix to retire: its closing edge follows the
             // cursor, so every part of it can still move.
-            None => match self.preview_shape()? {
-                ShapeResult::Select(op) => (LiveGesture::Selection(op), 0),
-                ShapeResult::Fill {
-                    layer,
-                    op,
-                    translation: frame,
-                } => (
-                    LiveGesture::Fill {
-                        layer,
-                        op,
-                        translation: frame,
-                    },
-                    0,
-                ),
-            },
+            Hand::Dragging(_) => (self.preview_shape()?.into(), 0),
+            // A selection tool drags a shape rather than paint, so it folds no mark —
+            // the same refusal `hover_to` makes at the door (§18.1.10). An unpaintable
+            // active layer needs no test: the stroke renderer refuses it as a commit
+            // would.
+            Hand::Hovering(h) if !self.tool.is_selection() => {
+                (LiveGesture::Stroke(h.record(self, seed, translation)), 0)
+            }
+            Hand::Hovering(_) | Hand::Idle => return None,
         };
         Some(GestureView {
             actor,
@@ -632,7 +663,7 @@ impl Session {
     /// Snapshot the in-flight stroke as a record without ending it, for live
     /// preview (§6.2). `None` if no stroke is active.
     pub fn preview_record(&self) -> Option<StrokeRecord> {
-        self.in_flight.as_ref().map(StrokeBuilder::to_record)
+        self.stroke().map(StrokeBuilder::to_record)
     }
 
     /// How many spans of the in-flight stroke are settled — the prefix a live
@@ -642,65 +673,70 @@ impl Session {
     /// Also 0 once the stroke has snapped (§6.9): steering a shape moves every control
     /// point, so there is no settled prefix to retire.
     pub fn frozen_spans(&self) -> usize {
-        self.in_flight.as_ref().map_or(0, |b| match b.assist {
-            Some(_) => 0,
-            None => b.fitter.frozen_spans(),
-        })
+        self.stroke().map_or(0, StrokeBuilder::frozen_spans)
     }
 
-    /// Finish the stroke, returning the record to commit — `None` if it is empty, and
-    /// `None` for a record that cannot deposit, since a step in the log that changes
-    /// no pixel would spend an undo step invisibly ([`Self::end_shape`] answers a
-    /// marquee click the same way). The travel that counts starts at the record's
-    /// marker, so a click at the end of a watched approach is still a click: its curve
-    /// holds the whole run-up, and its marker sits at the end of it
-    /// ([`PathFitter::painted`]).
+    /// Finish the gesture in flight, returning what to commit — and nothing at all if
+    /// the hand was idle or only hovering, which a release leaves exactly as it was.
+    ///
+    /// A stroke answers `None` if it is empty, and `None` for a record that cannot
+    /// deposit, since a step in the log that changes no pixel would spend an undo step
+    /// invisibly (a marquee click is answered the same way). The travel that counts
+    /// starts at the record's marker, so a click at the end of a watched approach is
+    /// still a click: its curve holds the whole run-up, and its marker sits at the end
+    /// of it ([`PathFitter::painted`]).
     ///
     /// A record reaching too far to be drawn at all is one that cannot deposit: every
     /// render refuses it whole, so logging it would also hand every peer a record to
     /// refuse again. Asked of the record as the log will hold it, which is also the
     /// record returned (`gpu::stroke::loggable`).
-    pub fn end_stroke(&mut self) -> Option<StrokeRecord> {
-        self.in_flight
-            .take()
-            .and_then(|mut b| {
-                // A snapped stroke's path is the shape's, not the fit's — there is
-                // nothing left for a last solve to settle.
-                if b.assist.is_none() {
-                    // The towed tip needs nothing at pen-up (§6.11): lifting stops
-                    // pulling the string rather than reeling the tip in, so the mark
-                    // ends where the rope had towed it — the trace the preview showed.
-                    b.fitter.finish();
-                    if !b.fitter.painted() {
-                        return None;
-                    }
+    ///
+    /// **The tool disarms when the gesture was a step towards painting, and stays
+    /// armed when the gesture was painting.** So a selecting action is momentary —
+    /// the canvas goes straight back to the brush, since selecting is essentially
+    /// never done twice in a row and a modal selection tool the user forgot about
+    /// means a brush gesture silently redefining the selection. A fill stays armed,
+    /// because blocking in *is* painting and is done many times in a row. A gesture
+    /// that enclosed nothing (a stray click) leaves the tool armed either way, so a
+    /// mis-click doesn't disarm it.
+    pub fn end_gesture(&mut self) -> Option<LiveGesture> {
+        // Read through the same call the preview makes, and before the hand is
+        // emptied: preview == committed (§1.3). `None` for every other hand.
+        let shape = self.preview_shape();
+        match std::mem::take(&mut self.hand) {
+            Hand::Stroking(b) => b.finish().map(LiveGesture::Stroke),
+            Hand::Dragging(_) => {
+                if matches!(shape, Some(ShapeResult::Select(_))) {
+                    self.tool = Tool::Brush;
                 }
-                Some(b.to_record())
-            })
-            .filter(|rec| rec.path.len() >= 2)
-            .and_then(crate::gpu::stroke::loggable)
+                shape.map(Into::into)
+            }
+            // A hover is not a gesture: it commits nothing, so a release with nothing
+            // in flight must leave the mark where it was.
+            hand @ (Hand::Idle | Hand::Hovering(_)) => {
+                self.hand = hand;
+                None
+            }
+        }
     }
 
     /// The in-flight tow, for the frontend's string overlay (§6.11): `None`
     /// when no stroke is active, the gesture carries no rope, or it has
-    /// snapped to a shape (a steered shape is driven by the raw pointer, so
-    /// there is no string to show).
+    /// snapped to a shape.
     pub fn tow_string(&self) -> Option<TowString> {
-        self.in_flight
-            .as_ref()
-            .filter(|b| b.assist.is_none())
-            .and_then(|b| b.tow.as_ref())
-            .map(Tow::string)
+        match &self.stroke()?.trace {
+            Trace::Fitting { tow, .. } => tow.as_ref().map(Tow::string),
+            // A steered shape is driven by the raw pointer, so there is no string to
+            // show — and, since the snap dropped it, none left to show one with.
+            Trace::Snapped(_) => None,
+        }
     }
 
-    /// Discard the in-flight stroke without committing. Takes the hover mark
-    /// with it: every caller — a pinch's cancel, a tool switch, the reset before
-    /// a load — is a moment the hypothesis stopped describing anything, and the
-    /// next hover report re-seeds it.
+    /// Empty the hand without committing. Takes the hover mark with it: every caller
+    /// — a pinch's cancel, a tool switch, the reset before a load — is a moment the
+    /// hypothesis stopped describing anything, and the next hover report re-seeds it.
     pub(crate) fn cancel_stroke(&mut self) {
-        self.in_flight = None;
-        self.selecting = None;
-        self.hover = None;
+        self.hand = Hand::Idle;
     }
 
     /// Forget everything this session held *about the document that just left*.
@@ -722,6 +758,60 @@ impl Session {
 }
 
 impl StrokeBuilder {
+    /// Take one pointer report: fitted into the curve, or — once the gesture has
+    /// snapped — used to **steer** the shape (§6.9).
+    fn extend(&mut self, sample: InputSample) {
+        match &mut self.trace {
+            // The towed tip (§6.11) sits between the raw stream and the fitter — and
+            // only there, which is why the steer below reads the raw position.
+            Trace::Fitting { fitter, tow } => match tow {
+                Some(tow) => tow.to(sample, &mut |s| fitter.push(s)),
+                None => fitter.push(sample),
+            },
+            Trace::Snapped(assist) => assist.steer(sample.pos),
+        }
+    }
+
+    /// Recognize the drawn trace and replace it with the ideal shape (§6.9). Answers
+    /// whether anything snapped; a stroke already snapped never snaps again.
+    fn snap(&mut self, guides: &Scaffold) -> bool {
+        let Trace::Fitting { fitter, tow } = &self.trace else {
+            return false;
+        };
+        let Some(base) = crate::assist::recognize(&fitter.trace(), self.tolerance, guides) else {
+            return false;
+        };
+        let drawn = fitter.path();
+        // From the marker on, as `trace` is: the run-up is not part of the shape.
+        let pen = PenProfile::of(&drawn, fitter.start());
+        let knots = drawn.len();
+        // A towed gesture snapped from its towed trace; the raw pointer is up to a
+        // rope beyond it, and this is what keeps the first steer from applying that
+        // gap as a jump (§6.11). Read before the tow goes with the fitter.
+        let shift = tow.as_ref().map_or(Vec2::ZERO, |t| {
+            let s = t.string();
+            s.tip - s.target
+        });
+        self.trace = Trace::Snapped(Assist {
+            base,
+            grip: base.grip(),
+            shape: base,
+            path: base.to_path(&pen, knots),
+            pen,
+            knots,
+            shift,
+        });
+        true
+    }
+
+    /// Which family the hold snapped this stroke to, if it has been held (§6.9).
+    fn assisted(&self) -> Option<crate::assist::Assisted> {
+        match &self.trace {
+            Trace::Snapped(a) => Some(a.shape.family()),
+            Trace::Fitting { .. } => None,
+        }
+    }
+
     /// The stroke's path and start marker as they now stand: the fit's, or —
     /// once the gesture has snapped — the shape's (§6.9), whose marker is 0
     /// because a snapped path *is* the gesture, with no run-up in it.
@@ -730,17 +820,40 @@ impl StrokeBuilder {
     /// path transform between the fitter and the renderer (§18.1.3) rather than a
     /// second kind of stroke: every caller reads the pair and cannot tell which it got.
     fn fitted(&self) -> (Vec<ControlPoint>, f32) {
-        match self.assist.as_ref() {
-            Some(a) => (a.path.clone(), 0.0),
+        match &self.trace {
+            Trace::Snapped(a) => (a.path.clone(), 0.0),
             // The fitted control points **as `finish` would leave them** (§6.2): the
             // free window re-solves at pen-up, so rendering the mid-stroke window
             // would put the preview on a curve the commit is not on — sub-pixel, but
             // a step wherever a lookup is discontinuous in position (the tooth,
-            // §6.4). As-finished, `End` adopts this very solve and live == committed
-            // holds bit for bit, the marker included. The last control point is
-            // pinned to the newest sample either way, so the preview reaches the
+            // §6.4). As-finished, the release adopts this very solve and live ==
+            // committed holds bit for bit, the marker included. The last control point
+            // is pinned to the newest sample either way, so the preview reaches the
             // cursor.
-            None => self.fitter.as_finished(),
+            Trace::Fitting { fitter, .. } => fitter.as_finished(),
+        }
+    }
+
+    /// How many leading control points of [`fitted`](Self::fitted) are final (§6.2).
+    ///
+    /// A **snapped** stroke has none: steering moves every control point at once, so
+    /// the whole path rides every frame. The ordinal bump in
+    /// [`Session::assist_stroke`] is what lets the wire's watermark drop back to zero
+    /// without walking backwards inside a gesture (§17.5).
+    fn frozen_points(&self) -> usize {
+        match &self.trace {
+            Trace::Snapped(_) => 0,
+            Trace::Fitting { fitter, .. } => fitter.frozen_points(),
+        }
+    }
+
+    /// How many leading *spans* of [`fitted`](Self::fitted) are settled — the same
+    /// partition [`frozen_points`](Self::frozen_points) reports, in the unit an
+    /// incremental repaint wants.
+    fn frozen_spans(&self) -> usize {
+        match &self.trace {
+            Trace::Snapped(_) => 0,
+            Trace::Fitting { fitter, .. } => fitter.frozen_spans(),
         }
     }
 
@@ -754,6 +867,25 @@ impl StrokeBuilder {
             start,
             translation: self.translation,
         }
+    }
+
+    /// The record to commit, or `None` for a gesture that deposits nothing — see
+    /// [`Session::end_gesture`], which is the only caller.
+    fn finish(mut self) -> Option<StrokeRecord> {
+        // A snapped stroke's path is the shape's, not the fit's — there is nothing
+        // left for a last solve to settle.
+        if let Trace::Fitting { fitter, .. } = &mut self.trace {
+            // The towed tip needs nothing at pen-up (§6.11): lifting stops pulling the
+            // string rather than reeling the tip in, so the mark ends where the rope
+            // had towed it — the trace the preview showed.
+            fitter.finish();
+            if !fitter.painted() {
+                return None;
+            }
+        }
+        Some(self.to_record())
+            .filter(|rec| rec.path.len() >= 2)
+            .and_then(crate::gpu::stroke::loggable)
     }
 }
 
@@ -787,7 +919,7 @@ mod tests {
         let at = |i: usize| InputSample::at(f(i as f32 / (n - 1) as f32));
         s.start_stroke(at(0), 1, tolerance, 0.0, stark_model::geom::IVec2::ZERO);
         for i in 1..n {
-            s.stroke_to(at(i));
+            s.gesture_to(at(i));
         }
         s.assist_stroke(&Scaffold::default());
         s.assisted()

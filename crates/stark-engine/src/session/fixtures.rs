@@ -24,5 +24,6 @@ pub(super) const UNUSABLE_TOLERANCES: [f32; 5] = [f32::NAN, 0.0, 1e-6, -1.0, f32
 
 /// Press a shape gesture at `pos`, with nothing already selected.
 pub(super) fn press(s: &mut Session, tool: Tool, pos: Vec2) {
-    s.start_selection(tool, pos, false, stark_model::geom::IVec2::ZERO);
+    let outline = tool.outline().expect("a tool that drags a region");
+    s.start_selection(tool, outline, pos, false, stark_model::geom::IVec2::ZERO);
 }

@@ -568,21 +568,16 @@ impl Engine {
     /// `preview == committed` rests on. Merging the two here gives the uniform
     /// ordering without the duplication (§17.4).
     ///
-    /// A hand that is only *hovering* folds the §18.1.10 mark instead — the stroke its
-    /// recent reports would have committed, in the same [`GestureView`] shape, so the
-    /// fold cannot tell it from a real gesture and `hover == committed` is inherited
-    /// rather than maintained. The `match` is what guarantees the two never coexist:
-    /// an actor folds at most one gesture, and a fact outranks a hypothesis.
+    /// That an actor folds *at most one* gesture is the session's to say
+    /// ([`Session::live_view`](crate::session::Session::live_view)), not this walk's to
+    /// re-derive: a hand holds one thing at a time, the §18.1.10 hover mark included.
     fn live_gestures(&self) -> Vec<GestureView> {
         let mut out: Vec<GestureView> = Vec::new();
-        match self.session.gesture_view(self.actor()) {
-            Some(g) => out.push(g),
-            None => out.extend(self.session.hover_view(
-                self.actor(),
-                self.authoring.clock,
-                self.frame_of(self.session.active_layer()),
-            )),
-        }
+        out.extend(self.session.live_view(
+            self.actor(),
+            self.authoring.clock,
+            self.frame_of(self.session.active_layer()),
+        ));
         out.extend(self.peers.iter().filter_map(Peer::gesture_view));
         out.sort_by_key(|g| g.actor);
         out

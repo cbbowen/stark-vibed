@@ -2,17 +2,15 @@
 //! previewed under the resting pointer — and the window of recent reports its
 //! heading is read from, which a press then takes as its run-up (§6.2).
 
-use super::{Session, path_in_frame};
+use super::{Hand, Session, path_in_frame};
 use crate::command::InputSample;
 use crate::path::{InputTolerance, fit_at};
-use crate::peer::{GestureView, LiveGesture};
-use stark_model::document::{ActorId, StrokeRecord};
+use stark_model::document::StrokeRecord;
 use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
 
 /// The hover mark's state (§18.1.10): the trailing window of recent reports —
-/// the heading's estimator — the probe laid from it, and the bookkeeping that
-/// keeps its renders distinct.
+/// the heading's estimator — and the probe laid from it.
 pub(super) struct HoverStroke {
     /// The estimator, oldest first: every entry a report the hand really made.
     /// Never rendered — the mark is where a press would *go*, not where the
@@ -22,9 +20,6 @@ pub(super) struct HoverStroke {
     /// would commit, from the cursor along the extrapolated heading. Rebuilt
     /// per accepted report, kept so a fold costs a clone.
     path: Vec<ControlPoint>,
-    /// This update's slot in the session's gesture-ordinal space (see
-    /// [`Session::gesture_ordinal`]).
-    ordinal: u64,
 }
 
 /// How much motion the estimator's window may span, in multiples of the input
@@ -71,17 +66,44 @@ fn probe_heading(trace: &[ControlPoint]) -> Option<Vec2> {
     (len.is_finite() && len > 1e-6).then(|| d / len)
 }
 
+impl HoverStroke {
+    /// The mark as the fold wants it: the record the gesture this predicts would
+    /// commit, drawn with the session's own brush at its own target.
+    ///
+    /// `translation` is read at the fold rather than pinned, because a probe has no
+    /// press to pin it at; `seed` likewise.
+    pub(super) fn record(
+        &self,
+        session: &Session,
+        seed: u64,
+        translation: stark_model::geom::IVec2,
+    ) -> StrokeRecord {
+        StrokeRecord {
+            layer: session.active_layer,
+            brush: session.brush,
+            // In the layer's frame, like every record (§14.12).
+            path: path_in_frame(self.path.clone(), translation),
+            seed,
+            // The probe is the whole prediction: two synthesized samples, no run-up
+            // ahead of them, so the mark starts where its curve does — exactly as the
+            // gesture it predicts would record it.
+            start: 0.0,
+            translation,
+        }
+    }
+}
+
 impl Session {
     /// Whether the hand is free to hover: nothing in flight, and a tool that
     /// paints rather than drags a shape.
     ///
-    /// **Both halves of the mark read it** — the door reports enter through
-    /// ([`hover_to`](Self::hover_to)) and the fold that draws it
-    /// ([`hover_view`](Self::hover_view)) — because the door is not free: an accepted
-    /// report bumps the gesture ordinal, and a bump mid-stroke makes every peer
-    /// discard its assembly (§17.5) and drops the local renderer's cached head.
+    /// The door reports enter through, and it is not a free one: an accepted report
+    /// bumps the gesture ordinal, and a bump mid-stroke makes every peer discard its
+    /// assembly (§17.5) and drops the local renderer's cached head. The *fold* asks
+    /// the tool half again ([`Session::live_view`]) and needs no more, because a hand
+    /// holding a mark is structurally not holding a gesture ([`Hand`]).
     fn hovering(&self) -> bool {
-        self.in_flight.is_none() && self.selecting.is_none() && !self.tool.is_selection()
+        !matches!(self.hand, Hand::Stroking(_) | Hand::Dragging(_)) && !self.tool.is_selection()
     }
 
     /// Feed the hover mark one report: append it to the trailing window of recent
@@ -114,7 +136,7 @@ impl Session {
     /// Answers whether anything changed, so a caller can skip the refold. A report is
     /// refused outright when the hand is not [`hovering`](Self::hovering) — see there
     /// for what accepting one costs — when it is non-finite, for
-    /// [`stroke_to`](Self::stroke_to)'s reason that the window *remembers*, and when
+    /// [`gesture_to`](Self::gesture_to)'s reason that the window *remembers*, and when
     /// it is within a tolerance of the last, where a resting pen's drift would buy a
     /// whole-window refit for nothing.
     pub fn hover_to(&mut self, sample: InputSample, tolerance: f32, reach: f32) -> bool {
@@ -124,13 +146,13 @@ impl Session {
         if !self.hovering() || !sample.is_admissible() || !reach.is_finite() {
             return false;
         }
-        if let Some(h) = self.hover.as_ref()
+        if let Hand::Hovering(h) = &self.hand
             && let Some(last) = h.window.last()
             && (last.pos == sample.pos || last.pos.distance(sample.pos) < tolerance.get())
         {
             return false;
         }
-        let mut window = self.hover.take().map(|h| h.window).unwrap_or_default();
+        let mut window = self.hand.take_hover().map(|h| h.window).unwrap_or_default();
         window.push(sample);
         prune_window(&mut window, WINDOW_ARC_TOLERANCES * tolerance.get());
         // The estimator: the window's smoothed trace, wanted only for where it
@@ -153,19 +175,19 @@ impl Session {
             // lone knot, which deposits nothing, exactly as the click would.
             None => fit_at([sample], tolerance),
         };
+        // Its slot in the gesture-ordinal space, so the renderer's per-actor head
+        // cache cannot mistake one hover's render for the next's. Not kept beside the
+        // mark: while one is held it *is* the session's ordinal, and a second copy
+        // could only disagree.
         self.gesture_ordinal += 1;
-        self.hover = Some(HoverStroke {
-            path,
-            window,
-            ordinal: self.gesture_ordinal,
-        });
+        self.hand = Hand::Hovering(HoverStroke { path, window });
         true
     }
 
     /// Drop the hover mark. Answers whether there was one to drop, so a caller
     /// can skip the refold — and the repaint — when there was not.
     pub(crate) fn clear_hover(&mut self) -> bool {
-        self.hover.take().is_some()
+        self.hand.take_hover().is_some()
     }
 
     /// The hover window, surrendered as a stroke's run-up (§6.2) — empty when there is
@@ -178,7 +200,7 @@ impl Session {
         press: Vec2,
         tolerance: InputTolerance,
     ) -> Vec<InputSample> {
-        let Some(h) = self.hover.take() else {
+        let Some(h) = self.hand.take_hover() else {
             return Vec::new();
         };
         let scale = WINDOW_ARC_TOLERANCES * tolerance.get();
@@ -192,46 +214,7 @@ impl Session {
     /// Whether a hover mark is held — what the frontend peeks before spending a
     /// command (and the frame behind it) taking one down.
     pub fn hover_held(&self) -> bool {
-        self.hover.is_some()
-    }
-
-    /// The hover mark as the fold wants it, authored by `actor` with `seed` — the same
-    /// [`GestureView`] shape a real gesture folds as, so the probe renders as exactly
-    /// the pixels its gesture would commit.
-    ///
-    /// `None` unless the hand is [`hovering`](Self::hovering): the fold holds at most
-    /// one gesture per actor, and a fact outranks a hypothesis. An unpaintable active
-    /// layer needs no test here — the stroke renderer refuses it as a commit would.
-    pub fn hover_view(
-        &self,
-        actor: ActorId,
-        seed: u64,
-        translation: stark_model::geom::IVec2,
-    ) -> Option<GestureView> {
-        if !self.hovering() {
-            return None;
-        }
-        let h = self.hover.as_ref()?;
-        Some(GestureView {
-            actor,
-            gesture: LiveGesture::Stroke(StrokeRecord {
-                layer: self.active_layer,
-                brush: self.brush,
-                // In the layer's frame, like every record (§14.12) — `frame` is
-                // read at the fold because a probe has no press to pin it at.
-                path: path_in_frame(h.path.clone(), translation),
-                seed,
-                // The probe is the whole prediction: two synthesized samples,
-                // no run-up ahead of them, so the mark starts where its curve
-                // does — exactly as the gesture it predicts would record it.
-                start: 0.0,
-                translation,
-            }),
-            ordinal: h.ordinal,
-            // Nothing settles: both samples move with every report, so the whole
-            // mark is live tail — the same answer a marquee gives.
-            frozen_spans: 0,
-        })
+        matches!(self.hand, Hand::Hovering(_))
     }
 }
 
@@ -240,7 +223,7 @@ mod tests {
     use super::*;
     use crate::command::Tool;
     use crate::session::fixtures::{press, session};
-    use stark_model::document::ShapeAction;
+    use stark_model::document::{ActorId, ShapeAction};
 
     /// The tolerance the hover tests report at; positions below are spaced well
     /// clear of it, so nothing is dropped as sub-tolerance drift.
@@ -249,6 +232,12 @@ mod tests {
     /// One hover report, far enough from the last to be accepted.
     fn hover(s: &mut Session, at: Vec2) -> bool {
         s.hover_to(InputSample::at(at), TOLERANCE, 50.0)
+    }
+
+    /// Whether the fold would draw this session's mark.
+    fn folds(s: &Session) -> bool {
+        s.live_view(ActorId::SOLO, 0, stark_model::geom::IVec2::ZERO)
+            .is_some()
     }
 
     /// With the hand free the mark is laid, and each accepted report takes its
@@ -262,8 +251,7 @@ mod tests {
         assert!(hover(&mut s, Vec2::new(20.0, 0.0)));
         assert_eq!(s.gesture_ordinal(), ordinal + 2);
         assert!(s.hover_held());
-        let view = s.hover_view(ActorId::SOLO, 0, stark_model::geom::IVec2::ZERO);
-        assert!(view.is_some(), "the free hand's mark did not fold");
+        assert!(folds(&s), "the free hand's mark did not fold");
     }
 
     /// A hover report arriving mid-stroke is refused, ordinal untouched. The fold
@@ -286,7 +274,7 @@ mod tests {
         assert!(!s.hover_held());
     }
 
-    /// Same for a shape gesture being dragged out: the other in-flight slot.
+    /// Same for a shape gesture being dragged out: the other live hand.
     ///
     /// The tool is put back to the brush, or this would pass on the conjunct the
     /// test below is about — a press arms both at once.
@@ -342,7 +330,7 @@ mod tests {
                 0.0,
                 stark_model::geom::IVec2::ZERO,
             );
-            s.stroke_to(press(30.0));
+            s.gesture_to(press(30.0));
             let run_up = s.preview_record().expect("in flight").start > 0.0;
             (accepted, run_up)
         };

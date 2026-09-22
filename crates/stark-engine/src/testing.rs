@@ -30,7 +30,7 @@ pub use crate::gpu::tile::TileChannels;
 /// (`tests/engine/tile_pool.rs`), and the tag `acquire_tex` demands of a caller.
 pub use crate::gpu::tile::{AllocSource, TilePool};
 pub use crate::peer::{GestureView, LiveGesture};
-pub use crate::session::Session;
+pub use crate::session::{Outline, Session};
 
 /// An engine on a headless device, in the default color space.
 pub async fn headless_engine(

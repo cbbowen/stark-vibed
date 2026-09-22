@@ -1,8 +1,9 @@
 //! The shape gesture (§6.8): the drag a selection tool makes, and what it
 //! resolves to on release — an edit to the selection, or a fill.
 
-use super::Session;
+use super::{Hand, Session};
 use crate::command::Tool;
+use crate::peer::LiveGesture;
 use stark_model::Srgb;
 use stark_model::document::{
     FillOp, LayerId, SelectionMode, SelectionOp, SelectionShape, ShapeAction,
@@ -14,6 +15,38 @@ use stark_model::geom::Vec2;
 /// mask boundary can resolve, so the polyline is thinned as it is collected —
 /// bounding both the rasterization cost and the size of the logged op (§6.8).
 const LASSO_MIN_STEP: f32 = 2.0;
+
+/// The region a shape gesture drags out (§6.8) — the *geometry*, which is all the
+/// drag has any use for, with the lasso's collected vertices inside the one arm that
+/// has any.
+///
+/// A [`Tool`] in its place could be [`Tool::Brush`], which drags no region at all, so
+/// the drag carried an arm no press could reach and a vertex list two thirds of it
+/// never filled. What a tool answers is now [`Tool::outline`], asked once at the press.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Outline {
+    Rect,
+    Ellipse,
+    /// The decimated outline so far, oldest first ([`LASSO_MIN_STEP`]).
+    Lasso(Vec<Vec2>),
+}
+
+impl Tool {
+    /// The region this tool drags out, or `None` for one that lays paint instead —
+    /// **the press's own dispatch** (§6.8).
+    ///
+    /// Answering with the region rather than with a `bool` is what leaves [`ShapeDrag`]
+    /// no way to hold a tool that drags none.
+    pub(crate) fn outline(self) -> Option<Outline> {
+        match self {
+            Tool::Brush => None,
+            Tool::SelectRect => Some(Outline::Rect),
+            Tool::SelectEllipse => Some(Outline::Ellipse),
+            // Seeded by the press, through `push` like every later vertex.
+            Tool::SelectLasso => Some(Outline::Lasso(Vec::new())),
+        }
+    }
+}
 
 /// What a finished shape gesture resolves to (§6.8,
 /// §18.0.4): an edit to the selection, or a fill.
@@ -36,6 +69,23 @@ pub(crate) enum ShapeResult {
         /// The translation of the layer, pinned at the press.
         translation: stark_model::geom::IVec2,
     },
+}
+
+impl From<ShapeResult> for LiveGesture {
+    fn from(result: ShapeResult) -> Self {
+        match result {
+            ShapeResult::Select(op) => LiveGesture::Selection(op),
+            ShapeResult::Fill {
+                layer,
+                op,
+                translation,
+            } => LiveGesture::Fill {
+                layer,
+                op,
+                translation,
+            },
+        }
+    }
 }
 
 /// What a shape gesture's action *means* against the selection it is drawn over:
@@ -69,7 +119,7 @@ fn against_selection(action: ShapeAction, has_selection: bool) -> ShapeAction {
 /// and the shape is derived from the drag on demand so a live preview and the
 /// committed op come from exactly the same code.
 pub(super) struct ShapeDrag {
-    tool: Tool,
+    outline: Outline,
     /// What the release will do with the region — captured at the *start* of the
     /// drag, like the feather, so re-picking a chip mid-gesture cannot change what the
     /// gesture already looks like it is doing.
@@ -92,8 +142,6 @@ pub(super) struct ShapeDrag {
     opacity: f32,
     /// Where the drag started; for the marquees this is one corner of the box.
     start: Vec2,
-    /// The lasso's decimated outline (empty for the marquees).
-    points: Vec<Vec2>,
     /// The newest sample, so the marquees can span `start`..`current`.
     current: Vec2,
     /// The active layer at the press — a **fill**'s target, pinned with the
@@ -107,54 +155,42 @@ pub(super) struct ShapeDrag {
 }
 
 impl ShapeDrag {
-    fn push(&mut self, pos: Vec2) {
+    pub(super) fn push(&mut self, pos: Vec2) {
         self.current = pos;
-        if self.tool == Tool::SelectLasso
-            && self
-                .points
+        if let Outline::Lasso(points) = &mut self.outline
+            && points
                 .last()
                 .is_none_or(|q| q.distance(pos) >= LASSO_MIN_STEP)
         {
-            self.points.push(pos);
+            points.push(pos);
         }
     }
 
     /// The region this drag currently encloses — `None` for a gesture that encloses
     /// nothing (a click with a marquee, a lasso too short to have an interior).
     fn to_shape(&self) -> Option<SelectionShape> {
-        let shape = match self.tool {
-            Tool::SelectRect => {
-                let (min, max) = (self.start.min(self.current), self.start.max(self.current));
-                if (max - min).min_element() <= 0.0 {
-                    return None;
-                }
-                SelectionShape::rect_from_corners(self.start, self.current)
-            }
-            Tool::SelectEllipse => {
-                let (min, max) = (self.start.min(self.current), self.start.max(self.current));
-                if (max - min).min_element() <= 0.0 {
-                    return None;
-                }
-                SelectionShape::ellipse_from_corners(self.start, self.current)
-            }
-            Tool::SelectLasso => {
+        // The marquees differ only in which conic the corners name, degeneracy test
+        // included.
+        let spanned = |of: fn(Vec2, Vec2) -> SelectionShape| {
+            let (min, max) = (self.start.min(self.current), self.start.max(self.current));
+            ((max - min).min_element() > 0.0).then(|| of(self.start, self.current))
+        };
+        match &self.outline {
+            Outline::Rect => spanned(SelectionShape::rect_from_corners),
+            Outline::Ellipse => spanned(SelectionShape::ellipse_from_corners),
+            Outline::Lasso(points) => {
                 // Close the loop with the newest sample: the shape has to reach the
                 // cursor mid-gesture, exactly as a stroke preview does. No second
                 // decimation pass — `push` already holds `LASSO_MIN_STEP` between
                 // kept points, and the trailing `current` is the one point a pass
                 // would keep anyway.
-                let mut points = self.points.clone();
+                let mut points = points.clone();
                 if points.last().is_none_or(|q| *q != self.current) {
                     points.push(self.current);
                 }
-                if points.len() < 3 {
-                    return None;
-                }
-                SelectionShape::Lasso(points)
+                (points.len() >= 3).then_some(SelectionShape::Lasso(points))
             }
-            Tool::Brush => return None,
-        };
-        Some(shape)
+        }
     }
 
     /// The action this drag currently stands for — what a release right now would
@@ -188,11 +224,16 @@ impl ShapeDrag {
 impl Session {
     /// Whether a shape gesture is being dragged out (§6.8).
     pub fn is_selecting(&self) -> bool {
-        self.selecting.is_some()
+        matches!(self.hand, Hand::Dragging(_))
     }
 
     /// Begin a shape gesture with the session's current action, feather and brush.
-    /// Any in-flight stroke or earlier gesture is abandoned.
+    /// Whatever the hand was doing is abandoned.
+    ///
+    /// `outline` is what the tool drags ([`Tool::outline`]), asked at the engine's
+    /// press dispatch because that is where the two kinds of gesture part. `tool` is
+    /// carried alongside it because the hand still has to *say* which tool it holds —
+    /// that is a view setting, not a fact about the drag.
     ///
     /// `has_selection` is the engine's to supply — whether a mask is already in force
     /// (`DocState::has_selection`) — because it decides what an Add gesture means; see
@@ -210,20 +251,23 @@ impl Session {
     pub fn start_selection(
         &mut self,
         tool: Tool,
+        outline: Outline,
         pos: Vec2,
         has_selection: bool,
         translation: stark_model::geom::IVec2,
     ) {
         self.tool = tool;
-        self.in_flight = None;
-        // The press supersedes the hover it interrupted — and the window must
-        // not survive the gesture, or the mark would reappear at the pre-press
-        // position the moment the hand lifted (§18.1.10).
-        self.hover = None;
+        // The press supersedes whatever it interrupted — a stroke abandoned, and the
+        // hover window, which must not survive the gesture or the mark would reappear
+        // at the pre-press position the moment the hand lifted (§18.1.10).
+        self.hand = Hand::Idle;
         self.gesture_ordinal += 1;
+        if !pos.is_finite() {
+            return;
+        }
         let [r, g, b] = self.color;
-        self.selecting = pos.is_finite().then(|| ShapeDrag {
-            tool,
+        let mut drag = ShapeDrag {
+            outline,
             action: against_selection(self.shape_action, has_selection),
             feather: self.selection_feather,
             // The hand's color, not the brush's: a fill lays the paint you have in
@@ -232,49 +276,22 @@ impl Session {
             color: Srgb::new([r, g, b]),
             opacity: self.shape_opacity,
             start: pos,
-            points: vec![pos],
             current: pos,
             layer: self.active_layer,
             translation,
-        });
-    }
-
-    /// Extend the in-flight shape gesture. A non-finite `pos` is dropped at the
-    /// door for [`start_selection`](Self::start_selection)'s reason — and the
-    /// lasso keeps every point it is given, so one such report would sit in the
-    /// logged polyline for the rest of the gesture.
-    pub fn selection_to(&mut self, pos: Vec2) {
-        if !pos.is_finite() {
-            return;
-        }
-        if let Some(drag) = self.selecting.as_mut() {
-            drag.push(pos);
-        }
+        };
+        // The press is the lasso's first vertex; the marquees read `start` instead.
+        drag.push(pos);
+        self.hand = Hand::Dragging(drag);
     }
 
     /// What the in-flight gesture currently stands for, for live preview — the very
-    /// same call [`Self::end_shape`] commits, so preview == committed.
+    /// same call [`Self::end_gesture`] commits, so preview == committed.
     pub(crate) fn preview_shape(&self) -> Option<ShapeResult> {
-        self.selecting.as_ref().and_then(ShapeDrag::to_result)
-    }
-
-    /// Finish the gesture, returning what to commit (`None` if it encloses nothing).
-    ///
-    /// **The tool disarms when the gesture was a step towards painting, and stays
-    /// armed when the gesture was painting.** So a selecting action is momentary —
-    /// the canvas goes straight back to the brush, since selecting is essentially
-    /// never done twice in a row and a modal selection tool the user forgot about
-    /// means a brush gesture silently redefining the selection. A fill stays armed,
-    /// because blocking in *is* painting and is done many times in a row.
-    ///
-    /// A gesture that enclosed nothing (a stray click) leaves the tool armed either
-    /// way, so a mis-click doesn't disarm it.
-    pub(crate) fn end_shape(&mut self) -> Option<ShapeResult> {
-        let result = self.selecting.take().and_then(|d| d.to_result());
-        if matches!(result, Some(ShapeResult::Select(_))) {
-            self.tool = Tool::Brush;
+        match &self.hand {
+            Hand::Dragging(d) => d.to_result(),
+            Hand::Idle | Hand::Hovering(_) | Hand::Stroking(_) => None,
         }
-        result
     }
 }
 
@@ -288,11 +305,12 @@ mod tests {
         let mut s = session(action);
         s.start_selection(
             Tool::SelectRect,
+            Outline::Rect,
             Vec2::ZERO,
             has_selection,
             stark_model::geom::IVec2::ZERO,
         );
-        s.selection_to(Vec2::splat(10.0));
+        s.gesture_to(crate::command::InputSample::at(Vec2::splat(10.0)));
         match s.preview_shape().expect("the marquee encloses something") {
             ShapeResult::Select(op) => op.mode(),
             ShapeResult::Fill { .. } => panic!("a selecting action does not fill"),
@@ -302,7 +320,7 @@ mod tests {
     /// **Add, with nothing selected, is New** ([`against_selection`]) — and the
     /// gesture is logged as the New it behaved as, so nothing downstream carries the
     /// rule. Read off the *preview*, which is the same call the release commits
-    /// ([`Session::end_shape`]).
+    /// ([`Session::end_gesture`]).
     #[test]
     fn adding_to_nothing_selects_the_region() {
         let add = ShapeAction::Select(SelectionMode::Union);
@@ -327,13 +345,8 @@ mod tests {
             assert_eq!(dragged(ShapeAction::Select(mode), false), mode);
         }
         let mut s = session(ShapeAction::Fill);
-        s.start_selection(
-            Tool::SelectRect,
-            Vec2::ZERO,
-            false,
-            stark_model::geom::IVec2::ZERO,
-        );
-        s.selection_to(Vec2::splat(10.0));
+        press(&mut s, Tool::SelectRect, Vec2::ZERO);
+        s.gesture_to(crate::command::InputSample::at(Vec2::splat(10.0)));
         assert!(matches!(s.preview_shape(), Some(ShapeResult::Fill { .. })));
     }
 
@@ -355,13 +368,13 @@ mod tests {
             let mut s = session(ShapeAction::Select(SelectionMode::Replace));
             press(&mut s, Tool::SelectRect, pos);
             assert!(!s.is_selecting(), "{pos} opened a drag");
-            assert_eq!(s.end_shape(), None, "{pos} alone committed an op");
+            assert!(s.end_gesture().is_none(), "{pos} alone committed an op");
 
             let mut s = session(ShapeAction::Select(SelectionMode::Replace));
             press(&mut s, Tool::SelectRect, pos);
-            s.selection_to(Vec2::splat(10.0));
+            s.gesture_to(crate::command::InputSample::at(Vec2::splat(10.0)));
             assert_eq!(s.preview_shape(), None, "{pos} drew a region");
-            assert_eq!(s.end_shape(), None, "{pos} dragged into an op");
+            assert!(s.end_gesture().is_none(), "{pos} dragged into an op");
         }
     }
 
@@ -372,13 +385,14 @@ mod tests {
     #[test]
     fn a_non_finite_move_does_not_reach_the_shape_drag() {
         let junk = [Vec2::splat(f32::NAN), Vec2::new(0.0, f32::INFINITY)];
+        let to = |s: &mut Session, p: Vec2| s.gesture_to(crate::command::InputSample::at(p));
 
         let mut s = session(ShapeAction::Select(SelectionMode::Replace));
         press(&mut s, Tool::SelectRect, Vec2::ZERO);
-        s.selection_to(Vec2::splat(10.0));
+        to(&mut s, Vec2::splat(10.0));
         let drawn = s.preview_shape().expect("the marquee encloses a region");
         for p in junk {
-            s.selection_to(p);
+            to(&mut s, p);
         }
         assert_eq!(s.preview_shape(), Some(drawn));
 
@@ -389,11 +403,11 @@ mod tests {
             Vec2::new(10.0, 10.0),
             Vec2::new(0.0, 10.0),
         ] {
-            s.selection_to(p);
+            to(&mut s, p);
         }
         let drawn = s.preview_shape().expect("the loop encloses a region");
         for p in junk {
-            s.selection_to(p);
+            to(&mut s, p);
         }
         assert_eq!(s.preview_shape(), Some(drawn));
     }

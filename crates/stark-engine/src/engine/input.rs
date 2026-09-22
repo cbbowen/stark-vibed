@@ -9,7 +9,7 @@ use super::Engine;
 use super::live::Held;
 use crate::command::{DocCommand, Edit, GestureCommand, PeerCommand, ViewCommand};
 use crate::document::Step;
-use crate::session::ShapeResult;
+use crate::peer::LiveGesture;
 use stark_model::document::{ActionId, ActionKind, GuideId, LayerId, TransformMap};
 
 /// Longest name that will be recorded, in `char`s — the wire's bound, reached for
@@ -183,7 +183,11 @@ impl Engine {
                 tolerance,
                 rope,
             } => {
-                if tool.is_selection() {
+                let frame = self.frame_of(self.session.active_layer());
+                // **The press's dispatch is the tool's own answer** (§6.8): a tool
+                // either drags a region out or lays paint, and answering with the
+                // region leaves the drag no way to hold a tool that drags none.
+                match tool.outline() {
                     // A marquee or lasso fits no curve, so it has no use for the
                     // tolerance (or the rope); its own decimation is a mask-cost knob
                     // (§6.8). What it does need is whether there is a mask to combine
@@ -191,16 +195,22 @@ impl Engine {
                     // (`session::against_selection`) — read at the press off the
                     // committed document, so the gesture's meaning is fixed before it
                     // has drawn anything.
-                    let has_selection = self.document().has_selection(self.actor());
-                    let frame = self.frame_of(self.session.active_layer());
-                    self.session
-                        .start_selection(tool, sample.pos, has_selection, frame);
-                } else {
-                    let seed = self.authoring.clock;
-                    let frame = self.frame_of(self.session.active_layer());
-                    self.session
-                        .start_stroke(sample, seed, tolerance, rope, frame);
-                    self.note_debug_sample(Capture::Restart, sample);
+                    Some(outline) => {
+                        let has_selection = self.document().has_selection(self.actor());
+                        self.session.start_selection(
+                            tool,
+                            outline,
+                            sample.pos,
+                            has_selection,
+                            frame,
+                        );
+                    }
+                    None => {
+                        let seed = self.authoring.clock;
+                        self.session
+                            .start_stroke(sample, seed, tolerance, rope, frame);
+                        self.note_debug_sample(Capture::Restart, sample);
+                    }
                 }
                 self.mark_live_stale();
             }
@@ -211,10 +221,10 @@ impl Engine {
                 // stroke length rather than with the tail: the fitter re-solves its
                 // unfrozen prefix on every push, ~350× the flattening beside it.
                 crate::timing::span!("input.fit");
-                if self.session.is_selecting() {
-                    self.session.selection_to(sample.pos);
-                } else {
-                    self.session.stroke_to(sample);
+                // One door for every kind of gesture: which one is live is the
+                // session's to know (`Session::gesture_to`), not this arm's to ask.
+                self.session.gesture_to(sample);
+                if self.session.is_stroking() {
                     self.note_debug_sample(Capture::Continue, sample);
                 }
                 self.mark_live_stale();
@@ -235,35 +245,34 @@ impl Engine {
             }
             // The one edge that produces document state.
             GestureCommand::End => {
-                if self.session.is_selecting() {
-                    // One gesture, two things it can commit — which one was decided
-                    // when the drag started (§18.0.4).
-                    match self.session.end_shape() {
-                        Some(ShapeResult::Select(op)) => self.commit(ActionKind::Select(op)),
-                        // The layer the drag pinned at the press, not the active
-                        // layer now: the op was converted into *that* layer's
-                        // frame, and the two must not part (`ShapeResult::Fill`).
-                        Some(ShapeResult::Fill {
-                            layer,
-                            op,
-                            translation: frame,
-                        }) => self.commit(ActionKind::Fill {
-                            layer,
-                            op,
-                            translation: frame,
-                        }),
-                        None => {}
-                    }
-                } else {
-                    // Fold first, so the commit is offered the stroke as it stands at
-                    // the release — the frame that would have shown the last few
-                    // samples. A fold costs the live tail; the render it saves the
-                    // commit costs the stroke.
+                // Fold first, so the commit is offered the stroke as it stands at the
+                // release — the frame that would have shown the last few samples. A
+                // fold costs the live tail; the render it saves the commit costs the
+                // stroke. Only a stroke has such a render to save.
+                if self.session.is_stroking() {
                     self.flush_live();
-                    if let Some(rec) = self.session.end_stroke() {
+                }
+                // One release, three things it can commit — which one was decided when
+                // the gesture started (§18.0.4).
+                match self.session.end_gesture() {
+                    Some(LiveGesture::Stroke(rec)) => {
                         self.log_debug_samples();
                         self.commit_stroke(rec);
                     }
+                    Some(LiveGesture::Selection(op)) => self.commit(ActionKind::Select(op)),
+                    // The layer the drag pinned at the press, not the active layer
+                    // now: the op was converted into *that* layer's frame, and the
+                    // two must not part (`ShapeDrag::layer`).
+                    Some(LiveGesture::Fill {
+                        layer,
+                        op,
+                        translation: frame,
+                    }) => self.commit(ActionKind::Fill {
+                        layer,
+                        op,
+                        translation: frame,
+                    }),
+                    None => {}
                 }
                 self.mark_live_stale();
             }
@@ -640,13 +649,17 @@ impl Engine {
         self.session
             .start_stroke(*first, seed, crate::path::DEFAULT_TOLERANCE, rope, frame);
         for s in it {
-            self.session.stroke_to(*s);
+            self.session.gesture_to(*s);
         }
-        let committed = self.session.end_stroke().map(|rec| {
-            let id = self.next_action_id();
-            self.commit_with_id(id, ActionKind::CommitStroke(rec));
-            id
-        });
+        let committed = match self.session.end_gesture() {
+            Some(LiveGesture::Stroke(rec)) => {
+                let id = self.next_action_id();
+                self.commit_with_id(id, ActionKind::CommitStroke(rec));
+                Some(id)
+            }
+            // A replay opens a stroke, so nothing else can be what it ends.
+            Some(LiveGesture::Selection(_) | LiveGesture::Fill { .. }) | None => None,
+        };
         self.mark_live_stale();
         committed
     }
