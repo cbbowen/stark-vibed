@@ -16,53 +16,50 @@ use stark_model::Srgb;
 use stark_model::document::ActorId;
 use stark_model::document::Filter;
 use stark_model::document::{GuideId, LayerId, MatteRegion, Parcel, PerspectiveGuide, Place};
-use stark_model::geom::{IVec2, TileCoord, Vec2};
+use stark_model::geom::{IVec2, TileCoord, TileRect, Vec2};
 use stark_model::{SubstrateId, SubstrateScale};
 
 /// Inclusive tile-coordinate bounding box of all populated tiles (§6),
 /// i.e. the explored extent of the infinite canvas.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub struct CanvasBounds {
-    range: Option<(TileCoord, TileCoord)>,
+///
+/// A [`TileRect`], whose [`union`](TileRect::union) is the join. [`TileRect::EMPTY`] is
+/// the only empty rect anything here builds, so the derived `PartialEq` compares
+/// extents.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct CanvasBounds(TileRect);
+
+impl Default for CanvasBounds {
+    /// Nothing painted.
+    fn default() -> Self {
+        Self(TileRect::EMPTY)
+    }
 }
 
 impl CanvasBounds {
     /// The `(min, max)` inclusive tile range, or `None` if nothing is painted.
     pub fn tile_range(&self) -> Option<(TileCoord, TileCoord)> {
-        self.range
+        let TileRect { min, max } = self.0;
+        (!self.0.is_empty()).then(|| (TileCoord::new(min.0, min.1), TileCoord::new(max.0, max.1)))
     }
 
     /// The extent spanning every tile in `coords` — empty for none.
     pub(crate) fn of_tiles<'a>(coords: impl Iterator<Item = &'a TileCoord>) -> Self {
-        let mut out = Self::default();
-        for c in coords {
-            out.include(*c);
-        }
-        out
+        Self(coords.fold(TileRect::EMPTY, |rect, c| {
+            rect.union(TileRect {
+                min: (c.x, c.y),
+                max: (c.x, c.y),
+            })
+        }))
     }
 
-    /// Grow to contain `other` as well.
-    ///
-    /// The **join** that makes a document's extent the union of its layers' own, so a
-    /// layer whose tiles did not change can contribute the box it already knows
-    /// ([`PaintTiles`]) rather than being walked again.
+    /// The extent spanning both — the **join** that makes a document's extent the
+    /// union of its layers' own, so a layer whose tiles did not change contributes the
+    /// box it already knows ([`PaintTiles`]) rather than being walked again.
     ///
     /// [`PaintTiles`]: super::layer::PaintTiles
-    pub(crate) fn union(&mut self, other: Self) {
-        if let Some((min, max)) = other.range {
-            self.include(min);
-            self.include(max);
-        }
-    }
-
-    fn include(&mut self, c: TileCoord) {
-        self.range = Some(match self.range {
-            None => (c, c),
-            Some((min, max)) => (
-                TileCoord::new(min.x.min(c.x), min.y.min(c.y)),
-                TileCoord::new(max.x.max(c.x), max.y.max(c.y)),
-            ),
-        });
+    #[must_use]
+    pub(crate) fn union(self, other: Self) -> Self {
+        Self(self.0.union(other.0))
     }
 
     /// The extent as it sits on the canvas once the layer's frame is placed at
@@ -74,23 +71,23 @@ impl CanvasBounds {
     /// the box to the other side of the canvas.
     pub(crate) fn shifted(self, by: IVec2) -> Self {
         use stark_model::geom::TILE_SIZE;
+        if self.0.is_empty() {
+            return self;
+        }
         let t = TILE_SIZE as i32;
         let floor = |d: i32| d.div_euclid(t);
         let ceil = |d: i32| d.saturating_add(t - 1).div_euclid(t);
-        Self {
-            range: self.range.map(|(min, max)| {
-                (
-                    TileCoord::new(
-                        min.x.saturating_add(floor(by.x)),
-                        min.y.saturating_add(floor(by.y)),
-                    ),
-                    TileCoord::new(
-                        max.x.saturating_add(ceil(by.x)),
-                        max.y.saturating_add(ceil(by.y)),
-                    ),
-                )
-            }),
-        }
+        let TileRect { min, max } = self.0;
+        Self(TileRect {
+            min: (
+                min.0.saturating_add(floor(by.x)),
+                min.1.saturating_add(floor(by.y)),
+            ),
+            max: (
+                max.0.saturating_add(ceil(by.x)),
+                max.1.saturating_add(ceil(by.y)),
+            ),
+        })
     }
 }
 
@@ -959,10 +956,9 @@ impl DocState {
     ///
     /// [`PaintTiles`]: super::layer::PaintTiles
     pub(crate) fn with_layers(&self, layers: Vector<Layer>) -> Self {
-        let mut bounds = CanvasBounds::default();
-        for l in layers.iter() {
-            bounds.union(l.subtree_bounds());
-        }
+        let bounds = layers
+            .iter()
+            .fold(CanvasBounds::default(), |b, l| b.union(l.subtree_bounds()));
         Self {
             layers,
             bounds,
@@ -1171,19 +1167,15 @@ mod tests {
         let a = span(&[at(0, 0), at(2, 1)]);
         let b = span(&[at(-4, 5)]);
 
-        let mut grown = a;
-        grown.union(empty);
-        assert_eq!(grown.tile_range(), a.tile_range(), "empty adds nothing");
+        assert_eq!(a.union(empty), a, "empty adds nothing");
+        assert_eq!(empty.union(a), a, "…either way round");
+        assert_eq!(empty.union(empty), empty);
+        // A shift moves nothing into something, so the one empty value stays the one
+        // the derived `PartialEq` compares against.
+        assert_eq!(empty.shifted(IVec2::new(300, -7)), empty);
 
-        let mut from_empty = empty;
-        from_empty.union(a);
-        assert_eq!(from_empty.tile_range(), a.tile_range(), "…either way round");
-
-        let mut ab = a;
-        ab.union(b);
-        let mut ba = b;
-        ba.union(a);
-        assert_eq!(ab.tile_range(), ba.tile_range(), "order cannot matter");
+        let (ab, ba) = (a.union(b), b.union(a));
+        assert_eq!(ab, ba, "order cannot matter");
         assert_eq!(ab.tile_range(), Some((at(-4, 0), at(2, 5))));
         // …and it agrees with spanning the tiles directly, which is what the
         // per-layer boxes replaced.
@@ -1339,11 +1331,11 @@ mod tests {
     }
     /// The box every layer carries for its subtree, recomputed from nothing.
     fn recomputed(l: &Layer) -> CanvasBounds {
-        let mut out = l.bounds().shifted(l.translation);
-        for c in l.carries().iter() {
-            out.union(recomputed(c));
-        }
-        out
+        l.carries()
+            .iter()
+            .fold(l.bounds().shifted(l.translation), |b, c| {
+                b.union(recomputed(c))
+            })
     }
 
     fn each(layers: &Vector<Layer>, f: &mut impl FnMut(&Layer)) {

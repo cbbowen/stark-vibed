@@ -588,18 +588,15 @@ impl Layer {
     /// cached, since `translation` and `content` are public fields and a box that
     /// depended on them could be left behind.
     pub(crate) fn subtree_bounds(&self) -> CanvasBounds {
-        let mut out = self.bounds().shifted(self.translation);
-        out.union(self.carried);
-        out
+        self.bounds().shifted(self.translation).union(self.carried)
     }
 
     /// The same layer carrying `carries` instead — and knowing their extent,
     /// which is O(children) here because each child already knows its own.
     pub(crate) fn with_carries(&self, carries: Vector<Layer>) -> Self {
-        let mut carried = CanvasBounds::default();
-        for l in carries.iter() {
-            carried.union(l.subtree_bounds());
-        }
+        let carried = carries
+            .iter()
+            .fold(CanvasBounds::default(), |b, l| b.union(l.subtree_bounds()));
         Self {
             carries,
             carried,

@@ -10,6 +10,7 @@ use rpds::HashTrieMap;
 use stark_model::document::{MAX_SELECTION_TILES, SelectionMode, SelectionOp};
 use stark_model::geom::{TILE_APRON, TileCoord, Vec2, tiles_covering};
 
+use super::state::CanvasBounds;
 use crate::gpu::tile::{MaskHandle, MaskMap};
 
 /// The document's selection: a sparse coverage mask plus the coverage that reigns
@@ -362,18 +363,9 @@ impl Selection {
         rasterize.sort_unstable_by_key(|c| (c.y, c.x));
         let outside = self.level - self.outside;
         let hull = (outside <= 0.0)
-            .then(|| {
-                let mut it = rasterize.iter();
-                let first = *it.next()?;
-                let (lo, hi) = it.fold((first, first), |(lo, hi), c| {
-                    (
-                        TileCoord::new(lo.x.min(c.x), lo.y.min(c.y)),
-                        TileCoord::new(hi.x.max(c.x), hi.y.max(c.y)),
-                    )
-                });
-                Some((lo.texture_box().0, hi.texture_box().1))
-            })
-            .flatten();
+            .then(|| CanvasBounds::of_tiles(rasterize.iter()).tile_range())
+            .flatten()
+            .map(|(lo, hi)| (lo.texture_box().0, hi.texture_box().1));
         SelectionPlan {
             keep_prev: false,
             rasterize,
