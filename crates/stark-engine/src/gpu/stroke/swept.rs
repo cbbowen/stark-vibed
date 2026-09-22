@@ -14,7 +14,7 @@ use stark_shaders::mirror::integrate::binding as ib;
 use stark_shaders::mirror::integrate::decl as id;
 use stark_shaders::mirror::stamp_common::binding as sc;
 use stark_shaders::mirror::stamp_common::decl as sd;
-use stark_shaders::{Lane, Stages};
+use stark_shaders::{EntryPoint, Lane, Stages};
 
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap, TilePairHandle};
 
@@ -56,50 +56,209 @@ use stark_shaders::mirror::stamp_common::TileXform;
 /// win flattens.
 const SCRATCH_RING: usize = 3;
 
-/// The swept fast path's GPU objects, built once (§6.2) — the sweep that accumulates a
-/// stroke's extent into a scratch tile, and the integrate that stacks that scratch over
-/// the base into a fresh CoW tile.
+/// A pipeline over the sweep's three layouts (§6.2, §6.12) — its row of [`SWEEPS`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum SweepPass {
+    /// The deposit: one instanced quad strip per segment, over-blended into the
+    /// stroke's scratch parcel.
+    Deposit,
+    /// The deposit with the **ceiling lane** as a fourth target, for a stroke whose
+    /// opacity the pen drives. A pipeline of its own because a target list is fixed at
+    /// pipeline creation, and an artifact of its own because the shader's output is
+    /// `@if(ceiling)`-gated, so no other stroke pays the lane.
+    DepositCeiling,
+    /// The ceiling lane **alone** (`fs_levels`): what the stamp loop draws per painting
+    /// segment into its region, so its claim advances by the sweep's own sums.
+    Levels,
+    /// The erase sweep (`fs_erase`): the stroke's transparency mass.
+    Erase,
+    /// The erase sweep with the ceiling lane and the mass's moment beside it.
+    EraseCeiling,
+}
+
+impl SweepPass {
+    /// The deposit, with the ceiling lane if `lane` is the ceiling build.
+    pub(super) fn deposit(lane: Lane) -> Self {
+        match lane {
+            Lane::Plain => Self::Deposit,
+            Lane::Ceiling => Self::DepositCeiling,
+        }
+    }
+
+    /// The erase sweep, with the ceiling lane if `lane` is the ceiling build.
+    pub(super) fn erase(lane: Lane) -> Self {
+        match lane {
+            Lane::Plain => Self::Erase,
+            Lane::Ceiling => Self::EraseCeiling,
+        }
+    }
+}
+
+/// One pipeline over the sweep's layouts: which build of `stamp.wesl` it runs, which of
+/// that build's fragment entry points (the vertex stage is always `vs_main`), and the
+/// color targets at that entry point's `@location`s.
+struct SweepRow {
+    pass: SweepPass,
+    label: &'static str,
+    lane: Lane,
+    fs: fn(&stark_shaders::Stamp) -> EntryPoint,
+    targets: fn(&ChannelFormats) -> Vec<Option<wgpu::ColorTargetState>>,
+}
+
+impl SweepRow {
+    /// The row's vertex and fragment entry points, out of `color_space`'s build of
+    /// the stamp shader (§6.10).
+    fn entries(&self, color_space: &dyn ColorSpace) -> (EntryPoint, EntryPoint) {
+        let shader = color_space.stamp_shader(self.lane);
+        (shader.vs_main, (self.fs)(shader))
+    }
+}
+
+/// Every pipeline the sweep's layouts serve, in [`SweepPass`] order: the one list the
+/// layouts are derived over and the pipelines are built from.
+const SWEEPS: [SweepRow; 5] = [
+    SweepRow {
+        pass: SweepPass::Deposit,
+        label: "stark sweep pipeline",
+        lane: Lane::Plain,
+        fs: |s| s.fs_main,
+        targets: |f| deposit_targets(f, Lane::Plain),
+    },
+    SweepRow {
+        pass: SweepPass::DepositCeiling,
+        label: "stark sweep ceiling pipeline",
+        lane: Lane::Ceiling,
+        fs: |s| s.fs_main,
+        targets: |f| deposit_targets(f, Lane::Ceiling),
+    },
+    // Over the plain build: `fs_levels` is not `@if(ceiling)`-gated, since it writes
+    // nothing but the lane.
+    SweepRow {
+        pass: SweepPass::Levels,
+        label: "stark sweep levels pipeline",
+        lane: Lane::Plain,
+        fs: |s| s.fs_levels,
+        targets: |_| vec![ceiling_target()],
+    },
+    SweepRow {
+        pass: SweepPass::Erase,
+        label: "stark erase sweep pipeline",
+        lane: Lane::Plain,
+        fs: |s| s.fs_erase,
+        targets: |_| super::erase::sweep_targets(Lane::Plain),
+    },
+    SweepRow {
+        pass: SweepPass::EraseCeiling,
+        label: "stark erase sweep ceiling pipeline",
+        lane: Lane::Ceiling,
+        fs: |s| s.fs_erase,
+        targets: |_| super::erase::sweep_targets(Lane::Ceiling),
+    },
+];
+
+const _: () = {
+    let mut i = 0;
+    while i < SWEEPS.len() {
+        assert!(
+            SWEEPS[i].pass as usize == i,
+            "`SWEEPS` is out of `SweepPass` order"
+        );
+        i += 1;
+    }
+};
+
+/// The deposit's targets (§6.1, §6.7): the channel trio as a deposit lands it, into a
+/// *scratch* parcel whose aux is the wide [`SCRATCH_AUX_FORMAT`]. The ceiling lane sits
+/// at location 3 whether or not the space has a residual at 2, so the plain list stops
+/// short of it and the ceiling list carries the hole (`accum::MAX_LANES`).
+fn deposit_targets(formats: &ChannelFormats, lane: Lane) -> Vec<Option<wgpu::ColorTargetState>> {
+    let mut targets = formats.deposit_targets(SCRATCH_AUX_FORMAT).to_vec();
+    match lane {
+        Lane::Plain => targets.truncate(formats.count()),
+        Lane::Ceiling => targets.push(ceiling_target()),
+    }
+    targets
+}
+
+/// The pipelines that rasterize a stroke's swept extent ([`SWEEPS`]), built once, and
+/// the three layouts they share: the per-tile transform at group 0, the prefix-τ volume
+/// at group 1, the noise and substrate fields at group 2. One set of layouts, so one set
+/// of bind groups serves every pipeline ([`SweepDraws`]).
 ///
 /// All handles are `Arc`-backed, so the kit is cheap to clone with its renderer.
 #[derive(Clone)]
-pub(super) struct SweptKit {
-    /// The sweep: one instanced quad strip per segment, over-blended into the scratch
-    /// pair, with the per-tile transform at group 0, the prefix-τ volume at group 1
-    /// and the noise + substrate fields at group 2.
-    pub(super) pipeline: wgpu::RenderPipeline,
-    /// The same sweep with the **ceiling lane** as a fourth target (§6.2), taken by a
-    /// stroke whose opacity the pen drives. A pipeline of its own because a target list
-    /// is fixed at pipeline creation, and an artifact of its own because the shader's
-    /// output is `@if(ceiling)`-gated, so no other stroke pays the lane.
-    pub(super) pipeline_ceiling: wgpu::RenderPipeline,
-    /// The ceiling lane **alone** (`stamp.wesl::fs_levels`): what the stamp loop
-    /// draws per painting segment into its region, so its claim advances by the
-    /// sweep's own sums (§6.2). Over the same three layouts, so the loop binds
-    /// the brush exactly as the swept path does.
-    pub(super) levels_pipeline: wgpu::RenderPipeline,
+pub(super) struct SweepKit {
     pub(super) uniform_bgl: desc::Bindings,
     pub(super) prefix_bgl: desc::Bindings,
     pub(super) noise_bgl: desc::Bindings,
-    /// The integrate (§6.2/§6.1): a fullscreen pass reading the base tile and the
-    /// stroke's extent scratch and writing `new = f(base, scratch)` into a fresh CoW
-    /// tile's color+aux MRT, through the shared law in `paint_common.wesl` that a fill
-    /// and the stamp loop's `deposit` also land by.
-    pub(super) integrate_pipeline: wgpu::RenderPipeline,
-    pub(super) integrate_bgl: desc::Bindings,
+    pipelines: [wgpu::RenderPipeline; SWEEPS.len()],
+}
+
+impl SweepKit {
+    pub(super) fn new(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Self {
+        // Each layout is the union over every row (§6.10). Group 0 is one buffer for the
+        // whole piece with a slot per tile, selected by a dynamic offset; group 1 the
+        // prefix-τ volume (§6.6); group 2 the noise field with its repeat sampler beside
+        // the canvas substrate's map (§6.2, §6.4).
+        let over = SWEEPS.map(|row| {
+            let (vs, fs) = row.entries(color_space);
+            Stages::Render(vs, fs)
+        });
+        let uniform_bgl =
+            desc::Bindings::shared_by(device, "stark sweep uniform bgl", &over, sd::XF, &[sd::XF]);
+        let prefix_bgl =
+            desc::Bindings::shared_by(device, "stark sweep prefix bgl", &over, sd::PREFIX_TEX, &[]);
+        let noise_bgl =
+            desc::Bindings::shared_by(device, "stark sweep noise bgl", &over, sd::NOISE_TEX, &[]);
+        let layout = desc::pipeline_layout_of(
+            device,
+            "stark sweep layout",
+            &[&uniform_bgl, &prefix_bgl, &noise_bgl],
+        );
+
+        // One module per build, shared by the rows over it: a second
+        // `create_shader_module` is a second parse and translation of source already in
+        // hand — on the web, startup the artist waits through.
+        let plain = stamp_module(device, color_space, Lane::Plain);
+        let ceiling = stamp_module(device, color_space, Lane::Ceiling);
+        let formats = ChannelFormats::of(color_space);
+        let pipelines = SWEEPS.map(|row| {
+            let (vs, fs) = row.entries(color_space);
+            desc::render_pipeline(
+                device,
+                desc::RenderPipe {
+                    label: row.label,
+                    layout: &layout,
+                    module: match row.lane {
+                        Lane::Plain => &plain,
+                        Lane::Ceiling => &ceiling,
+                    },
+                    vs,
+                    fs,
+                    primitive: desc::QUAD_STRIP,
+                    buffers: &[Some(stark_shaders::mirror::stamp::segment_instance_layout(
+                        wgpu::VertexStepMode::Instance,
+                    ))],
+                    targets: &(row.targets)(&formats),
+                },
+            )
+        });
+        Self {
+            uniform_bgl,
+            prefix_bgl,
+            noise_bgl,
+            pipelines,
+        }
+    }
+
+    pub(super) fn pipeline(&self, pass: SweepPass) -> &wgpu::RenderPipeline {
+        &self.pipelines[pass as usize]
+    }
 }
 
 /// Compile `stamp.wesl` for `color_space` (§6.2, §6.7) — with or without the ceiling
 /// lane, which is the axis the caller picks and the residual the space does.
-///
-/// **Once per renderer per variant, lent to both kits.** The erase pass builds its own
-/// pipelines over the same modules (§6.12), differing only in fragment entry point and
-/// target list, and a second `create_shader_module` is a second parse and translation
-/// of source already in hand — on the web, startup the artist waits through.
-pub(super) fn stamp_module(
-    device: &wgpu::Device,
-    color_space: &dyn ColorSpace,
-    lane: Lane,
-) -> desc::Module {
+fn stamp_module(device: &wgpu::Device, color_space: &dyn ColorSpace, lane: Lane) -> desc::Module {
     let label = match lane {
         Lane::Ceiling => "stark stamp ceiling",
         Lane::Plain => "stark stamp",
@@ -124,111 +283,37 @@ pub(super) fn ceiling_target() -> Option<wgpu::ColorTargetState> {
     desc::blended_target(CEILING_FORMAT, Some(wgpu::BlendState::ADDITIVE))
 }
 
-/// The five pipelines the sweep's three layouts serve: this kit's three and the erase
-/// kit's two, over both stamp builds (§6.12). One set of layouts, so one union.
-pub(super) fn sweep_pipelines(color_space: &dyn ColorSpace) -> [Stages; 5] {
-    let plain = color_space.stamp_shader(Lane::Plain);
-    let ceiling = color_space.stamp_shader(Lane::Ceiling);
-    [
-        Stages::Render(plain.vs_main, plain.fs_main),
-        Stages::Render(ceiling.vs_main, ceiling.fs_main),
-        Stages::Render(plain.vs_main, plain.fs_levels),
-        Stages::Render(plain.vs_main, plain.fs_erase),
-        Stages::Render(ceiling.vs_main, ceiling.fs_erase),
-    ]
-}
-
-/// Build the swept fast path's kit (§6.2): the sweep pipeline over its three bind
-/// group layouts — twice, with and without the ceiling lane — and the integrate
-/// that lands its scratch on the base.
-pub(super) fn build_swept_kit(
+/// A landing pass (§6.2, §6.12): the fullscreen pass that applies a stroke's parcel to
+/// the paint under one tile. It computes the finished texel, so no target blends, into
+/// the space's own channels (§6.7).
+pub(super) fn landing_pipeline(
     device: &wgpu::Device,
     color_space: &dyn ColorSpace,
-    shader: &desc::Module,
-    shader_ceiling: &desc::Module,
-) -> SweptKit {
-    // All three off the stages above (§6.10). Group 0 is one buffer for the whole
-    // stroke with a slot per tile, selected by a dynamic offset ([`XFORM_STRIDE`]);
-    // group 1 the prefix-τ volume (§6.6); group 2 the noise field with its repeat
-    // sampler beside the canvas substrate's map (§6.2, §6.4).
-    let over = sweep_pipelines(color_space);
-    let uniform_bgl =
-        desc::Bindings::shared_by(device, "stark sweep uniform bgl", &over, sd::XF, &[sd::XF]);
-    let prefix_bgl =
-        desc::Bindings::shared_by(device, "stark sweep prefix bgl", &over, sd::PREFIX_TEX, &[]);
-    let noise_bgl =
-        desc::Bindings::shared_by(device, "stark sweep noise bgl", &over, sd::NOISE_TEX, &[]);
+    label: &str,
+    shader: &dyn stark_shaders::Artifact,
+    entries: (EntryPoint, EntryPoint),
+    anchor: stark_shaders::Binding,
+) -> desc::OnePass {
+    let module = desc::Module::new(device, label, shader);
+    let targets = ChannelFormats::of(color_space).targets();
+    desc::OnePass::fullscreen(device, label, &module, entries, anchor, &[], &targets)
+}
 
-    let layout = desc::pipeline_layout_of(
+/// The integrate (`integrate.wesl`, §6.2/§6.1): the landing pass that stacks a stroke's
+/// parcel over the base tile — the layer's paint, the parcel, the selection each is
+/// gated by, the effect's opacity and the ceiling lane in; `new = f(base, parcel)` out,
+/// through the shared law in `paint_common.wesl` that a fill and the stamp loop's
+/// `deposit` also land by.
+pub(super) fn integrate_pass(device: &wgpu::Device, color_space: &dyn ColorSpace) -> desc::OnePass {
+    let shader = stark_shaders::integrate(color_space.resid());
+    landing_pipeline(
         device,
-        "stark sweep layout",
-        &[&uniform_bgl, &prefix_bgl, &noise_bgl],
-    );
-    // The stamp renders into a *scratch* tile, whose aux is the wide
-    // SCRATCH_AUX_FORMAT — not the compact persistent aux.
-    let formats = ChannelFormats::of(color_space);
-    let [color, aux, resid] = formats.deposit_targets(SCRATCH_AUX_FORMAT);
-    // The ceiling lane (§6.2) is at the shader's location 3 whether or not the space
-    // has a residual at 2, so the plain list stops short of it and the ceiling list
-    // carries the hole (`accum::MAX_LANES`).
-    let targets = [color, aux, resid, ceiling_target()];
-    // The same two records `stamp_module` compiled, for the entry points the
-    // pipelines below name (§6.10).
-    let plain = color_space.stamp_shader(Lane::Plain);
-    let ceiling = color_space.stamp_shader(Lane::Ceiling);
-    let sweep_pipeline = |label, module, vs, fs, targets: &[Option<wgpu::ColorTargetState>]| {
-        desc::render_pipeline(
-            device,
-            desc::RenderPipe {
-                label,
-                layout: &layout,
-                module,
-                vs,
-                fs,
-                primitive: desc::QUAD_STRIP,
-                buffers: &[Some(stark_shaders::mirror::stamp::segment_instance_layout(
-                    wgpu::VertexStepMode::Instance,
-                ))],
-                targets,
-            },
-        )
-    };
-    let pipeline = sweep_pipeline(
-        "stark sweep pipeline",
+        color_space,
+        "stark integrate",
         shader,
-        plain.vs_main,
-        plain.fs_main,
-        &targets[..formats.count()],
-    );
-    let pipeline_ceiling = sweep_pipeline(
-        "stark sweep ceiling pipeline",
-        shader_ceiling,
-        ceiling.vs_main,
-        ceiling.fs_main,
-        &targets,
-    );
-    // The lane alone, for the stamp loop's per-segment draw of it (§6.2) — over
-    // the plain module, since `fs_levels` is not `@if(ceiling)`-gated: it writes
-    // nothing else.
-    let levels_pipeline = sweep_pipeline(
-        "stark sweep levels pipeline",
-        shader,
-        plain.vs_main,
-        plain.fs_levels,
-        &[ceiling_target()],
-    );
-
-    let (integrate_pipeline, integrate_bgl) = build_integrate_pipeline(device, color_space);
-    SweptKit {
-        pipeline,
-        pipeline_ceiling,
-        levels_pipeline,
-        uniform_bgl,
-        prefix_bgl,
-        noise_bgl,
-        integrate_pipeline,
-        integrate_bgl,
-    }
+        (shader.vs_main, shader.fs_main),
+        id::BASE_COLOR,
+    )
 }
 
 impl StrokeRenderer {
@@ -328,7 +413,7 @@ impl StrokeRenderer {
             {
                 let mut pass =
                     desc::begin_pass(scope.encoder(), "stark sweep pass", scratch.targets());
-                draws.draw(&mut pass, &self.swept.pipeline, i);
+                draws.draw(&mut pass, self.swept.pipeline(SweepPass::Deposit), i);
             }
 
             // Integrate the scratch slab over the base into a fresh CoW tile, gated
@@ -353,7 +438,7 @@ impl StrokeRenderer {
             scope.fullscreen_pass(
                 "stark integrate",
                 dst.targets(),
-                &self.swept.integrate_pipeline,
+                &self.integrate.pipeline,
                 desc::Bound::one(&integrate_bg),
             );
             new_map = new_map.insert(*coord, dst);
@@ -430,16 +515,12 @@ impl StrokeRenderer {
         .run(
             &Sweep {
                 label: "stark sweep pass",
-                pipeline: if k.ceiling_lane {
-                    &self.swept.pipeline_ceiling
-                } else {
-                    &self.swept.pipeline
-                },
+                pipeline: self.swept.pipeline(SweepPass::deposit(k.lane())),
                 draws: &draws,
             },
             &Land {
                 label: "stark integrate",
-                pipeline: &self.swept.integrate_pipeline,
+                pipeline: &self.integrate.pipeline,
             },
             |l: &Landing<'_>| {
                 // The parcel's lanes as the trio they are, so this and the unscaled
@@ -821,40 +902,6 @@ pub(super) fn xform_group(
         .group(&r.ctx.device, "stark sweep region bg", |_| slot.window())
 }
 
-/// Build the stroke integrate pipeline (`integrate` shader) — §6.2/§6.1. A
-/// fullscreen pass with four sampled tiles (base/scratch color/aux), writing the
-/// color+aux MRT of a fresh tile.
-pub(super) fn build_integrate_pipeline(
-    device: &wgpu::Device,
-    color_space: &dyn ColorSpace,
-) -> (wgpu::RenderPipeline, desc::Bindings) {
-    let integrate = stark_shaders::integrate(color_space.resid());
-    let shader = desc::Module::new(device, "stark integrate", integrate);
-    // The layer's resident paint, the stroke's scratch parcel, the selection each is
-    // gated by, the effect's opacity and the ceiling lane — whatever this build of
-    // `integrate.wesl` reads (§6.2/§6.1).
-    let bgl = desc::Bindings::of(
-        device,
-        "stark integrate bgl",
-        Stages::Render(integrate.vs_main, integrate.fs_main),
-        id::BASE_COLOR,
-        &[],
-    );
-    let layout = desc::pipeline_layout_of(device, "stark integrate layout", &[&bgl]);
-    // No blend on any target: the shader does the combine and writes straight
-    // through.
-    let pipeline = desc::fullscreen_pipeline(
-        device,
-        "stark integrate pipeline",
-        &layout,
-        &shader,
-        (integrate.vs_main, integrate.fs_main),
-        // The space's own three (§6.7).
-        &ChannelFormats::of(color_space).targets(),
-    );
-    (pipeline, bgl)
-}
-
 /// The integrate pass's bind group: the pristine paint under a tile, the parcel the
 /// stroke laid over it, the selection coverage, the stroke's opacity ceiling, and
 /// the ceiling lane — the parcel's own under a pen-driven opacity, the 1×1 zero
@@ -877,8 +924,8 @@ fn integrate_bind_group(
     opacity: &LeasedSlots<Integrate>,
     ceiling: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
-    r.swept
-        .integrate_bgl
+    r.integrate
+        .bindings
         .group(&r.ctx.device, "stark integrate bg", |b| match b {
             ib::BASE_COLOR => wgpu::BindingResource::TextureView(base.color),
             ib::BASE_AUX => wgpu::BindingResource::TextureView(base.aux),

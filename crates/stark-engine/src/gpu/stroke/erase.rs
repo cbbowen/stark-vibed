@@ -18,7 +18,7 @@
 //! pipelines, and the one decision that is this pass's — a tile the layer does not
 //! have is nothing to erase ([`BareCanvas::Skip`]).
 
-use stark_shaders::Stages;
+use stark_shaders::Lane;
 use stark_shaders::mirror::erase::binding as eb;
 use stark_shaders::mirror::erase::decl as ed;
 
@@ -30,7 +30,7 @@ use super::accum::{
     BareCanvas, IncrementalTileAccumulator, Land, Landed, Landing, LaneKeys, Sweep, lane_key,
 };
 use super::incremental::Carried;
-use super::swept::{SweepDraws, SweptKit, reaches_nothing};
+use super::swept::{SweepDraws, SweepPass, landing_pipeline, reaches_nothing};
 use super::{Progress, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
 use crate::gpu::scratch::Key;
 
@@ -79,115 +79,32 @@ fn parcel_keys(ceiling_lane: bool) -> LaneKeys {
     keys
 }
 
-/// The erase pass's GPU objects, built once beside the two paths' kits.
-///
-/// All handles are `Arc`-backed, so the kit is cheap to clone with its renderer.
-#[derive(Clone)]
-pub(super) struct EraseKit {
-    /// The erase sweep: the swept path's pipeline shape — same module, same
-    /// instance layout, same three bind group layouts (shared with [`SweptKit`],
-    /// so one set of bind groups serves either pipeline) — with `fs_erase` writing
-    /// the single accumulator target.
-    pub(super) sweep: wgpu::RenderPipeline,
-    /// The same sweep with the ceiling lane as a second target (§6.2, §6.12) —
-    /// the swept kit's `pipeline_ceiling`, on the removing side.
-    pub(super) sweep_ceiling: wgpu::RenderPipeline,
-    /// The integrate (`erase.wesl`): a fullscreen pass reading the pristine tile
-    /// and the accumulated mass, writing the erased tile's color+aux(+resid) MRT.
-    pub(super) integrate: wgpu::RenderPipeline,
-    pub(super) integrate_bgl: desc::Bindings,
+/// The erase sweep's targets, at `stamp.wesl::fs_erase`'s own locations
+/// ([`SweepKit`](super::swept::SweepKit)): the transparency mass, additive across
+/// overlapping segment quads and, through the load, across the pieces of a live
+/// stroke — and under a pen-driven ceiling the lane and the mass's moment beside it,
+/// additive like the deposit's (`swept::ceiling_target`, §6.2).
+pub(super) fn sweep_targets(lane: Lane) -> Vec<Option<wgpu::ColorTargetState>> {
+    let mass = desc::blended_target(ACCUM_FORMAT, Some(wgpu::BlendState::ADDITIVE));
+    match lane {
+        Lane::Plain => vec![mass],
+        Lane::Ceiling => vec![mass.clone(), super::swept::ceiling_target(), mass],
+    }
 }
 
-/// Build the erase kit (§6.12). Takes the [`SweptKit`] because the sweep
-/// half *is* that path's pipeline over the same layouts — only the fragment entry
-/// point and the target list differ — and both stamp modules, for the same two
-/// sweeps that kit builds.
-pub(super) fn build_erase_kit(
-    device: &wgpu::Device,
-    color_space: &dyn ColorSpace,
-    swept: &SweptKit,
-    shader: &desc::Module,
-    shader_ceiling: &desc::Module,
-) -> EraseKit {
-    let layout = desc::pipeline_layout_of(
+/// The erase's landing pass (`erase.wesl`): the pristine tile, the stroke's accumulated
+/// mass, the selection, the opacity uniform and the ceiling lane in; the erased tile's
+/// channels out.
+pub(super) fn erase_pass(device: &wgpu::Device, color_space: &dyn ColorSpace) -> desc::OnePass {
+    let shader = stark_shaders::erase(color_space.resid());
+    landing_pipeline(
         device,
-        "stark erase sweep layout",
-        &[&swept.uniform_bgl, &swept.prefix_bgl, &swept.noise_bgl],
-    );
-    let targets = [
-        // The transparency mass, additive across overlapping segment quads —
-        // and, through the load below, across the pieces of a live stroke.
-        desc::blended_target(ACCUM_FORMAT, Some(wgpu::BlendState::ADDITIVE)),
-        // The ceiling lane and the mass's moment beside it, additive like the
-        // deposit's (`swept::ceiling_target`, §6.2).
-        super::swept::ceiling_target(),
-        desc::blended_target(ACCUM_FORMAT, Some(wgpu::BlendState::ADDITIVE)),
-    ];
-    // The same two records `swept::stamp_module` compiled, for the entry points the
-    // two pipelines below name (§6.10).
-    let plain = color_space.stamp_shader(stark_shaders::Lane::Plain);
-    let ceiling = color_space.stamp_shader(stark_shaders::Lane::Ceiling);
-    let sweep_pipeline = |label, module, vs, fs, targets: &[Option<wgpu::ColorTargetState>]| {
-        desc::render_pipeline(
-            device,
-            desc::RenderPipe {
-                label,
-                layout: &layout,
-                module,
-                vs,
-                fs,
-                primitive: desc::QUAD_STRIP,
-                buffers: &[Some(stark_shaders::mirror::stamp::segment_instance_layout(
-                    wgpu::VertexStepMode::Instance,
-                ))],
-                targets,
-            },
-        )
-    };
-    let sweep = sweep_pipeline(
-        "stark erase sweep pipeline",
+        color_space,
+        "stark erase",
         shader,
-        plain.vs_main,
-        plain.fs_erase,
-        &targets[..1],
-    );
-    let sweep_ceiling = sweep_pipeline(
-        "stark erase sweep ceiling pipeline",
-        shader_ceiling,
-        ceiling.vs_main,
-        ceiling.fs_erase,
-        &targets,
-    );
-
-    let erase = stark_shaders::erase(color_space.resid());
-    let integrate_shader = desc::Module::new(device, "stark erase", erase);
-    // The pristine tile, the stroke's accumulated mass, the selection, the opacity
-    // uniform and the ceiling lane — whatever this build of `erase.wesl` reads.
-    let integrate_bgl = desc::Bindings::of(
-        device,
-        "stark erase bgl",
-        Stages::Render(erase.vs_main, erase.fs_main),
+        (shader.vs_main, shader.fs_main),
         ed::BASE_COLOR,
-        &[],
-    );
-    let integrate_layout =
-        desc::pipeline_layout_of(device, "stark erase layout", &[&integrate_bgl]);
-    // No blend on any target: the shader computes the finished texel.
-    let integrate = desc::fullscreen_pipeline(
-        device,
-        "stark erase pipeline",
-        &integrate_layout,
-        &integrate_shader,
-        (erase.vs_main, erase.fs_main),
-        &crate::gpu::channels::ChannelFormats::of(color_space).targets(),
-    );
-
-    EraseKit {
-        sweep,
-        sweep_ceiling,
-        integrate,
-        integrate_bgl,
-    }
+    )
 }
 
 impl StrokeRenderer {
@@ -253,20 +170,16 @@ impl StrokeRenderer {
         .run(
             &Sweep {
                 label: "stark erase sweep pass",
-                pipeline: if k.ceiling_lane {
-                    &self.erase.sweep_ceiling
-                } else {
-                    &self.erase.sweep
-                },
+                pipeline: self.swept.pipeline(SweepPass::erase(k.lane())),
                 draws: &draws,
             },
             &Land {
                 label: "stark erase integrate",
-                pipeline: &self.erase.integrate,
+                pipeline: &self.erase.pipeline,
             },
             |l: &Landing<'_>| {
                 self.erase
-                    .integrate_bgl
+                    .bindings
                     .group(device, "stark erase bg", |b| match b {
                         eb::BASE_COLOR => wgpu::BindingResource::TextureView(l.base.color),
                         eb::BASE_AUX => wgpu::BindingResource::TextureView(l.base.aux),

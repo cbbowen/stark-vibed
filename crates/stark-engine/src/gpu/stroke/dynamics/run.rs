@@ -23,7 +23,7 @@ use stark_shaders::mirror::view::binding as vb;
 use super::super::incremental::{Carried, LoopCarry, Reservoir};
 use super::super::region::{RegionRect, chunk_segments, cover};
 use super::super::segments::{BleedFire, Segment};
-use super::super::swept::{segment_instance, tile_xform, xform_group};
+use super::super::swept::{SweepPass, segment_instance, tile_xform, xform_group};
 use super::super::{
     Complaint, Progress, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState,
 };
@@ -1331,7 +1331,7 @@ impl<'a> DynamicsRun<'a> {
                                     ..Default::default()
                                 },
                             );
-                            rpass.set_pipeline(&self.r.swept.levels_pipeline);
+                            rpass.set_pipeline(self.r.swept.pipeline(SweepPass::Levels));
                             rpass.set_bind_group(0, &l.xform, &[0]);
                             rpass.set_bind_group(1, &l.prefix, &[]);
                             rpass.set_bind_group(2, &l.noise, &[]);

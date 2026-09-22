@@ -49,13 +49,13 @@ mod segments;
 mod swept;
 mod tips;
 
+use crate::gpu::desc;
 use crate::gpu::scratch::ScratchPool;
 use budget::MAX_REGION_DIM;
 use dynamics::{DynamicsKit, StrokePath, build_dynamics_kit, dynamics_setup};
-use erase::{EraseKit, build_erase_kit};
 use incremental::Resume;
 use segments::{Segment, generate_segments_in};
-use swept::{SweptKit, build_swept_kit};
+use swept::SweepKit;
 use tips::{ResolvedTip, TipCache};
 
 // The submodules are private; callers name `gpu::stroke::X`.
@@ -68,20 +68,18 @@ pub(crate) struct StrokeRenderer {
     ctx: GpuContext,
     color_space: Arc<dyn ColorSpace>,
 
-    /// The two render paths' GPU objects, each built by the module that dispatches
-    /// them. Symmetric on purpose: one path behind a type and the other's pipelines
-    /// loose among the caches would make a struct documented as holding "only
-    /// immutable GPU objects" name one path and not the other.
-    swept: SweptKit,
+    /// The pipelines that rasterize the swept extent — the deposit's, the erase's
+    /// (§6.12) and the stamp loop's ceiling lane — over one set of layouts.
+    swept: SweepKit,
+    /// The deposit's landing pass (§6.2): a swept parcel over the paint under it.
+    integrate: desc::OnePass,
+    /// The erase's landing pass (§6.12), for a brush that erases
+    /// (`BrushEffect::Erase`).
+    erase: desc::OnePass,
     /// The sequential stamp loop (§6.2), used when the brush manipulates existing
     /// paint (`lift` / `deposit` / `charge` / `bleed` — the four axes `dynamics_setup`
     /// gates on).
     dynamics: DynamicsKit,
-    /// The erase pass (§6.12), used when the brush erases
-    /// (`BrushEffect::Erase`) — the swept extent turned on the base's visible
-    /// opacity. Built over the swept kit's own layouts, so the two share bind
-    /// groups.
-    erase: EraseKit,
 
     /// What a brush resolves to, and the lazily-baked caches behind it (§6.6) — the
     /// prefix-τ volume both paths integrate against, the coverage mask the reservoir
@@ -258,30 +256,17 @@ impl StrokeRenderer {
         color_space: Arc<dyn ColorSpace>,
         selection: SelectionRenderer,
         zeroes: Zeroes,
-        tile_bgl: crate::gpu::desc::Bindings,
+        tile_bgl: desc::Bindings,
         scratch: ScratchPool,
     ) -> Self {
-        // One compile of `stamp.wesl` per variant — plain, and with the ceiling lane
-        // (§6.2) — lent to the two kits that draw the swept extent through them
-        // (`swept::stamp_module`).
-        let stamp = swept::stamp_module(&ctx.device, color_space.as_ref(), Lane::Plain);
-        let stamp_ceiling = swept::stamp_module(&ctx.device, color_space.as_ref(), Lane::Ceiling);
-        let swept = build_swept_kit(&ctx.device, color_space.as_ref(), &stamp, &stamp_ceiling);
-        let dynamics = build_dynamics_kit(ctx, color_space.as_ref(), tile_bgl);
-        let erase = build_erase_kit(
-            &ctx.device,
-            color_space.as_ref(),
-            &swept,
-            &stamp,
-            &stamp_ceiling,
-        );
-
+        let space = color_space.as_ref();
         Self {
             ctx: ctx.clone(),
+            swept: SweepKit::new(&ctx.device, space),
+            integrate: swept::integrate_pass(&ctx.device, space),
+            erase: erase::erase_pass(&ctx.device, space),
+            dynamics: build_dynamics_kit(ctx, space, tile_bgl),
             color_space,
-            swept,
-            dynamics,
-            erase,
             tips: TipCache::new(ctx),
             scratch,
             zeroes,
@@ -603,6 +588,18 @@ struct StrokeConstants {
     /// deposit, and the two must read one gate.
     jitter_eps: f32,
     jitter_seed: u32,
+}
+
+impl StrokeConstants {
+    /// The build of `stamp.wesl` this stroke sweeps through: the ceiling lane's where
+    /// the pen drives the ceiling.
+    fn lane(&self) -> Lane {
+        if self.ceiling_lane {
+            Lane::Ceiling
+        } else {
+            Lane::Plain
+        }
+    }
 }
 
 /// The stroke's color-dynamics uniform pair — (per-axis frequency (across the

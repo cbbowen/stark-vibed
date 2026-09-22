@@ -424,7 +424,7 @@ impl Unbuilt {
 /// The sweep is linked along the ceiling axis as well as the residual, and `fs_levels`
 /// is not `@if(ceiling)`-gated — it writes the lane and nothing else, so the same
 /// function is right in both builds and the gate would say nothing. The stamp loop's
-/// per-segment draw of the lane runs the **plain** module's (`swept::build_swept_kit`),
+/// per-segment draw of the lane runs the **plain** module's (`swept::SWEEPS`),
 /// so the ceiling build translates a second copy that no pipeline names.
 ///
 /// Costs a translation per ceiling variant and nothing else; gating it in the WESL
