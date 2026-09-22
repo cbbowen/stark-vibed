@@ -244,10 +244,10 @@ its own (the ramp in hand as the library's well, §22.3, then Linear/Radial,
 Done) and a full-viewport catcher where the drag composes the axis. An empty
 library does not disable the entry: the mode opens with an empty well, nothing
 previews until it supplies a ramp, and Done then leaves without laying. Every mutation funnels through one update
-that issues `ViewCommand::PreviewFill` — the same `FillRenderer::apply` the
+that previews an `Edit::Fill` — the same `FillRenderer::apply` the
 commit runs over the committed tiles, so **preview == commit bit-exactly**
 (pinned in `tests/engine/fill.rs`) and re-dragging previews one fill, never a stack of
-glazes. "Done" commits a single `DocCommand::Fill`; entering Timeline mode
+glazes. "Done" commits it once (`DocCommand::Set`); entering Timeline mode
 abandons the composition the way it abandons a transform — while a trace armed
 from the bar's own well *suspends* it, the one displacement that is not an
 abandonment (§22.3). Nothing about strength

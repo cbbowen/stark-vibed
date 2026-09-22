@@ -401,15 +401,15 @@ in the readout. The rim is the core's own `SPREAD.1`, and the drawn radius stops
 handle's width inside the field, so no reachable setting puts the handle outside the
 element that receives the pointer — `DIAL_AB`'s guarantee, made the other way round.
 
-**The controls preview live and log once.** Each pointer move sends
-`ViewCommand::PreviewFilter` (view state, never logged) and the settled drag commits a
-single `DocCommand::SetFilter`. This is the bargain the frame drag (§15.7), the canvas
+**The controls preview live and log once.** Each pointer move previews an
+`Edit::Filter` (`ViewCommand::Preview`, view state, never logged) and the settled drag
+commits it once (`DocCommand::Set`). This is the bargain the frame drag (§15.7), the canvas
 color (§15.5) and the opacity slider (§14.6) already make, and it is the one this
 feature could least do without: a color adjustment is judged *by looking* — how much
 saturation is too much is a question about the painting, not about the number — so
 every value the pointer crosses has to reach the canvas and only the answer belongs in
 the log. It is affordable at pointer rate because a filter is presentation: a preview
-costs one fullscreen pass and resamples nothing, unlike `PreviewTransform`.
+costs one fullscreen pass and resamples nothing, unlike a transform's.
 
 The same two details the opacity slider needs apply unchanged: a settled drag always
 commits (so a preview is never left standing), and a commit to the filter the layer
@@ -418,7 +418,7 @@ undo step).
 
 **The whole filter travels on every edit**, rather than one command per knob. The bar
 reads the current settings off the projection, replaces one number, and sends the
-result back — the read-modify-commit shape `DocCommand::SetGuide` uses for a guide's
+result back — the read-modify-commit shape `Edit::Guide` uses for a guide's
 whole camera (§20.5). So a filter that grows a parameter, and the next *kind* of
 filter, need no new command, no new action, and no wire-format break.
 

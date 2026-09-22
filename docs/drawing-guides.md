@@ -403,9 +403,9 @@ contends with it. A stroke reads the guides to snap through them, but it reads
 them before it is an action at all, so the action it commits names this nowhere.
 
 Every control that is *dragged* previews and commits, the bargain
-`crate::preview` states once for the whole app: `ViewCommand::PreviewGuide` shows
-a pose per pointer sample without logging it, and one `DocCommand::SetGuide` is
-laid down when the gesture settles (§15.7, §21.6). So shaping a perspective costs
+`crate::preview` states once for the whole app: an `Edit::Guide` is previewed per
+pointer sample without logging it (`ViewCommand::Preview`), and laid down once when
+the gesture settles (`DocCommand::Set`, §15.7, §21.6). So shaping a perspective costs
 one undo step per adjustment rather than one per sample of the hand — and
 `SetGuide` carries the **whole camera** for the reason `SetFilter` carries the
 whole filter: a guide that grows a knob then needs no new action and no

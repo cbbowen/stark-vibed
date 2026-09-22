@@ -548,8 +548,8 @@ so touching the widget never resamples by accident. The bar carries **Flip ↔ /
 Flip ↕ / Done** (flips are world-axis mirrors folded into `linear`; four mirrors
 cancel bit-exactly).
 
-Everything before Done is a **lossless preview**: every change runs
-`ViewCommand::PreviewTransform` — the same renderer as the commit, over the
+Everything before Done is a **lossless preview**: every change previews an
+`Edit::Transform` — the same renderer as the commit, over the
 committed tiles, into the `doc_preview` slot the frame drag uses — so the screen
 shows exactly what Done will produce, a long drag resamples once, and Done
 commits a single action (one undo step per gesture). The widget anchors to the
@@ -694,7 +694,7 @@ undo step, reopening fresh around the moved paint. Never a silent
 approximation: a lossy carry would change what "Done" produces without the
 hand having done anything.
 
-Every family previews through the same `ViewCommand::PreviewTransform`
+Every family previews through the same `Edit::Transform`
 bargain (§16.6), now carrying a `TransformMap` (affine / perspective / warp);
 the engine routes each family to its own action kind, so the in-process
 command enum never touches the wire format. `preview == committed` holds for
@@ -718,8 +718,8 @@ The press and the drag are one gesture with two halves:
   is chosen by pointing at it rather than by finding its row.
 - **The drag carries it.** The carry is a **property write** now, not a
   cut/paste: the drag previews the layer's frame (§14.12) through
-  `ViewCommand::PreviewTranslate` — the opacity slider's bargain, folding the
-  very `DocCommand::TranslateLayer` the release commits — so each sample moves
+  `Edit::Translate` — the opacity slider's bargain, folding the
+  very action the release commits — so each sample moves
   a number where this gesture used to resample the layer. One undo step for
   the whole drag, like Done; a group travels whole, the engine expanding the
   move to the subtree (§14.12.1). With a mask in force the drag floats the

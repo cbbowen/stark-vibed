@@ -328,21 +328,24 @@ pub enum DocCommand {              // each becomes an Action
     AddLayer { above: Option<LayerId>, carrier: Option<LayerId> },
     AddMatte { .. },               // §15
     RemoveLayer(LayerId),
-    SetLayerBlend(LayerId, BlendMode),
+    Set(Edit),                     // a control's commit, once per settled gesture
     SetLayerClip(LayerId, bool),   // §14.4
-    SetLayerOpacity(LayerId, f32),
     SetLayerVisible(LayerId, bool),
     MoveLayer { id, at, carrier },  // reorder, carry and release in one action (§14.8)
-    SetMatteRect(..), SetMatteColor(..),
     Select(SelectionOp),
     InvertSelection,
     SetSubstrate(SubstrateId),         // which canvas the piece is painted on (§6.4)
-    SetSubstrateColor([f32; 3]),       // the substrate (§15.5)
     AddGuide { guide, after, name },  // a perspective to construct through (§20.5)
     RemoveGuide(GuideId),
-    SetGuide(GuideId, PerspectiveGuide),   // the whole camera, per settled gesture
     SetGuideName(GuideId, Option<String>),
     MoveGuide { id, after },       // the roster's arrangement
+}
+
+pub enum Edit {                    // a control's value: previewed per sample, committed once
+    LayerOpacity(..), LayerBlend(..), SelectionOpacity(..), Filter(..),
+    MatteRect(..), MattePaint(..), SubstrateColor(..), SubstrateScale(..),
+    Translate { .. }, Guide(..),       // §14.12, §20.5 — the whole camera
+    Fill { .. }, Transform { .. },     // §22.4, §16.6 — through the commit's own renderer
 }
 
 pub enum ViewCommand {             // never logged, never sent
@@ -357,15 +360,8 @@ pub enum ViewCommand {             // never logged, never sent
     SetShapeOpacity(f32),          // §6.8 — how strongly the next gesture lands
     SetMediaParams(MediaParams), SetEnvironment(EnvironmentId),
     SetActiveLayer(LayerId),       // (see PeerCommand — published when sharing)
-    PreviewMatteRect(..),          // §15.7
-    PreviewMatteColor(..),         // §15.7
-    PreviewTransform(..),          // §16.6
-    PreviewFill(..),               // §22.4 — the gradient fill's composing drag
-    PreviewBackground(..),         // §15.5
-    PreviewLayerOpacity(..),       // §14.6  — the in-flight half of a slider drag
-    PreviewLayerBlend(..),         // §6.3   — the same, for a mode's own parameters
+    Preview(Option<Edit>),         // the in-flight half of a control's drag
     SetShowPeerSelections(bool),   // §17.3
-    PreviewGuide(..),              // §20.5 — the in-flight half of a guide drag
     SetGuideVisible(GuideId, bool),// §20.5 — a guide's eye is *yours*, not the doc's
 }
 

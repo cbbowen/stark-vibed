@@ -489,9 +489,9 @@ reorder.
 Most controls in the panel report a value the hand *chose* — a blend mode, a clip,
 a name — and one of those per interaction. The opacity slider reports one
 per pointer **move**, and so it makes the same bargain the frame drag (§15.7) and
-the canvas color (§15.5) make, on the same slot: each sample sends
-`ViewCommand::PreviewLayerOpacity` (view state, never logged), and the settled
-drag commits a single `DocCommand::SetLayerOpacity`. A drag costs one undo step
+the canvas color (§15.5) make, on the same slot: each sample previews an
+`Edit::LayerOpacity` (`ViewCommand::Preview`, view state, never logged), and the
+settled drag commits it once (`DocCommand::Set`). A drag costs one undo step
 rather than a hundred, and in a shared session one replicated action rather than
 a hundred. `observe()` reports the *previewed* opacity, which keeps the track and
 the canvas agreeing with each other under the pointer.
@@ -513,11 +513,11 @@ Both are asserted by `dragging_layer_opacity_previews_without_logging` and
 
 The **Bend** slider beside the blend picker is the second control on this bargain,
 and it is here rather than in a section of its own because nothing about it is new:
-`ViewCommand::PreviewLayerBlend` per sample, one `DocCommand::SetLayerBlend` on
-release, both details above holding for the same reasons. What it does differ in is
-that it carries the whole `BlendMode` rather than the number — the parameter belongs
+an `Edit::LayerBlend` previewed per sample and committed once on release, both
+details above holding for the same reasons. What it does differ in is that it
+carries the whole `BlendMode` rather than the number — the parameter belongs
 to the mode (§6.3), so the mode is what both halves of the bargain already take, and
-a mode that grows a second knob needs no third command. The row exists only while
+a mode that grows a second knob needs no edit of its own. The row exists only while
 the layer's mode has a parameter, which is the panel reading the model rather than a
 rule of its own.
 
@@ -1166,7 +1166,7 @@ the layer's frame** and placed by `Layer::translation` on the way out, at the
 same three seams paint crosses (§14.12): the compositor's matte draw, export's
 `piece_rect`, and the projection, whose `MatteInfo` reports canvas coordinates so
 the chrome never does frame arithmetic. The commands stay canvas-space too —
-`DocCommand::SetMatteRect` and `SetMattePaint` take what the handles show, and
+`Edit::MatteRect` and `Edit::MattePaint` take what the handles show, and
 the engine converts into the frame where the gesture becomes an action, exactly
 as a fill's shape is converted. The placement is whole-pixel `f32` addition,
 exact until coordinates approach 2²⁴ — near the frame limit the round trip can
@@ -1564,9 +1564,9 @@ being non-clipping:
   every other crop tool moves a frame, and it is the one gesture this frame
   cannot borrow.
 
-A drag **previews live and logs once**: each pointer move sends
-`ViewCommand::PreviewMatteRect` (view state, never logged), and release commits a
-single `DocCommand::SetMatteRect`. So a drag costs one undo step rather than one
+A drag **previews live and logs once**: each pointer move previews an
+`Edit::MatteRect` (`ViewCommand::Preview`, view state, never logged), and release
+commits it once (`DocCommand::Set`). So a drag costs one undo step rather than one
 per move. `observe()` reports the *previewed* layer rect, which keeps the handles
 under the pointer rather than a frame behind — carefully **only** the layers,
 since `has_selection` must stay committed-only or a marquee drag flashes the
@@ -1576,8 +1576,8 @@ because a frame drag is handle-relative, not sample-driven: there is no
 frontend's business. What it keeps is the shape that matters — build in view
 state, commit once on release.
 
-**The frame's color makes the same bargain**, through
-`ViewCommand::PreviewMatteColor` and one `DocCommand::SetMatteColor` on release.
+**The frame's color makes the same bargain**, through an `Edit::MattePaint`
+previewed per sample and committed once on release.
 It has to: what is being chosen is how the mat board reads against the piece
 inside it, which is a judgement made *by looking*, so every color the pointer
 crosses has to reach the canvas and only the answer belongs in the log.
