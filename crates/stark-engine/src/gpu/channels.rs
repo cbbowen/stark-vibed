@@ -130,7 +130,7 @@ impl Channels {
     /// The pairing is the whole point. Nothing in a recorded encoder has run, so a
     /// scratch trio released before its submit is handed straight back out — to a pass
     /// in the very same encoder, which overwrites it before the earlier pass ever reads
-    /// it (`gpu::submit`). Acquiring and holding here cannot come apart.
+    /// it (`gpu::scratch`). Acquiring and holding here cannot come apart.
     ///
     /// Distinct from [`Self::acquire`], which is what a **destination** takes: that trio
     /// is returned to the caller and becomes a tile of the document, so its life is the

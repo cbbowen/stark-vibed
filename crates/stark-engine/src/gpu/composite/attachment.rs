@@ -12,7 +12,7 @@ use super::super::channels::{ChannelFormats, Targets};
 /// A viewport-sized offscreen render target — pass A's channels, the blend
 /// scratch, the supersampled target — that **returns its memory when it is
 /// replaced** rather than merely releasing its handle
-/// ([`ScopedResources`](crate::gpu::submit::ScopedResources)).
+/// ([`gpu::scratch`](crate::gpu::scratch)).
 ///
 /// These are the largest allocations the application makes: a whole set is rebuilt
 /// whenever the target changes size or the zoom crosses a supersampling threshold
@@ -22,7 +22,7 @@ use super::super::channels::{ChannelFormats, Targets};
 /// window-resize drag, which reports a new size every animation frame, strands whole
 /// sets at a rate and takes the GPU process down with every device on it. Hence the
 /// `destroy()` in `Drop`, safe because WebGPU defers the real free until in-flight
-/// work naming the texture completes (`gpu::submit`).
+/// work naming the texture completes (`gpu::scratch`).
 pub(super) struct Attachment {
     tex: wgpu::Texture,
     view: wgpu::TextureView,

@@ -25,7 +25,6 @@ pub(crate) mod registry;
 pub(crate) mod scratch;
 pub(crate) mod selection;
 pub(crate) mod stroke;
-pub(crate) mod submit;
 pub(crate) mod substrate;
 pub(crate) mod tile;
 pub(crate) mod transform;

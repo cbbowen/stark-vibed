@@ -21,6 +21,11 @@
 //! A scope dropped on an unwind returns nothing to the pool, which is also sound:
 //! its commands were never submitted, so nothing pending names its leases.
 //!
+//! **An unpooled resource merely dropped is not freed either.** On the web a drop
+//! releases the JS handle and waits for GC, which cannot keep up with a rate, so a
+//! resource replaced at one is `destroy()`ed instead — safe once the work naming it
+//! is submitted, since WebGPU defers the real free until that work completes.
+//!
 //! [`SubmitScope`] is also what the renderers that rewrite whole tiles record
 //! through — the transform, the merge, the fill, the selection. Those four take
 //! their working tiles from [`TilePool`](crate::gpu::TilePool) rather than from
@@ -235,7 +240,6 @@ impl ScratchPool {
             run_buf_leases: Vec::new(),
             piece_buf_leases: Vec::new(),
             piece_held: Vec::new(),
-            piece_scoped: crate::gpu::submit::ScopedResources::default(),
             piece_open: false,
             since_flush: 0,
         }
@@ -470,9 +474,6 @@ pub(crate) struct SubmitScope {
     /// whose early drop puts it back on `TilePool`'s free list while this encoder
     /// still names it.
     piece_held: Vec<Box<dyn std::any::Any>>,
-    /// Unpooled per-piece buffers, destroyed at the submit that reads them — the
-    /// uniform buffers written at creation, which cannot come from a pool.
-    piece_scoped: crate::gpu::submit::ScopedResources,
     /// Whether anything has been recorded or taken since the last submit — what
     /// keeps an operation that touched no tile from submitting an empty command
     /// buffer.
@@ -495,28 +496,6 @@ impl SubmitScope {
         // a scope that recorded but took nothing would otherwise flush to nothing.
         self.piece_open = true;
         &mut self.encoder
-    }
-
-    /// Register a per-piece buffer; returns it unchanged, destroyed at the submit.
-    ///
-    /// For a buffer that cannot be pooled because it is written at creation;
-    /// everything else takes [`take_piece_buffer`](Self::take_piece_buffer).
-    /// `ScopedResources` (`gpu::submit`) owns the destroy behind it.
-    ///
-    /// Opens the piece where the checkouts do not, and **conservatively rather than
-    /// necessarily**: a map-at-creation buffer stages nothing on the queue, so an
-    /// unrecorded scope naming one could destroy it outright. What this registers is
-    /// arbitrary, so the flag costs an empty command buffer against a resource freed
-    /// ahead of the work naming it. [`write_lease`](Self::write_lease) is where the
-    /// distinction is load-bearing and is drawn exactly.
-    #[expect(
-        dead_code,
-        reason = "no unpooled per-piece buffer is left since the transform's went onto slots; \
-                  the door stays, and this reports the next caller"
-    )]
-    pub(crate) fn buffer(&mut self, buf: wgpu::Buffer) -> wgpu::Buffer {
-        self.piece_open = true;
-        self.piece_scoped.buffer(buf)
     }
 
     /// Record one **fullscreen pass over a tile's channels**: the shape every
@@ -641,8 +620,8 @@ impl SubmitScope {
     /// Keep `thing` alive past the submit, dropping it just after — for resources
     /// whose drop *is* their release to some other pool.
     ///
-    /// Opens the piece on [`buffer`](Self::buffer)'s terms: `thing` is `dyn Any`, so
-    /// this call cannot know what its drop releases and assumes the worst for the
+    /// Opens the piece conservatively rather than necessarily: `thing` is `dyn Any`,
+    /// so this call cannot know what its drop releases and assumes the worst for the
     /// price of one empty command buffer.
     pub(crate) fn hold(&mut self, thing: impl std::any::Any) {
         self.piece_open = true;
@@ -665,7 +644,6 @@ impl SubmitScope {
         self.piece_open = false;
         let done = std::mem::replace(&mut self.encoder, fresh_encoder(&self.ctx, self.label));
         self.ctx.queue.submit([done.finish()]);
-        drop(std::mem::take(&mut self.piece_scoped));
         self.piece_held.clear();
         for lease in self.piece_leases.drain(..) {
             self.pool.give(lease);
@@ -685,7 +663,6 @@ impl SubmitScope {
         if self.piece_open {
             self.ctx.queue.submit([self.encoder.finish()]);
         }
-        drop(self.piece_scoped);
         self.piece_held.clear();
         for lease in self.piece_leases.drain(..).chain(self.run_leases.drain(..)) {
             self.pool.give(lease);

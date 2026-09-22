@@ -36,7 +36,7 @@ const ROUND_TIPS_KEPT: usize = 4;
 /// *re*-rendered: the live one, per pointer move, and the brush editor's pinned preview
 /// per edit, with a few more for a peer's live stroke (§12). Evicted tiles are
 /// `destroy()`ed rather than dropped: they go at the rate strokes do, and a dropped
-/// texture is not a freed one (`submit.rs`).
+/// texture is not a freed one (`gpu::scratch`).
 const NOISE_TILES_KEPT: usize = 4;
 
 /// One of [`TipCache`]'s two least-recently-used lists: newest last, shared across the
@@ -203,7 +203,7 @@ impl TipCache {
 /// `key`'s entry in a small LRU held as a `Vec` newest-last — the hit moved to the
 /// back, or `build`'s result pushed there — and, past `kept` entries, the oldest
 /// handed back for the caller to release. A GPU resource dropped is not one freed
-/// (`submit.rs`), so which release it gets is the caller's to say.
+/// (`gpu::scratch`), so which release it gets is the caller's to say.
 fn lru<K: PartialEq, V: Clone>(
     cache: &mut Vec<(K, V)>,
     key: K,

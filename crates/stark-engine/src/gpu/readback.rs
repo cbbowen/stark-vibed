@@ -114,7 +114,7 @@ pub(super) fn begin_read(
 /// Strip the row padding a texture→buffer copy required, leaving one tightly-packed
 /// byte string per texture. Consumes the buffer: unmaps it, then **destroys** it.
 ///
-/// Destroyed rather than dropped, for `ScopedResources`' reason (§6.2): on the web a
+/// Destroyed rather than dropped, for `gpu::scratch`'s reason (§6.2): on the web a
 /// dropped buffer only releases its JS handle and waits for GC, and this is the largest
 /// single allocation in the subsystem — an 8192² export is 268 MB. Sound because the
 /// copy that filled it has already been submitted *and* waited on.
