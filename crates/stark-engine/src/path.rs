@@ -32,6 +32,8 @@
 
 mod arc;
 mod arclen;
+#[cfg(test)]
+mod fingerprint;
 mod fit;
 mod flatten;
 
