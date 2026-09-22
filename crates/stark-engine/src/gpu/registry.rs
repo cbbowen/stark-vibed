@@ -41,6 +41,11 @@
 //! missing the same id in the gap both build it; the second's is dropped at insert —
 //! wasted work, not a wrong answer, since both came from the same bytes.
 //!
+//! [`Registry::register`] builds outside the lock too, and it may not use the same two
+//! steps: what it replaces is *already* pinned, so dropping first and rebuilding after
+//! would leave a pinned id unbuilt for the length of a bake. It builds first and swaps
+//! under one lock ([`Store::replace`]).
+//!
 //! Built objects are held to [`BUILT_BUDGET`] by evicting the least recently asked
 //! for, **except the ids registries stand on**, which are pinned for as long as one
 //! does. That is what makes `current()`'s "always built" a structural fact rather than
@@ -229,6 +234,25 @@ impl<R: Resource> Store<R> {
         }
     }
 
+    /// Take `entry` as the bytes for `content`, drop every object built from the old
+    /// ones, and file `built` in their place — **in one critical section**.
+    ///
+    /// One, because the three steps are not separately observable states: between the
+    /// forget and the refill, every id standing on this content is pinned and unbuilt,
+    /// which is exactly the shape [`Registry::current`] promises cannot happen. So the
+    /// replacements are built before this is called and handed over finished.
+    fn replace(&mut self, content: R::Content, entry: Arc<Entry<R>>, built: Vec<(R, R::Gpu)>) {
+        self.bytes.insert(content, entry);
+        // Whatever was built from this content was built from the *old* bytes —
+        // usually the builtin fallback, standing in while the fetch was in flight.
+        // Every build of it, since one height map bakes a substrate per scale (see the
+        // module note): the bytes are one key and the objects are another.
+        self.forget_content(content);
+        for (id, obj) in built {
+            self.insert(id, obj);
+        }
+    }
+
     fn pin(&mut self, id: R) {
         *self.pinned.entry(id).or_insert(0) += 1;
     }
@@ -386,35 +410,55 @@ impl<R: Resource> Registry<R> {
     /// download into a fallback nobody asked for, silently, one render later.
     ///
     /// Every id standing on this content is rebuilt, siblings' included — they are
-    /// pinned, and a pinned id is always built. A sibling still keeps its stale
+    /// pinned, and **a pinned id is always built**. A sibling still keeps its stale
     /// *binding* until it next rebinds.
+    ///
+    /// That invariant is what decides the shape here: the replacements are built with
+    /// the lock released and handed to [`Store::replace`] finished, so there is no
+    /// moment at which a pinned id has had its object dropped and not yet got another.
+    /// Forgetting first and rebuilding after — the obvious order — left that window
+    /// open for the whole of a substrate bake, and a sibling's `current()` in it is a
+    /// panic rather than a slow frame.
+    ///
+    /// The loop is what covers a pin *taken* in that window (another registry's
+    /// [`set`](Self::set) moving onto this content): the pinned set is read again under
+    /// the lock that swaps, and an id nothing built yet sends it round. Each pass
+    /// builds every id pinned at that moment, so it converges unless a second thread
+    /// keeps moving registries onto this content faster than they can be built.
     pub(crate) fn register(
         &self,
         gpu: &GpuContext,
         content: R::Content,
         bytes: Vec<u8>,
     ) -> std::result::Result<bool, DocError> {
-        let decoded = R::decode(&bytes)?;
-        let standing: Vec<R> = {
+        let entry = Arc::new(Entry {
+            decoded: R::decode(&bytes)?,
+            bytes,
+        });
+        let mut built: Vec<(R, R::Gpu)> = Vec::new();
+        loop {
             let mut store = self.store();
-            store
-                .bytes
-                .insert(content, Arc::new(Entry { bytes, decoded }));
-            // Whatever was built from this content was built from the *old* bytes —
-            // usually the builtin fallback, standing in while the fetch was in flight.
-            // Dropping it is what makes `get` return the real thing from now on. Every
-            // build of it, since one height map bakes a substrate per scale (see the
-            // module note): the bytes are one key and the objects are another.
-            store.forget_content(content);
-            store
+            let missing: Vec<R> = store
                 .pinned
                 .keys()
                 .copied()
-                .filter(|id| id.content() == content)
-                .collect()
-        };
-        for id in &standing {
-            self.get(gpu, *id);
+                .filter(|id| id.content() == content && !built.iter().any(|(b, _)| b == id))
+                .collect();
+            if missing.is_empty() {
+                store.replace(content, Arc::clone(&entry), built);
+                break;
+            }
+            drop(store);
+            built.extend(missing.into_iter().map(|id| {
+                let obj = id.build(
+                    gpu,
+                    Some(Registered {
+                        bytes: &entry.bytes,
+                        decoded: &entry.decoded,
+                    }),
+                );
+                (id, obj)
+            }));
         }
         Ok(self.id.content() == content)
     }
@@ -439,6 +483,109 @@ impl<R: Resource> Registry<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
+    use std::time::Duration;
+
+    /// How long either side of [`GATE`] waits before calling it a wiring bug. Long
+    /// enough that a loaded box is not mistaken for one, short enough that a test
+    /// binary fails rather than hangs.
+    const PATIENCE: Duration = Duration::from_secs(30);
+
+    /// Holds the *next* [`Probe`] build until the test lets it go — which is how the
+    /// window this module has to keep shut is made observable at all.
+    struct Gate {
+        entered: SyncSender<()>,
+        release: Receiver<()>,
+    }
+
+    static GATE: Mutex<Option<Gate>> = Mutex::new(None);
+
+    /// A resource whose build is a byte and whose decode always succeeds: everything
+    /// that matters here is *when* the build runs, not what it produces.
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+    struct Probe(u8);
+
+    impl Resource for Probe {
+        type Gpu = u8;
+        type Content = u8;
+        type Decoded = ();
+
+        fn decode(_bytes: &[u8]) -> std::result::Result<(), DocError> {
+            Ok(())
+        }
+
+        fn content(self) -> u8 {
+            self.0
+        }
+
+        fn is_builtin(self) -> bool {
+            self.0 == 0
+        }
+
+        fn build(self, _gpu: &GpuContext, registered: Option<Registered<'_, Self>>) -> u8 {
+            if let Some(gate) = crate::unpoisoned(GATE.lock()).take() {
+                gate.entered.send(()).expect("the test is waiting");
+                gate.release
+                    .recv_timeout(PATIENCE)
+                    .expect("the test releases");
+            }
+            registered.map_or(0, |r| r.bytes[0])
+        }
+    }
+
+    /// **A pinned id is never unbuilt**, not even for the length of a bake.
+    ///
+    /// `register` used to drop every object built from the replaced content and then
+    /// rebuild outside the lock, so a sibling standing on that content — `Clone` gives
+    /// every engine on one device the same store (§6.4) — could call `current()` in the
+    /// gap and hit the `expect` that says this cannot happen. It is a panic in the
+    /// render path, reached by an asset arriving while a second engine paints, and no
+    /// test would have found it by running the two in sequence.
+    ///
+    /// The build is held mid-flight here rather than raced, so the window is either
+    /// open or it is not.
+    #[test]
+    fn a_sibling_can_read_its_object_while_the_same_content_is_re_registered() {
+        let Some(ctx) =
+            crate::testing::or_skip(pollster::block_on(GpuContext::headless()), "GPU tests")
+        else {
+            return;
+        };
+        let registry = Registry::new(&ctx, Probe(0));
+        let mut sibling = registry.clone();
+        // A non-builtin id with no bytes yet: it falls back, and it is pinned.
+        sibling.set(&ctx, Probe(7));
+        assert_eq!(sibling.current(), 0, "the fallback build");
+
+        let (entered, entered_rx) = sync_channel(1);
+        let (release, release_rx) = sync_channel(1);
+        *crate::unpoisoned(GATE.lock()) = Some(Gate {
+            entered,
+            release: release_rx,
+        });
+
+        let registering = {
+            // The registering registry is not the one reading: this is the asset
+            // arriving on one engine while a second paints (§6.4).
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                registry
+                    .register(&ctx, 7, vec![42])
+                    .expect("the probe decodes");
+            })
+        };
+        entered_rx
+            .recv_timeout(PATIENCE)
+            .expect("the replacement build started");
+
+        // The store is mid-register. The sibling stands on 7, so it must still have
+        // something to show — the old build, since the new one is not finished.
+        assert_eq!(sibling.current(), 0);
+
+        release.send(()).expect("the build is waiting");
+        registering.join().expect("the registering thread");
+        assert_eq!(sibling.current(), 42, "and then the replacement");
+    }
 
     /// [`evict_order`] is the whole eviction policy: oldest first, never a pinned
     /// entry, and it stops the moment the budget holds.
