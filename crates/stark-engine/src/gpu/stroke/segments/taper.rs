@@ -56,7 +56,7 @@ const TAPER_MAX_CURVATURE: f32 = 3.0;
 const TAPER_OUTLINE_PX: f32 = crate::path::FLATTEN_TOLERANCE.position;
 
 /// Where the tip's own falloff is wider than the floor, the outline budget grows with
-/// it: a quarter of the shoulder ([`shoulder_per_radius`](crate::gpu::stroke::budget::shoulder_per_radius)),
+/// it: a quarter of the shoulder ([`shoulder_per_radius`](crate::gpu::stroke::tips::shoulder_per_radius)),
 /// the same resolvable-feature bound
 /// [`extent_cell`](crate::gpu::stroke::budget::extent_cell) coarsens against — an outline
 /// error the coverage blurs over more than this cannot print as a scallop. What keeps
@@ -119,7 +119,7 @@ pub(in crate::gpu::stroke) struct Taper {
     /// ([`Modulation`](stark_model::document::Modulation)), and the real step with it.
     radius: f32,
     /// The tip's shoulder width per unit radius
-    /// ([`shoulder_per_radius`](crate::gpu::stroke::budget::shoulder_per_radius)) — what lets the
+    /// ([`shoulder_per_radius`](crate::gpu::stroke::tips::shoulder_per_radius)) — what lets the
     /// step relax where the falloff blurs the join anyway.
     shoulder: f32,
 }
@@ -137,7 +137,7 @@ impl Taper {
     pub(super) fn resolve(b: &BrushParams, total: Option<f32>) -> Self {
         let (start, end) = b.taper_px();
         let radius = b.size.max(0.5);
-        let shoulder = crate::gpu::stroke::budget::shoulder_per_radius(&b.shape);
+        let shoulder = crate::gpu::stroke::tips::shoulder_per_radius(&b.shape);
         match total {
             Some(total) if start + end > total => {
                 // Scaled in proportion, so the two zones meet at one point.

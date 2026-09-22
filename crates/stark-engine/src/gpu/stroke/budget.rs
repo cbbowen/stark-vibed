@@ -620,36 +620,12 @@ const EXTENT_CELL_MAX: f32 = 16.0;
 /// because below that the hoist pass costs more than the ~4× it saves — which also
 /// keeps every radius ≤ 100 (where `0.02·r ≤ 2`) on the exact kernel.
 pub(super) fn extent_cell(shape: &BrushShape, radius: f32) -> u32 {
-    let shoulder = shoulder_per_radius(shape) * radius;
+    let shoulder = super::tips::shoulder_per_radius(shape) * radius;
     let cell = (0.02 * radius).min(0.25 * shoulder);
     if cell <= 2.0 {
         1
     } else {
         cell.min(EXTENT_CELL_MAX) as u32
-    }
-}
-
-/// The width of the tip's coverage falloff — its **shoulder** — per unit radius:
-/// `SOFT_SHOULDER·(1−hardness)` for the round tip, and 0 for a `Stamp`, which may be
-/// arbitrarily hard and is treated as the sharpest case.
-///
-/// **The round tip's number is now the falloff itself** — the 10–90 width its profile
-/// actually has, which is what `hardness` is defined to name (`tips::RoundProfile`) —
-/// where the old `3·(1−hardness)` was a proxy running some 3.7× wide of the family it
-/// stood for. Every budget below spends it as a bound, so a proxy that overstates it
-/// buys coarsening the coverage cannot pay for.
-///
-/// One definition for both sides of the same fact — features narrower than a fraction
-/// of the shoulder are ones the coverage cannot carry: [`extent_cell`] spends it as
-/// *coarsening* (the cell the coarse deposit may evaluate at), the taper's subdivision
-/// as *smoothness* (the radius step a segment boundary may take without printing,
-/// `segments::taper::Taper`).
-pub(super) fn shoulder_per_radius(shape: &BrushShape) -> f32 {
-    match shape {
-        BrushShape::Round { hardness } => {
-            super::tips::SOFT_SHOULDER * (1.0 - hardness.clamp(0.0, 1.0))
-        }
-        BrushShape::Stamp(_) => 0.0,
     }
 }
 
@@ -696,7 +672,7 @@ const SUPERSAMPLE_EDGE_PX: f32 = 0.75;
 pub(super) fn supersample_scale(b: &BrushParams) -> u32 {
     let Some(p) = b.paint() else { return 1 };
     let mass = stark_shaders::mirror::paint_common::OPACITY_K * p.flow * TAU_PER_PASS;
-    let ramp = (shoulder_per_radius(&b.shape) * b.size.max(0.5)).max(1.0);
+    let ramp = (super::tips::shoulder_per_radius(&b.shape) * b.size.max(0.5)).max(1.0);
     // `mass ≤ 0` (a brush laying nothing) divides to ∞ or NaN, and neither is
     // under the threshold — the comparison answers 1 without a guard.
     if ramp * EDGE_10_90 / mass < SUPERSAMPLE_EDGE_PX {
@@ -704,25 +680,6 @@ pub(super) fn supersample_scale(b: &BrushParams) -> u32 {
     } else {
         1
     }
-}
-
-/// The hardness a round tip actually **bakes** at `radius` px (§6.6): the brush's own,
-/// floored so the shoulder above never falls under one canvas px. A falloff narrower
-/// than a px is content past the tile grid's Nyquist — it can only shimmer — so a hard
-/// edge keeps the ~px antialiased rim every selection mask's feather already has
-/// ("floored at one, which *is* the antialiased hard edge", §6.8), and a tip too small
-/// to carry even that comes out as soft as its own footprint.
-///
-/// Deliberately **not** fed back into the budgets built on the nominal hardness (the
-/// taper's subdivision, [`extent_cell`]): the nominal shoulder is the narrower of the
-/// two, so those bounds only over-provide for a floored tip.
-pub(super) fn effective_hardness(hardness: f32, radius: f32) -> f32 {
-    // The inverse of `shoulder_per_radius` at one canvas px, so the two cannot drift:
-    // `SOFT_SHOULDER·(1 − h)·radius ≥ 1`. Floored at 0 because a tip smaller than its
-    // own softest falloff (`radius < 1/SOFT_SHOULDER`, some 3 px) asks for a hardness
-    // below the dial, and the answer there is the softest tip there is rather than a
-    // negative one.
-    hardness.min((1.0 - 1.0 / (super::tips::SOFT_SHOULDER * radius.max(0.5))).max(0.0))
 }
 
 #[cfg(test)]
@@ -778,12 +735,9 @@ mod tests {
         }
         assert_eq!(extent_cell(&soft, 250.0), 5);
         assert_eq!(extent_cell(&soft, 500.0), 10);
-        // Shoulder-bound, and now bound past the floor: at hardness 0.99 a 500 px
-        // tip's shoulder is 2.5 px, so a quarter of it is 0.6 — under the threshold of
-        // 2, and the tip takes the exact kernel. It used to coarsen to 3, on a
-        // `shoulder_per_radius` that overstated the falloff by an order (§6.6): a tip
-        // whose whole falloff is 2.5 px cannot pay for 3 px cells, and that is the
-        // reading the number now gives.
+        // Shoulder-bound past the floor: at hardness 0.99 a 500 px tip's shoulder is
+        // 2.5 px, so a quarter of it is 0.6 — under the threshold of 2, and the tip
+        // takes the exact kernel.
         assert_eq!(extent_cell(&BrushShape::Round { hardness: 0.99 }, 500.0), 1);
         // Shoulder-bound where the shoulder is wide enough to bind at all.
         assert_eq!(extent_cell(&BrushShape::Round { hardness: 0.9 }, 500.0), 6);
@@ -791,7 +745,8 @@ mod tests {
         // `shoulder_per_radius` rather than a copy of it, so the law and its own bound
         // cannot part company.
         for h in [0.9f32, 0.95, 0.99] {
-            let shoulder = shoulder_per_radius(&BrushShape::Round { hardness: h }) * 500.0;
+            let shoulder =
+                super::super::tips::shoulder_per_radius(&BrushShape::Round { hardness: h }) * 500.0;
             let cell = extent_cell(&BrushShape::Round { hardness: h }, 500.0);
             assert!(
                 cell as f32 * 4.0 <= shoulder || cell == 1,
@@ -902,47 +857,6 @@ mod tests {
             (faint - want).abs() < 1e-2,
             "no rise: the turn alone, {want} px, not {faint}"
         );
-    }
-
-    // --- the hardness floor ---------------------------------------------
-
-    /// [`effective_hardness`]'s whole claim, read through the shoulder it floors: the
-    /// baked tip's shoulder is never under a canvas px, a brush the floor does not
-    /// bind keeps its hardness exactly, and the floor relaxes monotonically as the
-    /// tip grows — so resizing a hard brush never makes its edge *softer* in px.
-    #[test]
-    fn the_baked_shoulder_never_falls_under_a_px() {
-        // The radius at which the softest tip's own falloff first reaches a px. Below
-        // it the floor has nothing to give — the whole tip is narrower than the
-        // shoulder being asked for — and the doc's "a tip too small to hold even that
-        // comes out as soft as its own footprint" is what happens instead.
-        let carries_one = 1.0 / super::super::tips::SOFT_SHOULDER;
-        for radius in [0.1f32, 0.5, 2.0, 16.0, 100.0, 500.0] {
-            let mut last = 0.0f32;
-            for h in [0.0f32, 0.3, 0.7, 0.9, 0.99, 1.0] {
-                let eff = effective_hardness(h, radius);
-                let shoulder =
-                    shoulder_per_radius(&BrushShape::Round { hardness: eff }) * radius.max(0.5);
-                if radius.max(0.5) >= carries_one {
-                    assert!(
-                        shoulder >= 1.0 - 1e-5,
-                        "radius {radius}, hardness {h}: baked shoulder is {shoulder} px",
-                    );
-                } else {
-                    // As soft as it can be, which is all a tip this size has.
-                    assert_eq!(
-                        eff, 0.0,
-                        "radius {radius} cannot carry a px, so it must bake fully soft",
-                    );
-                }
-                assert!(eff <= h, "the floor must never harden a brush");
-                assert!(eff >= last, "the floor must stay monotone in hardness");
-                last = eff;
-            }
-        }
-        // Wherever the tip can carry a px of shoulder, the hardness is untouched.
-        assert_eq!(effective_hardness(0.9, 100.0), 0.9);
-        assert_eq!(effective_hardness(0.0, 2.0), 0.0);
     }
 
     // --- the supersample gate --------------------------------------------
