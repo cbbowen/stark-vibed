@@ -270,8 +270,7 @@ impl MergeRenderer {
     ///
     /// The bind group is the **filter pass's own**, built by it
     /// ([`FilterPass::bind_group`](crate::gpu::composite::FilterPass)): the tile's
-    /// three channel textures stand where the accumulator's do, and the pigment LUT
-    /// is the blend pass's, as it is on screen.
+    /// three channel textures stand where the accumulator's do.
     ///
     /// The tile is not an `Option` where the merge's other encoders take one: a
     /// filter layer is *defined* as a function of the paint beneath it (§21), so the
@@ -287,13 +286,9 @@ impl MergeRenderer {
         // runs the very pipeline the screen would (§14.11.7). `None` is the blur
         // planes' 1×1 stand-ins, which a merge — refusing a resampling filter — never
         // reads.
-        let bg = self.filter.bind_group(
-            &self.ctx.device,
-            uniform.window(),
-            tile.targets(),
-            self.blend.pigment.as_ref(),
-            None,
-        );
+        let bg = self
+            .filter
+            .bind_group(&self.ctx.device, uniform.window(), tile.targets(), None);
         scope.fullscreen_pass(
             "stark merge filter",
             out.targets(),

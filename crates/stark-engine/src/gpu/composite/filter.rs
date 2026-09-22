@@ -15,6 +15,7 @@ use crate::colorspace::ColorSpace;
 use crate::gpu::channels::Targets;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Bindings};
+use crate::gpu::pigment::PigmentLut;
 use crate::gpu::uniforms::UniformSlots;
 use crate::view::ViewTransform;
 use stark_shaders::Stages;
@@ -33,7 +34,7 @@ pub(crate) use stark_shaders::mirror::filter_common::Filter as FilterUniform;
 ///
 /// `pub(crate)` and shared behind an `Arc` for [`BlendPass`]'s reason: `gpu::merge`
 /// runs this module's tile-space entry point to merge a filter layer into the paint
-/// beneath it (§14.11.7), and a second copy would decode the Mixbox LUT twice.
+/// beneath it (§14.11.7), so a merged tile comes out of the pipeline the screen runs.
 ///
 /// [`BlendPass`]: super::blend::BlendPass
 pub(crate) struct FilterPass {
@@ -70,14 +71,25 @@ pub(crate) struct FilterPass {
     /// merge, which refuses a resampling filter and so never reads them (§14.11.7).
     /// The §6.8 stand-in pattern.
     blur_zero: (wgpu::TextureView, wgpu::TextureView),
-    /// Whether **this** shader reads Mixbox's LUT, which its own layout holds a slot
-    /// for. The LUT itself is the blend pass's, so this is the half of the pair this
-    /// side can answer; [`SharedPasses`](super::SharedPasses) holds the two together.
-    wants_lut: bool,
+    /// Mixbox's LUT, present exactly where this pass's layout holds a slot for it
+    /// (§6.7) — the blend pass's table, since both passes ask it the same question.
+    pigment: Option<PigmentLut>,
 }
 
 impl FilterPass {
-    pub(crate) fn new(ctx: &GpuContext, color_space: &dyn ColorSpace) -> Self {
+    /// The pass for `color_space`, binding `pigment` — the blend pass's LUT
+    /// ([`BlendPass::pigment`](super::blend::BlendPass::pigment)), so a space decodes
+    /// one table rather than one per pass.
+    ///
+    /// # Panics
+    /// If `pigment` is present where this pass's shader reads no LUT, or absent where
+    /// it reads one: a space links both Mixbox shaders or neither (§6.7), and a build
+    /// that broke that would leave a layout slot with nothing to fill it.
+    pub(crate) fn new(
+        ctx: &GpuContext,
+        color_space: &dyn ColorSpace,
+        pigment: Option<PigmentLut>,
+    ) -> Self {
         let device = &ctx.device;
         let formats = crate::gpu::channels::ChannelFormats::of(color_space);
         let filter = color_space.filter_shader();
@@ -99,6 +111,18 @@ impl FilterPass {
             Bindings::shared_by(device, "stark filter bgl", &stages, fcd::F, &[fcd::F]),
             Bindings::if_reached(device, "stark filter space bgl", &stages, fmd::PIGMENT_LUT),
         ];
+        // Every entry point the layout was built over, not `fs_main` alone: the bind
+        // group answers for the whole layout, so a LUT only one of them reached is
+        // still a slot to fill.
+        let reads_lut = stages.iter().any(|s| match *s {
+            Stages::Render(vs, fs) => vs.reads(fmd::PIGMENT_LUT) || fs.reads(fmd::PIGMENT_LUT),
+            Stages::Compute(k) => k.reads(fmd::PIGMENT_LUT),
+        });
+        assert_eq!(
+            pigment.is_some(),
+            reads_lut,
+            "the filter pass is given a pigment LUT exactly where its shader reads one",
+        );
         let layout = desc::pipeline_layout_of(device, "stark filter layout", &[&bgls[0], &bgls[1]]);
         // No fixed-function blend: the pass computes the whole texel — including the
         // height it copies straight across — and *replaces* what it writes. That is
@@ -157,19 +181,8 @@ impl FilterPass {
             bgls,
             sampler,
             blur_zero,
-            // Every entry point the layout was built over, not `fs_main` alone: the
-            // bind group has to answer for the whole layout, so a LUT only one of them
-            // reached would be a slot nothing filled.
-            wants_lut: stages.iter().any(|s| match *s {
-                Stages::Render(vs, fs) => vs.reads(fmd::PIGMENT_LUT) || fs.reads(fmd::PIGMENT_LUT),
-                Stages::Compute(k) => k.reads(fmd::PIGMENT_LUT),
-            }),
+            pigment,
         }
-    }
-
-    /// Whether this pass's layout holds the pigment LUT — its own shader's answer.
-    pub(crate) fn wants_lut(&self) -> bool {
-        self.wants_lut
     }
 
     /// **The one description of `filter_common.wesl`'s group**, the screen's and the
@@ -177,21 +190,21 @@ impl FilterPass {
     /// module's tile-space entry point (§14.11.7), so it must bind this very group
     /// rather than a second description of it.
     ///
-    /// `pigment` is the **blend pass's** LUT, passed in rather than owned: both
-    /// passes ask it the same question, so there is one table per color space rather
-    /// than one per pass. `blur` is the frame's convolved planes when it has a focal
-    /// blur (§21.12); the 1×1 zeroes stand in otherwise, so the layout is answered
-    /// either way.
+    /// `blur` is the frame's convolved planes when it has a focal blur (§21.12); the
+    /// 1×1 zeroes stand in otherwise, so the layout is answered either way.
     pub(crate) fn bind_group(
         &self,
         device: &wgpu::Device,
         uniform: wgpu::BindingResource<'_>,
         back: Targets<'_>,
-        pigment: Option<&crate::gpu::pigment::PigmentLut>,
         blur: Option<(&wgpu::TextureView, &wgpu::TextureView)>,
     ) -> [wgpu::BindGroup; 2] {
         let (blur_light, blur_aux) = blur.unwrap_or((&self.blur_zero.0, &self.blur_zero.1));
-        let lut = || pigment.expect("the layout holds the LUT only where the shader reads it");
+        let lut = || {
+            self.pigment
+                .as_ref()
+                .expect("the layout holds the LUT only where the shader reads it")
+        };
         [
             self.bgls[0].group(device, "stark filter bg", |i| match i {
                 fc::F => uniform.clone(),
@@ -221,17 +234,12 @@ impl FilterPass {
     /// anywhere, since the planes ride the bind group either way (§21.12).
     /// `convolve` is `Some` exactly when **this** layer is the blur; its kernel,
     /// decode and FFT round trip are then encoded ahead of the fullscreen pass.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "every argument is a distinct piece of what one filter pass names"
-    )]
     pub(super) fn encode(
         &self,
         ctx: &GpuContext,
         encoder: &mut wgpu::CommandEncoder,
         b: Bounce<'_>,
         slots: &UniformSlots<FilterUniform>,
-        pigment: Option<&crate::gpu::pigment::PigmentLut>,
         blur: Option<&super::blur::BlurFrame>,
         convolve: Option<&super::blur::BlurPass>,
     ) {
@@ -240,7 +248,6 @@ impl FilterPass {
                 &ctx.device,
                 slots.resource(),
                 b.back,
-                pigment,
                 blur.map(|f| f.planes()),
             )
         });

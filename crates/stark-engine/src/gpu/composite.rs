@@ -614,16 +614,6 @@ impl CompositorPipeline {
             filter,
             tile_bgl,
         } = shared;
-        // The two passes ask their own shaders whether they read Mixbox's LUT, and only
-        // the blend pass owns one — so this is where the pair is held together. They
-        // agree because a space links both Mixbox shaders or neither (§6.7); a build
-        // that broke that would have the filter's layout declare a slot with nothing to
-        // fill it.
-        assert_eq!(
-            blend.pigment.is_some(),
-            filter.wants_lut(),
-            "the blend and filter shaders disagree about the pigment LUT",
-        );
         let passes = CompositorPasses {
             tiles: TilePass::new(device, color_space, formats, tile_bgl),
             blend,
@@ -1146,8 +1136,6 @@ impl Streams {
                     at(*src),
                     &self.blend_uniforms,
                 ),
-                // The pigment LUT is the blend pass's, and both passes ask it the same
-                // question — see `FilterPass::encode`.
                 Step::Filter {
                     back,
                     out,
@@ -1164,7 +1152,6 @@ impl Streams {
                         encoder,
                         bounce(*back, *out, *slot, *phase),
                         &self.filter_uniforms,
-                        p.blend.pigment.as_ref(),
                         blur,
                         convolve,
                     );

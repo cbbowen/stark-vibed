@@ -1,9 +1,9 @@
 //! Mixbox's pigment LUT on the GPU — the inverse of the mixing polynomial
 //! (§18.0.4, §6.7).
 //!
-//! One owner, the blend pass — which combines *light* and then has to say which
-//! mixture of pigments would have produced it — and the filter pass borrows it for the
-//! same question (§21). Every other GPU path runs Mixbox forwards
+//! Decoded once per space, by the blend pass — which combines *light* and then has to
+//! say which mixture of pigments would have produced it — and bound by the filter pass
+//! too, for the same question (§21). Every other GPU path runs Mixbox forwards
 //! (`lib/mixbox.wesl`) and the CPU handles the rare reverse; a per-texel inverse is
 //! what forces the table onto the GPU.
 //!
@@ -32,8 +32,10 @@ const LUT_PNG: &[u8] = include_bytes!("../../../../vendor/mixbox/shaders/mixbox_
 #[cfg(feature = "mixbox")]
 const LUT_DIM: u32 = 512;
 
-/// The pigment LUT bound to the blend pass: a texture plus the sampler that reads
-/// it.
+/// The pigment LUT the blend and filter passes bind: a texture plus the sampler that
+/// reads it. Handles only, so a clone binds the same table rather than decoding
+/// another.
+#[derive(Clone)]
 pub(crate) struct PigmentLut {
     pub view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,

@@ -74,9 +74,8 @@ pub(crate) struct BlendPass {
     /// and the two residuals, or nothing at all in a colorimetric space (§6.7).
     bgls: [Bindings; 2],
     /// Mixbox's LUT, `None` in a space whose blend shader declares none — which is
-    /// every colorimetric one (§6.7). Shared with the filter pass, which asks the same
-    /// question of the same space.
-    pub(crate) pigment: Option<PigmentLut>,
+    /// every colorimetric one (§6.7).
+    pigment: Option<PigmentLut>,
 }
 
 impl BlendPass {
@@ -113,6 +112,13 @@ impl BlendPass {
             bgls,
             pigment,
         }
+    }
+
+    /// The LUT this pass decoded, for the filter pass to bind too
+    /// ([`FilterPass::new`](super::filter::FilterPass::new)): both ask it the same
+    /// question of the same space.
+    pub(crate) fn pigment(&self) -> Option<&PigmentLut> {
+        self.pigment.as_ref()
     }
 
     /// The bind group for one merge: the isolated `src` over the accumulator `back`

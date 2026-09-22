@@ -420,8 +420,9 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
     // one would decode the Mixbox LUT twice.
     let blend = Arc::new(BlendPass::new(&gpu, cs.as_ref()));
     // The same bargain for the filter pass, which `gpu::merge` runs on tile-sized
-    // targets to merge a filter layer into the paint beneath it (§14.11.7).
-    let filter = Arc::new(FilterPass::new(&gpu, cs.as_ref()));
+    // targets to merge a filter layer into the paint beneath it (§14.11.7). It binds
+    // the blend pass's LUT rather than decoding its own.
+    let filter = Arc::new(FilterPass::new(&gpu, cs.as_ref(), blend.pigment().cloned()));
     let compositor_pipeline = CompositorPipeline::new(
         &gpu,
         target_format,
