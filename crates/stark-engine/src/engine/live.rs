@@ -555,13 +555,9 @@ impl Engine {
     /// [`presented`](Self::presented) reaches it through an entry point that flushes
     /// first, so a stale fold is never observable. Idempotent.
     ///
-    /// `pub` for harnesses, not frontends: a frontend gets its flush from
-    /// [`render`](Self::render) with the frame that shows the result, while the stroke
-    /// benchmark must pay the fold explicitly to time it. Not a command, deliberately
-    /// (§4): a command is an *input* — logged, replicated, countable — and this
-    /// mutates no document or session state, only a cache their content determines.
-    #[doc(hidden)]
-    pub fn flush_live(&mut self) {
+    /// Not a command (§4): it mutates no document or session state, only a cache their
+    /// content determines.
+    pub(crate) fn flush_live(&mut self) {
         if !self.preview.stale {
             return;
         }

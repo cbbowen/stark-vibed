@@ -127,14 +127,15 @@ impl Peer {
     }
 
     /// What to draw for this peer right now, if anything.
-    pub fn gesture(&self) -> Option<&LiveGesture> {
+    #[cfg(test)]
+    pub(crate) fn gesture(&self) -> Option<&LiveGesture> {
         self.rx.drawn()
     }
 
     /// This peer's gesture as the preview fold wants it — the same shape
     /// [`Session::gesture_view`](crate::session::Session::gesture_view) produces for
     /// the local client.
-    pub fn gesture_view(&self) -> Option<GestureView> {
+    pub(crate) fn gesture_view(&self) -> Option<GestureView> {
         Some(GestureView {
             actor: self.actor,
             gesture: self.rx.drawn()?.clone(),
@@ -146,7 +147,7 @@ impl Peer {
     }
 
     /// Whether this peer has a gesture on the canvas.
-    pub fn is_gesturing(&self) -> bool {
+    fn is_gesturing(&self) -> bool {
         self.rx.drawn().is_some()
     }
 
@@ -160,7 +161,8 @@ impl Peer {
 
     /// How many spans of [`live_stroke`](Self::live_stroke) are settled, so the
     /// preview can repaint only the tail (§6.2, §17.6).
-    pub fn live_frozen_spans(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn live_frozen_spans(&self) -> usize {
         self.rx.frozen_spans()
     }
 
@@ -212,22 +214,22 @@ impl Peer {
 /// the live fold — a `DocState` clone and a re-render of every stroke in flight —
 /// thirty times a second per peer, while someone is painting.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub struct PresenceChange {
+pub(crate) struct PresenceChange {
     /// Anything at all moved, so a cached projection of the roster is stale.
-    pub roster: bool,
+    pub(crate) roster: bool,
     /// The composited picture is stale and the live fold must be rebuilt. Implies
     /// [`roster`](Self::roster).
-    pub canvas: bool,
+    pub(crate) canvas: bool,
 }
 
 impl PresenceChange {
     /// Nothing moved.
-    pub const NONE: Self = Self {
+    pub(crate) const NONE: Self = Self {
         roster: false,
         canvas: false,
     };
     /// The canvas moved — which is also a roster change.
-    pub const CANVAS: Self = Self {
+    pub(crate) const CANVAS: Self = Self {
         roster: true,
         canvas: true,
     };
@@ -403,7 +405,7 @@ impl Peers {
 /// neighbouring hues, and preventing that would need the allocation protocol this
 /// avoids. Saturation and value are fixed high enough to read as a person-marker over
 /// paint of any value.
-pub fn peer_color(actor: ActorId) -> [f32; 3] {
+pub(crate) fn peer_color(actor: ActorId) -> [f32; 3] {
     // splitmix64 finalizer: cheap, and it decorrelates the low bits that
     // `actor_from_endpoint_id` happens to take from a public key.
     let mut z = actor.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
@@ -416,7 +418,7 @@ pub fn peer_color(actor: ActorId) -> [f32; 3] {
 
 /// A peer's name until they publish one: short, stable, and derived from the id, so
 /// two unnamed peers are still distinguishable.
-pub fn default_name(actor: ActorId) -> String {
+pub(crate) fn default_name(actor: ActorId) -> String {
     format!("{:04x}", actor.0 as u16)
 }
 

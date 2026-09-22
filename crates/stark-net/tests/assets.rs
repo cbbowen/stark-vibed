@@ -10,6 +10,7 @@ mod util;
 
 use std::time::Duration;
 
+use stark_engine::testing::Probe;
 use stark_model::DocumentFile;
 use stark_model::document::{BrushParams, BrushShape};
 use stark_model::geom::Vec2;

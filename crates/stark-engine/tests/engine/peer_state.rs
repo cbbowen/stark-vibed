@@ -11,7 +11,7 @@
 //! `stark-engine`, which is the point of putting them there.
 
 use crate::common::palette::{GREEN_SOFT, RED};
-use crate::common::{Lead, MARGIN_FLAT, engine_or_skip, images_match, leads, paint, rgb};
+use crate::common::{Lead, MARGIN_FLAT, Probe, engine_or_skip, images_match, leads, paint, rgb};
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, PeerCommand, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;

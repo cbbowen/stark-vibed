@@ -108,8 +108,8 @@ pub(crate) fn unpoisoned<'a, T>(
     lock.unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The suite's and the benchmarks' own harness, and the diagnostic methods only they
-/// call — see the module (§9).
+/// The suite's and the benchmarks' own harness, and the diagnostic reads only they
+/// make — see the module (§9).
 #[doc(hidden)]
 pub mod testing;
 
@@ -119,7 +119,7 @@ pub use colorspace::{all_available, available};
 pub use engine::{
     Background, DEFAULT_FAST_COMMIT, DEFAULT_HISTORY_BUDGET, Engine, EngineShared, ExportPlan,
     ExportScale, GuideInfo, Guides, LayerInfo, Layers, MatteInfo, ObservableState, PickOptions,
-    PickSource, PresenceTick, Projected, Rendered, headless_engine,
+    PickSource, PresenceTick, Projected, Rendered,
 };
 pub use error::{EngineError, ExportError, Produces, Result};
 pub use gpu::{
@@ -127,7 +127,6 @@ pub use gpu::{
     Output, Transfer, max_stretch, max_tip_reach,
 };
 pub use image::RgbaImage;
-pub use peer::{GestureView, Identity, LiveGesture, Peer};
-pub use session::Session;
+pub use peer::{Identity, Peer};
 pub use tow::TowString;
 pub use view::{Extent2, ViewTransform};

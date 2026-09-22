@@ -5,7 +5,7 @@
 
 use crate::common::collab::{pair, snap, sync, sync_into};
 use crate::common::palette::{BLUE_VIVID, GREEN_SOFT, RED_VIVID};
-use crate::common::{engine_or_skip, images_match, paint, whole_render};
+use crate::common::{Probe, engine_or_skip, images_match, paint, whole_render};
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_model::document::ActorId;
 use stark_model::geom::Vec2;

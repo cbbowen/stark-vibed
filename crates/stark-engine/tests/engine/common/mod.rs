@@ -14,6 +14,8 @@ use std::path::{Path, PathBuf};
 use stark_engine::Extent2;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
+/// Every module that takes `common::*` gets the engine's diagnostic reads with it.
+pub use stark_engine::testing::Probe;
 use stark_engine::{Engine, EngineError, RgbaImage};
 use stark_model::document::LayerId;
 use stark_model::document::{BrushParams, BrushShape};

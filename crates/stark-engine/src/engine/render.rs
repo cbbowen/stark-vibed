@@ -351,45 +351,10 @@ impl Engine {
         }
     }
 
-    /// One committed tile's channels, straight off the GPU — **height and alpha
-    /// without the lit composite in between** (§6.1).
-    ///
-    /// `None` if that layer has no paint tile at that coordinate, which includes every
-    /// layer that is not paint at all. Reads the *committed* document, so a caller
-    /// mid-gesture is asking about the state before the live tail.
-    ///
-    /// `pub` for the suite and nothing else, and hidden to say so (`testing`): a
-    /// conservation, opacity or erase claim read off the composited image cannot
-    /// separate "height was not conserved" from "the light changed", and §6.1 is a
-    /// claim about the first.
+    /// [`Probe::render_to_image`](crate::testing::Probe::render_to_image): the
+    /// export path, read back blocking. WebGPU has no blocking poll (`gpu::readback`).
     #[cfg(not(target_arch = "wasm32"))]
-    #[doc(hidden)]
-    pub fn tile_channels(
-        &self,
-        layer: stark_model::document::LayerId,
-        coord: stark_model::geom::TileCoord,
-    ) -> Option<crate::gpu::TileChannels> {
-        Some(
-            self.document()
-                .layer(layer)?
-                .tiles()?
-                .get(&coord)?
-                .read_channels(&self.shared.gpu),
-        )
-    }
-
-    /// Render the current canvas to a CPU-side image at the viewport size (§9). The
-    /// backbone of golden tests. The target uses the engine's configured format, so it
-    /// matches on-screen rendering.
-    ///
-    /// Blocking, and therefore **native-only**: WebGPU has no blocking poll, so this
-    /// shape cannot work on the web (see `gpu::readback`). The frontend uses
-    /// [`export`](Self::export), which awaits the map.
-    ///
-    /// `pub` for the suite and nothing else, and hidden to say so (`testing`).
-    #[cfg(not(target_arch = "wasm32"))]
-    #[doc(hidden)]
-    pub fn render_to_image(&mut self) -> RgbaImage {
+    pub(super) fn render_to_image(&mut self) -> RgbaImage {
         // One render per call, so nothing is kept: the attachments are allocated here
         // and dropped with this `Offscreen`.
         let (target, size) = self.render_offscreen(
@@ -404,14 +369,10 @@ impl Engine {
         RgbaImage::from_target_bytes(size.width, size.height, pixels, target.format())
     }
 
-    /// Render the current canvas through the **screen's** passes into a half-float
-    /// texture and read it back as `f32` — four per texel, rows top-down, in the
-    /// transfer the engine's [`Output`](crate::Output) names (§6.5). Only for an
-    /// engine built on an `Rgba16Float` target. `pub` for the suite and nothing else,
-    /// and hidden to say so (`testing`).
+    /// [`Probe::render_to_floats`](crate::testing::Probe::render_to_floats): the
+    /// screen's passes, read back blocking.
     #[cfg(not(target_arch = "wasm32"))]
-    #[doc(hidden)]
-    pub fn render_to_floats(&mut self) -> Vec<f32> {
+    pub(super) fn render_to_floats(&mut self) -> Vec<f32> {
         let format = self.shared.target_format;
         assert_eq!(
             format,

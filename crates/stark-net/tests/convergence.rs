@@ -5,6 +5,7 @@
 mod util;
 
 use stark_engine::command::DocCommand;
+use stark_engine::testing::Probe;
 use stark_model::geom::Vec2;
 use stark_net::NetOptions;
 

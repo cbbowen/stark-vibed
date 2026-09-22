@@ -368,39 +368,6 @@ impl Engine {
         self.shared.apply.substrates.bytes(id)
     }
 
-    /// What share of a substrate a tip with this tooth — the `give` it settles with
-    /// and the `softness` of its contact transition — travelling along `dir`, stands
-    /// on (§6.4): the bearing fraction a toothed transfer is booked against.
-    ///
-    /// Exposed because it is the model's own falsifiable quantity, checkable against
-    /// the map rather than taken on trust (`tests/engine/tooth.rs`). `dir` is there because
-    /// contact reads the substrate's slope *along the travel*, which makes the curve a
-    /// property of the substrate and the direction crossing it together. Builds the
-    /// substrate on the first ask.
-    ///
-    /// At the **document's** scale, since that is the substrate a stroke would actually
-    /// bite right now (§6.4) — the same pair `apply` resolves.
-    ///
-    /// `pub` for the suite and nothing else, and hidden to say so.
-    #[doc(hidden)]
-    pub fn substrate_bearing(
-        &self,
-        id: SubstrateId,
-        give: f32,
-        softness: f32,
-        dir: stark_model::geom::Vec2,
-    ) -> f32 {
-        let substrate = Substrate {
-            id,
-            scale: self.document().substrate_scale,
-        };
-        self.shared
-            .apply
-            .substrates
-            .get(&self.shared.gpu, substrate)
-            .bearing(give, softness, dir.to_array())
-    }
-
     /// Import a canvas substrate from a height-map PNG, returning the id that names it
     /// (§6.4). The frontend fetches the bytes — the engine embeds none — and this is
     /// how a substrate enters the engine, whether it ships with the app, came out of a

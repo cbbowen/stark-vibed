@@ -61,7 +61,7 @@
 //! CLAUDE.md names twice. The `.config/nextest.toml` window is what it runs behind:
 //! ~5 s is a real adapter's number, and CI renders on lavapipe.
 
-use crate::common::{engine_or_skip, images_match};
+use crate::common::{Probe, engine_or_skip, images_match};
 use stark_engine::command::{DocCommand, InputCommand, PeerCommand};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::document::{

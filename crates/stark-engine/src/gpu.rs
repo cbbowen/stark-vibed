@@ -46,11 +46,5 @@ pub use selection::SelectionRenderer;
 pub(crate) use stroke::StrokeSpans;
 pub use stroke::{StrokeRenderer, max_stretch, max_tip_reach};
 pub use substrate::{Substrate, SubstrateMap};
-/// Gated to match what it is *for*: both ends of a channel readback —
-/// [`TilePairHandle::read_channels`](tile::TilePairHandle::read_channels) and
-/// `Engine::tile_channels` — are native-only, because a readback blocks and the
-/// browser has no thread to block.
-#[cfg(not(target_arch = "wasm32"))]
-pub use tile::TileChannels;
-pub use tile::{AllocSource, INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TilePool, mask_tex_origin};
+pub use tile::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TilePool, mask_tex_origin};
 pub use transform::TransformRenderer;

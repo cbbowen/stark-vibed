@@ -12,7 +12,7 @@
 
 use super::{Engine, ROOT_LAYER};
 use crate::Result;
-use crate::document::{DocState, LinearTimeline, ReplicatedTimeline, Timeline, TimelineStats};
+use crate::document::{DocState, LinearTimeline, ReplicatedTimeline, Timeline};
 use crate::peer::{Identity, Peer};
 use stark_model::DocumentFile;
 use stark_model::document::{Action, ActorId};
@@ -229,61 +229,6 @@ impl Engine {
             .as_mut()
             .map(std::mem::take)
             .unwrap_or_default()
-    }
-
-    /// How the timeline has serviced materializations (§12.6): the
-    /// commutation fast paths versus rewind-and-replay. Zeros when solo. For
-    /// tests and diagnostics — pixels can't tell the paths apart, by design.
-    /// `pub` for the suite and nothing else, and hidden to say so (`testing`).
-    #[doc(hidden)]
-    pub fn timeline_stats(&self) -> TimelineStats {
-        self.timeline.stats()
-    }
-
-    /// How many in-flight strokes the preview fold is caching a settled head for
-    /// (§17.6) — at most one per actor who is *currently* drawing one.
-    ///
-    /// For tests and diagnostics, beside [`timeline_stats`](Self::timeline_stats): a
-    /// head is a cache, so pixels cannot show whether one is held — least of all one
-    /// held for a gesture that has *ended*, which is not a wrong picture but a
-    /// `DocState`'s worth of tile handles the pool cannot reclaim, invisible until the
-    /// GPU runs out.
-    ///
-    /// `&mut` because the count is only meaningful of a serviced fold, so this flushes
-    /// first — the same picture the next paint would build.
-    /// `pub` for the suite and nothing else, and hidden to say so (`testing`).
-    #[doc(hidden)]
-    pub fn live_head_count(&mut self) -> usize {
-        self.flush_live();
-        self.preview.head_count()
-    }
-
-    /// How many of this client's stroke commits have taken the preview's tiles
-    /// rather than rendering the stroke again at pen-up (`PreparedStroke`, §6.2).
-    ///
-    /// For tests and diagnostics, beside [`live_head_count`](Self::live_head_count):
-    /// the two ways a commit can land are the same pixels by design, so only a count
-    /// can say which one ran — and a commit that quietly fell back to the whole render
-    /// is the hitch this path exists to remove, reported by nothing else.
-    /// `pub` for the suite and nothing else, and hidden to say so (`testing`).
-    #[doc(hidden)]
-    pub fn strokes_reused(&self) -> u64 {
-        self.strokes_reused
-    }
-
-    /// The preview's invalidation epoch (§17.6): a counter that advances whenever the
-    /// document the in-flight gestures are composited onto is replaced — by a commit,
-    /// an undo, a remote merge, a load, or an unlogged drag preview being installed or
-    /// dropped. A cached head stamped with an older value is discarded.
-    ///
-    /// For tests and diagnostics, beside [`live_head_count`](Self::live_head_count),
-    /// because pixels cannot stand in for it: a drag preview that changes no *tiles* —
-    /// the substrate color, say — leaves a stale head drawing exactly the right paint,
-    /// so the picture is right while the rule that keeps it right has been broken.
-    /// `pub` for the suite and nothing else, and hidden to say so (`testing`).
-    #[doc(hidden)]
-    pub fn preview_epoch(&self) -> u64 {
-        self.preview.epoch()
     }
 
     // --- the presence channel (§17.4) -----------------------------------

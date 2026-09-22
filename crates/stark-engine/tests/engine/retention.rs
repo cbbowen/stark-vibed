@@ -13,7 +13,7 @@
 //! write files missing their early strokes, with the in-memory picture still showing
 //! the whole painting.
 
-use crate::common::{brush, engine_or_skip, stroke_with};
+use crate::common::{Probe, brush, engine_or_skip, stroke_with};
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::geom::Vec2;

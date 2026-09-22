@@ -461,21 +461,3 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
         compositor,
     }
 }
-
-/// Convenience for tests/tools: build an engine on a headless device.
-pub async fn headless_engine(
-    target_format: wgpu::TextureFormat,
-    viewport: Extent2,
-) -> Result<Engine> {
-    headless_engine_with(target_format, viewport, ColorSpaceId::Oklab).await
-}
-
-/// Headless engine in a chosen color space (§6.7).
-pub async fn headless_engine_with(
-    target_format: wgpu::TextureFormat,
-    viewport: Extent2,
-    color_space: ColorSpaceId,
-) -> Result<Engine> {
-    let gpu = GpuContext::headless().await?;
-    Engine::new_with_color_space(gpu, target_format, viewport, color_space)
-}

@@ -10,7 +10,7 @@
 
 use crate::common::collab::{pair, pair_sized, snap, sync, sync_into};
 use crate::common::palette::{BLUE_VIVID, GREEN_SOFT, RED_VIVID};
-use crate::common::{engine_or_skip, engine_or_skip_sized, images_match, paint};
+use crate::common::{Probe, engine_or_skip, engine_or_skip_sized, images_match, paint};
 use stark_engine::Extent2;
 use stark_engine::command::DocCommand;
 use stark_engine::{Engine, RgbaImage};

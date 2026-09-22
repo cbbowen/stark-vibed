@@ -25,8 +25,6 @@ pub use apply::ApplyCtx;
 // Not on the API: `PreparedStroke` is a message between the engine and one fold, and
 // this line exists for `engine::live`'s import alone.
 pub(crate) use apply::PreparedStroke;
-#[doc(hidden)]
-pub use audit::undeclared;
 pub use layer::{CompositeParams, Layer, LayerContent, PaintTiles};
 pub use liquify::LiquifyRun;
 /// Merging a layer down onto the one beneath it (§14.11) — the rule for when that

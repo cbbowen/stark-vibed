@@ -4,7 +4,7 @@
 use stark_engine::{Engine, Extent2, RgbaImage};
 use stark_model::document::ActorId;
 
-use super::{SIZE, engine_or_skip_sized};
+use super::{Probe, SIZE, engine_or_skip_sized};
 
 /// A session of two: `a` started it as actor 1 and `b` joined from `a`'s file as
 /// actor 2, so both hold one log and nothing has been painted yet. `None` where there

@@ -279,14 +279,6 @@ impl Engine {
         }
     }
 
-    /// The tile memory [`trim_history`](Self::trim_history) measures against the
-    /// budget: what the pool owns, idle textures included.
-    /// `pub` for the suite and nothing else, and hidden to say so (`testing`).
-    #[doc(hidden)]
-    pub fn resident_tile_bytes(&self) -> u64 {
-        self.shared.apply.pool.resident_bytes()
-    }
-
     /// Point the active layer at something that exists, preferring a paintable one:
     /// someone who just lost the layer they were painting on wants to keep painting,
     /// not to land on the frame. Searches the whole tree, not just the root stack —

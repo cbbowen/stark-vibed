@@ -16,7 +16,6 @@
 use glam::Quat;
 use stark_engine::Assisted;
 use stark_engine::Extent2;
-use stark_engine::Session;
 use stark_engine::ViewTransform;
 use stark_engine::command::InputSample;
 use stark_engine::command::Tool;
@@ -24,6 +23,7 @@ use stark_engine::path::{
     DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, IntermediateSample, flatten, flatten_spans_from,
     span_count,
 };
+use stark_engine::testing::Session;
 use stark_model::document::{LayerId, PerspectiveGuide, Scaffold, StrokeRecord};
 use stark_model::geom::{Ellipse, Vec2};
 

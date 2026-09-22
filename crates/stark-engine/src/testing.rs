@@ -1,20 +1,100 @@
-//! What the test suite and the benchmarks need of this crate and a shipping
-//! frontend does not (§9).
+//! What the test suite, the benchmarks and the examples need of this crate and a
+//! shipping frontend does not (§9).
 //!
-//! **`#[doc(hidden)]`, and the module is the point.** An integration test is a
-//! separate crate, so anything it reaches has to be `pub`; the diagnostic methods on
-//! [`Engine`](crate::Engine) that only tests call are `pub` for that reason and no
-//! other, and marking them says so. The harness's own shared pieces live here so the
-//! decision is written once rather than in files that cannot see each other.
+//! An integration test is a separate crate, so anything it reaches has to be `pub`;
+//! a name only they spell is offered here rather than at the root, and the diagnostic
+//! reads on [`Engine`] are the [`Probe`](crate::testing::Probe) trait rather than
+//! inherent methods.
 //!
-//! Not behind a cargo feature, deliberately: a feature would have to be enabled by
-//! every command in CLAUDE.md's list and by a self-referential dev-dependency — a
-//! second build of the crate to hide a handful of methods a reader is already told
-//! to ignore.
+//! Not behind a cargo feature: every command in CLAUDE.md's list, and a
+//! self-referential dev-dependency, would have to enable it.
 
+use stark_model::SubstrateId;
+use stark_model::document::LayerId;
+use stark_model::geom::{TileCoord, Vec2};
+
+use crate::document::DocState;
+use crate::view::Extent2;
+use crate::{Engine, Result, RgbaImage};
+
+pub use crate::document::audit::undeclared;
+pub use crate::document::timeline::TimelineStats;
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::gpu::tile::TileChannels;
 /// The recycling tile pool (§6.1), for the one test that drives it directly
 /// (`tests/engine/tile_pool.rs`), and the tag `acquire_tex` demands of a caller.
-pub use crate::gpu::{AllocSource, TilePool};
+pub use crate::gpu::tile::{AllocSource, TilePool};
+pub use crate::peer::{GestureView, LiveGesture};
+pub use crate::session::Session;
+
+/// An engine on a headless device, in the default color space.
+pub async fn headless_engine(
+    target_format: wgpu::TextureFormat,
+    viewport: Extent2,
+) -> Result<Engine> {
+    let gpu = crate::GpuContext::headless().await?;
+    Engine::new_with_color_space(
+        gpu,
+        target_format,
+        viewport,
+        stark_model::ColorSpaceId::Oklab,
+    )
+}
+
+/// What the suite reads off an [`Engine`] that pixels cannot show: caches, counters
+/// and the raw channels under the lit composite. `use stark_engine::testing::Probe`.
+pub trait Probe {
+    /// The committed document.
+    fn document(&self) -> &DocState;
+
+    /// One committed tile's channels, straight off the GPU — height and alpha without
+    /// the lit composite, which cannot separate "height was not conserved" from "the
+    /// light changed" (§6.1). `None` where that layer has no paint tile. Reads the
+    /// committed document, so a caller mid-gesture sees the state before the live tail.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn tile_channels(&self, layer: LayerId, coord: TileCoord) -> Option<TileChannels>;
+
+    /// The canvas at the viewport size, read back (§9) — the golden tests' backbone.
+    /// Blocking, so native only; a frontend awaits [`Engine::export`] instead.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn render_to_image(&mut self) -> RgbaImage;
+
+    /// The canvas through the screen's passes into a half-float target, read back as
+    /// four `f32` per texel, rows top-down, in the engine's [`Output`](crate::Output)
+    /// transfer (§6.5). Only for an engine presenting to `Rgba16Float`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn render_to_floats(&mut self) -> Vec<f32>;
+
+    /// Service a pending preview fold. A frontend gets this from
+    /// [`Engine::render`]; a benchmark pays it explicitly to time it.
+    fn flush_live(&mut self);
+
+    /// How the timeline serviced materializations: the commutation fast paths versus
+    /// rewind-and-replay (§12.6). Zeros when solo.
+    fn timeline_stats(&self) -> TimelineStats;
+
+    /// How many in-flight strokes the preview fold caches a settled head for (§17.6),
+    /// after a flush. A head held for an ended gesture is not a wrong picture but a
+    /// `DocState` of tile handles the pool cannot reclaim.
+    fn live_head_count(&mut self) -> usize;
+
+    /// How many of this client's stroke commits took the preview's tiles rather than
+    /// rendering again (§6.2). Both paths are the same pixels by design.
+    fn strokes_reused(&self) -> u64;
+
+    /// The preview's invalidation epoch (§17.6): it advances whenever the document the
+    /// in-flight gestures composite onto is replaced, including by an unlogged drag.
+    fn preview_epoch(&self) -> u64;
+
+    /// The share of substrate `id`, at the document's scale, that a tip with this
+    /// `give` and contact `softness` stands on travelling along `dir` (§6.4). Builds
+    /// the substrate on the first ask.
+    fn substrate_bearing(&self, id: SubstrateId, give: f32, softness: f32, dir: Vec2) -> f32;
+
+    /// The tile memory history retention measures against its budget, idle textures
+    /// included (§5).
+    fn resident_tile_bytes(&self) -> u64;
+}
 
 /// The environment variable that turns a missing GPU from a failure into a skip.
 ///

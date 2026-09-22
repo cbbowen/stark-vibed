@@ -8,8 +8,9 @@
 //! measured on** and are not to be tuned in passing.
 
 use stark_engine::command::InputSample;
+use stark_engine::testing::headless_engine;
 use stark_engine::timing;
-use stark_engine::{Engine, Extent2, headless_engine};
+use stark_engine::{Engine, Extent2};
 use stark_model::document::{BrushEffect, BrushParams};
 use stark_model::geom::Vec2;
 

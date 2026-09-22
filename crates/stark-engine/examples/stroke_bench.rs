@@ -55,6 +55,7 @@ use std::time::Instant;
 use scenario::{N, install_timing, phase_table, plain, samples, smear, wait_idle};
 use stark_engine::command::{GestureCommand, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_engine::testing::Probe;
 use stark_engine::timing;
 use stark_model::document::BrushParams;
 

@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use stark_engine::Extent2;
 use stark_engine::RgbaImage;
 use stark_engine::command::ViewCommand;
-use stark_engine::headless_engine;
+use stark_engine::testing::{Probe, headless_engine};
 use stark_model::DocumentFile;
 use stark_model::document::{ActionKind, FillOp, SelectionShape};
 use stark_model::geom::Vec2;

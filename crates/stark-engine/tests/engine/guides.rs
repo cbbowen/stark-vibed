@@ -22,7 +22,7 @@
 //! opposite sides of the crate boundary and so can only be checked by drawing
 //! it (§20.9).
 
-use crate::common::{engine_or_skip, engine_or_skip_in_format, engine_or_skip_sized};
+use crate::common::{Probe, engine_or_skip, engine_or_skip_in_format, engine_or_skip_sized};
 use stark_engine::Engine;
 use stark_engine::Extent2;
 use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};

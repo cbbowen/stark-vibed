@@ -75,7 +75,7 @@ impl Engine {
     /// there, which every action aimed at one is refused as anyway. Off the
     /// **committed** document, which every mint and every preview entry point reads,
     /// so the frame a gesture is converted into is the frame its commit will carry.
-    pub(crate) fn frame_of(&self, layer: LayerId) -> stark_model::geom::IVec2 {
+    pub(super) fn frame_of(&self, layer: LayerId) -> stark_model::geom::IVec2 {
         self.timeline
             .current()
             .layer(layer)

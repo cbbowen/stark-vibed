@@ -9,8 +9,7 @@
 //! - here — the state: [`Engine`], [`EngineShared`] and [`Authoring`], the one door
 //!   a command comes in by ([`Engine::process`]), and the small named reads a
 //!   frontend asks beside a projection;
-//! - `build` — the GPU half, the constructors, the color-space rebuild, the
-//!   headless engine tests use (§6.7, §11);
+//! - `build` — the GPU half, the constructors, the color-space rebuild (§6.7, §11);
 //! - `input` — commands into state: the arms of `process`, the setters, the stroke
 //!   replay (§4);
 //! - `commit` — the doors into the log, history navigation and retention (§5,
@@ -22,7 +21,8 @@
 //! - `pick` — the eyedropper (§18.0.2);
 //! - `collab` — the action and presence channels of a shared session (§12, §17);
 //! - `file` — saving, opening, replay, and the resources a replay is run against
-//!   (§8, §6.4, §6.6).
+//!   (§8, §6.4, §6.6);
+//! - `probe` — the suite's [`Probe`](crate::testing::Probe) reads (§9).
 //!
 //! The data structures the read side is built from — [`Projected`], `Memo` and the
 //! `Revision` that keys one — live at the crate root (`projection`).
@@ -35,12 +35,12 @@ mod input;
 mod live;
 mod observe;
 mod pick;
-pub(crate) mod render;
+mod probe;
+mod render;
 
 use std::sync::Arc;
 
 pub use crate::projection::Projected;
-pub use build::headless_engine;
 pub use collab::PresenceTick;
 pub use commit::{DEFAULT_FAST_COMMIT, DEFAULT_HISTORY_BUDGET};
 pub use observe::{GuideInfo, Guides, LayerInfo, Layers, MatteInfo, ObservableState};
@@ -284,7 +284,7 @@ impl Engine {
     /// The eye is applied here — the document holds the guides,
     /// [`Session::shown_guides`](crate::session::Session::shown_guides) drops the
     /// ones this client has hidden — so everything past here sees only geometry.
-    pub(crate) fn scaffold(&self, doc: &DocState) -> Scaffold {
+    fn scaffold(&self, doc: &DocState) -> Scaffold {
         Scaffold::of(self.session.shown_guides(doc).map(|g| &g.camera))
     }
 
@@ -297,10 +297,8 @@ impl Engine {
         self.shared.gpu.health().failure()
     }
 
-    /// The current committed document state. `pub` for the suite and nothing else,
-    /// and hidden to say so (`testing`).
-    #[doc(hidden)]
-    pub fn document(&self) -> &DocState {
+    /// The current committed document state.
+    pub(crate) fn document(&self) -> &DocState {
         self.timeline.current()
     }
 

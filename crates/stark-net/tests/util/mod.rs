@@ -10,7 +10,8 @@ use std::time::Duration;
 use stark_engine::Extent2;
 use stark_engine::command::{GestureCommand, InputSample, Tool, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
-use stark_engine::{Engine, RgbaImage, headless_engine};
+use stark_engine::testing::headless_engine;
+use stark_engine::{Engine, RgbaImage};
 use stark_model::document::{
     Action, ActionId, ActionKind, ActorId, BrushParams, BrushShape, LayerId, StrokeRecord,
 };

@@ -298,9 +298,8 @@ fn an_unpaintable_layer_refuses_the_mark() {
 #[test]
 fn a_pixel_staircase_holds_its_heading() {
     use stark_engine::Extent2;
-    use stark_engine::GestureView;
-    use stark_engine::Session;
-    use stark_engine::{LiveGesture, ViewTransform};
+    use stark_engine::ViewTransform;
+    use stark_engine::testing::{GestureView, LiveGesture, Session};
     use stark_model::document::{ActorId, LayerId};
 
     let mut session = Session::new(
@@ -385,9 +384,9 @@ fn a_pixel_staircase_holds_its_heading() {
 #[test]
 fn the_run_up_conditions_the_strokes_entry() {
     use stark_engine::Extent2;
-    use stark_engine::Session;
     use stark_engine::ViewTransform;
     use stark_engine::path::{point_at, span_count, span_end};
+    use stark_engine::testing::Session;
     use stark_model::document::LayerId;
 
     let session = || {
