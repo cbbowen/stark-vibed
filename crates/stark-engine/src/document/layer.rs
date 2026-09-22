@@ -640,8 +640,8 @@ impl Layer {
 
     /// The same layer with one property written — [`prop`](Self::prop)'s inverse, and
     /// the one statement of **which layers refuse which property**. A refusal hands
-    /// the layer back unchanged, in the document rather than in a frontend rule, so a
-    /// replay and a peer decline exactly what a local fold does:
+    /// the layer back unchanged, in the document rather than in a frontend rule (see
+    /// `DocState`'s *Refusals*):
     ///
     /// - A **blend mode on a filter** (§21.4). A mode says how a source meets a
     ///   backdrop, and a filter has no source — nor, never carrying (§21.2), a group

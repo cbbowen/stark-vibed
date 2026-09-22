@@ -119,6 +119,14 @@ pub(crate) struct LayerSite {
 /// exactly three callers, each of them the log: `apply` (the fold), `patch` (its
 /// inverse), and the unlogged drag previews in `engine`, which fold the very action
 /// their release will commit (`document::apply::preview_of`).
+///
+/// # Refusals
+///
+/// **Every mutator is total.** An edit naming something absent, or asking for an
+/// arrangement the document cannot hold, hands the state back unchanged rather than
+/// failing — and since it is asked of the fold's own state, every peer and every
+/// replay declines the same action the same way (§12.1). Each mutator says *what* it
+/// refuses; this is why a refusal is always silent.
 #[derive(Clone)]
 pub struct DocState {
     /// The root stack, bottom-to-top. The tree lives *inside* it: a layer's
@@ -317,9 +325,8 @@ impl DocState {
     /// The roster with a new guide directly after `after`, or at its head when
     /// nothing is named (§20.5).
     ///
-    /// An anchor that is not there lands the guide at the head — deterministic,
-    /// taken the same way by every peer, and the same shape [`Place::Above`]
-    /// takes for a sibling that has gone.
+    /// An anchor that is not there lands the guide at the head — the shape
+    /// [`Place::Above`] takes for a sibling that has gone.
     pub(crate) fn insert_guide(
         &self,
         id: GuideId,
@@ -417,8 +424,7 @@ impl DocState {
     /// `actor`'s selection mask (§6.8, §17.3). An actor with
     /// no entry has selected nothing, which *is* the unrestricted selection.
     ///
-    /// By value: a persistent-map clone, the same handful of `Arc` bumps as cloning
-    /// the `DocState` it came out of.
+    /// By value: a persistent-map clone, as cheap as cloning the `DocState` itself.
     pub fn selection_of(&self, actor: ActorId) -> Selection {
         self.selections
             .get(&actor)
@@ -592,10 +598,9 @@ impl DocState {
     /// at the bottom, which is why this takes the full [`Place`] where the
     /// other inserts keep the two-state anchor (§15.5).
     ///
-    /// **Declined, deterministically, for a region nobody can measure**
-    /// ([`MatteRegion::usable`]) — the frame's half of §16.1's gate. A rect cannot be
-    /// clamped into a repaired rect without reframing the piece, so every peer and
-    /// every replay refuses the same one. The paint beside it *is* clamped, by
+    /// **Declined for a region nobody can measure** ([`MatteRegion::usable`]) — the
+    /// frame's half of §16.1's gate: a rect cannot be clamped into a repaired rect
+    /// without reframing the piece. The paint beside it *is* clamped, by
     /// `ActionKind::sanitized` on the way in, because a color out of range has a
     /// nearest legal value.
     pub(crate) fn insert_matte(
@@ -644,7 +649,7 @@ impl DocState {
         }
         // A filter never carries (§21.2): what a group carries composites *over*
         // its base, so a filter base could reach none of it — declined here, in
-        // state, so replay and peers agree and no path can build the arrangement.
+        // state, so no path can build the arrangement.
         if self.cannot_carry(carrier) {
             return self.clone();
         }
@@ -652,8 +657,7 @@ impl DocState {
             None => Some(splice(&self.layers, above, &layer)),
             // Into the carrier's own stack. An unknown carrier inserts nowhere:
             // silently landing the layer at the root instead would be a
-            // different document on a client whose tree is one action behind,
-            // and "nothing happened" is at least the same nothing everywhere.
+            // different document on a client whose tree is one action behind.
             Some(c) => map_in(&self.layers, c, &mut |l: &Layer| {
                 l.with_carries(splice(l.carries(), above, &layer))
             }),
@@ -673,8 +677,8 @@ impl DocState {
     /// tiles, same name, same opacity. The name comes along undecorated, because a name
     /// in the document is the author's own word (see [`Layer::name`]).
     ///
-    /// Nothing happens — deterministically, so peers and replays agree — when the
-    /// source is absent, or when the subtree holds a layer `ids` does not name.
+    /// Nothing happens when the source is absent, or when the subtree holds a layer
+    /// `ids` does not name.
     ///
     /// [`ActionKind::DuplicateLayer`]: stark_model::document::ActionKind::DuplicateLayer
     pub(crate) fn duplicate_layer(&self, ids: &[(LayerId, LayerId)], number: Option<u32>) -> Self {
@@ -685,8 +689,7 @@ impl DocState {
         // id each source is paired with; it cannot notice two sources paired with one
         // id, or a copy naming a layer the document already holds (§17.9). An action
         // this engine mints cannot say either — `commit_minting` draws them from its
-        // own action id at distinct `k` — but this one arrived in a payload. Declined
-        // deterministically, so peers agree about the refusal.
+        // own action id at distinct `k` — but this one arrived in a payload.
         //
         // One set answers both questions: seeded with every id the document holds,
         // it refuses a copy that is already there and a copy named twice alike.
@@ -878,8 +881,7 @@ impl DocState {
     /// three (§14.8): reordering within a stack is `carrier` unchanged, **carrying** a
     /// layer onto another is `carrier` set, and **releasing** it is `carrier` cleared.
     ///
-    /// Two ways it declines, both silent and both deterministic — which is what
-    /// matters, since peers replay this from a log and must all decline identically:
+    /// Two ways it declines:
     ///
     /// - **A cycle.** Carrying a layer onto its own descendant (or onto itself) would
     ///   detach the subtree from the document entirely. Two peers can concurrently ask
@@ -1196,8 +1198,7 @@ mod tests {
     }
 
     /// A filter never carries (§21.2): every way a layer can be attached under a
-    /// carrier declines a filter carrier, deterministically, so no log can build the
-    /// arrangement.
+    /// carrier declines a filter carrier, so no log can build the arrangement.
     #[test]
     fn a_filter_refuses_to_carry() {
         let state = with_filter();

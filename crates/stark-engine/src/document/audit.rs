@@ -7,7 +7,7 @@
 //!
 //! # What it costs
 //!
-//! One `DocState` clone (a handful of `Arc` bumps, §5.1) and one walk of the layer
+//! One `DocState` clone (cheap by design, §5.1) and one walk of the layer
 //! tree comparing tile handles by pointer, both debug-only. `Materialize::AUDITED`
 //! keeps a consumer that does not audit from paying even the clone.
 //!

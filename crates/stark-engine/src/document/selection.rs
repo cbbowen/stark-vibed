@@ -208,8 +208,8 @@ impl Selection {
                 .all(|(c, h)| other.tiles.get(c).is_some_and(|o| o.same(h)))
     }
 
-    /// The mask map itself — cloning it is a handful of `Arc` bumps, which is how the
-    /// renderer builds the next selection on top of this one.
+    /// The mask map itself — persistent, so cloning it is cheap (§5.1), which is how
+    /// the renderer builds the next selection on top of this one.
     pub(crate) fn tile_map(&self) -> &MaskMap {
         &self.tiles
     }
