@@ -33,8 +33,7 @@
 //! alternation. So each keeps its own and they share the expensive half by reference.
 //! What they must not each keep a copy of is the view settings: two consumers
 //! disagreeing about the canvas substrate or the lighting would be a bug visible only
-//! in the smaller picture, so those live in the pipeline behind a generation counter
-//! that each `Compositor` notices.
+//! in the smaller picture, so those live in the pipeline, read at every render.
 
 mod attachment;
 pub(crate) mod blend;
@@ -277,6 +276,16 @@ pub(crate) struct CompositorPasses {
     /// there is a residual at all, which decides the third attachment on every pass A
     /// target and is the space's answer rather than a per-target choice.
     formats: ChannelFormats,
+
+    /// Which passes these are, for a [`Compositor`] to tell whether it was built
+    /// against them: its streams' bind groups answer to these layouts, and its
+    /// attachments carry these formats.
+    ///
+    /// Minted once, with the passes. A colour-space rebuild does not mutate them but
+    /// *replaces* them (§6.7), which is why the stamp is drawn from a process-wide
+    /// counter ([`next_stamp`]): a per-kit count would start the replacement at the
+    /// very value a kept compositor of the old kit holds.
+    generation: u64,
 }
 
 /// The bind group layouts of the four passes that write a frame's target — the half
@@ -405,27 +414,10 @@ pub(crate) struct CompositorPipeline {
     substrate: SubstrateMap,
     // The HDR lighting environment sampled by the media pass (§6.3).
     environment: Environment,
-    /// A stamp for "the **pipeline** a consumer's attachments were built against".
-    /// Moved when this kit is built or rebuilt, and never by a setting — so a
-    /// consumer holding an older value is holding attachments whose *formats* may be
-    /// wrong, which is the only thing that can require reallocating them.
-    ///
-    /// Drawn from a **process-wide** counter rather than counted per pipeline, so no
-    /// two states anywhere ever share a value: "same stamp" then implies "same
-    /// pipeline", and a consumer's decision to reuse cannot be wrong.
-    ///
-    /// The case that needs that is a color-space rebuild (§6.7), which does not mutate
-    /// a pipeline but *replaces* it: a per-pipeline counter would start the
-    /// replacement back at the very value a consumer of the old pipeline is holding,
-    /// so a kept [`Compositor`] would see "no change" and keep attachments belonging
-    /// to a pipeline that is gone — one whose targets may lack, or carry, the
-    /// residual the new space has ([`ColorSpace::has_resid`]).
-    generation: u64,
-
     /// A stamp for "the substrate and light a media bind group would name". Moved
     /// whenever either is swapped.
     ///
-    /// **Separate from [`generation`](Self::generation) because the two invalidate
+    /// **Separate from [`CompositorPasses::generation`] because the two invalidate
     /// different things.** A substrate or a light is *bound into* each consumer's
     /// media group and named nowhere else, so a swap costs one `create_bind_group`
     /// ([`media::Accumulator::rebind`]) where one stamp for both would drop and rebuild
@@ -435,15 +427,16 @@ pub(crate) struct CompositorPipeline {
     /// every switch in the Lighting panel and every late-arriving HDR moves it, which
     /// on the web is the destroy/create churn [`Attachment`] warns about, at a rate.
     ///
-    /// Process-wide for `generation`'s reason, and for one of its own: a rebuild
-    /// replaces the substrate and the light too, so a consumer must not mistake the
-    /// new kit's first binding state for the old kit's.
+    /// Process-wide for `generation`'s reason: a rebuild replaces the substrate and
+    /// the light too, so a consumer must not mistake the new kit's first binding state
+    /// for the old kit's.
     bindings: u64,
 }
 
-/// The next value for [`CompositorPipeline::generation`] — see there for why this is
-/// process-wide.
-fn next_generation() -> u64 {
+/// The next value for a stamp a consumer compares against the one it holds —
+/// [`CompositorPasses::generation`], [`CompositorPipeline::bindings`]. Process-wide,
+/// so no two states anywhere share a value and "same stamp" implies "same state".
+fn next_stamp() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(1);
     NEXT.fetch_add(1, Ordering::Relaxed)
@@ -459,16 +452,24 @@ fn next_generation() -> u64 {
 /// renders beside it: an export, the navigator's miniature. Sharing one across
 /// targets of different sizes means each render resizes the attachments the other
 /// just built, so the cost is paid twice per alternation rather than once ever.
+///
+/// **It answers to one set of passes.** Every half of it names them — the streams'
+/// bind groups their layouts, the attachments their formats — so a compositor that
+/// meets another set ([`CompositorPasses::generation`]) starts over whole rather than
+/// half (`Compositor::follow`). That is what a kept [`Offscreen`] meets across a
+/// colour-space rebuild.
 pub(crate) struct Compositor {
+    /// The [`CompositorPasses::generation`] this was built against.
+    generation: u64,
     sized: TargetSized,
     streams: Streams,
 }
 
-/// What the attachments were built for — the whole of what decides a rebuild over a
-/// rebind (§6.4). Equality **is** the decision, so a field added here cannot be left
-/// out of it. The substrate and the light are deliberately absent: a swap of either
-/// is a rebind of the one group that names them ([`CompositorPipeline::bindings`]),
-/// which the attachments survive.
+/// What the attachments were built for within one set of passes — the whole of what
+/// decides a rebuild over a rebind (§6.4). Equality **is** the decision, so a field
+/// added here cannot be left out of it. The substrate and the light are deliberately
+/// absent: a swap of either is a rebind of the one group that names them
+/// ([`CompositorPipeline::bindings`]), which the attachments survive.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct TargetKey {
     /// The size **every** offscreen attachment is at: the target's, times `ss`.
@@ -479,9 +480,6 @@ struct TargetKey {
     ss: u32,
     /// The target format the supersampled intermediate carries (§6.4).
     format: wgpu::TextureFormat,
-    /// The [`CompositorPipeline::generation`]: the pipeline whose channel formats
-    /// the attachments carry.
-    generation: u64,
 }
 
 /// The attachments one render sized, with the key they answer to. Absent until the
@@ -569,7 +567,8 @@ struct Streams {
 pub struct Offscreen(Option<Compositor>);
 
 impl Offscreen {
-    /// The compositor, built against `p` if this is the first use.
+    /// The compositor, built against `p` if this is the first use. One kept across a
+    /// colour-space rebuild starts over at its next render (`Compositor::follow`).
     ///
     /// No size: the attachments are sized by the first *render*, which is the only
     /// thing that knows the zoom and therefore the supersampling factor.
@@ -625,6 +624,7 @@ impl CompositorPipeline {
             view: View::new(device),
             ctx: ctx.clone(),
             formats,
+            generation: next_stamp(),
         };
         Self::sharing(Arc::new(passes), substrate, environment, settings)
     }
@@ -649,8 +649,7 @@ impl CompositorPipeline {
             settings,
             substrate,
             environment,
-            generation: next_generation(),
-            bindings: next_generation(),
+            bindings: next_stamp(),
         }
     }
 
@@ -711,13 +710,13 @@ impl CompositorPipeline {
     /// untouched — see [`CompositorPipeline::bindings`].
     pub(crate) fn set_substrate(&mut self, substrate: SubstrateMap) {
         self.substrate = substrate;
-        self.bindings = next_generation();
+        self.bindings = next_stamp();
     }
 
     /// Swap the HDR lighting environment so the next render samples it (§6.3).
     pub(crate) fn set_environment(&mut self, environment: Environment) {
         self.environment = environment;
-        self.bindings = next_generation();
+        self.bindings = next_stamp();
     }
 
     /// The channel formats pass A writes (§6.7) — what a caller supplying its own
@@ -763,20 +762,20 @@ impl TargetSized {
     /// into.
     ///
     /// Called at the top of every render, so a resized target, a zoom that crossed a
-    /// supersampling threshold, a swapped canvas substrate, a swapped light and a
-    /// whole rebuilt pipeline (a color-space change, which changes the channel
-    /// *formats*) all land without anyone having to be notified.
+    /// supersampling threshold, a swapped canvas substrate and a swapped light all
+    /// land without anyone having to be notified. (A rebuilt pipeline never reaches
+    /// here: the whole compositor starts over first, [`Compositor::follow`].)
     ///
-    /// **Two stamps, because two of those are not the same event.** A resize or a
-    /// rebuilt pipeline invalidates the attachments themselves (the [`TargetKey`]);
-    /// a swapped substrate or light invalidates only the group that names them
+    /// **Two stamps, because two of those are not the same event.** A resize
+    /// invalidates the attachments themselves (the [`TargetKey`]); a swapped
+    /// substrate or light invalidates only the group that names them
     /// ([`CompositorPipeline::bindings`]), and is rebound in place.
     ///
     /// The blend scratch and the blur planes are dropped rather than kept through a
-    /// rebuild: both are sized like the attachments and carry their formats, so
-    /// "everything that depends on the target or the pipeline is rebuilt together"
-    /// holds by construction rather than by a second condition that could disagree
-    /// with this one. It costs one reallocation on the next blended render.
+    /// rebuild: both are sized like the attachments, so "everything that depends on
+    /// the target is rebuilt together" holds by construction rather than by a second
+    /// condition that could disagree with this one. It costs one reallocation on the
+    /// next blended render.
     ///
     /// `buffers_moved` is [`Streams::upload`]'s report that a uniform buffer the
     /// scratch's cached bind groups name was replaced; a blur frame built, resized or
@@ -800,7 +799,6 @@ impl TargetSized {
             size: Extent2::new(target_size.width * ss, target_size.height * ss),
             ss,
             format,
-            generation: p.generation,
         };
         // Taken rather than matched through `&mut`: a guard's borrow of the hit
         // outlives a miss under NLL, and the miss arm has to replace the slot.
@@ -1108,8 +1106,17 @@ impl Compositor {
     /// knows the zoom.
     pub(crate) fn new(pipeline: &CompositorPipeline) -> Self {
         Self {
+            generation: pipeline.generation,
             sized: TargetSized::default(),
             streams: Streams::new(pipeline),
+        }
+    }
+
+    /// Start over if `p`'s passes are not the ones this was built against — see
+    /// [`Compositor`]. Called by every entry point that writes.
+    fn follow(&mut self, p: &CompositorPipeline) {
+        if self.generation != p.generation {
+            *self = Self::new(p);
         }
     }
 
@@ -1119,6 +1126,7 @@ impl Compositor {
     /// Separate from the recording because it happens *once* for a trace: every slot
     /// has to be written before the single submit that reads them.
     pub(crate) fn write_views(&mut self, p: &CompositorPipeline, views: &[ViewTransform]) {
+        self.follow(p);
         // A pick draws pass A alone into a patch of its own — no outline, so the one
         // thing the view's transfer lane reaches is not encoded here (§6.5).
         self.streams.write_views(p, views, Transfer::Srgb);
@@ -1143,6 +1151,7 @@ impl Compositor {
         view: ViewTransform,
         groups: &'a [CompositeGroup],
     ) -> PreparedPick<'a> {
+        self.follow(p);
         let plan = Plan::build(groups);
         let (streams, buffers_moved) = self.streams.upload(p, view, &plan);
         // The screen's cache, not this pick's: the two share the uniform buffers,
@@ -1264,6 +1273,7 @@ impl Compositor {
         view: ViewTransform,
         scene: CompositeScene<'_>,
     ) {
+        self.follow(p);
         let CompositeScene {
             substrate_color: bg_channels,
             substrate_resid: bg_resid,
@@ -1453,7 +1463,6 @@ mod tests {
             size: size(),
             ss: 1,
             format: wgpu::TextureFormat::Bgra8Unorm,
-            generation: 7,
         }
     }
 
@@ -1483,14 +1492,5 @@ mod tests {
             ..key()
         };
         assert_ne!(key(), deep);
-    }
-
-    #[test]
-    fn a_rebuilt_pipeline_rebuilds() {
-        let rebuilt = TargetKey {
-            generation: 8,
-            ..key()
-        };
-        assert_ne!(key(), rebuilt);
     }
 }

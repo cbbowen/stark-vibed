@@ -98,12 +98,12 @@ pub(super) struct ViewBindings {
 }
 
 /// The three never-changing things a view group is built from — all owned by the
-/// shared [`CompositorPasses`](super::CompositorPasses).
+/// shared [`CompositorPasses`](super::CompositorPasses), and handed in at every build
+/// rather than borrowed for a [`ViewBindings`]' life.
 ///
-/// **Handed in at every build rather than kept**, so a [`ViewBindings`] cannot
-/// outlive the layouts it answers to: a color-space rebuild replaces the passes, and
-/// a consumer holding the old layouts would go on building groups against them with
-/// nothing to say so (§6.7).
+/// What keeps a `ViewBindings` from outliving the layouts its groups answer to is its
+/// owner: a [`Compositor`](super::Compositor) that meets a rebuilt set of passes
+/// starts over whole, these bindings included (§6.7).
 pub(super) struct ViewGroups<'a> {
     pub(super) sampler: &'a wgpu::Sampler,
     pub(super) tiles: &'a Bindings,
