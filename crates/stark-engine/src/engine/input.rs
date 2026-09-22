@@ -6,6 +6,7 @@
 //! nothing about either.
 
 use super::Engine;
+use super::live::Held;
 use crate::command::{DocCommand, Edit, GestureCommand, PeerCommand, ViewCommand};
 use crate::document::Step;
 use crate::session::ShapeResult;
@@ -164,7 +165,7 @@ impl Engine {
         let rebakes = matches!(edit, Edit::SubstrateScale(_));
         match self.edit_kind(edit) {
             Some(kind) => self.commit(kind),
-            None => self.preview.set_doc(None),
+            None => self.preview.hold(None),
         }
         if rebakes {
             self.apply_document_substrate();
@@ -483,7 +484,14 @@ impl Engine {
     /// `apply_document_substrate`, so nothing bakes while a hand is on a slider
     /// ([`Edit::SubstrateScale`]).
     fn preview_edit(&mut self, edit: Option<Edit>) {
-        let shown = edit.and_then(|e| self.edit_kind(e)).and_then(|kind| {
+        let held = edit.map(|e| self.held(e));
+        self.preview.hold(held);
+    }
+
+    /// `edit` as the hand holds it: folded over the committed document through the
+    /// action its release would commit.
+    fn held(&self, edit: Edit) -> Held {
+        let shown = self.edit_kind(edit.clone()).and_then(|kind| {
             crate::document::apply::preview_of(
                 kind,
                 self.timeline.current(),
@@ -491,7 +499,19 @@ impl Engine {
                 &self.shared.apply,
             )
         });
-        self.preview.set_doc(shown);
+        Held::new(edit, shown)
+    }
+
+    /// Fold the held edit again over a committed document that a change the hand did
+    /// not make has just replaced — a peer's action, a replay (`Drag::Keep`) — and
+    /// invalidate what was drawn over the old one.
+    ///
+    /// Here rather than at the next pointer sample, because a slider held still and an
+    /// idle transform mode send none: the drag would stay built over the old document,
+    /// hiding everything that landed since.
+    pub(super) fn refold_held(&mut self) {
+        let held = self.preview.held_edit().cloned().map(|e| self.held(e));
+        self.preview.rebase(held);
     }
 
     /// View-state mutations: nothing here is logged, replicated, or reachable by

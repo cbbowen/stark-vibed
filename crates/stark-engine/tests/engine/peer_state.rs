@@ -919,6 +919,141 @@ fn a_peers_head_survives_a_local_no_op_commit() {
     );
 }
 
+/// Where A paints, on the layer its held drag fades out.
+const FADED_LINE: Vec2 = Vec2::new(0.0, -60.0);
+
+/// A session of two in which A has painted across [`FADED_LINE`] on a layer of its
+/// own and holds a drag fading that layer out — a slider held still, which sends
+/// nothing more until it moves or lets go (§21.6).
+fn holding_a_drag() -> Option<(Engine, Engine, LayerId)> {
+    let (mut a, mut b) = crate::common::collab::pair()?;
+    let faded = crate::common::add_layer(&mut a);
+    paint(
+        &mut a,
+        RED,
+        12.0,
+        &[FADED_LINE - Vec2::X * 80.0, FADED_LINE + Vec2::X * 80.0],
+    );
+    sync(&mut a, &mut b);
+    a.process(ViewCommand::Preview(Some(Edit::LayerOpacity(faded, 0.0))));
+    assert!(
+        !is_painted(&snap(&mut a), FADED_LINE),
+        "the drag fades A's layer"
+    );
+    Some((a, b, faded))
+}
+
+fn opacity_of(engine: &Engine, layer: LayerId) -> Option<f32> {
+    let layers = engine.observe().layers;
+    layers.iter().find(|l| l.id == layer).map(|l| l.opacity)
+}
+
+/// **A drag held still is folded again over a peer's edit** (§17.6, §21.6).
+///
+/// The drag's preview is a document built over the committed one, and nothing re-sends
+/// it while the hand is still. Left as it was, a peer's action stays behind it: their
+/// layer missing from the roster, their stroke missing from the canvas.
+#[test]
+fn a_held_drag_is_refolded_over_a_peers_edit() {
+    let Some((mut a, mut b, faded)) = holding_a_drag() else {
+        return;
+    };
+
+    // B paints on the layer both started with, then adds one of its own.
+    paint(&mut b, GREEN_SOFT, 12.0, &CROSSING);
+    b.process(DocCommand::AddLayer {
+        carrier: None,
+        above: None,
+    });
+    sync(&mut a, &mut b);
+
+    assert_eq!(a.observe().layers.len(), 3, "B's layer is in A's roster");
+    assert_eq!(opacity_of(&a, faded), Some(0.0), "under A's drag");
+    let img = snap(&mut a);
+    assert!(is_green(&img, Vec2::ZERO), "B's stroke shows on A mid-drag");
+    assert!(!is_painted(&img, FADED_LINE), "under A's drag");
+
+    // Letting go commits the drag onto the document as it now stands.
+    a.process(DocCommand::Set(Edit::LayerOpacity(faded, 0.0)));
+    sync(&mut a, &mut b);
+    assert_eq!(a.observe().layers.len(), 3);
+    assert_eq!(opacity_of(&b, faded), Some(0.0), "the commit reached B");
+    let img = snap(&mut a);
+    assert!(images_match(&img, &snap(&mut b), 0), "the peers converge");
+    assert!(is_green(&img, Vec2::ZERO));
+}
+
+/// **A peer's stroke after their `SetSubstrate` folds over the document it is painted
+/// on, while a drag is held** (§6.4, §17.6).
+///
+/// The fold draws a live stroke over the held drag's document and bites the tooth of
+/// the substrate in use, which the merge of a `SetSubstrate` moves. A drag left over the
+/// document from before that merge puts the two on different substrates — which the
+/// renderer asserts against — and at the peer's pen-up it hides the committed stroke
+/// the live copy made way for.
+#[test]
+fn a_peers_stroke_on_their_new_substrate_shows_under_a_held_drag() {
+    let Some((mut a, mut b, faded)) = holding_a_drag() else {
+        return;
+    };
+    let bytes = stark_testdata::assets::rough();
+    let rough = b
+        .import_substrate(&bytes)
+        .expect("the rough height map imports");
+    // The transport's half: the bytes a peer's `SetSubstrate` names arrive first (§12.4).
+    a.import_substrate(&bytes)
+        .expect("the rough height map imports");
+    b.process(DocCommand::SetSubstrate(rough));
+    sync(&mut a, &mut b);
+    assert_eq!(a.observe().substrate, rough);
+
+    // B paints on the layer A's drag was built over, publishing as it goes.
+    let line = [Vec2::new(-80.0, 60.0), Vec2::new(80.0, 60.0)];
+    let mid = Vec2::new(0.0, 60.0);
+    b.process(ViewCommand::set_brush(crate::common::brush(
+        GREEN_SOFT, 12.0,
+    )));
+    b.process(GestureCommand::Start {
+        tool: Tool::Brush,
+        sample: InputSample::at(line[0]),
+        tolerance: DEFAULT_TOLERANCE,
+        rope: 0.0,
+    });
+    let mut now = 0.0;
+    for i in 1..=8 {
+        let t = i as f32 / 8.0;
+        b.process(GestureCommand::To {
+            sample: InputSample::at(line[0] + (line[1] - line[0]) * t),
+        });
+        now += 0.05;
+        if let Some(frame) = b.take_presence(now).frame {
+            a.merge_presence(ActorId(2), frame, now);
+        }
+    }
+    let img = snap(&mut a);
+    assert!(is_green(&img, mid), "B's live stroke shows on A");
+    assert!(!is_painted(&img, FADED_LINE), "under A's drag");
+
+    // B lifts: the live copy comes down, and the committed one takes its place.
+    b.process(GestureCommand::End);
+    sync(&mut a, &mut b);
+    assert!(
+        is_green(&snap(&mut a), mid),
+        "B's stroke outlives B's pen-up"
+    );
+
+    a.process(DocCommand::Set(Edit::LayerOpacity(faded, 0.0)));
+    sync(&mut a, &mut b);
+    assert_eq!(
+        a.observe().substrate,
+        rough,
+        "A's commit is on B's substrate"
+    );
+    assert_eq!(opacity_of(&b, faded), Some(0.0), "the commit reached B");
+    let img = snap(&mut a);
+    assert!(images_match(&img, &snap(&mut b), 0), "the peers converge");
+}
+
 /// A collaborator's selection outline is off by default and drawn only when this
 /// client asks for it — a view setting, so it changes what you look at and nothing
 /// about the drawing (§17.3). Your own outline is unaffected either way.

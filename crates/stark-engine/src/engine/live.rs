@@ -11,6 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::Engine;
+use crate::command::Edit;
 use crate::document::apply::{fill_onto, select_onto};
 use crate::document::{ApplyCtx, DocState, PreparedStroke};
 use crate::gpu::stroke::Progress;
@@ -23,22 +24,20 @@ use stark_model::geom::{TileCoord, TileRect};
 /// What is being *shown* over the committed document, and the caches that make
 /// showing it affordable (§17.6).
 ///
-/// The two fields that can invalidate a cached head — the drag-preview document and
-/// the committed one underneath it — move only through [`set_doc`](Self::set_doc),
-/// [`invalidate`](Self::invalidate) and [`supersede`](Self::supersede), each of which
-/// bumps the epoch and marks the fold stale as it goes: a fold over a replaced base is
-/// stale by definition.
+/// The two things that can invalidate a cached head — the held drag's document and
+/// the committed one underneath it — move only through [`hold`](Self::hold),
+/// [`rebase`](Self::rebase), [`invalidate`](Self::invalidate) and
+/// [`supersede`](Self::supersede), each of which bumps the epoch and marks the fold
+/// stale as it goes: a fold over a replaced base is stale by definition.
 #[derive(Default)]
 pub(super) struct Preview {
-    /// The unlogged document edit in flight: a whole document standing in for the
-    /// committed one, since what these edits change — a matte's rect (§15.7), the
-    /// substrate color (§15.5) — is document state rather than a tile edit. One
-    /// slot, not one per kind: only one such drag can be in flight at a time, and a
-    /// second kind starting mid-drag supersedes the first rather than compounding
-    /// with it. `None` when nothing is being dragged.
-    doc: Option<DocState>,
-    /// The committed state (or `doc`) with every in-flight gesture — this client's
-    /// and every peer's — drawn over it. `None` when nobody is mid-gesture.
+    /// The unlogged document edit in flight. One slot, not one per kind: only one such
+    /// drag can be in flight at a time, and a second kind starting mid-drag supersedes
+    /// the first rather than compounding with it. `None` when nothing is being dragged.
+    held: Option<Held>,
+    /// The committed state (or the held drag's document) with every in-flight gesture
+    /// — this client's and every peer's — drawn over it. `None` when nobody is
+    /// mid-gesture.
     live: Option<DocState>,
     /// The settled head of each in-flight stroke, keyed by its author (see
     /// [`FrozenHead`]). Every head is rooted at the *committed* document rather than
@@ -70,6 +69,25 @@ pub(super) struct Preview {
     prepared: Option<PreparedStroke>,
 }
 
+/// An unlogged edit the hand is holding (§21.6), and what it shows.
+pub(super) struct Held {
+    /// The edit itself, kept so that a committed change the hand did not make can fold
+    /// it again over the document that change left (`Engine::refold_held`): a slider
+    /// held still sends nothing that would.
+    edit: Edit,
+    /// `edit` folded over the committed document — a whole document standing in for
+    /// it, since what these edits change (a matte's rect, the substrate color) is
+    /// document state rather than a tile edit. `None` where its commit would be
+    /// declined, which shows the committed document.
+    doc: Option<DocState>,
+}
+
+impl Held {
+    pub(super) fn new(edit: Edit, doc: Option<DocState>) -> Self {
+        Self { edit, doc }
+    }
+}
+
 impl Preview {
     /// Note that the document the previews are drawn over has been replaced, so
     /// every cached head is stale and the fold has to be rebuilt.
@@ -83,26 +101,35 @@ impl Preview {
     /// a local edit, which supersedes the drag (`Engine::commit`). One replacement,
     /// one epoch.
     pub(super) fn supersede(&mut self) {
-        self.doc = None;
+        self.held = None;
         self.invalidate();
     }
 
-    /// Install (or, with `None`, drop) the stand-in document for an unlogged edit in
-    /// flight. The gesture previews are composited onto it, so moving it invalidates;
-    /// dropping a slot that is already empty moves nothing, which is what lets a
-    /// declined commit keep every cached head.
-    pub(super) fn set_doc(&mut self, doc: Option<DocState>) {
-        if doc.is_none() && self.doc.is_none() {
-            return;
+    /// Hold (or, with `None`, let go of) an unlogged edit. The gesture previews are
+    /// composited onto what it shows, so a change there invalidates; one that shows
+    /// nothing, before or after, moves nothing — which is what lets a declined commit
+    /// keep every cached head.
+    pub(super) fn hold(&mut self, held: Option<Held>) {
+        let moves = self.doc().is_some() || held.as_ref().is_some_and(|h| h.doc.is_some());
+        self.held = held;
+        if moves {
+            self.invalidate();
         }
-        self.doc = doc;
+    }
+
+    /// [`invalidate`](Self::invalidate) for a committed document replaced by a change
+    /// the hand did not make, with `held` the held edit folded again over the new one.
+    /// Unconditional, unlike [`hold`](Self::hold): the base moved even where the drag
+    /// shows nothing.
+    pub(super) fn rebase(&mut self, held: Option<Held>) {
+        self.held = held;
         self.invalidate();
     }
 
     /// Forget everything: no drag in flight, no fold, no heads. For loading a
     /// different document, where none of it describes anything any more.
     pub(super) fn clear(&mut self) {
-        self.doc = None;
+        self.held = None;
         self.live = None;
         self.heads.clear();
         self.invalidate();
@@ -111,16 +138,18 @@ impl Preview {
     /// The document as it should be *shown*: the fold if there is one, else the
     /// unlogged edit in flight, else `committed`.
     pub(super) fn presented<'a>(&'a self, committed: &'a DocState) -> &'a DocState {
-        self.live
-            .as_ref()
-            .or(self.doc.as_ref())
-            .unwrap_or(committed)
+        self.live.as_ref().or(self.doc()).unwrap_or(committed)
     }
 
-    /// The unlogged edit in flight, for the presentation properties that must track a
-    /// drag rather than lag on the committed value (§15.5, §15.7).
+    /// What the unlogged edit in flight shows, for the presentation properties that
+    /// must track a drag rather than lag on the committed value (§15.5, §15.7).
     pub(super) fn doc(&self) -> Option<&DocState> {
-        self.doc.as_ref()
+        self.held.as_ref().and_then(|h| h.doc.as_ref())
+    }
+
+    /// The unlogged edit in flight, whatever it shows.
+    pub(super) fn held_edit(&self) -> Option<&Edit> {
+        self.held.as_ref().map(|h| &h.edit)
     }
 
     /// How many strokes in flight have a settled head cached — at most one per actor
@@ -189,7 +218,7 @@ impl Preview {
             return;
         }
         self.fold.bump();
-        let base = self.doc.clone().unwrap_or_else(|| committed.clone());
+        let base = self.doc().unwrap_or(committed).clone();
         let mut out = base.clone();
         // Last fold's cache to draw from, and this fold's to fill: what is not moved
         // across is released when `cached` drops at the end of the call.
@@ -298,7 +327,7 @@ impl Preview {
                     // diagnostic's.
                     let lands_at_commit = actor == local
                         && !contested
-                        && self.doc.is_none()
+                        && self.doc().is_none()
                         && !cfg!(feature = "debug-unfrozen");
                     if lands_at_commit
                         && let Some(from) = base.layer(rec.layer).filter(|l| l.tiles().is_some())
@@ -661,17 +690,17 @@ fn render_span_range(
     //
     // The registry's *in-use* substrate, not a lookup by `base.substrate()`: this is a
     // `&self` path and cannot bake one on demand. `apply_document_substrate` holds
-    // `current()` level with `document().substrate()`, and a live gesture cannot
-    // straddle a logged `SetSubstrate` — a merge that moved the substrate bumped the
-    // preview's epoch and threw every frozen head away with it.
+    // `current()` level with the committed document's substrate, and `base` is that
+    // document or a held drag folded over it — folded again whenever the committed
+    // document moves (`Drag::Keep`), and no edit previews the id. A merge that moved
+    // the substrate also bumped the epoch, so no head frozen on the old one survives.
     //
     // **The pair can still part, and only on the scale.**
     // Previewing an `Edit::SubstrateScale` moves `base.substrate().scale` without
     // baking, so a mark live across that drag — a hover probe, which no gesture is in
     // flight to suppress — draws on the scale the registry still holds. That costs a
     // preview lagging the slider, not a divergence: the commit re-bakes and renders
-    // from the log. The **id** is what a live stroke may never be wrong about, and no
-    // command previews it.
+    // from the log.
     debug_assert_eq!(
         base.substrate().id,
         ctx.substrates.id().id,

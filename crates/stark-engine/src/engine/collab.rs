@@ -135,8 +135,7 @@ impl Engine {
         // makes it a replay rather than an approximation.
         self.adopt(validated);
         let initial = DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate);
-        // `adopt` has already cleared the preview, drag and all.
-        self.change_committed(Drag::Keep, |timeline, ctx| {
+        self.change_committed(Drag::Supersede, |timeline, ctx| {
             *timeline = Timeline::Replicated(ReplicatedTimeline::from_log(
                 actor,
                 initial,
@@ -188,6 +187,7 @@ impl Engine {
         // A committed change although the pixels are untouched: what the history
         // *offers* moved with it — a peer's stroke is this document's to undo now, and
         // the scrubber comes back — and nothing else in the projection would say so.
+        // The document is the same one, so a drag held across leaving stays up.
         self.change_committed(Drag::Keep, |timeline, _| {
             let parked = Timeline::Linear(LinearTimeline::new(DocState::with_layer(ROOT_LAYER)));
             *timeline = std::mem::replace(timeline, parked).unshare();

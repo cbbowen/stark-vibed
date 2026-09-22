@@ -41,11 +41,11 @@ impl std::ops::Deref for Committed {
 /// (§17.6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Drag {
-    /// A local edit supersedes the drag — whether or not anything moved, for
-    /// [`commit`](Engine::commit)'s reason.
+    /// A local edit, or a document replaced wholesale, supersedes the drag — whether or
+    /// not anything moved, for [`commit`](Engine::commit)'s reason.
     Supersede,
-    /// A change the hand did not make — a peer's action, a replay — leaves it up: the
-    /// next pointer sample re-previews over the new document.
+    /// A change the hand did not make — a peer's action, a replay — leaves it up,
+    /// folded again over the new document ([`refold_held`](Engine::refold_held)).
     Keep,
 }
 
@@ -103,8 +103,9 @@ impl Engine {
     /// **The one door a change to the committed timeline goes through** — a commit,
     /// an undo, a merge, a share, a join, a reset, a replayed action. `f` makes the
     /// change and answers whether the committed document moved; only then are the
-    /// caches over it dropped: the preview's epoch and fold, and `doc_revision`, which
-    /// keys every memo and says the document was edited.
+    /// caches over it dropped — the preview's epoch and fold, and `doc_revision`, which
+    /// keys every memo and says the document was edited — and the drag in flight
+    /// superseded or folded again over it, as `drag` says.
     ///
     /// **Repointing the brush belongs here too.** The rule is not "a `RemoveLayer`
     /// removes a layer" — an undo of an `AddLayer` withdraws one, a merge folds one
@@ -122,8 +123,8 @@ impl Engine {
         let moved = f(&mut self.timeline.0, &mut self.shared.apply);
         match (moved, drag) {
             (true, Drag::Supersede) => self.preview.supersede(),
-            (true, Drag::Keep) => self.preview.invalidate(),
-            (false, Drag::Supersede) => self.preview.set_doc(None),
+            (true, Drag::Keep) => self.refold_held(),
+            (false, Drag::Supersede) => self.preview.hold(None),
             (false, Drag::Keep) => {}
         }
         if moved {
@@ -190,7 +191,7 @@ impl Engine {
         // own sanitized twin — the case the check exists to catch.
         let kind = kind.sanitized();
         if crate::document::apply::is_noop_on(&kind, self.document(), self.actor()) {
-            self.preview.set_doc(None);
+            self.preview.hold(None);
             return;
         }
         // Drawn only once the action is known to be worth logging, so a slider

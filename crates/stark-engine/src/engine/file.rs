@@ -579,11 +579,12 @@ impl Engine {
     /// [`release_closed_document`](Self::release_closed_document).
     fn reset_document(&mut self, named: &[AssetNeed]) {
         let initial = DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate);
-        // The preview is cleared outright below, drag and all.
-        self.change_committed(Drag::Keep, |timeline, _| {
+        self.change_committed(Drag::Supersede, |timeline, _| {
             *timeline = Timeline::Linear(LinearTimeline::new(initial));
             true
         });
+        // The fold and every head hold the closed document's tiles, which the release
+        // below wants idle.
         self.preview.clear();
         self.peers.clear();
         // Built over the closed document's tiles; the next frame builds its own.
