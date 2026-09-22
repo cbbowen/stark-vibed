@@ -13,10 +13,9 @@ use crate::Result;
 use crate::document::{CompositeParams, DocState, Layer, LayerContent};
 use crate::error::{ExportError, Produces};
 use crate::gpu::composite::{
-    CompositeGroup, CompositeItem, CompositeScene, FilterDraw, MatteDraw, Offscreen, Output,
-    SelectionOutline,
+    CompositeGroup, CompositeItem, CompositeScene, CompositorPipeline, FilterDraw, MatteDraw,
+    Offscreen, Output, SelectionOutline,
 };
-use crate::gpu::context::GpuContext;
 use crate::image::RgbaImage;
 use crate::view::{Extent2, ViewTransform};
 use stark_model::document::{GradientParcel, GuideScene, LayerId};
@@ -145,11 +144,11 @@ impl ExportPlan {
 /// number: the frontend requests `wgpu::Limits::default()` while the headless device
 /// ([`GpuContext::headless`]) asks only for the engine's own minimums
 /// ([`MAX_TEXTURE_DIM_2D`](crate::gpu::context::MAX_TEXTURE_DIM_2D)), so any literal
-/// agrees with one of them and not the other.
+/// agrees with one of them and not the other. Asked once, by the compositor.
 ///
 /// [`GpuContext::headless`]: crate::gpu::context::GpuContext::headless
-fn max_export_dim(gpu: &GpuContext) -> u32 {
-    gpu.device.limits().max_texture_dimension_2d
+fn max_export_dim(compositor: &CompositorPipeline) -> u32 {
+    compositor.max_dim()
 }
 
 /// How much of the viewport [`Engine::show_piece`] leaves clear around the piece, as
@@ -277,13 +276,6 @@ impl Engine {
             self.draw_list(key, &doc)
         };
 
-        // The substrate is document state (§15.5), so the one a piece was painted on
-        // travels with it rather than with whichever frontend renders it.
-        let bg = self.shared.color_space.rgb_to_latent(doc.substrate_color);
-        // The substrate is opaque paint under everything, so its per-unit opacity is
-        // 1; the residual target carries the same number (§6.7).
-        let bg_channels = [bg.lat[0], bg.lat[1], bg.lat[2], 1.0];
-        let bg_resid = [bg.res[0], bg.res[1], bg.res[2], 0.0];
         // Chrome never reaches a file: an exported image gets no selection outline
         // (§15.6). Keyed on `chrome`, deliberately *not* on the background — a
         // substrate export is still an export. Read off the owned `doc`, so the
@@ -325,8 +317,9 @@ impl Engine {
             Attachments::Export(_) => Output::SDR,
         };
         let scene = CompositeScene {
-            substrate_color: bg_channels,
-            substrate_resid: bg_resid,
+            // Document state (§15.5), so the substrate a piece was painted on travels
+            // with it rather than with whichever frontend renders it.
+            substrate: self.shared.color_space.rgb_to_latent(doc.substrate_color),
             // Off `doc`, which is the *previewed* document when one is up — so an
             // unlogged scale drag re-lights the substrate at pointer rate (§6.4).
             substrate_uv_scale: doc.substrate().uv_scale(),
@@ -467,7 +460,7 @@ impl Engine {
             (w * zoom).round().max(1.0) as u32,
             (h * zoom).round().max(1.0) as u32,
         );
-        let limit = max_export_dim(&self.shared.gpu);
+        let limit = max_export_dim(&self.compositor_pipeline);
         if size.width > limit || size.height > limit {
             return Err(ExportError::OverLimit {
                 what: Produces::Export,
@@ -499,8 +492,8 @@ impl Engine {
     /// Deliberately *not* an `async fn`: one would hold `&mut self` across the
     /// readback, and a frontend taking that borrow from a shared cell would panic with
     /// `AlreadyBorrowedMut` when the UI re-rendered mid-await. The future owns a cloned
-    /// [`GpuContext`] and the target texture and touches the engine not at all, so the
-    /// borrow ends when `export` returns.
+    /// [`GpuContext`](crate::gpu::context::GpuContext) and the target texture and
+    /// touches the engine not at all, so the borrow ends when `export` returns.
     ///
     /// `content` chooses whether the in-flight gesture is in the picture: a file
     /// export takes [`Rendered::Live`], since that is what the artist is looking at.
@@ -574,7 +567,7 @@ impl Engine {
             return Err(ExportError::UnusableView.into());
         }
         let size = view.viewport;
-        let limit = max_export_dim(&self.shared.gpu);
+        let limit = max_export_dim(&self.compositor_pipeline);
         if size.width == 0 || size.height == 0 || size.width > limit || size.height > limit {
             return Err(ExportError::OverLimit {
                 what: Produces::Render,

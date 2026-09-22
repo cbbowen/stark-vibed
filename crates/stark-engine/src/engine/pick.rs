@@ -285,12 +285,12 @@ impl Engine {
             PickSource::CompositeOverSubstrate | PickSource::Below(_)
         )
         .then(|| {
-            let l = self
-                .shared
-                .color_space
-                .rgb_to_latent(self.presented().substrate_color);
-            // Opaque, like the substrate the screen composites over (`render.rs`).
-            ([l.lat[0], l.lat[1], l.lat[2], 1.0], l.res)
+            // The very lanes the screen composites over.
+            crate::gpu::composite::media::substrate_lanes(
+                self.shared
+                    .color_space
+                    .rgb_to_latent(self.presented().substrate_color),
+            )
         });
 
         // Both color spaces store the color channels as four halves (§6.1). A new
@@ -399,17 +399,14 @@ impl Engine {
                 .enumerate()
                 .map(|(i, texels)| {
                     let mean = match substrate {
-                        Some((bg, _)) => mean_over_substrate(texels, bg),
+                        Some([bg, _]) => mean_over_substrate(texels, bg),
                         None => mean_channels(texels),
                     };
                     // The residual takes the **same** two means: its target's alpha
                     // duplicates the color's, so `sum[3]` is the same coverage sum
                     // either way and both weightings are already right for it (§6.7).
                     let mean_resid = resid_sets.as_ref().and_then(|sets| match substrate {
-                        Some((_, bg_resid)) => mean_over_substrate(
-                            &sets[i],
-                            [bg_resid[0], bg_resid[1], bg_resid[2], 1.0],
-                        ),
+                        Some([_, bg_resid]) => mean_over_substrate(&sets[i], bg_resid),
                         None => mean_channels(&sets[i]),
                     });
                     mean.map(|c| {

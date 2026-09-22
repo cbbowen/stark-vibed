@@ -140,10 +140,10 @@ pub(crate) struct SubstrateMap {
     /// measured over a reach in the texels this scale implies, so reading them at any
     /// other pitch would be reading the wrong substrate.
     texels_per_px: TexelsPerPx,
-    /// 1.0 if this is a real (image) substrate with substrate to interact with, 0.0 for
-    /// the procedural `Flat`. Lets effects keyed on substrate relief (e.g. the knife's
-    /// scrape, §6.2) be a no-op on `Flat`, whose height is a constant 0.
-    pub relief: f32,
+    /// Whether there is relief to catch on: false for the procedural `Flat`, whose
+    /// height is a constant 0, so the tooth ([`Self::texels_per_px()`]) and the
+    /// bearing ([`Self::bearing`]) answer exactly 1 there.
+    relief: bool,
     /// What share of the substrate a tip stands on, per tooth and direction of travel
     /// — the table that makes a toothed smear conserve paint ([`Bearing`]).
     bearing: Bearing,
@@ -159,7 +159,7 @@ impl SubstrateMap {
     /// (no relief) — exactly equivalent to having no substrate (§6.4).
     pub(crate) fn flat(ctx: &GpuContext, substrate: Substrate) -> Self {
         Self {
-            relief: 0.0,
+            relief: false,
             ..Self::from_height(ctx, substrate, &[0u8], 1, 1)
         }
     }
@@ -168,7 +168,7 @@ impl SubstrateMap {
     /// substrate with no relief, which the shaders gate on for a tooth of exactly 1, as
     /// [`bearing`](Self::bearing) answers 1 on the tool's side.
     pub(crate) fn texels_per_px(&self) -> TexelsPerPx {
-        if self.relief <= 0.0 {
+        if !self.relief {
             return TexelsPerPx::NONE;
         }
         self.texels_per_px
@@ -183,7 +183,7 @@ impl SubstrateMap {
     /// the model's: a substrate with no relief has nothing to bite, whatever the tooth,
     /// and answers exactly 1.
     pub(crate) fn bearing(&self, give: f32, softness: f32, dir: [f32; 2]) -> f32 {
-        if self.relief <= 0.0 {
+        if !self.relief {
             return 1.0;
         }
         self.bearing.at(give, softness, dir)
@@ -219,7 +219,7 @@ impl SubstrateMap {
             view,
             sampler,
             texels_per_px: substrate.texels_per_px(w, h),
-            relief: 1.0,
+            relief: true,
             bearing: Bearing::tabulate(&packed),
             texture_bytes: packed.len() as u64,
         }

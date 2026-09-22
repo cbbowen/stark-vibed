@@ -51,7 +51,7 @@ mod view;
 
 use std::sync::Arc;
 
-use crate::colorspace::ColorSpace;
+use crate::colorspace::{ColorSpace, Latent};
 use crate::gpu::channels::{ChannelFormats, Targets};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
@@ -191,13 +191,10 @@ struct PreparedStreams<'a> {
 /// substrate is drawn at all.
 pub(crate) struct CompositeScene<'a> {
     /// The substrate color in the document's working channels — the substrate under
-    /// the paint (§15.5).
-    pub substrate_color: [f32; 4],
-    /// The substrate color's **residual** in `.xyz` (§6.7); `.w` unused. Zero in a
-    /// space that has none — and the reason a *black* substrate in a pigment document
-    /// finally reads black, since Mixbox's polynomial renders those concentrations
-    /// `#383838` on their own.
-    pub substrate_resid: [f32; 4],
+    /// the paint (§15.5). Its residual is zero in a space that has none, and in a
+    /// pigment one is the reason a *black* substrate reads black, since Mixbox's
+    /// polynomial renders those concentrations `#383838` on their own (§6.7).
+    pub substrate: Latent,
     /// How large the canvas substrate is laid, as canvas px → substrate-tile uv
     /// ([`Substrate::uv_scale`]).
     ///
@@ -225,7 +222,7 @@ pub(crate) struct CompositeScene<'a> {
     pub output: Output,
 }
 
-/// The pipelines themselves — the six passes, their layouts and samplers, and the
+/// The pipelines themselves — every pass, its layouts and samplers, and the
 /// channel formats they were built for.
 ///
 /// Split from [`CompositorPipeline`] along a second line: does it ever *change*?
@@ -276,6 +273,10 @@ pub(crate) struct CompositorPasses {
     /// there is a residual at all, which decides the third attachment on every pass A
     /// target and is the space's answer rather than a per-target choice.
     formats: ChannelFormats,
+    /// The device's largest 2-D texture edge — what caps the supersampling (§6.4) and
+    /// an export's size. Asked once: `Device::limits` is a round trip into JS on the
+    /// web, and a frame would otherwise ask it several times.
+    max_dim: u32,
 
     /// Which passes these are, for a [`Compositor`] to tell whether it was built
     /// against them: its streams' bind groups answer to these layouts, and its
@@ -309,6 +310,27 @@ impl TargetLayouts {
     }
 }
 
+/// The shader modules of the same four passes, compiled once however many target
+/// formats they are built for: a module does not depend on the format, only the
+/// pipelines over it do. Needed only while the passes are built.
+struct TargetModules {
+    media: desc::Module,
+    overlay: desc::Module,
+    guides: desc::Module,
+    resolve: desc::Module,
+}
+
+impl TargetModules {
+    fn new(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Self {
+        Self {
+            media: desc::Module::new(device, "stark media", color_space.media_shader()),
+            overlay: desc::Module::new(device, "stark selection overlay", stark_shaders::overlay()),
+            guides: desc::Module::new(device, "stark guides", stark_shaders::guides()),
+            resolve: desc::Module::new(device, "stark resolve", stark_shaders::resolve()),
+        }
+    }
+}
+
 /// Passes B–E — the lit image, the outlines, the guides and the presentation
 /// resolve — compiled against one target format (§6.4). An HDR session renders into
 /// two: the screen's float surface and the 8-bit texture an export is read back from.
@@ -327,6 +349,7 @@ impl TargetPasses {
         device: &wgpu::Device,
         color_space: &dyn ColorSpace,
         layouts: &TargetLayouts,
+        modules: &TargetModules,
         format: wgpu::TextureFormat,
     ) -> Self {
         // **The target may not be an sRGB format**, and this is the one place that can
@@ -345,10 +368,10 @@ impl TargetPasses {
         let target = [desc::target(format)];
         Self {
             format,
-            overlay: OverlayPass::new(device, format, &layouts.overlay),
-            guides: GuidePass::new(device, format, &layouts.guides),
-            media: MediaPass::new(device, color_space, &layouts.media, &target),
-            resolve: ResolvePass::new(device, &layouts.resolve, &target),
+            overlay: OverlayPass::new(device, &modules.overlay, &layouts.overlay, format),
+            guides: GuidePass::new(device, &modules.guides, &layouts.guides, format),
+            media: MediaPass::new(device, color_space, &modules.media, &layouts.media, &target),
+            resolve: ResolvePass::new(device, &modules.resolve, &layouts.resolve, &target),
         }
     }
 }
@@ -393,10 +416,10 @@ pub(crate) struct ViewSettings {
 ///
 /// Split from [`Compositor`] so several of them can share one of these. Each renders
 /// into a target of its own size and therefore keeps its own attachments; what they
-/// must *not* keep their own of is the pipelines, because they are expensive (six
-/// passes, plus a decoded Mixbox LUT), and the view settings, because two consumers
-/// disagreeing about the canvas substrate or the lighting would be a bug that shows
-/// only in the smaller picture.
+/// must *not* keep their own of is the pipelines, because they are expensive (every
+/// pass compiled, plus a decoded Mixbox LUT), and the view settings, because two
+/// consumers disagreeing about the canvas substrate or the lighting would be a bug
+/// that shows only in the smaller picture.
 ///
 /// Not immutable: the view settings change, through `&mut self` on this type. It
 /// holds no GPU-visible state that a render writes — every uniform a render fills in
@@ -600,12 +623,15 @@ impl CompositorPipeline {
     ) -> Self {
         let device = &ctx.device;
         let formats = ChannelFormats::of(color_space);
+        let max_dim = device.limits().max_texture_dimension_2d;
         let layouts = TargetLayouts::new(device, color_space);
-        let screen = TargetPasses::new(device, color_space, &layouts, target_format);
+        let modules = TargetModules::new(device, color_space);
+        let screen = TargetPasses::new(device, color_space, &layouts, &modules, target_format);
         // An export is drawn into an 8-bit texture whatever the screen is (§15.6), so
         // a deep screen needs a second set of the four; an SDR session pays nothing.
         let export = (export_format(target_format) != target_format).then(|| {
-            TargetPasses::new(device, color_space, &layouts, export_format(target_format))
+            let format = export_format(target_format);
+            TargetPasses::new(device, color_space, &layouts, &modules, format)
         });
 
         let SharedPasses {
@@ -617,13 +643,14 @@ impl CompositorPipeline {
             tiles: TilePass::new(device, color_space, formats, tile_bgl),
             blend,
             filter,
-            blur: BlurPass::new(ctx),
+            blur: BlurPass::new(ctx, max_dim),
             layouts,
             screen,
             export,
             view: View::new(device),
             ctx: ctx.clone(),
             formats,
+            max_dim,
             generation: next_stamp(),
         };
         Self::sharing(Arc::new(passes), substrate, environment, settings)
@@ -717,6 +744,11 @@ impl CompositorPipeline {
     pub(crate) fn set_environment(&mut self, environment: Environment) {
         self.environment = environment;
         self.bindings = next_stamp();
+    }
+
+    /// The device's largest 2-D texture edge, asked once when the passes were built.
+    pub(crate) fn max_dim(&self) -> u32 {
+        self.max_dim
     }
 
     /// The channel formats pass A writes (§6.7) — what a caller supplying its own
@@ -841,13 +873,9 @@ impl TargetSized {
         let built: &Built = self.built.insert(built);
         // The filter bind groups the scratch caches name the blur's planes, so a
         // frame that grew, resized or dropped them starts those caches over.
-        let blur_changed = p.blur.prepare(
-            &p.ctx,
-            &mut self.blur,
-            built.key.size,
-            kernels,
-            p.ctx.device.limits().max_texture_dimension_2d,
-        );
+        let blur_changed = p
+            .blur
+            .prepare(&p.ctx, &mut self.blur, built.key.size, kernels);
         ScratchTargets::ensure(
             &mut self.scratch,
             &p.ctx.device,
@@ -1191,7 +1219,6 @@ impl Compositor {
             &mut blur,
             view.viewport,
             &blur::blur_kernels(&plan.filters, view),
-            p.ctx.device.limits().max_texture_dimension_2d,
         );
         PreparedPick {
             plan,
@@ -1275,8 +1302,7 @@ impl Compositor {
     ) {
         self.follow(p);
         let CompositeScene {
-            substrate_color: bg_channels,
-            substrate_resid: bg_resid,
+            substrate,
             substrate_uv_scale,
             groups,
             outlines,
@@ -1308,7 +1334,7 @@ impl Compositor {
         let ss = supersample(
             view.viewport,
             view.zoom,
-            &p.ctx.device.limits(),
+            p.max_dim,
             resolve::attachment_bytes(
                 p.formats,
                 format,
@@ -1389,8 +1415,7 @@ impl Compositor {
                 environment: &p.environment,
                 substrate_uv_scale,
                 view,
-                substrate_color: bg_channels,
-                substrate_resid: bg_resid,
+                substrate,
                 transparent,
                 dither_step,
                 output,

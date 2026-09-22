@@ -50,18 +50,13 @@ const MAX_SUPERSAMPLED_BYTES: u64 = 224 << 20;
 /// `1` at 1:1 and closer — a view that magnifies is already oversampling, so a golden
 /// blessed at `zoom = 1.0` never sees this pass. Below that it is the minification
 /// ratio, so each output pixel gets back roughly one sample per canvas pixel it
-/// covers, capped by [`MAX_SUPERSAMPLE`], by [`MAX_SUPERSAMPLED_BYTES`] and by what
-/// the device will allocate.
+/// covers, capped by [`MAX_SUPERSAMPLE`], by [`MAX_SUPERSAMPLED_BYTES`] and by
+/// `max_dim`, the largest texture edge the device will allocate.
 ///
 /// `bytes_per_px` is what *one supersampled texel of this frame* costs across every
 /// attachment that scales with the sample count ([`attachment_bytes`]) — the caller's
 /// to compute, because only it knows the color space and the group tree.
-pub(super) fn supersample(
-    size: Extent2,
-    zoom: f32,
-    limits: &wgpu::Limits,
-    bytes_per_px: u64,
-) -> u32 {
+pub(super) fn supersample(size: Extent2, zoom: f32, max_dim: u32, bytes_per_px: u64) -> u32 {
     if !(zoom.is_finite() && zoom > 0.0) {
         return 1;
     }
@@ -77,9 +72,7 @@ pub(super) fn supersample(
             let bytes = u64::from(sw)
                 .saturating_mul(u64::from(sh))
                 .saturating_mul(bytes_per_px);
-            sw <= limits.max_texture_dimension_2d
-                && sh <= limits.max_texture_dimension_2d
-                && bytes <= MAX_SUPERSAMPLED_BYTES
+            sw <= max_dim && sh <= max_dim && bytes <= MAX_SUPERSAMPLED_BYTES
         })
         .unwrap_or(1)
 }
@@ -153,15 +146,16 @@ pub(super) struct ResolvePass {
 }
 
 impl ResolvePass {
+    /// The pipeline over `module`, `resolve.wesl` compiled.
     pub(super) fn new(
         device: &wgpu::Device,
+        module: &desc::Module,
         bgl: &Bindings,
         target: &[Option<wgpu::ColorTargetState>],
     ) -> Self {
         // A fullscreen pass reading the supersampled target with `textureLoad` at an
         // integer block of its own choosing, so nothing here needs a sampler.
         let resolve = stark_shaders::resolve();
-        let shader = desc::Module::new(device, "stark resolve", resolve);
         let layout = desc::pipeline_layout_of(device, "stark resolve layout", &[bgl]);
         // The pass covers every texel and carries the alpha it averaged, so there is
         // nothing for a fixed-function blend to do.
@@ -169,7 +163,7 @@ impl ResolvePass {
             device,
             "stark resolve pipeline",
             &layout,
-            &shader,
+            module,
             (resolve.vs_main, resolve.fs_main),
             target,
         );
@@ -271,12 +265,7 @@ mod tests {
 
     /// The device this policy is written against: the `downlevel_webgl2` floor's
     /// 8192-px limit, which is what the wasm build can count on.
-    fn limits() -> wgpu::Limits {
-        wgpu::Limits {
-            max_texture_dimension_2d: 8192,
-            ..wgpu::Limits::default()
-        }
-    }
+    const MAX_DIM: u32 = 8192;
 
     const TARGET: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8UnormSrgb;
 
@@ -304,19 +293,11 @@ mod tests {
     fn magnification_costs_nothing() {
         let window = Extent2::new(1280, 720);
         for zoom in [1.0, 1.5, 4.0, 64.0] {
-            assert_eq!(
-                supersample(window, zoom, &limits(), flat()),
-                1,
-                "at {zoom}×"
-            );
+            assert_eq!(supersample(window, zoom, MAX_DIM, flat()), 1, "at {zoom}×");
         }
         // A degenerate zoom asks for nothing rather than for a division by it.
         for zoom in [0.0, -1.0, f32::NAN, f32::INFINITY] {
-            assert_eq!(
-                supersample(window, zoom, &limits(), flat()),
-                1,
-                "at {zoom}×"
-            );
+            assert_eq!(supersample(window, zoom, MAX_DIM, flat()), 1, "at {zoom}×");
         }
     }
 
@@ -324,17 +305,17 @@ mod tests {
     fn minification_is_matched_sample_for_canvas_pixel() {
         // Small enough that no cap binds, so this is the rule itself.
         let thumb = Extent2::new(252, 176);
-        assert_eq!(supersample(thumb, 0.5, &limits(), flat()), 2);
-        assert_eq!(supersample(thumb, 0.25, &limits(), flat()), 4);
+        assert_eq!(supersample(thumb, 0.5, MAX_DIM, flat()), 2);
+        assert_eq!(supersample(thumb, 0.25, MAX_DIM, flat()), 4);
         // Past the cap the ratio keeps growing and the answer does not.
-        assert_eq!(supersample(thumb, 0.01, &limits(), flat()), MAX_SUPERSAMPLE);
+        assert_eq!(supersample(thumb, 0.01, MAX_DIM, flat()), MAX_SUPERSAMPLE);
     }
 
     #[test]
     fn a_large_target_gives_up_samples_rather_than_the_render() {
         // The memory budget binds first at window sizes: 4× of this is 176 Mpx.
         let window = Extent2::new(2560, 1440);
-        let n = supersample(window, 0.1, &limits(), flat());
+        let n = supersample(window, 0.1, MAX_DIM, flat());
         assert!(n > 1, "a zoomed-out window should still supersample");
         let px = u64::from(window.width * n) * u64::from(window.height * n);
         assert!(
@@ -343,7 +324,7 @@ mod tests {
         );
         // And the device limit binds before either of the others on a wide one.
         let wide = Extent2::new(7000, 400);
-        assert_eq!(supersample(wide, 0.1, &limits(), flat()), 1);
+        assert_eq!(supersample(wide, 0.1, MAX_DIM, flat()), 1);
     }
 
     /// The blur is the largest byte cost a pixel count cannot see (§21.12): a frame
@@ -362,7 +343,7 @@ mod tests {
             supersample(
                 window,
                 0.1,
-                &limits(),
+                MAX_DIM,
                 attachment_bytes(oklab(), TARGET, &flat, blur),
             )
         };
@@ -402,7 +383,7 @@ mod tests {
         // And the budget turns that into samples: the same window that supersamples
         // when flat gives them up as the document nests.
         let window = Extent2::new(2560, 1440);
-        let at = |f, s: &[Level]| supersample(window, 0.1, &limits(), cost(f, s));
+        let at = |f, s: &[Level]| supersample(window, 0.1, MAX_DIM, cost(f, s));
         assert!(at(oklab(), &[]) >= at(oklab(), &[SwapIso]));
         assert!(at(oklab(), &[SwapIso]) >= at(pigment(), &[SwapIso]));
         assert_eq!(

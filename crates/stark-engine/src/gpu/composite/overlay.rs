@@ -71,13 +71,14 @@ pub(super) struct OverlayPass {
 }
 
 impl OverlayPass {
+    /// The pipeline over `module`, `overlay.wesl` compiled, for `target_format`.
     pub(super) fn new(
         device: &wgpu::Device,
-        target_format: wgpu::TextureFormat,
+        module: &desc::Module,
         layouts: &OverlayLayouts,
+        target_format: wgpu::TextureFormat,
     ) -> Self {
         let overlay = stark_shaders::overlay();
-        let shader = desc::Module::new(device, "stark selection overlay", overlay);
         let layout = desc::pipeline_layout_of(
             device,
             "stark overlay layout",
@@ -88,7 +89,7 @@ impl OverlayPass {
             RenderPipe {
                 label: "stark overlay pipeline",
                 layout: &layout,
-                module: &shader,
+                module,
                 vs: overlay.vs_main,
                 fs: overlay.fs_main,
                 primitive: desc::QUAD_STRIP,

@@ -77,10 +77,12 @@ pub(crate) struct BlurPass {
     make_kernel: wgpu::ComputePipeline,
     apply_kernel: wgpu::ComputePipeline,
     bgl: Bindings,
+    /// The device's largest texture edge — the planes' last-resort clamp ([`layers`]).
+    max_dim: u32,
 }
 
 impl BlurPass {
-    pub(crate) fn new(ctx: &GpuContext) -> Self {
+    pub(crate) fn new(ctx: &GpuContext, max_dim: u32) -> Self {
         let device = &ctx.device;
         let blur = stark_shaders::blur();
         let module = desc::Module::new(device, "stark blur", blur);
@@ -109,6 +111,7 @@ impl BlurPass {
             make_kernel: cpipe("stark blur make kernel", blur.make_kernel),
             apply_kernel: cpipe("stark blur apply kernel", blur.apply_kernel),
             bgl,
+            max_dim,
         }
     }
 
@@ -131,12 +134,11 @@ impl BlurPass {
         frame: &mut Option<BlurFrame>,
         accum: Extent2,
         kernels: &[(u32, f32, Aperture)],
-        max_dim: u32,
     ) -> bool {
         if kernels.is_empty() {
             return frame.take().is_some();
         }
-        let layers = layers(accum, kernels, max_dim);
+        let layers = layers(accum, kernels, self.max_dim);
         // The planes hold the largest layer's transform; a smaller layer runs on
         // a subregion at their origin, its extent riding its own uniforms.
         let planes = layers.iter().fold(Extent2::new(2, 2), |m, l| {
@@ -309,15 +311,32 @@ const MAX_CONV_RADIUS: f32 = stark_model::document::FocalBlur::RADIUS.1;
 /// This is what bounds the FFT (§21.12): without it the guard band grows with the zoom
 /// and the padded planes balloon past the device's buffer and memory limits, spending
 /// gigabytes to resolve texel-scale detail an aperture hundreds of texels wide provably
-/// cannot contain. The loop's floor keeps a hostile radius (a non-finite zoom, a log
-/// this engine did not write) from spinning; past it the extent clamp in [`layers`]
-/// absorbs what is left.
-pub(super) fn scale(r_texels: f32) -> u32 {
+/// cannot contain. The loop's floor keeps a huge radius (a log this engine did not
+/// write) from spinning; past it the extent clamp in [`layers`] absorbs what is left.
+fn scale(r_texels: f32) -> u32 {
     let mut s = 1u32;
     while s < (1 << 20) && r_texels / s as f32 > MAX_CONV_RADIUS {
         s *= 2;
     }
     s
+}
+
+/// How a layer of on-screen radius `r_texels` is convolved: its decimation [`scale`],
+/// and its radius in convolution texels.
+///
+/// **The one place the radius is sanitised**, for both of its readers — the dispatch
+/// plan ([`layers`]) and the filter uniform's `disp.x`, which the decode and the
+/// resolve read the scale from — so the three cannot disagree about it. The document's
+/// radius is sanitised already, but the *view* multiplies it ([`texel_radius`]): a
+/// non-finite product decimates to a point rather than saturating the extent sums.
+pub(super) fn decimation(r_texels: f32) -> (u32, f32) {
+    let r_texels = if r_texels.is_finite() {
+        r_texels.max(0.0)
+    } else {
+        0.0
+    };
+    let s = scale(r_texels);
+    (s, r_texels / s as f32)
 }
 
 /// Which compute pipeline one dispatch runs.
@@ -485,14 +504,14 @@ impl BlurFrame {
     }
 
     /// Encode the convolution for the focal blur at filter `slot`: the kernel passes it
-    /// still owes, the decode of the accumulator `bg` names, and the FFT round trip —
-    /// everything but the filter's own fullscreen pass, which the caller encodes next
+    /// still owes, the decode of the accumulator `bound` names, and the FFT round trip
+    /// — everything but the filter's own fullscreen pass, which the caller encodes next
     /// and which reads set A.
     ///
-    /// `bg` is the **filter bind group** of the bounce this blur is part of and
-    /// `offset` its layer's dynamic-offset slot: the decode binds the very group the
-    /// resolve pass will, which is how it reads the right half of the accumulator's
-    /// ping-pong without a description of its own.
+    /// `bound` is the **filter bind group** of the bounce this blur is part of, at its
+    /// layer's dynamic offset: the decode binds the very group the resolve pass will,
+    /// which is how it reads the right half of the accumulator's ping-pong without a
+    /// description of its own.
     pub(super) fn encode(
         &self,
         pass: &BlurPass,
@@ -601,17 +620,7 @@ fn layers(accum: Extent2, kernels: &[(u32, f32, Aperture)], max_dim: u32) -> Vec
     kernels
         .iter()
         .map(|&(slot, r_texels, aperture)| {
-            // The document's radius is sanitized, but the *view* multiplies it
-            // (`texel_radius`), and this arithmetic must hold whatever a zoom
-            // does: a non-finite product decimates to a point rather than
-            // saturating the extent sums below.
-            let r_texels = if r_texels.is_finite() {
-                r_texels.max(0.0)
-            } else {
-                0.0
-            };
-            let s = scale(r_texels);
-            let r = r_texels / s as f32;
+            let (s, r) = decimation(r_texels);
             let guard = r.ceil() as u32;
             let axis = |d: u32| {
                 let scaled = d.div_ceil(s).max(2);
@@ -1070,6 +1079,16 @@ mod tests {
         assert_eq!(scale(2049.0), 32);
         // The loop's own floor: a hostile value decimates rather than spinning.
         assert!(scale(f32::INFINITY) <= 1 << 20);
+    }
+
+    /// A radius the view made unusable is a point, for the plan and the filter
+    /// uniform alike — both read it through [`decimation`].
+    #[test]
+    fn an_unusable_radius_decimates_to_a_point() {
+        for r in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -3.0] {
+            assert_eq!(decimation(r), (1, 0.0), "radius {r}");
+        }
+        assert_eq!(decimation(2049.0), (32, 2049.0 / 32.0));
     }
 
     /// **Zooming into a blur cannot balloon the transform** — what the decimation

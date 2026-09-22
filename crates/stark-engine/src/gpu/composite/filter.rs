@@ -306,16 +306,17 @@ pub(crate) fn filter_uniform(f: &FilterDraw, view: ViewTransform) -> FilterUnifo
                 ..base
             }
         }
-        // `disp.x` is the decimation scale the convolution runs at (§21.12), by the
-        // rule `BlurPass::prepare` plans the transform with, so the decode, the
-        // transform and the resolve cannot disagree about it. The aperture's lanes
-        // are read by no fullscreen arm — the convolution has run by then — and are
-        // carried so the uniform states the document's numbers (`filter_common.wesl`).
+        // `disp.x` is the decimation scale the convolution runs at (§21.12), from the
+        // one rule the transform is planned by (`blur::decimation`). The aperture's
+        // lanes are read by no fullscreen arm — the convolution has run by then — and
+        // are carried so the uniform states the document's numbers
+        // (`filter_common.wesl`).
         FilterOp::FocalBlur(b) => {
             let [shape, param, angle] = Aperture::of(b.aperture).lanes();
+            let (scale, _) = blur::decimation(blur::texel_radius(b, view));
             FilterUniform {
                 kind: fc::FILTER_FOCAL_BLUR,
-                disp: [blur::scale(blur::texel_radius(b, view)) as f32, 0.0],
+                disp: [scale as f32, 0.0],
                 params: [b.radius, shape, param, angle],
                 ..base
             }

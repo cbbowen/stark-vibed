@@ -6,7 +6,7 @@
 
 use super::attachment::Trio;
 use super::display::Output;
-use crate::colorspace::ColorSpace;
+use crate::colorspace::{ColorSpace, Latent};
 use crate::gpu::channels::{ChannelFormats, Targets};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Bindings};
@@ -97,20 +97,21 @@ pub(super) struct MediaPass {
 }
 
 impl MediaPass {
+    /// The pipeline over `module`, `color_space`'s media shader compiled.
     pub(super) fn new(
         device: &wgpu::Device,
         color_space: &dyn ColorSpace,
+        module: &desc::Module,
         bgls: &[Bindings; 2],
         target: &[Option<wgpu::ColorTargetState>],
     ) -> Self {
         let media = color_space.media_shader();
-        let shader = desc::Module::new(device, "stark media", media);
         let layout = desc::pipeline_layout_of(device, "stark media layout", &[&bgls[0], &bgls[1]]);
         let pipeline = desc::fullscreen_pipeline(
             device,
             "stark media pipeline",
             &layout,
-            &shader,
+            module,
             (media.vs_main, media.fs_main),
             target,
         );
@@ -147,6 +148,16 @@ impl MediaPass {
     }
 }
 
+/// The substrate as the media pass's `bg` and `bg_resid` lanes (§15.5, §6.7) — and the
+/// eyedropper's, which composites a patch over the same numbers.
+///
+/// Opaque paint under everything, so per-unit opacity 1 in both: the residual target's
+/// alpha duplicates the color's, as it does on every tile.
+pub(crate) fn substrate_lanes(substrate: Latent) -> [[f32; 4]; 2] {
+    let Latent { lat, res } = substrate;
+    [[lat[0], lat[1], lat[2], 1.0], [res[0], res[1], res[2], 1.0]]
+}
+
 /// What pass B needs beyond the accumulator: how the frame is lit, what is under the
 /// paint, and where the canvas is (§6.3).
 pub(super) struct MediaScene<'a> {
@@ -164,8 +175,8 @@ pub(super) struct MediaScene<'a> {
     /// The **supersampled** view, so the substrate and the relief are measured in the
     /// texels this pass is actually shading (§6.4).
     pub(super) view: ViewTransform,
-    pub(super) substrate_color: [f32; 4],
-    pub(super) substrate_resid: [f32; 4],
+    /// The substrate color in the document's working channels.
+    pub(super) substrate: Latent,
     /// Skip the substrate and carry the paint's visible alpha out, for a cut-out
     /// export (§15.6).
     pub(super) transparent: bool,
@@ -195,9 +206,10 @@ impl MediaScene<'_> {
         // *flat* canvas receives, so an unrelieved patch of paint comes back out its
         // own color in every environment, procedural or HDR (§6.3).
         let exposure = self.environment.flat_irradiance.recip();
+        let [bg, bg_resid] = substrate_lanes(self.substrate);
         MediaUniform {
-            bg: self.substrate_color,
-            bg_resid: self.substrate_resid,
+            bg,
+            bg_resid,
             shade: [exposure, diffuse_lod, m.specular, m.height_strength],
             view_a: [
                 canvas_origin.x,

@@ -127,19 +127,20 @@ pub(super) struct GuidePass {
 }
 
 impl GuidePass {
+    /// The pipeline over `module`, `guides.wesl` compiled, for `target_format`.
     pub(super) fn new(
         device: &wgpu::Device,
-        target_format: wgpu::TextureFormat,
+        module: &desc::Module,
         bgl: &Bindings,
+        target_format: wgpu::TextureFormat,
     ) -> Self {
         let guides = stark_shaders::guides();
-        let shader = desc::Module::new(device, "stark guides", guides);
         let layout = desc::pipeline_layout_of(device, "stark guides layout", &[bgl]);
         let pipeline = desc::fullscreen_pipeline(
             device,
             "stark guides pipeline",
             &layout,
-            &shader,
+            module,
             (guides.vs_main, guides.fs_main),
             // The shader accumulates its elements premultiplied, so the pass
             // composites `src + dst·(1 − src.a)`.
