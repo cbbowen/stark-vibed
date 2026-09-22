@@ -15,7 +15,7 @@
 
 use crate::common::palette::{BLACK, RED_SOFT};
 use crate::common::*;
-use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, PeerCommand, ViewCommand};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::Srgb;
 use stark_model::document::{LayerId, MatteRegion, Parcel, Place};
@@ -153,7 +153,7 @@ fn matte_honors_layer_opacity_and_visibility() {
     );
 
     engine.process(DocCommand::SetLayerVisible(matte_id, true));
-    engine.process(DocCommand::SetLayerOpacity(matte_id, 0.5));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(matte_id, 0.5)));
     let half = engine.render_to_image();
     let (o, hf, hd) = (outside(&opaque), outside(&half), outside(&hidden));
     // Compared on total brightness, not per channel: against a red stroke the
@@ -301,7 +301,7 @@ fn dragging_a_frame_previews_without_logging() {
 
     // Three "pointer moves" of a drag that shrinks the hole.
     for w in [45.0f32, 40.0, 35.0] {
-        engine.process(ViewCommand::PreviewMatteRect(Some((
+        engine.process(ViewCommand::Preview(Some(Edit::MatteRect(
             matte_id,
             Vec2::new(-w, -w),
             Vec2::new(w, w),
@@ -328,11 +328,11 @@ fn dragging_a_frame_previews_without_logging() {
     engine.process(DocCommand::Redo);
 
     // Releasing commits exactly one action, and drops the preview.
-    engine.process(DocCommand::SetMatteRect(
+    engine.process(DocCommand::Set(Edit::MatteRect(
         matte_id,
         Vec2::new(-35.0, -35.0),
         Vec2::new(35.0, 35.0),
-    ));
+    )));
     let committed = engine.render_to_image();
     assert!(
         images_match(&dragging, &committed, 2),
@@ -363,9 +363,9 @@ fn dragging_the_canvas_color_previews_without_logging() {
 
     // Three "pointer moves" of a drag towards a dark substrate.
     for v in [0.5f32, 0.3, 0.1] {
-        engine.process(ViewCommand::PreviewSubstrateColor(Some(Srgb::new([
-            v, v, v,
-        ]))));
+        engine.process(ViewCommand::Preview(Some(Edit::SubstrateColor(Srgb::new(
+            [v, v, v],
+        )))));
     }
     let dragging = engine.render_to_image();
     assert!(
@@ -387,7 +387,9 @@ fn dragging_the_canvas_color_previews_without_logging() {
     engine.process(DocCommand::Redo);
 
     // Releasing commits exactly one action, and drops the preview.
-    engine.process(DocCommand::SetSubstrateColor(Srgb::new([0.1, 0.1, 0.1])));
+    engine.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new([
+        0.1, 0.1, 0.1,
+    ]))));
     let committed = engine.render_to_image();
     assert!(
         images_match(&dragging, &committed, 2),
@@ -423,7 +425,7 @@ fn picking_a_frame_color_previews_without_logging() {
 
     // Three "pointer moves" of a pick towards a pale mat board.
     for v in [0.3f32, 0.6, 0.9] {
-        engine.process(ViewCommand::PreviewParcel(Some((
+        engine.process(ViewCommand::Preview(Some(Edit::MattePaint(
             matte_id,
             Parcel::Solid(Srgb::new([v, v, v])),
         ))));
@@ -452,15 +454,15 @@ fn picking_a_frame_color_previews_without_logging() {
 
     // Settling commits exactly one action, which supersedes the preview it matches.
     for v in [0.3f32, 0.6, 0.9] {
-        engine.process(ViewCommand::PreviewParcel(Some((
+        engine.process(ViewCommand::Preview(Some(Edit::MattePaint(
             matte_id,
             Parcel::Solid(Srgb::new([v, v, v])),
         ))));
     }
-    engine.process(DocCommand::SetMattePaint(
+    engine.process(DocCommand::Set(Edit::MattePaint(
         matte_id,
         Parcel::Solid(Srgb::new([0.9, 0.9, 0.9])),
-    ));
+    )));
     assert!(
         images_match(&picking, &engine.render_to_image(), 2),
         "the committed color should match what the pick previewed"
@@ -487,15 +489,15 @@ fn a_frame_color_pick_that_changes_nothing_logs_nothing() {
     let black = engine.render_to_image();
 
     for v in [0.3f32, 0.6, 0.0] {
-        engine.process(ViewCommand::PreviewParcel(Some((
+        engine.process(ViewCommand::Preview(Some(Edit::MattePaint(
             matte_id,
             Parcel::Solid(Srgb::new([v, v, v])),
         ))));
     }
-    engine.process(DocCommand::SetMattePaint(
+    engine.process(DocCommand::Set(Edit::MattePaint(
         matte_id,
         Parcel::Solid(Srgb::new(BLACK)),
-    ));
+    )));
     assert!(
         images_match(&black, &engine.render_to_image(), 2),
         "the settled pick should leave the document as it found it, preview and all"
@@ -638,7 +640,7 @@ fn a_gradient_matte_survives_undo_and_reload() {
         .expect("the frame is topmost")
         .id;
     let black = engine.render_to_image();
-    engine.process(DocCommand::SetMattePaint(
+    engine.process(DocCommand::Set(Edit::MattePaint(
         matte_id,
         MP::Gradient(GradientParcel {
             gradient: red_blue(),
@@ -647,7 +649,7 @@ fn a_gradient_matte_survives_undo_and_reload() {
                 radius: 90.0,
             },
         }),
-    ));
+    )));
     let graded = engine.render_to_image();
     assert!(
         !images_match(&black, &graded, 4),
@@ -733,10 +735,10 @@ fn a_translated_matte_is_the_frame_made_at_the_shifted_rect() {
     }
     add_frame(&mut a);
     let moved = a.observe().layers.last().expect("matte").id;
-    a.process(DocCommand::TranslateLayer {
+    a.process(DocCommand::Set(Edit::Translate {
         layer: moved,
         to: D,
-    });
+    }));
     b.process(DocCommand::AddMatte {
         carrier: None,
         at: Place::Top,
@@ -786,10 +788,10 @@ fn a_translated_gradient_matte_carries_its_axis() {
         }),
     });
     let moved = a.observe().layers.last().expect("matte").id;
-    a.process(DocCommand::TranslateLayer {
+    a.process(DocCommand::Set(Edit::Translate {
         layer: moved,
         to: D,
-    });
+    }));
     b.process(DocCommand::AddMatte {
         carrier: None,
         at: Place::Top,
@@ -836,10 +838,10 @@ fn a_translated_gradient_backing_carries_its_wash() {
         .first()
         .expect("the backing is at the bottom")
         .id;
-    a.process(DocCommand::TranslateLayer {
+    a.process(DocCommand::Set(Edit::Translate {
         layer: moved,
         to: D,
-    });
+    }));
     b.process(backing(axis.translated(D.as_vec2())));
     assert!(
         images_match(&a.render_to_image(), &b.render_to_image(), 0),
@@ -860,10 +862,10 @@ fn a_translated_mattes_rect_is_read_and_written_on_the_canvas() {
     add_frame(&mut engine);
     let matte_id = engine.observe().layers.last().expect("matte").id;
     let framed = engine.render_to_image();
-    engine.process(DocCommand::TranslateLayer {
+    engine.process(DocCommand::Set(Edit::Translate {
         layer: matte_id,
         to: D,
-    });
+    }));
     let row = |e: &Engine| e.observe().layers.last().expect("matte").clone();
     let shown = HOLE.translated(D.as_vec2()).rect();
     assert_eq!(row(&engine).translation, D, "a matte's frame really moves");
@@ -876,7 +878,7 @@ fn a_translated_mattes_rect_is_read_and_written_on_the_canvas() {
     // Committing the rect it already shows is not an edit.
     let revision = engine.observe().doc_revision;
     let (min, max) = shown.expect("a frame has a rect");
-    engine.process(DocCommand::SetMatteRect(matte_id, min, max));
+    engine.process(DocCommand::Set(Edit::MatteRect(matte_id, min, max)));
     assert_eq!(
         engine.observe().doc_revision,
         revision,
@@ -885,13 +887,13 @@ fn a_translated_mattes_rect_is_read_and_written_on_the_canvas() {
 
     // A drag lands where the hand put it: preview and commit convert alike.
     let d = Vec2::new(-15.0, 10.0);
-    engine.process(ViewCommand::PreviewMatteRect(Some((
+    engine.process(ViewCommand::Preview(Some(Edit::MatteRect(
         matte_id,
         min + d,
         max + d,
     ))));
     let dragging = engine.render_to_image();
-    engine.process(DocCommand::SetMatteRect(matte_id, min + d, max + d));
+    engine.process(DocCommand::Set(Edit::MatteRect(matte_id, min + d, max + d)));
     assert_eq!(
         row(&engine).matte.as_ref().and_then(|m| m.rect),
         Some((min + d, max + d)),
@@ -932,7 +934,7 @@ fn a_matte_carried_by_a_moved_group_rides_along() {
         above: None,
         filter: stark_model::document::Filter::ALL[0].clone(),
     });
-    engine.process(DocCommand::TranslateLayer { layer: base, to: D });
+    engine.process(DocCommand::Set(Edit::Translate { layer: base, to: D }));
     let o = engine.observe();
     let translation = |l: &stark_engine::LayerInfo| l.translation;
     let of = |want: fn(&stark_engine::LayerInfo) -> bool| {

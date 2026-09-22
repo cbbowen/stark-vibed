@@ -14,7 +14,7 @@ use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{
     Bar, Chip, Choice, CommandButton, Face, PreviewSlider, Segmented, Slider, SliderShape,
 };
-use stark_engine::command::{DocCommand, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, ViewCommand};
 use stark_model::document::{FillOp, ShapeAction};
 use stark_ui::commands::Command;
 use stark_ui::selection::Dial;
@@ -145,7 +145,7 @@ pub fn SelectPanel() -> Element {
 pub fn SelectionBar() -> Element {
     let state = use_context::<AppState>();
     // The committed selection, not the in-flight preview, so the controls do not light and
-    // grey under an unreleased drag. The opacity *does* preview (`PreviewSelectionOpacity`):
+    // grey under an unreleased drag. The opacity *does* preview (`Edit::SelectionOpacity`):
     // the engine reports the previewed value back, so the track follows the pointer.
     //
     // One memo (`state::use_obs`): none of these moves per pointer sample of a marquee drag.
@@ -173,7 +173,7 @@ pub fn SelectionBar() -> Element {
                 // including this bar's two fills.
                 //
                 // On the bar because it is set after the region is drawn, which makes it
-                // document state (`DocCommand::SetSelectionOpacity`). Live with nothing
+                // document state (`Edit::SelectionOpacity`). Live with nothing
                 // selected: it is then the strength the next region takes
                 // (`Selection::opacity`). A deselect resets it to 1 (`Selection::plan`).
                 PreviewSlider {
@@ -232,10 +232,10 @@ pub fn fill_selection(state: AppState) {
     let [r, g, b] = state.transient.peek().color;
     dispatch(
         state,
-        DocCommand::Fill {
+        DocCommand::Set(Edit::Fill {
             layer,
             op: FillOp::of_selection(Srgb::new([r, g, b])),
-        },
+        }),
     );
 }
 

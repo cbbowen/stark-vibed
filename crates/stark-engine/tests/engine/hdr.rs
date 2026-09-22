@@ -3,7 +3,7 @@
 //! change — the SDR preview, everything under white, the paint, and the export.
 
 use crate::common::*;
-use stark_engine::command::{DocCommand, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, ViewCommand};
 use stark_engine::{
     Background, Engine, EnvironmentId, ExportScale, MediaParams, Offscreen, Output, Rendered,
     Transfer,
@@ -192,7 +192,9 @@ fn paint_never_leaves_white_behind_it() {
         dither: false,
     }));
     hdr.process(ViewCommand::SetOutput(Output::new(Transfer::Linear, 4.0)));
-    hdr.process(DocCommand::SetSubstrateColor(Srgb::new([0.0, 0.0, 0.0])));
+    hdr.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new([
+        0.0, 0.0, 0.0,
+    ]))));
     let brush = BrushParams {
         effect: BrushEffect::painted([1.0, 1.0, 1.0]),
         size: 48.0,

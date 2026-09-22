@@ -25,7 +25,7 @@
 use crate::common::{Probe, engine_or_skip, engine_or_skip_in_format, engine_or_skip_sized};
 use stark_engine::Engine;
 use stark_engine::Extent2;
-use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, PeerCommand, ViewCommand};
 use stark_engine::{MediaParams, Output, Transfer};
 use stark_model::Srgb;
 use stark_model::color::{linear_to_srgb, srgb_to_linear};
@@ -122,7 +122,7 @@ fn guides_survive_the_moment_a_document_is_shared() {
     // A guide that is edited, one that is deleted, and one that is merely renamed —
     // the three later actions that name a guide by id.
     let edited = add_and_show(&mut e, PerspectiveGuide::default(), Some("the ground"));
-    e.process(DocCommand::SetGuide(edited, distinctive()));
+    e.process(DocCommand::Set(Edit::Guide(edited, distinctive())));
     let doomed = add(&mut e, PerspectiveGuide::default(), Some("a mistake"));
     e.process(DocCommand::RemoveGuide(doomed));
     let renamed = add(&mut e, PerspectiveGuide::default(), None);
@@ -245,7 +245,10 @@ fn every_guide_edit_is_one_undo_step() {
     let second = add(&mut e, PerspectiveGuide::default(), None);
     let two = roster(&e);
 
-    e.process(DocCommand::SetGuide(first, PerspectiveGuide::default()));
+    e.process(DocCommand::Set(Edit::Guide(
+        first,
+        PerspectiveGuide::default(),
+    )));
     let reshaped = roster(&e);
     assert_ne!(reshaped, two, "the reshape changed nothing");
 
@@ -604,9 +607,13 @@ fn code(transfer: Transfer, v: f32) -> i32 {
 /// The guide rendered for `transfer`, over a black substrate and over a white one.
 fn over_both_substrates(e: &mut Engine, transfer: Transfer) -> (Vec<f32>, Vec<f32>) {
     e.process(ViewCommand::SetOutput(Output::new(transfer, 1.0)));
-    e.process(DocCommand::SetSubstrateColor(Srgb::new([0.0, 0.0, 0.0])));
+    e.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new([
+        0.0, 0.0, 0.0,
+    ]))));
     let dark = e.render_to_floats();
-    e.process(DocCommand::SetSubstrateColor(Srgb::new([1.0, 1.0, 1.0])));
+    e.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new([
+        1.0, 1.0, 1.0,
+    ]))));
     (dark, e.render_to_floats())
 }
 

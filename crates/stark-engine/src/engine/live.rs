@@ -666,7 +666,7 @@ fn render_span_range(
     // preview's epoch and threw every frozen head away with it.
     //
     // **The pair can still part, and only on the scale.**
-    // `ViewCommand::PreviewSubstrateScale` moves `base.substrate().scale` without
+    // Previewing an `Edit::SubstrateScale` moves `base.substrate().scale` without
     // baking, so a mark live across that drag — a hover probe, which no gesture is in
     // flight to suppress — draws on the scale the registry still holds. That costs a
     // preview lagging the slider, not a divergence: the commit re-bakes and renders

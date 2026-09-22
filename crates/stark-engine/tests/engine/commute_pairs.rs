@@ -62,7 +62,7 @@
 //! ~5 s is a real adapter's number, and CI renders on lavapipe.
 
 use crate::common::{Probe, engine_or_skip, images_match};
-use stark_engine::command::{DocCommand, InputCommand, PeerCommand};
+use stark_engine::command::{DocCommand, Edit, InputCommand, PeerCommand};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::document::{
     Action, ActionId, ActionKind, ActorId, BlendMode, ColorAdjust, FillOp, Filter, LayerId,
@@ -331,7 +331,7 @@ fn vocabulary(e: &mut Engine, file: &DocumentFile) -> Vec<(&'static str, Action)
         mint(
             e,
             file,
-            DocCommand::Fill {
+            DocCommand::Set(Edit::Fill {
                 layer: A,
                 op: FillOp::new(
                     SelectionShape::rect_from_corners(Vec2::splat(40.0), Vec2::splat(120.0)),
@@ -339,7 +339,7 @@ fn vocabulary(e: &mut Engine, file: &DocumentFile) -> Vec<(&'static str, Action)
                     Srgb::new([0.1, 0.7, 0.3]),
                     0.8,
                 ),
-            },
+            }),
         ),
     );
     push(
@@ -360,14 +360,14 @@ fn vocabulary(e: &mut Engine, file: &DocumentFile) -> Vec<(&'static str, Action)
     );
     push(
         "selection-opacity",
-        mint(e, file, DocCommand::SetSelectionOpacity(0.4)),
+        mint(e, file, DocCommand::Set(Edit::SelectionOpacity(0.4))),
     );
     push(
         "substrate-scale",
         mint(
             e,
             file,
-            DocCommand::SetSubstrateScale(SubstrateScale::new(200)),
+            DocCommand::Set(Edit::SubstrateScale(SubstrateScale::new(200))),
         ),
     );
     push(
@@ -375,16 +375,20 @@ fn vocabulary(e: &mut Engine, file: &DocumentFile) -> Vec<(&'static str, Action)
         mint(
             e,
             file,
-            DocCommand::SetSubstrateColor(Srgb::new([0.9, 0.85, 0.7])),
+            DocCommand::Set(Edit::SubstrateColor(Srgb::new([0.9, 0.85, 0.7]))),
         ),
     );
     push(
         "blend",
-        mint(e, file, DocCommand::SetLayerBlend(A, BlendMode::Multiply)),
+        mint(
+            e,
+            file,
+            DocCommand::Set(Edit::LayerBlend(A, BlendMode::Multiply)),
+        ),
     );
     push(
         "opacity",
-        mint(e, file, DocCommand::SetLayerOpacity(A, 0.5)),
+        mint(e, file, DocCommand::Set(Edit::LayerOpacity(A, 0.5))),
     );
     push(
         "visible",
@@ -429,7 +433,7 @@ fn vocabulary(e: &mut Engine, file: &DocumentFile) -> Vec<(&'static str, Action)
     );
     push(
         "opacity-in-group",
-        mint(e, file, DocCommand::SetLayerOpacity(INNER, 0.4)),
+        mint(e, file, DocCommand::Set(Edit::LayerOpacity(INNER, 0.4))),
     );
     push(
         "rename-in-group",
@@ -457,10 +461,10 @@ fn vocabulary(e: &mut Engine, file: &DocumentFile) -> Vec<(&'static str, Action)
         mint(
             e,
             file,
-            DocCommand::Transform {
+            DocCommand::Set(Edit::Transform {
                 layer: A,
                 map: TransformMap::Affine(Affine2::from_translation(Vec2::new(12.0, -7.0))),
-            },
+            }),
         ),
     );
     push(

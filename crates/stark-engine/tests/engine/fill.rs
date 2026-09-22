@@ -14,7 +14,7 @@ use crate::common::palette::{BLUE_SOFT, GREEN_SOFT, RED};
 use crate::common::*;
 use stark_engine::RgbaImage;
 use stark_engine::command::Tool;
-use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::Srgb;
 use stark_model::document::{
@@ -59,7 +59,7 @@ fn fill_rect(
     opacity: f32,
 ) {
     let layer = engine.observe().active_layer;
-    engine.process(DocCommand::Fill {
+    engine.process(DocCommand::Set(Edit::Fill {
         layer,
         op: FillOp::new(
             SelectionShape::rect_from_corners(min, max),
@@ -67,7 +67,7 @@ fn fill_rect(
             Srgb::new(color),
             opacity,
         ),
-    });
+    }));
 }
 
 /// Arm the Fill action with a red brush. A fill lays *the brush's color*, so
@@ -171,10 +171,10 @@ fn filling_the_selection_needs_one_and_is_otherwise_refused() {
     // Nothing selected: `All` is unbounded, and the action is rejected rather
     // than inventing a rectangle. The document must be untouched.
     let before = engine.render_to_image();
-    engine.process(DocCommand::Fill {
+    engine.process(DocCommand::Set(Edit::Fill {
         layer,
         op: FillOp::of_selection(Srgb::new(RED)),
-    });
+    }));
     let after = engine.render_to_image();
     assert!(
         images_match(&before, &after, 0),
@@ -189,10 +189,10 @@ fn filling_the_selection_needs_one_and_is_otherwise_refused() {
         Vec2::new(30.0, 30.0),
         0.0,
     );
-    engine.process(DocCommand::Fill {
+    engine.process(DocCommand::Set(Edit::Fill {
         layer,
         op: FillOp::of_selection(Srgb::new(RED)),
-    });
+    }));
     let filled = engine.render_to_image();
     assert!(is_red(&filled, Vec2::ZERO));
     assert!(!is_red(&filled, Vec2::new(70.0, 70.0)));
@@ -570,7 +570,7 @@ fn fill_golden() {
         &[Vec2::new(-70.0, -30.0), Vec2::new(70.0, 30.0)],
     );
     let layer = engine.observe().active_layer;
-    engine.process(DocCommand::Fill {
+    engine.process(DocCommand::Set(Edit::Fill {
         layer,
         op: FillOp::new(
             SelectionShape::ellipse_from_corners(Vec2::new(-60.0, -60.0), Vec2::new(60.0, 60.0)),
@@ -578,7 +578,7 @@ fn fill_golden() {
             Srgb::new([0.9, 0.2, 0.1]),
             0.7,
         ),
-    });
+    }));
     assert_golden("fill_ellipse", &engine.render_to_image(), 2);
 }
 
@@ -618,7 +618,7 @@ fn gradient_fill_rect(
     opacity: f32,
 ) {
     let layer = engine.observe().active_layer;
-    engine.process(DocCommand::Fill {
+    engine.process(DocCommand::Set(Edit::Fill {
         layer,
         op: FillOp::with_paint(
             SelectionShape::rect_from_corners(min, max),
@@ -626,7 +626,7 @@ fn gradient_fill_rect(
             Parcel::Gradient(parcel),
             opacity,
         ),
-    });
+    }));
 }
 
 /// The ramp lies along its axis, and beyond either end it holds its end stop —
@@ -720,10 +720,9 @@ fn a_radial_gradient_fill_rings_outward() {
     );
 }
 
-/// The preview is the commit, before the commit — `PreviewTransform`'s bargain,
-/// made by the gradient-fill mode (§22.4): `ViewCommand::PreviewFill` runs the
-/// same `FillRenderer::apply` over the same committed tiles as
-/// `DocCommand::Fill`, so the two frames must be identical.
+/// The preview is the commit, before the commit, for the gradient-fill mode
+/// (§22.4): previewing an `Edit::Fill` runs the same `FillRenderer::apply` over
+/// the same committed tiles as committing it, so the two frames must be identical.
 #[test]
 fn the_gradient_preview_matches_the_commit() {
     let Some(mut engine) = engine_or_skip() else {
@@ -750,10 +749,13 @@ fn the_gradient_preview_matches_the_commit() {
         },
     });
 
-    engine.process(ViewCommand::PreviewFill(Some((layer, op.clone()))));
+    engine.process(ViewCommand::Preview(Some(Edit::Fill {
+        layer,
+        op: op.clone(),
+    })));
     let previewed = engine.render_to_image();
-    engine.process(ViewCommand::PreviewFill(None));
-    engine.process(DocCommand::Fill { layer, op });
+    engine.process(ViewCommand::Preview(None));
+    engine.process(DocCommand::Set(Edit::Fill { layer, op }));
     let committed = engine.render_to_image();
     assert!(
         images_match(&previewed, &committed, 0),
@@ -784,13 +786,22 @@ fn the_gradient_preview_does_not_accumulate() {
             },
         })
     };
-    engine.process(ViewCommand::PreviewFill(Some((layer, op(40.0)))));
+    engine.process(ViewCommand::Preview(Some(Edit::Fill {
+        layer,
+        op: op(40.0),
+    })));
     let first = engine.render_to_image();
     for to in 0..50 {
-        engine.process(ViewCommand::PreviewFill(Some((layer, op(to as f32)))));
+        engine.process(ViewCommand::Preview(Some(Edit::Fill {
+            layer,
+            op: op(to as f32),
+        })));
         let _ = engine.render_to_image();
     }
-    engine.process(ViewCommand::PreviewFill(Some((layer, op(40.0)))));
+    engine.process(ViewCommand::Preview(Some(Edit::Fill {
+        layer,
+        op: op(40.0),
+    })));
     let last = engine.render_to_image();
     assert!(
         images_match(&first, &last, 0),
@@ -869,7 +880,7 @@ fn a_gradient_fill_survives_save_and_load() {
         6.0,
     );
     let layer = engine.observe().active_layer;
-    engine.process(DocCommand::Fill {
+    engine.process(DocCommand::Set(Edit::Fill {
         layer,
         op: FillOp::gradient_of_selection(GradientParcel {
             gradient,
@@ -878,7 +889,7 @@ fn a_gradient_fill_survives_save_and_load() {
                 radius: 47.0,
             },
         }),
-    });
+    }));
     let before = engine.render_to_image();
 
     let bytes = engine.save_bytes().expect("save");

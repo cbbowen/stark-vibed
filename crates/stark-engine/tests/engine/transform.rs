@@ -13,7 +13,7 @@
 use crate::common::palette::{GREEN_SOFT, RED};
 use crate::common::*;
 use stark_engine::RgbaImage;
-use stark_engine::command::DocCommand;
+use stark_engine::command::{DocCommand, Edit};
 #[cfg(feature = "mixbox")]
 use stark_model::ColorSpaceId;
 use stark_model::Srgb;
@@ -54,7 +54,7 @@ fn transform(engine: &mut stark_engine::Engine, affine: Affine2) {
 
 fn transform_map(engine: &mut stark_engine::Engine, map: TransformMap) {
     let layer = engine.observe().active_layer;
-    engine.process(DocCommand::Transform { layer, map });
+    engine.process(DocCommand::Set(Edit::Transform { layer, map }));
 }
 
 fn assert_identical(a: &RgbaImage, b: &RgbaImage, what: &str) {
@@ -417,10 +417,10 @@ fn transform_on_a_matte_layer_is_refused() {
         .expect("a matte exists")
         .id;
     let before = engine.render_to_image();
-    engine.process(DocCommand::Transform {
+    engine.process(DocCommand::Set(Edit::Transform {
         layer: matte,
         map: TransformMap::Affine(Affine2::from_translation(Vec2::new(50.0, 0.0))),
-    });
+    }));
     let after = engine.render_to_image();
     assert_identical(&before, &after, "transform aimed at a matte");
 }
@@ -477,8 +477,8 @@ fn save_load_reproduces_a_transform() {
     assert_identical(&before, &after, "save/load of a transform");
 }
 
-/// The preview is the commit, before the commit: `ViewCommand::PreviewTransform`
-/// runs the same renderer over the same committed tiles as `DocCommand::Transform`,
+/// The preview is the commit, before the commit: previewing an `Edit::Transform`
+/// runs the same renderer over the same committed tiles as committing it,
 /// so the previewed frame and the committed frame must be identical — the §1.3
 /// live == committed invariant, extended to the transform gesture
 /// (§16.6).
@@ -498,10 +498,13 @@ fn preview_matches_the_commit() {
     let layer = engine.observe().active_layer;
     let map = TransformMap::Affine(Affine2::from_translation(Vec2::new(57.0, 23.0)));
 
-    engine.process(ViewCommand::PreviewTransform(Some((layer, map.clone()))));
+    engine.process(ViewCommand::Preview(Some(Edit::Transform {
+        layer,
+        map: map.clone(),
+    })));
     let previewed = engine.render_to_image();
-    engine.process(ViewCommand::PreviewTransform(None));
-    engine.process(DocCommand::Transform { layer, map });
+    engine.process(ViewCommand::Preview(None));
+    engine.process(DocCommand::Set(Edit::Transform { layer, map }));
     let committed = engine.render_to_image();
     assert_identical(&previewed, &committed, "transform preview vs commit");
 }
@@ -849,10 +852,13 @@ fn gated_preview_matches_the_commit() {
     wm.points[5] += Vec2::new(26.0, -14.0);
     let map = TransformMap::Warp(wm);
 
-    engine.process(ViewCommand::PreviewTransform(Some((layer, map.clone()))));
+    engine.process(ViewCommand::Preview(Some(Edit::Transform {
+        layer,
+        map: map.clone(),
+    })));
     let previewed = engine.render_to_image();
-    engine.process(ViewCommand::PreviewTransform(None));
-    engine.process(DocCommand::Transform { layer, map });
+    engine.process(ViewCommand::Preview(None));
+    engine.process(DocCommand::Set(Edit::Transform { layer, map }));
     let committed = engine.render_to_image();
     assert_identical(&previewed, &committed, "gated preview vs commit");
 }

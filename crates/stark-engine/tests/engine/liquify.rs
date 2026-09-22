@@ -14,7 +14,7 @@
 
 use crate::common::palette::RED;
 use crate::common::*;
-use stark_engine::command::{DocCommand, GestureCommand, InputSample, Tool, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, GestureCommand, InputSample, Tool, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Engine, RgbaImage};
 use stark_model::Srgb;
@@ -52,7 +52,7 @@ fn flat_band(engine: &mut Engine, radius: f32, from: Vec2, to: Vec2) {
 /// relocate.
 fn flat_fill(engine: &mut Engine, min: Vec2, max: Vec2) {
     let layer = engine.observe().active_layer;
-    engine.process(DocCommand::Fill {
+    engine.process(DocCommand::Set(Edit::Fill {
         layer,
         op: FillOp::new(
             SelectionShape::rect_from_corners(min, max),
@@ -60,7 +60,7 @@ fn flat_fill(engine: &mut Engine, min: Vec2, max: Vec2) {
             Srgb::new(RED),
             1.0,
         ),
-    });
+    }));
 }
 
 /// The rewrite guard, end to end: a stroke whose strength is zero moves nothing

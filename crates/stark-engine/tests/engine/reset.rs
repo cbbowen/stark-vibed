@@ -4,7 +4,7 @@ use crate::common::palette::RED;
 use crate::common::*;
 use stark_assetid::Picture;
 use stark_engine::Engine;
-use stark_engine::command::DocCommand;
+use stark_engine::command::{DocCommand, Edit};
 use stark_engine::testing::{AllocSource, TilePool};
 use stark_model::document::{FillOp, SelectionShape};
 use stark_model::geom::{IVec2, TILE_SIZE, Vec2};
@@ -50,7 +50,7 @@ fn a_new_document_gives_back_the_closed_one_s_tiles_and_pictures() {
     };
     let layer = engine.observe().active_layer;
     let half = 2.0 * TILE_SIZE as f32;
-    engine.process(DocCommand::Fill {
+    engine.process(DocCommand::Set(Edit::Fill {
         layer,
         op: FillOp::new(
             SelectionShape::rect_from_corners(Vec2::splat(-half), Vec2::splat(half)),
@@ -58,7 +58,7 @@ fn a_new_document_gives_back_the_closed_one_s_tiles_and_pictures() {
             Srgb::new(RED),
             1.0,
         ),
-    });
+    }));
     let image = place(&mut engine, &picture(30));
     // The draw list holds tile handles as well, and a frame builds one.
     let _ = engine.render_to_image();

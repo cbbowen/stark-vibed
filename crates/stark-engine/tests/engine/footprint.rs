@@ -43,7 +43,7 @@ use std::collections::BTreeSet;
 
 use crate::common::{Probe, engine_or_skip, paint};
 use stark_engine::Engine;
-use stark_engine::command::{DocCommand, InputCommand};
+use stark_engine::command::{DocCommand, Edit, InputCommand};
 use stark_engine::testing::{DocState, undeclared};
 use stark_model::AssetId;
 use stark_model::document::{
@@ -218,7 +218,7 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "blend",
-        DocCommand::SetLayerBlend(second, BlendMode::Multiply),
+        DocCommand::Set(Edit::LayerBlend(second, BlendMode::Multiply)),
     );
     step(
         &mut engine,
@@ -230,7 +230,7 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "opacity",
-        DocCommand::SetLayerOpacity(second, 0.4),
+        DocCommand::Set(Edit::LayerOpacity(second, 0.4)),
     );
     step(
         &mut engine,
@@ -256,7 +256,7 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "background",
-        DocCommand::SetSubstrateColor(Srgb::new([0.2, 0.3, 0.4])),
+        DocCommand::Set(Edit::SubstrateColor(Srgb::new([0.2, 0.3, 0.4]))),
     );
 
     // Mattes.
@@ -284,13 +284,20 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "move matte",
-        DocCommand::SetMatteRect(matte, Vec2::new(5.0, 5.0), Vec2::new(190.0, 150.0)),
+        DocCommand::Set(Edit::MatteRect(
+            matte,
+            Vec2::new(5.0, 5.0),
+            Vec2::new(190.0, 150.0),
+        )),
     );
     step(
         &mut engine,
         seen,
         "recolor matte",
-        DocCommand::SetMattePaint(matte, Parcel::Solid(Srgb::new([0.1, 0.1, 0.1]))),
+        DocCommand::Set(Edit::MattePaint(
+            matte,
+            Parcel::Solid(Srgb::new([0.1, 0.1, 0.1])),
+        )),
     );
     step(
         &mut engine,
@@ -340,7 +347,7 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "lay the canvas substrate larger",
-        DocCommand::SetSubstrateScale(SubstrateScale::new(200)),
+        DocCommand::Set(Edit::SubstrateScale(SubstrateScale::new(200))),
     );
 
     // Selection, and the tools that act through it.
@@ -374,7 +381,7 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "dim the selection",
-        DocCommand::SetSelectionOpacity(0.5),
+        DocCommand::Set(Edit::SelectionOpacity(0.5)),
     );
     step(
         &mut engine,
@@ -396,7 +403,7 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "fill a shape",
-        DocCommand::Fill {
+        DocCommand::Set(Edit::Fill {
             layer: root,
             op: FillOp::new(
                 rect(Vec2::new(40.0, 40.0), Vec2::new(80.0, 80.0)),
@@ -404,16 +411,16 @@ fn every_action_touches_only_what_it_declares() {
                 Srgb::new([0.2, 0.7, 0.4]),
                 0.5,
             ),
-        },
+        }),
     );
     step(
         &mut engine,
         seen,
         "fill the selection",
-        DocCommand::Fill {
+        DocCommand::Set(Edit::Fill {
             layer: root,
             op: FillOp::of_selection(Srgb::new([0.3, 0.3, 0.8])),
-        },
+        }),
     );
 
     // The three transform families.
@@ -421,16 +428,16 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "affine transform",
-        DocCommand::Transform {
+        DocCommand::Set(Edit::Transform {
             layer: root,
             map: TransformMap::Affine(Affine2::from_translation(Vec2::new(24.0, -16.0))),
-        },
+        }),
     );
     step(
         &mut engine,
         seen,
         "perspective transform",
-        DocCommand::Transform {
+        DocCommand::Set(Edit::Transform {
             layer: root,
             map: TransformMap::Perspective(PerspectiveMap {
                 min: Vec2::new(20.0, 20.0),
@@ -442,20 +449,20 @@ fn every_action_touches_only_what_it_declares() {
                     c
                 },
             }),
-        },
+        }),
     );
     step(
         &mut engine,
         seen,
         "warp transform",
-        DocCommand::Transform {
+        DocCommand::Set(Edit::Transform {
             layer: root,
             map: TransformMap::Warp({
                 let mut w = WarpMap::identity(Vec2::new(20.0, 20.0), Vec2::new(160.0, 120.0), 3, 3);
                 w.points[4] += Vec2::new(9.0, -7.0);
                 w
             }),
-        },
+        }),
     );
 
     // The layer frame (§14.12) and the float (§16.12) — the float made on a
@@ -465,10 +472,10 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "translate a layer",
-        DocCommand::TranslateLayer {
+        DocCommand::Set(Edit::Translate {
             layer: root,
             to: stark_model::geom::IVec2::new(37, -13),
-        },
+        }),
     );
     step(
         &mut engine,
@@ -484,10 +491,10 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "drag the float",
-        DocCommand::TranslateLayer {
+        DocCommand::Set(Edit::Translate {
             layer: float_child,
             to: stark_model::geom::IVec2::new(-40, 21),
-        },
+        }),
     );
     step(
         &mut engine,
@@ -538,13 +545,13 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "dial the filter",
-        DocCommand::SetFilter(
+        DocCommand::Set(Edit::Filter(
             filter,
             Filter::Color(ColorAdjust {
                 saturation: 0.0,
                 ..ColorAdjust::NEUTRAL
             }),
-        ),
+        )),
     );
 
     // …and the merge, which is the largest footprint in the enum: it rewrites the
@@ -609,13 +616,13 @@ fn every_action_touches_only_what_it_declares() {
         &mut engine,
         seen,
         "reshape a guide",
-        DocCommand::SetGuide(
+        DocCommand::Set(Edit::Guide(
             first,
             PerspectiveGuide {
                 focal: 1200.0,
                 ..PerspectiveGuide::default()
             },
-        ),
+        )),
     );
     step(
         &mut engine,

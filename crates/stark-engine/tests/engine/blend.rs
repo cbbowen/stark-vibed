@@ -19,7 +19,7 @@
 
 use crate::common::palette::{COOL, WARM};
 use crate::common::*;
-use stark_engine::command::DocCommand;
+use stark_engine::command::{DocCommand, Edit};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::ColorSpaceId;
 // Both users of this are `#[cfg(feature = "mixbox")]`, so the import is too —
@@ -115,7 +115,7 @@ fn blend_over_nothing_is_normal() {
     let normal = engine.render_to_image();
 
     for mode in COMBINING {
-        engine.process(DocCommand::SetLayerBlend(ROOT, mode));
+        engine.process(DocCommand::Set(Edit::LayerBlend(ROOT, mode)));
         let blended = engine.render_to_image();
         let (frac, worst) = diff_fraction(&normal, &blended);
         assert_eq!(
@@ -141,7 +141,10 @@ fn empty_blend_layer_contributes_nothing() {
         carrier: None,
         above: None,
     });
-    engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Reinhard));
+    engine.process(DocCommand::Set(Edit::LayerBlend(
+        top(&engine),
+        BlendMode::Reinhard,
+    )));
     let after = engine.render_to_image();
 
     let (frac, worst) = diff_fraction(&before, &after);
@@ -167,7 +170,7 @@ fn light_modes_brighten_the_overlap() {
         crossed(&mut engine);
 
         let normal = luma(center(&engine.render_to_image()));
-        engine.process(DocCommand::SetLayerBlend(top(&engine), mode));
+        engine.process(DocCommand::Set(Edit::LayerBlend(top(&engine), mode)));
         let blended = luma(center(&engine.render_to_image()));
 
         // The top layer alone, for "brighter than either input".
@@ -206,7 +209,10 @@ fn multiply_darkens_the_overlap() {
     crossed(&mut engine);
 
     let normal = luma(center(&engine.render_to_image()));
-    engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Multiply));
+    engine.process(DocCommand::Set(Edit::LayerBlend(
+        top(&engine),
+        BlendMode::Multiply,
+    )));
     let blended = luma(center(&engine.render_to_image()));
 
     engine.process(DocCommand::SetLayerVisible(ROOT, false));
@@ -237,7 +243,7 @@ fn blend_only_acts_where_the_layers_meet() {
     crossed(&mut engine);
     let normal = engine.render_to_image();
 
-    engine.process(DocCommand::SetLayerBlend(top(&engine), RADIANCE));
+    engine.process(DocCommand::Set(Edit::LayerBlend(top(&engine), RADIANCE)));
     let blended = engine.render_to_image();
 
     // The vertical stroke runs to y = ±60 canvas px; the horizontal one is 44 px
@@ -283,7 +289,7 @@ fn a_blend_layer_leaves_the_backdrop_where_it_has_no_paint() {
                 &[Vec2::new(-60.0, -100.0), Vec2::new(60.0, -100.0)],
             );
             let normal = engine.render_to_image();
-            engine.process(DocCommand::SetLayerBlend(top(&engine), mode));
+            engine.process(DocCommand::Set(Edit::LayerBlend(top(&engine), mode)));
             let (frac, worst) = diff_fraction(&normal, &engine.render_to_image());
             assert_eq!(
                 (frac, worst),
@@ -354,7 +360,7 @@ fn stacking_is_order_independent(mode: BlendMode) {
             opaque.jitter = 0.0;
             stroke_with(&mut engine, opaque, paths[i]);
             let id = engine.observe().active_layer;
-            engine.process(DocCommand::SetLayerBlend(id, mode));
+            engine.process(DocCommand::Set(Edit::LayerBlend(id, mode)));
         }
         Some(engine.render_to_image())
     };
@@ -404,7 +410,10 @@ fn a_combining_layer_weighs_its_coverage_in_light() {
     layer_with(&mut engine, WARM, V_STROKE);
     let normal = center(&engine.render_to_image());
 
-    engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Reinhard));
+    engine.process(DocCommand::Set(Edit::LayerBlend(
+        top(&engine),
+        BlendMode::Reinhard,
+    )));
     let glow = center(&engine.render_to_image());
 
     let worst = (0..3)
@@ -487,7 +496,7 @@ fn black_is_the_identity_through_the_round_trip() {
             stroke_with(&mut engine, opaque(color), V_STROKE);
             let over_black = center(&engine.render_to_image());
 
-            engine.process(DocCommand::SetLayerBlend(top(&engine), mode));
+            engine.process(DocCommand::Set(Edit::LayerBlend(top(&engine), mode)));
             let blended = center(&engine.render_to_image());
 
             let worst = (0..3)
@@ -546,7 +555,10 @@ fn white_is_the_identity_through_the_round_trip() {
         stroke_with(&mut engine, opaque(color), V_STROKE);
         let over_white = center(&engine.render_to_image());
 
-        engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Multiply));
+        engine.process(DocCommand::Set(Edit::LayerBlend(
+            top(&engine),
+            BlendMode::Multiply,
+        )));
         let blended = center(&engine.render_to_image());
 
         let worst = (0..3)
@@ -587,7 +599,10 @@ fn multiply_over_black_is_black() {
         });
         stroke_with(&mut engine, opaque(color), V_STROKE);
         let normal = center(&engine.render_to_image());
-        engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Multiply));
+        engine.process(DocCommand::Set(Edit::LayerBlend(
+            top(&engine),
+            BlendMode::Multiply,
+        )));
         Some((normal, center(&engine.render_to_image())))
     };
 
@@ -633,7 +648,7 @@ fn glow_leaves_headroom_where_radiance_does_not() {
             }
             paint(&mut engine, bright, 50.0, H_STROKE);
             let id = engine.observe().active_layer;
-            engine.process(DocCommand::SetLayerBlend(id, mode));
+            engine.process(DocCommand::Set(Edit::LayerBlend(id, mode)));
         }
         Some(luma(center(&engine.render_to_image())))
     };
@@ -664,10 +679,10 @@ fn a_layers_bend_moves_the_overlap() {
     let overlap = |k: f32| -> Option<f64> {
         let mut engine = engine_or_skip()?;
         crossed(&mut engine);
-        engine.process(DocCommand::SetLayerBlend(
+        engine.process(DocCommand::Set(Edit::LayerBlend(
             top(&engine),
             BlendMode::Drago { k },
-        ));
+        )));
         Some(luma(center(&engine.render_to_image())))
     };
     let Some(hard) = overlap(DRAGO_K_RANGE.0) else {
@@ -705,7 +720,7 @@ fn blend_works_in_the_pigment_space() {
     };
     paint(&mut engine, WARM, 44.0, H_STROKE);
     let normal = engine.render_to_image();
-    engine.process(DocCommand::SetLayerBlend(ROOT, BlendMode::Reinhard));
+    engine.process(DocCommand::Set(Edit::LayerBlend(ROOT, BlendMode::Reinhard)));
     let (frac, worst) = diff_fraction(&normal, &engine.render_to_image());
     assert_eq!(
         (frac, worst),
@@ -713,10 +728,13 @@ fn blend_works_in_the_pigment_space() {
         "a glow layer over nothing is the identity in pigment too"
     );
 
-    engine.process(DocCommand::SetLayerBlend(ROOT, BlendMode::Normal));
+    engine.process(DocCommand::Set(Edit::LayerBlend(ROOT, BlendMode::Normal)));
     layer_with(&mut engine, COOL, V_STROKE);
     let covered = luma(center(&engine.render_to_image()));
-    engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Reinhard));
+    engine.process(DocCommand::Set(Edit::LayerBlend(
+        top(&engine),
+        BlendMode::Reinhard,
+    )));
     let combined = luma(center(&engine.render_to_image()));
     assert!(
         combined > covered + 4.0,
@@ -734,7 +752,10 @@ fn golden_glow_layer() {
         return;
     };
     crossed(&mut engine);
-    engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Reinhard));
+    engine.process(DocCommand::Set(Edit::LayerBlend(
+        top(&engine),
+        BlendMode::Reinhard,
+    )));
     assert_golden("blend_glow", &engine.render_to_image(), 6);
 }
 
@@ -744,7 +765,7 @@ fn golden_radiance_layer() {
         return;
     };
     crossed(&mut engine);
-    engine.process(DocCommand::SetLayerBlend(top(&engine), RADIANCE));
+    engine.process(DocCommand::Set(Edit::LayerBlend(top(&engine), RADIANCE)));
     assert_golden("blend_radiance", &engine.render_to_image(), 6);
 }
 
@@ -754,7 +775,10 @@ fn golden_multiply_layer() {
         return;
     };
     crossed(&mut engine);
-    engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Multiply));
+    engine.process(DocCommand::Set(Edit::LayerBlend(
+        top(&engine),
+        BlendMode::Multiply,
+    )));
     assert_golden("blend_multiply", &engine.render_to_image(), 6);
 }
 
@@ -788,7 +812,9 @@ fn golden_multiply_layer() {
 fn black_is_black_in_the_pigment_space() {
     let black_in = |space| -> Option<([u8; 4], [u8; 4])> {
         let mut engine = engine_or_skip_with(space)?;
-        engine.process(DocCommand::SetSubstrateColor(Srgb::new([0.0, 0.0, 0.0])));
+        engine.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new([
+            0.0, 0.0, 0.0,
+        ]))));
         let substrate = center(&engine.render_to_image());
         paint(&mut engine, [0.0, 0.0, 0.0], 70.0, H_STROKE);
         Some((substrate, center(&engine.render_to_image())))
@@ -845,7 +871,7 @@ fn carrying_brush() -> BrushParams {
 #[cfg(feature = "mixbox")]
 fn carried_onto(space: ColorSpaceId, bg: [f32; 3]) -> Option<[u8; 4]> {
     let mut engine = engine_or_skip_with(space)?;
-    engine.process(DocCommand::SetSubstrateColor(Srgb::new(bg)));
+    engine.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new(bg))));
     paint(&mut engine, [0.0, 0.0, 0.0], 30.0, BLACK_BAND);
     stroke_with(&mut engine, carrying_brush(), CARRY_DRAG);
     Some(center(&engine.render_to_image()))

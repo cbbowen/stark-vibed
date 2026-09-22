@@ -6,15 +6,10 @@
 //! nothing about either.
 
 use super::Engine;
-use crate::command::{DocCommand, GestureCommand, PeerCommand, ViewCommand};
+use crate::command::{DocCommand, Edit, GestureCommand, PeerCommand, ViewCommand};
 use crate::document::Step;
 use crate::session::ShapeResult;
-use stark_model::document::{
-    ActionId, ActionKind, BlendMode, FillOp, Filter, GuideId, LayerId, Parcel, PerspectiveGuide,
-    TransformMap,
-};
-use stark_model::geom::{IVec2, Vec2};
-use stark_model::{Srgb, SubstrateScale};
+use stark_model::document::{ActionId, ActionKind, GuideId, LayerId, TransformMap};
 
 /// Longest name that will be recorded, in `char`s — the wire's bound, reached for
 /// rather than restated.
@@ -41,27 +36,6 @@ fn normalize_name<T: From<String>>(name: Option<impl AsRef<str>>) -> Option<T> {
     let trimmed = name?;
     let capped: String = trimmed.as_ref().trim().chars().take(MAX_NAME).collect();
     (!capped.is_empty()).then(|| T::from(capped))
-}
-
-/// The payload of a setter: a document command whose drag previews by folding the
-/// very action its release commits (§21.6). One variant per `DocCommand` /
-/// `ViewCommand::Preview*` pair, and both mint their kind through
-/// [`Engine::setter_kind`].
-enum Setter {
-    LayerBlend(LayerId, BlendMode),
-    LayerOpacity(LayerId, f32),
-    SelectionOpacity(f32),
-    Filter(LayerId, Filter),
-    MatteRect(LayerId, Vec2, Vec2),
-    MattePaint(LayerId, Parcel),
-    SubstrateColor(Srgb),
-    SubstrateScale(SubstrateScale),
-    Translate(LayerId, IVec2),
-    Guide(GuideId, PerspectiveGuide),
-    /// A fill of the layer, its op stated on the canvas (§22.4).
-    Fill(LayerId, FillOp),
-    /// A transform of the layer's selected paint, its map stated on the canvas (§16).
-    Transform(LayerId, TransformMap),
 }
 
 /// Whether a captured pointer report opens a stroke or continues one — see
@@ -117,37 +91,36 @@ impl Engine {
             .collect()
     }
 
-    /// The action a setter commits — and the very one its preview folds (§21.6) — or
+    /// The action an [`Edit`] commits — and the very one its preview folds (§21.6) — or
     /// `None` for a transform whose map is unusable, a knowably dead action kept out
     /// of the log (§16.1).
     ///
     /// **One function, so `preview == committed` (§1.3) is a property of the code
-    /// rather than of a setter's two arms agreeing.** Whatever a kind needs beyond its
-    /// payload is read here, once, off the committed document: the canvas-to-frame
-    /// conversion a matte's rect and paint and a fill's op carry, the frame a
-    /// transform's map is conjugated into (§14.12), and the subtree a translate
-    /// expands to.
-    fn setter_kind(&self, setter: Setter) -> Option<ActionKind> {
-        Some(match setter {
-            Setter::LayerBlend(id, blend) => ActionKind::SetLayerBlend(id, blend),
-            Setter::LayerOpacity(id, opacity) => ActionKind::SetLayerOpacity(id, opacity),
-            Setter::SelectionOpacity(opacity) => ActionKind::SetSelectionOpacity(opacity),
-            Setter::Filter(id, filter) => ActionKind::SetFilter(id, filter),
-            Setter::MatteRect(id, min, max) => {
+    /// rather than of two arms agreeing.** Whatever a kind needs beyond its payload is
+    /// read here, once, off the committed document: the canvas-to-frame conversion a
+    /// matte's rect and paint and a fill's op carry, the frame a transform's map is
+    /// conjugated into (§14.12), and the subtree a translate expands to.
+    fn edit_kind(&self, edit: Edit) -> Option<ActionKind> {
+        Some(match edit {
+            Edit::LayerBlend(id, blend) => ActionKind::SetLayerBlend(id, blend),
+            Edit::LayerOpacity(id, opacity) => ActionKind::SetLayerOpacity(id, opacity),
+            Edit::SelectionOpacity(opacity) => ActionKind::SetSelectionOpacity(opacity),
+            Edit::Filter(id, filter) => ActionKind::SetFilter(id, filter),
+            Edit::MatteRect(id, min, max) => {
                 let d = self.frame_of(id).as_vec2();
                 ActionKind::SetMatteRect(id, min - d, max - d)
             }
-            Setter::MattePaint(id, paint) => {
+            Edit::MattePaint(id, paint) => {
                 let d = self.frame_of(id).as_vec2();
                 ActionKind::SetMattePaint(id, paint.translated(-d))
             }
-            Setter::SubstrateColor(rgb) => ActionKind::SetSubstrateColor(rgb),
-            Setter::SubstrateScale(scale) => ActionKind::SetSubstrateScale(scale),
-            Setter::Translate(layer, to) => ActionKind::TranslateLayers {
+            Edit::SubstrateColor(rgb) => ActionKind::SetSubstrateColor(rgb),
+            Edit::SubstrateScale(scale) => ActionKind::SetSubstrateScale(scale),
+            Edit::Translate { layer, to } => ActionKind::TranslateLayers {
                 moves: self.translate_moves(layer, to),
             },
-            Setter::Guide(id, guide) => ActionKind::SetGuide(id, guide),
-            Setter::Fill(layer, op) => {
+            Edit::Guide(id, guide) => ActionKind::SetGuide(id, guide),
+            Edit::Fill { layer, op } => {
                 let frame = self.frame_of(layer);
                 ActionKind::Fill {
                     layer,
@@ -155,11 +128,11 @@ impl Engine {
                     translation: frame,
                 }
             }
-            Setter::Transform(_, map) if !map.usable() => return None,
+            Edit::Transform { map, .. } if !map.usable() => return None,
             // The map stays stated on the canvas, with the frame beside it; the fold
             // conjugates. Each family is its own kind, since the wire never carries
             // the routing enum.
-            Setter::Transform(layer, map) => {
+            Edit::Transform { layer, map } => {
                 let translation = self.frame_of(layer);
                 match map {
                     TransformMap::Affine(affine) => ActionKind::Transform {
@@ -182,12 +155,19 @@ impl Engine {
         })
     }
 
-    /// Commit what `setter` mints — or, where it mints nothing, drop the drag preview
+    /// Commit what `edit` mints — or, where it mints nothing, drop the drag preview
     /// as a declined commit would ([`commit`](Self::commit)'s bargain).
-    fn commit_setter(&mut self, setter: Setter) {
-        match self.setter_kind(setter) {
+    fn commit_edit(&mut self, edit: Edit) {
+        // A committed scale is a substrate the registry bakes, and a `SubstrateMap` is
+        // built from the substrate and its scale together — so laying it at another
+        // size invalidates the bound one exactly as `SetSubstrate` does.
+        let rebakes = matches!(edit, Edit::SubstrateScale(_));
+        match self.edit_kind(edit) {
             Some(kind) => self.commit(kind),
             None => self.preview.set_doc(None),
+        }
+        if rebakes {
+            self.apply_document_substrate();
         }
     }
 
@@ -326,16 +306,7 @@ impl Engine {
             DocCommand::Seek(to) => self.navigate(Step::Seek(to)),
             DocCommand::Select(op) => self.commit(ActionKind::Select(op)),
             DocCommand::InvertSelection => self.commit(ActionKind::InvertSelection),
-            DocCommand::SetSelectionOpacity(opacity) => {
-                self.commit_setter(Setter::SelectionOpacity(opacity))
-            }
-            DocCommand::Fill { layer, op } => self.commit_setter(Setter::Fill(layer, op)),
-            DocCommand::Transform { layer, map } => {
-                self.commit_setter(Setter::Transform(layer, map))
-            }
-            DocCommand::TranslateLayer { layer, to } => {
-                self.commit_setter(Setter::Translate(layer, to))
-            }
+            DocCommand::Set(edit) => self.commit_edit(edit),
             DocCommand::FloatSelection { layer } => {
                 // Asked before an action is spent, as `MergeLayerDown` asks its offer:
                 // the fold's own refusals, off the same committed state, so a float
@@ -357,14 +328,6 @@ impl Engine {
                 // Unconditional, and a no-op when the substrate did not move: the
                 // registry is brought level with the document rather than with what
                 // this command asked for.
-                self.apply_document_substrate();
-            }
-            DocCommand::SetSubstrateScale(scale) => {
-                self.commit_setter(Setter::SubstrateScale(scale));
-                // The same call for the same reason, and it is the same *state*: a
-                // `SubstrateMap` is built from the substrate and its scale together, so
-                // laying it larger invalidates the bound substrate exactly as switching
-                // it does.
                 self.apply_document_substrate();
             }
             DocCommand::AddLayer { carrier, above } => {
@@ -424,14 +387,6 @@ impl Engine {
                 // filter has no tile map, so arming it as the paint target would
                 // swallow the next stroke (§21.4).
             }
-            DocCommand::SetFilter(id, filter) => self.commit_setter(Setter::Filter(id, filter)),
-            DocCommand::SetMatteRect(id, min, max) => {
-                self.commit_setter(Setter::MatteRect(id, min, max))
-            }
-            DocCommand::SetMattePaint(id, paint) => {
-                self.commit_setter(Setter::MattePaint(id, paint))
-            }
-            DocCommand::SetSubstrateColor(rgb) => self.commit_setter(Setter::SubstrateColor(rgb)),
             DocCommand::DuplicateLayer(source) => {
                 // One minted id per layer of the subtree, paired with the layer it
                 // copies, in composite order — the map the action carries (§14.8).
@@ -486,13 +441,7 @@ impl Engine {
                     }
                 }
             }
-            DocCommand::SetLayerBlend(id, blend) => {
-                self.commit_setter(Setter::LayerBlend(id, blend))
-            }
             DocCommand::SetLayerClip(id, clip) => self.commit(ActionKind::SetLayerClip(id, clip)),
-            DocCommand::SetLayerOpacity(id, opacity) => {
-                self.commit_setter(Setter::LayerOpacity(id, opacity))
-            }
             DocCommand::SetLayerVisible(id, visible) => {
                 self.commit(ActionKind::SetLayerVisible(id, visible))
             }
@@ -515,7 +464,6 @@ impl Engine {
                 });
             }
             DocCommand::RemoveGuide(id) => self.commit(ActionKind::RemoveGuide(id)),
-            DocCommand::SetGuide(id, guide) => self.commit_setter(Setter::Guide(id, guide)),
             DocCommand::SetGuideName(id, name) => {
                 self.commit(ActionKind::SetGuideName(id, normalize_name(name)))
             }
@@ -523,15 +471,19 @@ impl Engine {
         }
     }
 
-    /// Show the document committing `setter` would leave behind, without logging it —
-    /// the body every `Preview*` arm below shares (§21.6).
+    /// Show the document committing `edit` would leave behind, without logging it
+    /// (§21.6).
     ///
     /// `None` clears the preview, which is what the release of a drag that changed
-    /// nothing sends, and so does a setter whose commit would be declined. The sanitize
-    /// and the fold both happen inside [`crate::document::apply::preview_of`], so an
-    /// arm cannot forget a step it does not perform.
-    fn preview_setter(&mut self, setter: Option<Setter>) {
-        let shown = setter.and_then(|s| self.setter_kind(s)).and_then(|kind| {
+    /// nothing sends, and so does an edit whose commit would be declined. The sanitize
+    /// and the fold both happen inside [`crate::document::apply::preview_of`], so this
+    /// cannot forget a step it does not perform.
+    ///
+    /// It moves the document the compositor reads and stops there: no
+    /// `apply_document_substrate`, so nothing bakes while a hand is on a slider
+    /// ([`Edit::SubstrateScale`]).
+    fn preview_edit(&mut self, edit: Option<Edit>) {
+        let shown = edit.and_then(|e| self.edit_kind(e)).and_then(|kind| {
             crate::document::apply::preview_of(
                 kind,
                 self.timeline.current(),
@@ -598,48 +550,7 @@ impl Engine {
                     self.mark_live_stale();
                 }
             }
-            ViewCommand::PreviewGuide(drag) => {
-                self.preview_setter(drag.map(|(id, guide)| Setter::Guide(id, guide)));
-            }
-            ViewCommand::PreviewMatteRect(drag) => {
-                self.preview_setter(drag.map(|(id, min, max)| Setter::MatteRect(id, min, max)));
-            }
-            ViewCommand::PreviewSubstrateColor(rgb) => {
-                self.preview_setter(rgb.map(Setter::SubstrateColor));
-            }
-            // The preview moves the *document* the compositor reads and stops there:
-            // no `apply_document_substrate`, so nothing is baked while the hand is on
-            // the slider. So it shows the scale in the **light**, which the media pass
-            // re-reads every frame, and not in the **tooth**, whose substrate is a
-            // stored bake — paint already down looks right immediately; what the next
-            // stroke will bite is right from the commit.
-            ViewCommand::PreviewSubstrateScale(scale) => {
-                self.preview_setter(scale.map(Setter::SubstrateScale));
-            }
-            ViewCommand::PreviewParcel(pick) => {
-                self.preview_setter(pick.map(|(id, paint)| Setter::MattePaint(id, paint)));
-            }
-            ViewCommand::PreviewSelectionOpacity(opacity) => {
-                self.preview_setter(opacity.map(Setter::SelectionOpacity));
-            }
-            ViewCommand::PreviewLayerOpacity(set) => {
-                self.preview_setter(set.map(|(id, opacity)| Setter::LayerOpacity(id, opacity)));
-            }
-            ViewCommand::PreviewFilter(set) => {
-                self.preview_setter(set.map(|(id, filter)| Setter::Filter(id, filter)));
-            }
-            ViewCommand::PreviewLayerBlend(set) => {
-                self.preview_setter(set.map(|(id, blend)| Setter::LayerBlend(id, blend)));
-            }
-            ViewCommand::PreviewTransform(t) => {
-                self.preview_setter(t.map(|(layer, map)| Setter::Transform(layer, map)));
-            }
-            ViewCommand::PreviewTranslate(set) => {
-                self.preview_setter(set.map(|(layer, to)| Setter::Translate(layer, to)));
-            }
-            ViewCommand::PreviewFill(f) => {
-                self.preview_setter(f.map(|(layer, op)| Setter::Fill(layer, op)));
-            }
+            ViewCommand::Preview(edit) => self.preview_edit(edit),
             ViewCommand::PreviewHover(report) => match report {
                 Some(r) => {
                     // The CPU half of a hover report — the window refit — on its own

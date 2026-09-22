@@ -22,7 +22,7 @@
 
 use crate::common::palette::{BLUE_SOFT, RED_WARM};
 use crate::common::*;
-use stark_engine::command::{DocCommand, PeerCommand};
+use stark_engine::command::{DocCommand, Edit, PeerCommand};
 use stark_engine::{Engine, PickOptions, PickSource};
 use stark_model::Srgb;
 use stark_model::document::{BlendMode, ColorAdjust, Filter, LayerId, Place};
@@ -154,7 +154,7 @@ fn over_the_substrate_answers_with_the_canvas_color() {
         return;
     };
     const SUBSTRATE: [f32; 3] = [0.2, 0.55, 0.35];
-    engine.process(DocCommand::SetSubstrateColor(Srgb::new(SUBSTRATE)));
+    engine.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new(SUBSTRATE))));
 
     assert_near(
         pick(&mut engine, Vec2::ZERO, over_substrate(0)),
@@ -304,7 +304,7 @@ fn a_pick_over_a_blended_stack_still_answers() {
     });
     let over = engine.observe().active_layer;
     paint(&mut engine, BLUE_SOFT, 24.0, BAR);
-    engine.process(DocCommand::SetLayerBlend(over, BlendMode::Multiply));
+    engine.process(DocCommand::Set(Edit::LayerBlend(over, BlendMode::Multiply)));
 
     // A single point first, which is the one-patch case and would survive a lost
     // submit only by accident.
@@ -369,7 +369,10 @@ fn add_multiply(engine: &mut Engine, tint: [f32; 3], x: f32) {
     });
     let layer = engine.observe().active_layer;
     paint(engine, tint, 8.0, &[Vec2::new(x, -4.0), Vec2::new(x, 4.0)]);
-    engine.process(DocCommand::SetLayerBlend(layer, BlendMode::Multiply));
+    engine.process(DocCommand::Set(Edit::LayerBlend(
+        layer,
+        BlendMode::Multiply,
+    )));
 }
 
 /// Every sample of a trace is an eyedropper pick (§22.2). The fitted ramp keeps both
@@ -467,7 +470,7 @@ fn one_layer_ignores_its_own_opacity_until_it_reaches_zero() {
     let full = pick(&mut engine, Vec2::ZERO, source).expect("opaque paint picks");
 
     for opacity in [0.75, 0.25, 0.02, 0.001] {
-        engine.process(DocCommand::SetLayerOpacity(layer, opacity));
+        engine.process(DocCommand::Set(Edit::LayerOpacity(layer, opacity)));
         assert_near(
             pick(&mut engine, Vec2::ZERO, source),
             [full[0], full[1], full[2]],
@@ -478,7 +481,7 @@ fn one_layer_ignores_its_own_opacity_until_it_reaches_zero() {
 
     // Zero is a different statement, not a fainter one: the layer contributes nothing
     // to the document, so there is nothing of it to sample.
-    engine.process(DocCommand::SetLayerOpacity(layer, 0.0));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(layer, 0.0)));
     assert_eq!(
         pick(&mut engine, Vec2::ZERO, source),
         None,
@@ -487,9 +490,9 @@ fn one_layer_ignores_its_own_opacity_until_it_reaches_zero() {
 
     // …and the *composite* still fades with the slider, which is what says this is a
     // property of the one-layer source rather than of the pick as a whole.
-    engine.process(DocCommand::SetLayerOpacity(layer, 1.0));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(layer, 1.0)));
     let opaque = pick_point(&mut engine, Vec2::ZERO).expect("the composite shows paint");
-    engine.process(DocCommand::SetLayerOpacity(layer, 0.0));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(layer, 0.0)));
     assert_eq!(
         pick_point(&mut engine, Vec2::ZERO),
         None,
@@ -723,7 +726,7 @@ fn the_below_source_cuts_the_stack_above_the_layer() {
         return;
     };
     const SUBSTRATE: [f32; 3] = [0.2, 0.55, 0.35];
-    engine.process(DocCommand::SetSubstrateColor(Srgb::new(SUBSTRATE)));
+    engine.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new(SUBSTRATE))));
     let (l0, _l1, m1, _m2) = scoped_doc(&mut engine);
     let below = |layer| source(PickSource::Below(layer));
 
@@ -867,10 +870,10 @@ fn a_faded_layer_is_still_there_and_a_zeroed_one_is_not() {
     };
     let top = crossed(&mut engine);
 
-    engine.process(DocCommand::SetLayerOpacity(top, 0.1));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(top, 0.1)));
     assert_eq!(hit(&mut engine, BOTH), Some(top), "faint, but it is there");
 
-    engine.process(DocCommand::SetLayerOpacity(top, 0.0));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(top, 0.0)));
     assert_eq!(hit(&mut engine, BOTH), Some(ROOT), "switched off is gone");
 }
 

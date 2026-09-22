@@ -15,7 +15,7 @@ use crate::common::palette::RED;
 use crate::common::*;
 use stark_engine::RgbaImage;
 use stark_engine::command::Tool;
-use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::Srgb;
 use stark_model::document::BrushDynamics;
@@ -847,7 +847,7 @@ fn a_dimmed_selection_is_the_dial_at_that_opacity() {
         return;
     };
     select(&mut dimmed, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
-    dimmed.process(DocCommand::SetSelectionOpacity(0.5));
+    dimmed.process(DocCommand::Set(Edit::SelectionOpacity(0.5)));
     stroke_with(&mut dimmed, washed(1.0, 0.0), &path);
     let dimmed = dimmed.render_to_image();
 
@@ -857,10 +857,10 @@ fn a_dimmed_selection_is_the_dial_at_that_opacity() {
 
     let mut filled = engine_or_skip().expect("the adapter answered once already");
     let layer = filled.observe().active_layer;
-    filled.process(DocCommand::Fill {
+    filled.process(DocCommand::Set(Edit::Fill {
         layer,
         op: FillOp::new(rect(BOX_MIN, BOX_MAX), 0.0, Srgb::new(RED), 0.5),
-    });
+    }));
     let filled = filled.render_to_image();
 
     for p in probes {
@@ -900,7 +900,7 @@ fn dimming_is_an_undo_step_that_keeps_the_selection() {
     };
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
     let before = engine.render_to_image();
-    engine.process(DocCommand::SetSelectionOpacity(0.5));
+    engine.process(DocCommand::Set(Edit::SelectionOpacity(0.5)));
     let obs = engine.observe();
     assert_eq!(obs.selection_opacity, 0.5);
     assert!(obs.has_selection, "dimming must not deselect");
@@ -932,7 +932,7 @@ fn deselecting_lands_on_full_strength() {
         return;
     };
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
-    engine.process(DocCommand::SetSelectionOpacity(0.3));
+    engine.process(DocCommand::Set(Edit::SelectionOpacity(0.3)));
     assert_eq!(engine.observe().selection_opacity, 0.3);
     engine.process(DocCommand::Select(SelectionOp::select_all()));
     let obs = engine.observe();
@@ -987,7 +987,7 @@ fn nothing_selected_still_takes_an_opacity() {
         return;
     };
     let revision = engine.observe().doc_revision;
-    engine.process(DocCommand::SetSelectionOpacity(0.5));
+    engine.process(DocCommand::Set(Edit::SelectionOpacity(0.5)));
     let obs = engine.observe();
     assert_ne!(
         obs.doc_revision, revision,
@@ -1385,7 +1385,9 @@ fn a_peer_s_outline_is_their_colour_on_any_display() {
     b.join_collaboration(&a.document_file(), ActorId(2))
         .expect("join a session this build can render");
     a.process(ViewCommand::SetMediaParams(FLAT));
-    a.process(DocCommand::SetSubstrateColor(Srgb::new([0.0, 0.0, 0.0])));
+    a.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new([
+        0.0, 0.0, 0.0,
+    ]))));
     a.process(ViewCommand::SetShowPeerSelections(true));
 
     // The peer's selection is document state, so it travels in the log (§17.1); that

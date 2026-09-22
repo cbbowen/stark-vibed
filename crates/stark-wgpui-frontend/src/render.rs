@@ -12,7 +12,7 @@
 //! [`Renderer::desk`], never re-spelled.
 
 use stark_engine::Extent2;
-use stark_engine::command::{InputCommand, ViewCommand};
+use stark_engine::command::{Edit, InputCommand, ViewCommand};
 use stark_engine::{Engine, GpuContext, Output, Transfer, ViewTransform};
 use stark_ui::desk::Desk;
 use wgpui::{WgpuSurfaceHandle, Window};
@@ -317,8 +317,8 @@ impl Preview {
         let surface = window.create_wgpu_surface(width, height, donor.format())?;
         let donor = donor.desk.engine();
         let mut engine = Engine::on_shared(donor.shared(), Extent2::new(width, height));
-        engine.process(stark_engine::command::DocCommand::SetSubstrateColor(
-            donor.observe().substrate_color,
+        engine.process(stark_engine::command::DocCommand::Set(
+            Edit::SubstrateColor(donor.observe().substrate_color),
         ));
         Some(Self {
             surface,

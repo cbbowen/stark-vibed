@@ -22,7 +22,7 @@
 
 use crate::common::palette::{COOL, PALE, WARM};
 use crate::common::*;
-use stark_engine::command::{DocCommand, PeerCommand};
+use stark_engine::command::{DocCommand, Edit, PeerCommand};
 use stark_engine::{Engine, LayerInfo, RgbaImage};
 use stark_model::Srgb;
 use stark_model::document::{BlendMode, LayerId, MatteRegion, Parcel, Place};
@@ -391,7 +391,7 @@ fn grouping_rescopes_an_interior_blend_mode() {
     paint(&mut engine, PALE, 44.0, H_STROKE);
     let glow = add_layer(&mut engine);
     paint(&mut engine, COOL, 44.0, V_STROKE);
-    engine.process(DocCommand::SetLayerBlend(glow, BlendMode::Reinhard));
+    engine.process(DocCommand::Set(Edit::LayerBlend(glow, BlendMode::Reinhard)));
     let ungrouped = engine.render_to_image();
 
     // `glow` now combines light with `base` alone, not with everything under it.
@@ -657,7 +657,7 @@ fn the_bases_blend_mode_is_the_groups() {
     });
 
     let normal = engine.render_to_image();
-    engine.process(DocCommand::SetLayerBlend(base, BlendMode::Multiply));
+    engine.process(DocCommand::Set(Edit::LayerBlend(base, BlendMode::Multiply)));
     let multiplied = engine.render_to_image();
 
     // A point on the carried layer's stroke, inside the pale bar but away from the
@@ -691,11 +691,11 @@ fn group_opacity_fades_the_composite_not_the_members() {
         at: Place::Top,
     });
 
-    engine.process(DocCommand::SetLayerOpacity(base, 0.5));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(base, 0.5)));
     let group_faded = engine.render_to_image();
 
-    engine.process(DocCommand::SetLayerOpacity(base, 1.0));
-    engine.process(DocCommand::SetLayerOpacity(carried, 0.5));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(base, 1.0)));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(carried, 0.5)));
     let member_faded = engine.render_to_image();
 
     let (frac, _) = diff_fraction(&group_faded, &member_faded);
@@ -740,7 +740,7 @@ fn a_groups_opacity_fades_its_base_exactly_once() {
         carrier: Some(ROOT),
         at: Place::Top,
     });
-    engine.process(DocCommand::SetLayerOpacity(ROOT, FADE));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(ROOT, FADE)));
     let grouped = engine.render_to_image();
 
     // Ungrouped: two sliders, one per layer, folded into their tiles.
@@ -749,7 +749,7 @@ fn a_groups_opacity_fades_its_base_exactly_once() {
         carrier: None,
         at: Place::Above(ROOT),
     });
-    engine.process(DocCommand::SetLayerOpacity(carried, FADE));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(carried, FADE)));
     let flat = engine.render_to_image();
 
     // Not to the byte: the grouped path scales the accumulator in the blend pass

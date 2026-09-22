@@ -253,6 +253,10 @@ pub enum DocCommand {
     /// [`Engine::scrub_range`](crate::Engine::scrub_range)).
     Seek(usize),
 
+    /// Commit an [`Edit`] — one action, one undo step, superseding any preview in
+    /// force.
+    Set(Edit),
+
     /// Add an empty paint layer to the stack carried by `carrier` (the
     /// document's own when `None`), directly above `above` (§14.8).
     AddLayer {
@@ -280,12 +284,10 @@ pub enum DocCommand {
     /// offering the control ([`LayerInfo::merge_down`](crate::LayerInfo::merge_down)),
     /// so a command sent anyway is a silent no-op rather than a different picture.
     MergeLayerDown(LayerId),
-    SetLayerBlend(LayerId, BlendMode),
     /// Clip a layer to the paint beneath it in its own stack, or stop
     /// (§14.4). On the base of a group this clips the whole group
     /// to what lies under the group.
     SetLayerClip(LayerId, bool),
-    SetLayerOpacity(LayerId, f32),
     SetLayerVisible(LayerId, bool),
     /// Name a layer, or with `None` clear the name so it goes back to being
     /// described by its place in the stack. The text is trimmed and length-capped
@@ -313,29 +315,6 @@ pub enum DocCommand {
     Select(SelectionOp),
     /// Swap selected for unselected everywhere.
     InvertSelection,
-    /// How strongly the **whole** mask gates, `0..=1` — the Select panel's Opacity
-    /// slider (§6.8).
-    ///
-    /// A document command where its neighbours on the panel
-    /// ([`ViewCommand::SetSelectionFeather`], [`ViewCommand::SetShapeOpacity`]) are
-    /// view commands: those two shape the *next* gesture, and this reaches the mask
-    /// already drawn. So it is logged, undoable and replicated — and previewed per
-    /// pointer sample through [`ViewCommand::PreviewSelectionOpacity`].
-    SetSelectionOpacity(f32),
-
-    /// Fill a region of `layer` with paint (§18.0.4) — the direct path, next to
-    /// `Select`: the selection bar's Fill button and any frontend that has its own
-    /// geometry. The gesture path goes through
-    /// [`ShapeAction::Fill`](stark_model::document::ShapeAction) and commits the
-    /// identical action.
-    ///
-    /// A fill whose region is [`SelectionShape::All`](stark_model::document::SelectionShape)
-    /// means "the selection", and is refused when there is none — the canvas is
-    /// unbounded, and inventing a boundary would be a different fill on every client.
-    Fill {
-        layer: LayerId,
-        op: FillOp,
-    },
 
     /// Add a **matte** layer — a region filled with a [`Parcel`] (§15.2). A frame is
     /// one of these on top of the stack; a substrate ([`MatteRegion::Everything`]) is
@@ -360,8 +339,7 @@ pub enum DocCommand {
     /// [`ActionKind::PlaceImage`](stark_model::document::ActionKind::PlaceImage).
     /// Where to put it is the frontend's to decide, because only the frontend knows
     /// what is being looked at (§18.1.2); scaling and turning it afterwards is
-    /// [`Transform`](Self::Transform), which with nothing selected moves the whole
-    /// layer.
+    /// [`Edit::Transform`], which with nothing selected moves the whole layer.
     ///
     /// The picture is named by **content id**, imported first through
     /// [`Engine::import_picture`](crate::Engine::import_picture) — the same two-step a
@@ -388,47 +366,13 @@ pub enum DocCommand {
     /// does *not* become the active layer, because a filter cannot be painted on.
     ///
     /// It arrives at its neutral setting, so adding one changes nothing until it is
-    /// dialled with [`SetFilter`](Self::SetFilter). Where it lands is its scope —
+    /// dialled with [`Edit::Filter`]. Where it lands is its scope —
     /// the root stack filters the whole painting, a carried stack filters that group
     /// — so there is no parameter saying how far it reaches.
     AddFilter {
         carrier: Option<LayerId>,
         above: Option<LayerId>,
         filter: Filter,
-    },
-    /// Retune a filter layer — one action per adjustment, committed when the slider
-    /// settles (§21.6). The whole filter travels, so a new knob or a new kind of
-    /// filter needs no command of its own.
-    SetFilter(LayerId, Filter),
-    /// Move a matte's rect — one action per frame drag, committed on release.
-    SetMatteRect(LayerId, Vec2, Vec2),
-    /// Repaint a matte — a flat color or a gradient ramp (§15.4, §22.4). One
-    /// action per pick or per composed axis, committed when the gesture settles.
-    SetMattePaint(LayerId, Parcel),
-    /// Set the canvas substrate color — the substrate under everything, straight
-    /// sRGB (§15.5). A document property, not a view setting: it is
-    /// what the piece was painted on, and it is saved.
-    SetSubstrateColor(Srgb),
-
-    /// Transform this client's selected paint on `layer` — affine, perspective
-    /// or warp (§16, §16.8, §16.9) — carrying the selection along with it. A
-    /// universal selection moves the whole layer. One action per gesture: the
-    /// interactive drag builds in view state and commits once on "Done". The engine
-    /// routes each map family to its own action kind, so the log stays wire-stable.
-    Transform {
-        layer: LayerId,
-        map: TransformMap,
-    },
-
-    /// Put `layer`'s frame at `to` on the canvas — "move the layer", as one property
-    /// write and no tile at all (§14.12). The engine expands the move to the layer's
-    /// whole subtree (its paint members, each by the same delta), since a group moves
-    /// as one and translation does not inherit; the release half of the
-    /// pick-and-translate drag (§16.11), whose in-flight half is
-    /// [`ViewCommand::PreviewTranslate`].
-    TranslateLayer {
-        layer: LayerId,
-        to: IVec2,
     },
 
     /// Cut what the author's selection holds on `layer` into a fresh child
@@ -449,14 +393,6 @@ pub enum DocCommand {
     /// after it and not the ones before.
     SetSubstrate(SubstrateId),
 
-    /// Lay the canvas substrate at a different size (§6.4).
-    ///
-    /// Document state on [`SetSubstrate`](Self::SetSubstrate)'s argument, and the same
-    /// gate: the tooth reads the substrate's rise over a reach in canvas px, so the
-    /// size it is laid at decides what a stroke deposits. One action per slider drag,
-    /// committed on release (`ViewCommand::PreviewSubstrateScale`).
-    SetSubstrateScale(SubstrateScale),
-
     /// Add a **drawing guide** — a perspective grid to construct through
     /// (§20.5), directly after `after` in the roster or at its head.
     ///
@@ -475,14 +411,6 @@ pub enum DocCommand {
     },
     /// Remove a drawing guide.
     RemoveGuide(GuideId),
-    /// Reshape a guide — the **whole camera** at once (§20.5): the orbit, the
-    /// lens, the crosshair, the cell count, the opacity, the plane chips and the
-    /// fisheye toggle all come through here.
-    ///
-    /// One action per settled gesture, not one per pointer move: the drag previews
-    /// through [`ViewCommand::PreviewGuide`] and commits once on release — the bargain
-    /// the frame drag and the opacity slider already make (§15.7, §14.6).
-    SetGuide(GuideId, PerspectiveGuide),
     /// Name a guide, or with `None` clear the name so it goes back to being
     /// described by its place in the roster. Trimmed and capped like
     /// [`SetLayerName`](Self::SetLayerName), through the same funnel.
@@ -494,6 +422,66 @@ pub enum DocCommand {
         id: GuideId,
         after: Option<GuideId>,
     },
+}
+
+/// A document value a control sets: what its drag **previews** per pointer sample
+/// ([`ViewCommand::Preview`]) and its release **commits** once ([`DocCommand::Set`]).
+///
+/// A slider, a color picker, a frame handle and the transform widget are judged by
+/// looking, so every value the hand crosses has to reach the canvas — and only the
+/// answer belongs in the log: one undo step and one replicated action per adjustment
+/// rather than per pointer move. Not a [`GestureCommand`], because a control reports
+/// the value it wants rather than samples of the motion that reached it.
+///
+/// Both halves mint their action through one function off the committed document, so
+/// a preview is what its commit would lay (§1.3) — a [`Fill`](Self::Fill) or a
+/// [`Transform`](Self::Transform) through the commit's own renderer over the committed
+/// tiles, so a long drag never compounds. Canvas-space payloads are carried into the
+/// layer's frame there (§14.12).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Edit {
+    /// A layer's opacity (§14.6).
+    LayerOpacity(LayerId, f32),
+    /// A layer's blend mode — the whole mode rather than one of its parameters, so a
+    /// knob a mode grows needs no variant of its own (§18.0.4).
+    LayerBlend(LayerId, BlendMode),
+    /// How strongly the **whole** selection mask gates, `0..=1` (§6.8). Document state
+    /// where the Select panel's other settings ([`ViewCommand::SetSelectionFeather`],
+    /// [`ViewCommand::SetShapeOpacity`]) are view state: those shape the *next*
+    /// gesture, and this reaches the mask already drawn.
+    SelectionOpacity(f32),
+    /// A filter layer's settings (§21.6). The whole filter travels, so a new knob or a
+    /// new kind of filter needs no variant of its own.
+    Filter(LayerId, Filter),
+    /// A matte's rect, `min..max` on the canvas (§15.7).
+    MatteRect(LayerId, Vec2, Vec2),
+    /// A matte's paint — a flat color or a gradient ramp (§15.4, §22.4).
+    MattePaint(LayerId, Parcel),
+    /// The canvas substrate's color, straight sRGB (§15.5).
+    SubstrateColor(Srgb),
+    /// How large the canvas substrate is laid (§6.4) — a gate on deposition, like
+    /// [`DocCommand::SetSubstrate`], since the tooth reads its rise over a reach in
+    /// canvas px. A preview bakes nothing, so it shows in the light the media pass
+    /// re-reads every frame and not in the tooth, a stored bake: paint already down
+    /// looks right at once, and what the next stroke bites is right from the commit.
+    SubstrateScale(SubstrateScale),
+    /// Put `layer`'s frame at `to` on the canvas — a property write that moves no tile
+    /// (§14.12, §16.11). The layer's whole subtree moves by the same delta, since a
+    /// group moves as one and translation does not inherit.
+    Translate { layer: LayerId, to: IVec2 },
+    /// A drawing guide — the whole camera at once (§20.5).
+    Guide(GuideId, PerspectiveGuide),
+    /// Fill a region of `layer` with paint (§18.0.4, §22.4) — the identical action a
+    /// fill gesture commits ([`ShapeAction::Fill`]). A region of
+    /// [`SelectionShape::All`](stark_model::document::SelectionShape) means the
+    /// selection, and is refused when there is none: the canvas is unbounded, and
+    /// inventing a boundary would be a different fill on every client.
+    Fill { layer: LayerId, op: FillOp },
+    /// Transform this client's selected paint on `layer` — affine, perspective or warp
+    /// (§16, §16.8, §16.9) — carrying the selection with it; a universal selection
+    /// moves the whole layer. A map that is not [usable](TransformMap::usable) is
+    /// refused rather than logged (§16.1).
+    Transform { layer: LayerId, map: TransformMap },
 }
 
 /// Mutations of **view state**: per-client, transient, never logged and never sent
@@ -602,7 +590,7 @@ pub enum ViewCommand {
     /// panel's Opacity slider, mounted under the Fill action.
     ///
     /// Not what a *selecting* gesture lands at: a selection's strength is the whole
-    /// mask's and is set after the fact ([`DocCommand::SetSelectionOpacity`], §6.8),
+    /// mask's and is set after the fact ([`Edit::SelectionOpacity`], §6.8),
     /// which is why that one is the selection bar's slider rather than the panel's.
     /// Each answer is given where its moment is — this one before the gesture, with
     /// the gesture's other settings; the mask's after.
@@ -619,7 +607,7 @@ pub enum ViewCommand {
     /// statement about what you are looking at rather than about the drawing:
     /// shutting a guide to see the picture underneath must not reach across a shared
     /// session, must not be saved, and must not cost an undo step. Everything else a
-    /// guide has is logged (`DocCommand::SetGuide` and its siblings).
+    /// guide has is logged ([`Edit::Guide`] and its siblings).
     ///
     /// **A guide is hidden until this client asks for it**, so one arriving from a
     /// peer or out of a file draws nothing until an eye is opened on it — the
@@ -630,146 +618,9 @@ pub enum ViewCommand {
     /// shape it opens its eye (`panels::guides`' `begin_guide_edit`).
     SetGuideVisible(GuideId, bool),
 
-    /// Show `guide` in place of the one `id` names **without logging it**
-    /// (§20.5) — the in-flight half of an orbit, a lens drag, a crosshair drag
-    /// or a slider. `None` drops the preview.
-    ///
-    /// The bargain [`PreviewMatteRect`](Self::PreviewMatteRect) strikes: the hand
-    /// reports a pose per pointer sample, this shows each one, and the frontend
-    /// commits a single [`DocCommand::SetGuide`] when the gesture settles — so
-    /// shaping a perspective costs one undo step rather than five thousand.
-    PreviewGuide(Option<(GuideId, PerspectiveGuide)>),
-
-    /// Show a matte at `min..max` **without logging it** — the in-flight half of a
-    /// frame-handle drag (§15.7). `None` drops the preview.
-    ///
-    /// A view command rather than a `GestureCommand` because a frame drag is
-    /// handle-relative, not sample-driven: there is no `InputSample` to feed
-    /// `Start`/`To`/`End`. What it shares with a gesture is the shape that matters —
-    /// it builds in view state and the frontend commits one
-    /// [`DocCommand::SetMatteRect`] on release, so a drag costs one undo step.
-    PreviewMatteRect(Option<(LayerId, Vec2, Vec2)>),
-
-    /// Show a matte wearing `paint` **without logging it** — the in-flight half
-    /// of a frame-color pick or a gradient-axis drag (§15.7, §22.4). `None`
-    /// drops the preview.
-    ///
-    /// The rect's bargain: the frontend previews each value the gesture crosses and
-    /// commits one [`DocCommand::SetMattePaint`] when it settles. How a matte reads
-    /// against the piece is judged *by looking*, so the picking has to show on the
-    /// canvas and only the answer belongs in the log.
-    PreviewParcel(Option<(LayerId, Parcel)>),
-
-    /// Show the document as a [`DocCommand::Transform`] would leave it, **without
-    /// logging it** — the in-flight half of the transform gesture
-    /// (§16.6). `None` drops the preview.
-    ///
-    /// The same bargain as [`PreviewMatteRect`](Self::PreviewMatteRect), run through
-    /// the *same renderer* as the commit and over the committed tiles — so what is
-    /// shown is what committing would produce, and a long drag never compounds
-    /// resampling loss.
-    PreviewTransform(Option<(LayerId, TransformMap)>),
-
-    /// Show the document as a [`DocCommand::Fill`] would leave it, **without
-    /// logging it** — the in-flight half of the gradient-fill gesture, where the
-    /// drag composes the ramp's axis and "Done" commits one `Fill` (§22.4).
-    /// `None` drops the preview.
-    ///
-    /// The same bargain as [`PreviewTransform`](Self::PreviewTransform), through the
-    /// same renderer as its commit (`FillRenderer::apply`) and laying the parcel on
-    /// the *committed* tiles — so redrawing the axis a hundred times previews one
-    /// fill, never a hundred stacked glazes.
-    PreviewFill(Option<(LayerId, FillOp)>),
-
-    /// Show `layer`'s frame at `to` **without logging it** — the in-flight half
-    /// of the pick-and-translate drag (§16.11, §14.12). `None` drops the preview.
-    ///
-    /// The same bargain as [`PreviewLayerOpacity`](Self::PreviewLayerOpacity): a
-    /// translation is presentation folded in at the draw list, so each sample folds
-    /// the very [`DocCommand::TranslateLayer`] the release will commit — subtree
-    /// expansion included — and moves no tile. That it costs what an opacity drag
-    /// costs is the entire feature, where a transform resamples (§16.6).
-    PreviewTranslate(Option<(LayerId, IVec2)>),
-
-    /// Show a substrate color **without logging it** — the in-flight half of a
-    /// canvas-color drag (§15.5). `None` drops the preview.
-    ///
-    /// The same bargain as [`PreviewMatteRect`](Self::PreviewMatteRect): a color
-    /// picker reports a value per pointer *move*, so committing each one would spend
-    /// an undo step — and, in a shared session, a replicated log entry — on every
-    /// sample of a single drag. The frontend commits one
-    /// [`DocCommand::SetSubstrateColor`] where the drag ends.
-    PreviewSubstrateColor(Option<Srgb>),
-
-    /// Show the substrate laid at `scale` **without logging it** — the in-flight half of
-    /// a substrate-scale slider drag (§6.4). `None` drops the preview.
-    ///
-    /// The same bargain as [`PreviewSubstrateColor`](Self::PreviewSubstrateColor), and
-    /// it buys more here than an undo step: a *committed* scale is a substrate the
-    /// engine bakes and holds (`gpu::substrate::Substrate`), so a drag that logged
-    /// every value it crossed would leave a texture behind for each one. A preview is
-    /// one number in a uniform.
-    PreviewSubstrateScale(Option<SubstrateScale>),
-
-    /// Show the selection read at `opacity` **without logging it** — the in-flight
-    /// half of the Select panel's Opacity drag (§6.8). `None` drops the preview.
-    ///
-    /// The same bargain as [`PreviewLayerOpacity`](Self::PreviewLayerOpacity), and the
-    /// cheapest of the family: a selection's strength moves no pixels until something
-    /// paints through it, so the preview costs one number in a `DocState`.
-    PreviewSelectionOpacity(Option<f32>),
-
-    /// Show a layer at `opacity` **without logging it** — the in-flight half of an
-    /// opacity-slider drag (§14.6). `None` drops the preview.
-    ///
-    /// The same bargain as [`PreviewSubstrateColor`](Self::PreviewSubstrateColor): a
-    /// slider reports a value per pointer *move*, so committing each one spends an
-    /// undo step — and, in a shared session, a replicated action — on every sample of
-    /// what the hand did once. The frontend commits one
-    /// [`DocCommand::SetLayerOpacity`] where the drag ends.
-    ///
-    /// A view command rather than a `GestureCommand` for the reason
-    /// [`PreviewMatteRect`](Self::PreviewMatteRect) is one: a slider is not
-    /// sample-driven, so there is no [`InputSample`] to feed `Start`/`To`/`End` with,
-    /// and it reports the value it wants rather than the motion that reached it.
-    ///
-    /// Opacity is a presentation property folded in at composite time (§14.7), so a
-    /// preview costs a refold and moves no pixels: unlike
-    /// [`PreviewTransform`](Self::PreviewTransform) there is nothing to resample,
-    /// which is what makes it affordable at pointer rate.
-    PreviewLayerOpacity(Option<(LayerId, f32)>),
-
-    /// Show a filter layer set to `filter` **without logging it** — the in-flight
-    /// half of a filter-slider drag (§21.6). `None` drops the preview.
-    ///
-    /// The same bargain as [`PreviewLayerOpacity`](Self::PreviewLayerOpacity): a color
-    /// adjustment is judged *by looking* — how much saturation is too much is a
-    /// question about the painting, not about the number — so every value the pointer
-    /// crosses has to reach the canvas, and only the answer belongs in the log.
-    ///
-    /// A filter is presentation, folded in at composite time (§21.3), so a preview
-    /// costs one fullscreen pass and moves no pixels of stored paint, which is what
-    /// makes it affordable at pointer rate.
-    PreviewFilter(Option<(LayerId, Filter)>),
-
-    /// Show a layer blending as `blend` **without logging it** — the in-flight half
-    /// of a drag on one of a mode's own parameters (§18.0.4). `None` drops the
-    /// preview.
-    ///
-    /// The same bargain as [`PreviewLayerOpacity`](Self::PreviewLayerOpacity), for
-    /// [`PreviewFilter`](Self::PreviewFilter)'s reason: a mode's parameter is judged
-    /// *by looking* — how hot Radiance should run is a question about the painting —
-    /// so every value the pointer crosses has to reach the canvas and only the answer
-    /// belongs in the log.
-    ///
-    /// It carries the whole mode rather than a parameter, which keeps this one command
-    /// rather than one per knob a mode grows: what a frontend has in hand while
-    /// dragging is the layer's mode with one field moved, and that is exactly what
-    /// [`DocCommand::SetLayerBlend`] takes when the drag settles.
-    ///
-    /// A blend is folded in at composite time, so a preview costs the isolation and
-    /// the merge pass the layer was already paying for.
-    PreviewLayerBlend(Option<(LayerId, BlendMode)>),
+    /// Show the document as committing an [`Edit`] would leave it, **without logging
+    /// it** — the in-flight half of a control's drag. `None` takes the preview down.
+    Preview(Option<Edit>),
 
     /// Show the mark the brush **will** make if a drag begins this instant,
     /// **without logging it** — the brush cursor's painted half (§18.1.10).
@@ -784,7 +635,7 @@ pub enum ViewCommand {
     /// newest pair because reports are quantized to the device tolerance and a lone
     /// pair's heading snaps between the eight compass points (`Session::hover_to`).
     ///
-    /// Unlike the rest of the `Preview*` family this is a prediction rather than the
+    /// Unlike [`Preview`](Self::Preview) this is a prediction rather than the
     /// in-flight half of any commit, and three things follow. It is **outranked** by
     /// a real gesture (the fold holds one gesture per actor); it is **dropped** by
     /// anything that ends its premise — a gesture starting, a tool switch, a load;

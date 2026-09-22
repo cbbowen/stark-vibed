@@ -15,7 +15,7 @@
 
 use crate::common::palette::RED;
 use crate::common::*;
-use stark_engine::command::{DocCommand, GestureCommand, InputSample, Tool, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, GestureCommand, InputSample, Tool, ViewCommand};
 use stark_engine::path::{DEFAULT_TOLERANCE, MIN_TOLERANCE};
 use stark_model::Srgb;
 use stark_model::document::{
@@ -73,7 +73,7 @@ fn smear_under_the_pen() -> BrushParams {
 /// reference the headline compares against (`FillOp::opacity`).
 fn fill_canvas(engine: &mut stark_engine::Engine, color: [f32; 3], opacity: f32) {
     let layer = engine.observe().active_layer;
-    engine.process(DocCommand::Fill {
+    engine.process(DocCommand::Set(Edit::Fill {
         layer,
         op: FillOp::new(
             SelectionShape::rect_from_corners(Vec2::new(-128.0, -128.0), Vec2::new(128.0, 128.0)),
@@ -81,7 +81,7 @@ fn fill_canvas(engine: &mut stark_engine::Engine, color: [f32; 3], opacity: f32)
             Srgb::new(color),
             opacity,
         ),
-    });
+    }));
 }
 
 /// **The dial is quoted in visible coverage** — the claim the knob exists for

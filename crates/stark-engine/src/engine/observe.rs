@@ -155,7 +155,7 @@ pub struct LayerInfo {
     pub content_revision: Option<u64>,
     /// Where the layer's frame sits on the canvas (§14.12) — what the
     /// pick-and-translate drag adds its delta to
-    /// ([`DocCommand::TranslateLayer`](crate::command::DocCommand::TranslateLayer)).
+    /// ([`Edit::Translate`](crate::command::Edit::Translate)).
     /// A matte stands in its frame like paint (§15.2); only a filter has no
     /// frame to move, and its row here is always zero.
     pub translation: stark_model::geom::IVec2,
@@ -360,7 +360,7 @@ impl Engine {
             has_selection: doc.has_selection(self.actor()),
             selection_hull: doc.selection_of(self.actor()).hull(),
             // Off the *shown* document, unlike the two above: this one previews
-            // (`PreviewSelectionOpacity`), and a bar reading the committed number
+            // (`Edit::SelectionOpacity`), and a bar reading the committed number
             // would fight its own slider mid-drag (§6.8).
             selection_opacity: shown.selection_of(self.actor()).opacity(),
             shape_action: self.session.shape_action,
@@ -371,7 +371,7 @@ impl Engine {
             fast_commit: self.fast_commit,
             guides: self.projected_guides(|| {
                 // Off `shown`, like the layer list and the substrate color: a
-                // guide's drag previews through `PreviewGuide`, and a panel
+                // guide's drag previews through `Edit::Guide`, and a panel
                 // reading the committed roster would show the pose the hand left
                 // behind (§20.5).
                 shown
@@ -468,7 +468,7 @@ fn layer_rows(shown: &DocState) -> Vec<LayerInfo> {
             matte: match &l.content {
                 // Placed onto the canvas, where the chrome lives: region and paint are
                 // stated in the layer's frame (§15.2), and the mint takes the same
-                // offset back out (`DocCommand::SetMatteRect`), so the handles never do
+                // offset back out (`Edit::MatteRect`), so the handles never do
                 // frame arithmetic.
                 LayerContent::Matte { region, paint } => {
                     let d = l.translation.as_vec2();

@@ -25,7 +25,7 @@
 
 use crate::common::palette::RED_SOFT;
 use crate::common::*;
-use stark_engine::command::DocCommand;
+use stark_engine::command::{DocCommand, Edit};
 #[cfg(feature = "mixbox")]
 use stark_model::ColorSpaceId;
 use stark_model::Srgb;
@@ -158,7 +158,7 @@ fn an_off_size_render_matches_one_at_the_substrates_own_size() {
             above: None,
         });
         let top = engine.observe().active_layer;
-        engine.process(DocCommand::SetLayerBlend(top, BlendMode::Multiply));
+        engine.process(DocCommand::Set(Edit::LayerBlend(top, BlendMode::Multiply)));
         paint(
             &mut engine,
             BLUE,
@@ -409,7 +409,7 @@ fn a_kept_offscreen_survives_a_frame_with_more_merges_than_the_last() {
             &[Vec2::new(0.0, -40.0), Vec2::new(0.0, 40.0)],
         );
         let id = engine.observe().active_layer;
-        engine.process(DocCommand::SetLayerBlend(id, BlendMode::Multiply));
+        engine.process(DocCommand::Set(Edit::LayerBlend(id, BlendMode::Multiply)));
         merges += 1;
     };
 

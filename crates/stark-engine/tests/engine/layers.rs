@@ -4,7 +4,7 @@
 use crate::common::palette::{GREEN_SOFT, RED_SOFT};
 use crate::common::*;
 use stark_engine::Extent2;
-use stark_engine::command::{DocCommand, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, ViewCommand};
 use stark_engine::{Background, Engine, Offscreen, Rendered};
 use stark_model::Srgb;
 use stark_model::document::{BlendMode, DRAGO_K, LayerId, Place};
@@ -71,7 +71,7 @@ fn zero_opacity_layer_is_invisible() {
     };
     two_layers(&mut engine);
 
-    engine.process(DocCommand::SetLayerOpacity(top(&engine), 0.0));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(top(&engine), 0.0)));
     assert!(red_dominant(center(&engine.render_to_image())));
 
     // Undo the opacity change → green returns (layer ops are historized).
@@ -361,12 +361,12 @@ fn setting_a_value_to_the_one_it_already_holds_is_not_an_edit() {
     // Each of these is the value the document already reads.
     engine.process(DocCommand::SetLayerVisible(top(&engine), false));
     engine.process(DocCommand::SetLayerClip(top(&engine), true));
-    engine.process(DocCommand::SetLayerOpacity(top(&engine), 1.0));
-    engine.process(DocCommand::SetSubstrateColor(Srgb::new([
+    engine.process(DocCommand::Set(Edit::LayerOpacity(top(&engine), 1.0)));
+    engine.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new([
         BG.r as f32,
         BG.g as f32,
         BG.b as f32,
-    ])));
+    ]))));
     assert_eq!(
         logged(&engine),
         before,
@@ -400,7 +400,7 @@ fn a_commit_supersedes_a_drag_it_knows_nothing_about() {
     engine.process(DocCommand::SetLayerVisible(top(&engine), true));
 
     // A drag in flight on the root layer, never released.
-    engine.process(ViewCommand::PreviewLayerOpacity(Some((ROOT, 0.0))));
+    engine.process(ViewCommand::Preview(Some(Edit::LayerOpacity(ROOT, 0.0))));
     // An unrelated commit lands mid-drag.
     engine.process(DocCommand::RemoveLayer(top(&engine)));
     assert!(
@@ -468,7 +468,10 @@ fn dragging_layer_opacity_previews_without_logging() {
 
     // Three "pointer moves" of a drag towards transparent.
     for v in [0.6f32, 0.3, 0.0] {
-        engine.process(ViewCommand::PreviewLayerOpacity(Some((top(&engine), v))));
+        engine.process(ViewCommand::Preview(Some(Edit::LayerOpacity(
+            top(&engine),
+            v,
+        ))));
     }
     assert!(
         red_dominant(center(&engine.render_to_image())),
@@ -490,10 +493,13 @@ fn dragging_layer_opacity_previews_without_logging() {
 
     // Release: one commit, which supersedes the preview it matches.
     for v in [0.6f32, 0.3, 0.0] {
-        engine.process(ViewCommand::PreviewLayerOpacity(Some((top(&engine), v))));
+        engine.process(ViewCommand::Preview(Some(Edit::LayerOpacity(
+            top(&engine),
+            v,
+        ))));
     }
     let dragging = engine.render_to_image();
-    engine.process(DocCommand::SetLayerOpacity(top(&engine), 0.0));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(top(&engine), 0.0)));
     assert!(
         images_match(&dragging, &engine.render_to_image(), 2),
         "the committed opacity should match what the drag previewed"
@@ -519,9 +525,12 @@ fn an_opacity_drag_that_ends_where_it_started_logs_nothing() {
     let opaque = engine.render_to_image();
 
     for v in [0.6f32, 0.3, 1.0] {
-        engine.process(ViewCommand::PreviewLayerOpacity(Some((top(&engine), v))));
+        engine.process(ViewCommand::Preview(Some(Edit::LayerOpacity(
+            top(&engine),
+            v,
+        ))));
     }
-    engine.process(DocCommand::SetLayerOpacity(top(&engine), 1.0));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(top(&engine), 1.0)));
     assert!(
         images_match(&opaque, &engine.render_to_image(), 2),
         "the settled drag should leave the document as it found it, preview and all"
@@ -545,12 +554,12 @@ fn dragging_a_blend_parameter_previews_without_logging() {
         return;
     };
     two_layers(&mut engine);
-    engine.process(DocCommand::SetLayerBlend(top(&engine), RADIANCE));
+    engine.process(DocCommand::Set(Edit::LayerBlend(top(&engine), RADIANCE)));
     let rest = engine.render_to_image();
 
     // Three "pointer moves" of a drag towards the hot end.
     for k in [1.0f32, 2.0, 4.0] {
-        engine.process(ViewCommand::PreviewLayerBlend(Some((
+        engine.process(ViewCommand::Preview(Some(Edit::LayerBlend(
             top(&engine),
             BlendMode::Drago { k },
         ))));
@@ -567,10 +576,10 @@ fn dragging_a_blend_parameter_previews_without_logging() {
     );
 
     // Release: one commit, which supersedes the preview it matches.
-    engine.process(DocCommand::SetLayerBlend(
+    engine.process(DocCommand::Set(Edit::LayerBlend(
         top(&engine),
         BlendMode::Drago { k: 4.0 },
-    ));
+    )));
     assert!(
         images_match(&dragging, &engine.render_to_image(), 2),
         "the committed bend should match what the drag previewed"
@@ -583,12 +592,12 @@ fn dragging_a_blend_parameter_previews_without_logging() {
 
     // …and a drag that travels out and comes back is not an edit at all.
     for k in [1.0f32, 2.0, DRAGO_K] {
-        engine.process(ViewCommand::PreviewLayerBlend(Some((
+        engine.process(ViewCommand::Preview(Some(Edit::LayerBlend(
             top(&engine),
             BlendMode::Drago { k },
         ))));
     }
-    engine.process(DocCommand::SetLayerBlend(top(&engine), RADIANCE));
+    engine.process(DocCommand::Set(Edit::LayerBlend(top(&engine), RADIANCE)));
     assert!(
         images_match(&rest, &engine.render_to_image(), 2),
         "the settled drag should leave the document as it found it, preview and all"
@@ -607,7 +616,7 @@ fn layer_state_survives_save_load() {
         return;
     };
     two_layers(&mut engine);
-    engine.process(DocCommand::SetLayerOpacity(top(&engine), 0.4));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(top(&engine), 0.4)));
     let before = engine.render_to_image();
     let bytes = engine.save_bytes().expect("serialize");
 
@@ -672,14 +681,14 @@ fn a_moved_document_projects_a_fresh_layer_list() {
 
     // A commit: the opacity really changes, so the list must too.
     let before = engine.observe().layers;
-    engine.process(DocCommand::SetLayerOpacity(top(&engine), 0.5));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(top(&engine), 0.5)));
     let committed = engine.observe().layers;
     assert_ne!(before, committed, "a commit must project the new opacity");
 
     // A preview: nothing is logged, `doc_revision` stands, and the projection
     // still has to report what is on screen (§14.6).
     let revision = engine.observe().doc_revision;
-    engine.process(ViewCommand::PreviewLayerOpacity(Some((
+    engine.process(ViewCommand::Preview(Some(Edit::LayerOpacity(
         top(&engine),
         0.125,
     ))));
@@ -774,10 +783,10 @@ fn a_layers_own_picture_ignores_its_surroundings() {
     let alone = render_only(&mut engine, Some(top));
 
     for (label, command) in [
-        ("faded", DocCommand::SetLayerOpacity(top, 0.25)),
+        ("faded", DocCommand::Set(Edit::LayerOpacity(top, 0.25))),
         (
             "multiplied",
-            DocCommand::SetLayerBlend(top, BlendMode::Multiply),
+            DocCommand::Set(Edit::LayerBlend(top, BlendMode::Multiply)),
         ),
         ("clipped", DocCommand::SetLayerClip(top, true)),
     ] {
@@ -790,7 +799,7 @@ fn a_layers_own_picture_ignores_its_surroundings() {
 
     // The exception, and the one place the picture is allowed to go: switched
     // off entirely, the layer has nothing to show.
-    engine.process(DocCommand::SetLayerOpacity(top, 0.0));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(top, 0.0)));
     assert_eq!(
         center(&render_only(&mut engine, Some(top)))[3],
         0,
@@ -841,8 +850,11 @@ fn content_revision_tracks_the_tiles_and_nothing_else() {
     // Presentation properties do not: they change how the document shows the
     // layer, never what its own paint is. Three commands, so three undos below.
     let painted = key(&engine, top(&engine));
-    engine.process(DocCommand::SetLayerOpacity(top(&engine), 0.5));
-    engine.process(DocCommand::SetLayerBlend(top(&engine), BlendMode::Multiply));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(top(&engine), 0.5)));
+    engine.process(DocCommand::Set(Edit::LayerBlend(
+        top(&engine),
+        BlendMode::Multiply,
+    )));
     engine.process(DocCommand::SetLayerVisible(top(&engine), false));
     assert_eq!(
         painted,

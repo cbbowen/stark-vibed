@@ -24,7 +24,7 @@
 
 use crate::common::palette::{COOL, PALE, WARM};
 use crate::common::*;
-use stark_engine::command::{DocCommand, PeerCommand};
+use stark_engine::command::{DocCommand, Edit, PeerCommand};
 use stark_engine::{Engine, LayerInfo, RgbaImage};
 use stark_model::Srgb;
 use stark_model::document::{
@@ -255,7 +255,7 @@ fn a_faded_layer_folds_its_opacity_into_the_merge() {
     paint(&mut engine, WARM, 44.0, H_STROKE);
     let top = add_layer(&mut engine);
     paint(&mut engine, COOL, 44.0, V_STROKE);
-    engine.process(DocCommand::SetLayerOpacity(top, 0.45));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(top, 0.45)));
 
     let (before, after, dest) = merged(&mut engine, top);
     unchanged(&before, &after, 1, "a faded source");
@@ -277,10 +277,10 @@ fn two_faded_layers_merge_without_a_shift() {
         return;
     };
     paint(&mut engine, WARM, 44.0, H_STROKE);
-    engine.process(DocCommand::SetLayerOpacity(ROOT, 0.7));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(ROOT, 0.7)));
     let top = add_layer(&mut engine);
     paint(&mut engine, COOL, 44.0, V_STROKE);
-    engine.process(DocCommand::SetLayerOpacity(top, 0.35));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(top, 0.35)));
 
     let (before, after) = {
         let (b, a, _) = merged(&mut engine, top);
@@ -358,7 +358,7 @@ fn the_bottom_of_a_group_merges_into_its_base() {
         carrier: Some(ROOT),
         at: Place::Top,
     });
-    engine.process(DocCommand::SetLayerBlend(ROOT, BlendMode::Multiply));
+    engine.process(DocCommand::Set(Edit::LayerBlend(ROOT, BlendMode::Multiply)));
 
     let (before, after, dest) = merged(&mut engine, carried);
     assert_eq!(dest, ROOT);
@@ -410,8 +410,11 @@ fn an_unoffered_merge_changes_nothing() {
     // Modes that **disagree**, above the foot of the stack where both are stated
     // against something: after a merge one set of params would have to speak for
     // both, and there is no third mode that means "glow here and multiply there".
-    engine.process(DocCommand::SetLayerBlend(middle, BlendMode::Multiply));
-    engine.process(DocCommand::SetLayerBlend(top, BlendMode::Reinhard));
+    engine.process(DocCommand::Set(Edit::LayerBlend(
+        middle,
+        BlendMode::Multiply,
+    )));
+    engine.process(DocCommand::Set(Edit::LayerBlend(top, BlendMode::Reinhard)));
     assert_eq!(
         offered(&engine, top),
         None,
@@ -455,7 +458,7 @@ fn a_merge_the_frame_refuses_is_not_offered() {
     for i in 0..12 {
         for j in 0..12 {
             let centre = Vec2::new(3.0 * i as f32 + 0.5, 3.0 * j as f32 + 0.5) * tile;
-            engine.process(DocCommand::Fill {
+            engine.process(DocCommand::Set(Edit::Fill {
                 layer: top,
                 op: FillOp::new(
                     SelectionShape::rect_from_corners(centre - 4.0, centre + 4.0),
@@ -463,7 +466,7 @@ fn a_merge_the_frame_refuses_is_not_offered() {
                     Srgb::new(WARM),
                     1.0,
                 ),
-            });
+            }));
         }
     }
     assert_eq!(
@@ -472,10 +475,10 @@ fn a_merge_the_frame_refuses_is_not_offered() {
         "in one frame the pair merges"
     );
 
-    engine.process(DocCommand::TranslateLayer {
+    engine.process(DocCommand::Set(Edit::Translate {
         layer: top,
         to: IVec2::splat(TILE_SIZE as i32),
-    });
+    }));
     let layers = engine.observe().layers.len();
     engine.process(DocCommand::MergeLayerDown(top));
     assert_eq!(
@@ -504,8 +507,8 @@ fn undo_puts_both_layers_back() {
     paint(&mut engine, WARM, 44.0, H_STROKE);
     let top = add_layer(&mut engine);
     paint(&mut engine, COOL, 44.0, V_STROKE);
-    engine.process(DocCommand::SetLayerOpacity(top, 0.6));
-    engine.process(DocCommand::SetLayerOpacity(ROOT, 0.8));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(top, 0.6)));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(ROOT, 0.8)));
     engine.process(PeerCommand::SetActiveLayer(top));
 
     let before = engine.render_to_image();
@@ -595,10 +598,10 @@ fn siblings_sharing_a_mode_merge() {
         paint_pale(&mut engine, 60.0, H_STROKE);
         let lower = add_layer(&mut engine);
         paint(&mut engine, WARM, 44.0, H_STROKE);
-        engine.process(DocCommand::SetLayerBlend(lower, mode));
+        engine.process(DocCommand::Set(Edit::LayerBlend(lower, mode)));
         let upper = add_layer(&mut engine);
         paint(&mut engine, COOL, 44.0, V_STROKE);
-        engine.process(DocCommand::SetLayerBlend(upper, mode));
+        engine.process(DocCommand::Set(Edit::LayerBlend(upper, mode)));
 
         let (before, after, dest) = merged(&mut engine, upper);
         assert_eq!(dest, lower);
@@ -629,13 +632,13 @@ fn any_mode_merges_into_its_carrier() {
         paint(&mut engine, WARM, 44.0, H_STROKE);
         let carried = add_layer(&mut engine);
         paint(&mut engine, COOL, 44.0, V_STROKE);
-        engine.process(DocCommand::SetLayerBlend(carried, mode));
+        engine.process(DocCommand::Set(Edit::LayerBlend(carried, mode)));
         engine.process(DocCommand::MoveLayer {
             id: carried,
             carrier: Some(base),
             at: Place::Top,
         });
-        engine.process(DocCommand::SetLayerBlend(base, BlendMode::Multiply));
+        engine.process(DocCommand::Set(Edit::LayerBlend(base, BlendMode::Multiply)));
 
         let (before, after, dest) = merged(&mut engine, carried);
         assert_eq!(dest, base);
@@ -669,7 +672,7 @@ fn a_faded_carrier_keeps_its_own_opacity() {
         carrier: Some(base),
         at: Place::Top,
     });
-    engine.process(DocCommand::SetLayerOpacity(base, 0.45));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(base, 0.45)));
 
     let (before, after, _) = merged(&mut engine, carried);
     unchanged(&before, &after, 2, "a faded carrier");
@@ -698,7 +701,7 @@ fn a_clipped_member_merges_into_a_faded_carrier() {
         at: Place::Top,
     });
     engine.process(DocCommand::SetLayerClip(carried, true));
-    engine.process(DocCommand::SetLayerOpacity(base, 0.6));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(base, 0.6)));
 
     let (before, after, _) = merged(&mut engine, carried);
     unchanged(&before, &after, 2, "a clipped member under a faded base");
@@ -798,9 +801,9 @@ fn a_filter_merge_keeps_the_destinations_params_and_bakes_its_strength() {
     let base = add_layer(&mut engine);
     paint(&mut engine, WARM, 44.0, V_STROKE);
     let filter = add_filter(&mut engine, Some(base), GREY);
-    engine.process(DocCommand::SetLayerOpacity(filter, 0.4));
-    engine.process(DocCommand::SetLayerOpacity(base, 0.7));
-    engine.process(DocCommand::SetLayerBlend(base, BlendMode::Multiply));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(filter, 0.4)));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(base, 0.7)));
+    engine.process(DocCommand::Set(Edit::LayerBlend(base, BlendMode::Multiply)));
 
     let (before, after, dest) = merged(&mut engine, filter);
     unchanged(
@@ -881,7 +884,7 @@ fn a_resampling_filter_is_never_offered_a_merge() {
         "a gather cannot be baked into tiles (§6.4)",
     );
 
-    engine.process(DocCommand::SetFilter(filter, GREY));
+    engine.process(DocCommand::Set(Edit::Filter(filter, GREY)));
     assert_eq!(
         offered(&engine, filter),
         Some(ROOT),
@@ -966,7 +969,7 @@ fn a_merge_is_exact_at_texel_centres_and_drifts_off_them() {
     };
     // A fill lays fully opaque paint, so its height is the mass the slab law needs:
     // opacity 1 − e⁻¹ inverts to h = 1, and opacity 1 to h = OPAQUE_MASS = 8.
-    engine.process(DocCommand::Fill {
+    engine.process(DocCommand::Set(Edit::Fill {
         layer: ROOT,
         op: FillOp::new(
             rect(-100.0, 100.0),
@@ -974,13 +977,13 @@ fn a_merge_is_exact_at_texel_centres_and_drifts_off_them() {
             Srgb::new(WARM),
             1.0 - (-1.0f32).exp(),
         ),
-    });
+    }));
     let top = add_layer(&mut engine);
     // Its edge on the texel boundary at x = 0, so the step spans one texel pair.
-    engine.process(DocCommand::Fill {
+    engine.process(DocCommand::Set(Edit::Fill {
         layer: top,
         op: FillOp::new(rect(-100.0, 0.0), 0.0, Srgb::new(COOL), 1.0),
-    });
+    }));
     // The straddling pair itself: the last texel the top fill covers and the first it
     // does not. `None` there is as good as zero — an unminted tile is not a tile of
     // zeroes — so the claim is "no paint", not "a tile exists holding none".

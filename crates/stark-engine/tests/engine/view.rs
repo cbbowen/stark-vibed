@@ -11,7 +11,9 @@
 use crate::common::palette::{BLACK, BLUE_SOFT, GREEN, RED, WARM};
 use crate::common::*;
 use stark_engine::command::Tool;
-use stark_engine::command::{DocCommand, GestureCommand, HoverReport, InputSample, ViewCommand};
+use stark_engine::command::{
+    DocCommand, Edit, GestureCommand, HoverReport, InputSample, ViewCommand,
+};
 use stark_engine::document::CanvasBounds;
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::testing::{CompositeParams, Guide, Layer, LayerContent};
@@ -165,7 +167,7 @@ fn the_view_never_reaches_the_document() {
     );
 }
 
-/// The document every preview is walked over — one of each thing a `Preview*` can
+/// The document every preview is walked over — one of each thing a preview can
 /// name, each arranged so its sample moves a pixel: a stroke under the painted
 /// layer (a blend over nothing is `Normal`), a woven substrate in the light (a
 /// scale of the flat one shows nowhere), an open eye on the guide, a filter above
@@ -314,55 +316,30 @@ impl Committed {
     }
 }
 
-/// The table: every `Preview*` variant and what its in-flight sample carries, given
-/// the seeded document.
+/// The table: every [`Edit`] carrying its in-flight sample, given the seeded document.
 ///
-/// A macro for `corpus.rs`'s `battery!` reason. One list expands to two things —
-/// the `match` over every `ViewCommand`, and the drops the walk iterates — so a new
-/// `Preview*` variant refuses to compile until it has a line here, and a line cannot
-/// be matched without being walked. The non-preview variants are spelled out rather
-/// than `_`, or that arm would take the new variant silently. `$seed` is hygiene:
-/// the samples name `seed`, so the function binding it takes the identifier from
-/// the same place.
+/// A macro for `corpus.rs`'s `battery!` reason. One list expands to two things — the
+/// edits the walk sends and a `match` over every `Edit` — so a new variant refuses to
+/// compile until it has a line here, and a line cannot be matched without being
+/// walked. `$seed` is hygiene: the samples name `seed`, so the function binding it
+/// takes the identifier from the same place.
 macro_rules! preview_table {
-    ($seed:ident: $($variant:ident => $carries:expr),+ $(,)?) => {
-        /// `none`'s variant carrying the table's sample, or `None` for a command
-        /// that previews nothing.
-        fn in_flight($seed: &Seed, none: &ViewCommand) -> Option<ViewCommand> {
-            match none {
-                $(ViewCommand::$variant(_) => Some(ViewCommand::$variant(Some($carries))),)+
-                ViewCommand::SetTool(_)
-                | ViewCommand::SetBrush { .. }
-                | ViewCommand::Pan { .. }
-                | ViewCommand::Zoom { .. }
-                | ViewCommand::Pinch { .. }
-                | ViewCommand::SetRotation(_)
-                | ViewCommand::MirrorH
-                | ViewCommand::CenterOn(_)
-                | ViewCommand::ShowPiece(_)
-                | ViewCommand::Resize(_)
-                | ViewCommand::SetShapeAction(_)
-                | ViewCommand::SetSelectionFeather(_)
-                | ViewCommand::SetShapeOpacity(_)
-                | ViewCommand::SetShowPeerSelections(_)
-                | ViewCommand::SetGuideVisible(..)
-                | ViewCommand::SetMediaParams(_)
-                | ViewCommand::SetEnvironment(_)
-                | ViewCommand::SetOutput(_)
-                | ViewCommand::SetHistoryBudget(_)
-                | ViewCommand::SetFastCommit(_) => None,
+    ($seed:ident: $($variant:ident $payload:tt),+ $(,)?) => {
+        /// Every edit in the table, carrying its sample.
+        fn edits($seed: &Seed) -> Vec<Edit> {
+            let edits = vec![$(Edit::$variant $payload),+];
+            for edit in &edits {
+                match edit {
+                    $(Edit::$variant { .. })|+ => {}
+                }
             }
-        }
-
-        /// Every variant in the table carrying nothing: the drop half of each pair.
-        fn dropped() -> Vec<ViewCommand> {
-            vec![$(ViewCommand::$variant(None)),+]
+            edits
         }
     };
 }
 
 preview_table! { seed:
-    PreviewGuide => (
+    Guide(
         seed.guide,
         PerspectiveGuide {
             center: Vec2::new(37.0, -104.0),
@@ -370,47 +347,74 @@ preview_table! { seed:
             ..PerspectiveGuide::default()
         },
     ),
-    PreviewMatteRect => (seed.matte, Vec2::new(-40.0, -30.0), Vec2::new(40.0, 30.0)),
-    PreviewParcel => (seed.matte, Parcel::Solid(Srgb::new(WARM))),
-    PreviewTransform => (
-        seed.paint,
-        TransformMap::Affine(Affine2::from_translation(Vec2::new(57.0, 23.0))),
-    ),
-    PreviewFill => (
-        seed.paint,
-        FillOp::new(
+    MatteRect(seed.matte, Vec2::new(-40.0, -30.0), Vec2::new(40.0, 30.0)),
+    MattePaint(seed.matte, Parcel::Solid(Srgb::new(WARM))),
+    Transform {
+        layer: seed.paint,
+        map: TransformMap::Affine(Affine2::from_translation(Vec2::new(57.0, 23.0))),
+    },
+    Fill {
+        layer: seed.paint,
+        op: FillOp::new(
             SelectionShape::rect_from_corners(Vec2::new(-30.0, -20.0), Vec2::new(30.0, 20.0)),
             4.0,
             Srgb::new(BLUE_SOFT),
             1.0,
         ),
-    ),
-    PreviewTranslate => (seed.paint, IVec2::new(-90, 55)),
-    PreviewSubstrateColor => Srgb::new(WARM),
-    PreviewSubstrateScale => SubstrateScale::new(200),
-    PreviewSelectionOpacity => 0.5,
-    PreviewLayerOpacity => (seed.paint, 0.25),
-    PreviewFilter => (
+    },
+    Translate {
+        layer: seed.paint,
+        to: IVec2::new(-90, 55),
+    },
+    SubstrateColor(Srgb::new(WARM)),
+    SubstrateScale(SubstrateScale::new(200)),
+    SelectionOpacity(0.5),
+    LayerOpacity(seed.paint, 0.25),
+    Filter(
         seed.filter,
         Filter::Color(ColorAdjust {
             saturation: 0.5,
             ..ColorAdjust::NEUTRAL
         }),
     ),
-    PreviewLayerBlend => (seed.paint, BlendMode::Drago { k: 2.0 }),
-    PreviewHover => HoverReport {
-        sample: InputSample::at(Vec2::ZERO),
-        tolerance: DEFAULT_TOLERANCE,
-        reach: 40.0,
-    },
+    LayerBlend(seed.paint, BlendMode::Drago { k: 2.0 }),
 }
 
-/// **Every `Preview*` leaves the committed document alone** (§4).
+/// The command that takes `shown` down, or `None` for one that shows nothing.
+/// Exhaustive rather than `_`, so a new view command has to say which it is.
+fn dropping(shown: &ViewCommand) -> Option<ViewCommand> {
+    match shown {
+        ViewCommand::Preview(_) => Some(ViewCommand::Preview(None)),
+        ViewCommand::PreviewHover(_) => Some(ViewCommand::PreviewHover(None)),
+        ViewCommand::SetTool(_)
+        | ViewCommand::SetBrush { .. }
+        | ViewCommand::Pan { .. }
+        | ViewCommand::Zoom { .. }
+        | ViewCommand::Pinch { .. }
+        | ViewCommand::SetRotation(_)
+        | ViewCommand::MirrorH
+        | ViewCommand::CenterOn(_)
+        | ViewCommand::ShowPiece(_)
+        | ViewCommand::Resize(_)
+        | ViewCommand::SetShapeAction(_)
+        | ViewCommand::SetSelectionFeather(_)
+        | ViewCommand::SetShapeOpacity(_)
+        | ViewCommand::SetShowPeerSelections(_)
+        | ViewCommand::SetGuideVisible(..)
+        | ViewCommand::SetMediaParams(_)
+        | ViewCommand::SetEnvironment(_)
+        | ViewCommand::SetOutput(_)
+        | ViewCommand::SetHistoryBudget(_)
+        | ViewCommand::SetFastCommit(_) => None,
+    }
+}
+
+/// **Every preview leaves the committed document alone** (§4).
 ///
 /// The Doc/View split is a convention, not a type: `process_view` holds the whole
 /// engine and could commit. The files that check one preview each say what it
-/// *shows*; this walks the table, sending each variant carrying its sample and then
-/// carrying nothing, and reads the committed document whole after both.
+/// *shows*; this walks the table and the hover, sending each carrying its sample and
+/// then carrying nothing, and reads the committed document whole after both.
 ///
 /// The renders are what keep the walk from being vacuous: a transform or a fill
 /// previews as nothing on a layer it cannot work on, and a sample the
@@ -444,10 +448,19 @@ fn every_preview_leaves_the_committed_document_alone() {
     let exported = export(&mut engine);
     let resting = engine.render_to_image();
 
-    for none in dropped() {
-        let some = in_flight(&seed, &none).expect("in the table");
+    let hover = ViewCommand::PreviewHover(Some(HoverReport {
+        sample: InputSample::at(Vec2::ZERO),
+        tolerance: DEFAULT_TOLERANCE,
+        reach: 40.0,
+    }));
+    let walk = edits(&seed)
+        .into_iter()
+        .map(|edit| ViewCommand::Preview(Some(edit)))
+        .chain([hover]);
+    for some in walk {
+        let none = dropping(&some).expect("a preview");
         // A selection's strength moves no pixel until something paints through it.
-        let moves_a_pixel = !matches!(some, ViewCommand::PreviewSelectionOpacity(_));
+        let moves_a_pixel = !matches!(some, ViewCommand::Preview(Some(Edit::SelectionOpacity(_))));
         let sent = format!("{some:?}");
         engine.process(some);
         let shown = engine.render_to_image();

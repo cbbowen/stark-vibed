@@ -13,7 +13,9 @@
 use crate::common::palette::{GREEN_SOFT, RED};
 use crate::common::{Lead, MARGIN_FLAT, Probe, engine_or_skip, images_match, leads, paint, rgb};
 use stark_engine::command::Tool;
-use stark_engine::command::{DocCommand, GestureCommand, InputSample, PeerCommand, ViewCommand};
+use stark_engine::command::{
+    DocCommand, Edit, GestureCommand, InputSample, PeerCommand, ViewCommand,
+};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Engine, RgbaImage};
 use stark_model::Srgb;
@@ -807,9 +809,9 @@ fn every_replacement_of_the_preview_base_moves_the_epoch() {
 
     let e0 = engine.preview_epoch();
     // Installing a drag preview replaces the base the fold composites onto.
-    engine.process(ViewCommand::PreviewSubstrateColor(Some(Srgb::new([
-        0.2, 0.4, 0.9,
-    ]))));
+    engine.process(ViewCommand::Preview(Some(Edit::SubstrateColor(Srgb::new(
+        [0.2, 0.4, 0.9],
+    )))));
     let e1 = moved(&mut engine, e0, "installing a drag preview");
 
     // A commit, obviously — and it supersedes the drag, which is the other half.
@@ -826,9 +828,9 @@ fn every_replacement_of_the_preview_base_moves_the_epoch() {
     // The case an epoch bump inside the seek's own `if` would miss: a drag preview up,
     // and a `Seek` that declines to move the playhead. The slot is dropped either way,
     // so the epoch must move either way.
-    engine.process(ViewCommand::PreviewSubstrateColor(Some(Srgb::new([
-        0.9, 0.3, 0.1,
-    ]))));
+    engine.process(ViewCommand::Preview(Some(Edit::SubstrateColor(Srgb::new(
+        [0.9, 0.3, 0.1],
+    )))));
     let e5 = moved(&mut engine, e4, "installing a second drag preview");
     let at = engine.scrub_range().map_or(0, |(at, _)| at);
     engine.process(DocCommand::Seek(at));
@@ -865,19 +867,19 @@ fn a_command_that_changes_nothing_moves_no_epoch() {
         assert_eq!(engine.preview_fold(), fold, "{what} refolded");
     };
 
-    engine.process(DocCommand::SetLayerOpacity(root.id, root.opacity));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(root.id, root.opacity)));
     still(&mut engine, "a setter on its own value");
     engine.process(DocCommand::Undo);
     still(&mut engine, "an undo with nothing to undo");
     let at = engine.scrub_range().map_or(0, |(at, _)| at);
     engine.process(DocCommand::Seek(at));
     still(&mut engine, "a seek to where the playhead stands");
-    engine.process(DocCommand::Transform {
+    engine.process(DocCommand::Set(Edit::Transform {
         layer: root.id,
         map: stark_model::document::TransformMap::Affine(stark_model::geom::Affine2::ZERO),
-    });
+    }));
     still(&mut engine, "a refused transform");
-    engine.process(ViewCommand::PreviewLayerOpacity(None));
+    engine.process(ViewCommand::Preview(None));
     still(&mut engine, "releasing a drag that was never up");
     assert_eq!(
         engine.observe().doc_revision,
@@ -902,7 +904,7 @@ fn a_peers_head_survives_a_local_no_op_commit() {
     let (epoch, fold) = (engine.preview_epoch(), engine.preview_fold());
 
     let root = engine.observe().layers[0].clone();
-    engine.process(DocCommand::SetLayerOpacity(root.id, root.opacity));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(root.id, root.opacity)));
 
     assert_eq!(
         engine.preview_epoch(),

@@ -12,7 +12,7 @@ use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
 
 use stark_engine::Extent2;
-use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 /// Every module that takes `common::*` gets the engine's diagnostic reads with it.
 pub use stark_engine::testing::Probe;
@@ -175,9 +175,11 @@ pub fn engine_or_skip_blue() -> Option<Engine> {
 }
 
 pub fn on_blue(mut engine: Engine) -> Engine {
-    engine.process(stark_engine::command::DocCommand::SetSubstrateColor(
-        Srgb::new([BG.r as f32, BG.g as f32, BG.b as f32]),
-    ));
+    engine.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new([
+        BG.r as f32,
+        BG.g as f32,
+        BG.b as f32,
+    ]))));
     engine
 }
 

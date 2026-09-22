@@ -3,7 +3,7 @@
 //! cube on the way into a file.
 
 use crate::common::*;
-use stark_engine::command::{DocCommand, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, ViewCommand};
 use stark_engine::{
     Background, Engine, ExportScale, MediaParams, Offscreen, Output, Rendered, Transfer,
 };
@@ -30,7 +30,9 @@ fn painted(format: wgpu::TextureFormat) -> Option<Engine> {
         substrate_strength: 0.0,
         dither: false,
     }));
-    engine.process(DocCommand::SetSubstrateColor(Srgb::new([0.0, 0.0, 0.0])));
+    engine.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new([
+        0.0, 0.0, 0.0,
+    ]))));
     let brush = BrushParams {
         effect: BrushEffect::painted(p3_green()),
         size: 48.0,

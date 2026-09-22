@@ -4,60 +4,42 @@
 //! A slider, a color picker, a frame handle and a transform widget all want the
 //! same thing: **the value is judged by looking**, so every value the pointer
 //! crosses has to reach the canvas — and only the answer belongs in the log. So
-//! each of them previews per sample through a [`ViewCommand`] that logs nothing,
-//! and commits once through a [`DocCommand`] when the gesture settles. One undo
-//! step per adjustment, and one replicated action, rather than one per pointer
-//! move (§6.4, §14.6, §15.7, §16.6, §21.6, §22.4).
+//! each of them previews per sample through [`ViewCommand::Preview`], which logs
+//! nothing, and commits once through [`DocCommand::Set`] when the gesture settles.
+//! One undo step per adjustment, and one replicated action, rather than one per
+//! pointer move (§6.4, §14.6, §15.7, §16.6, §21.6, §22.4).
 //!
-//! # The pair is data, not control flow
+//! # The pair is one value
 //!
-//! Look at the ten commands in [`ViewCommand`] that do this: every one is
-//! `PreviewX(Option<T>)`, and for every one there is a commit taking exactly that
-//! `T`. The preview and the commit are not two decisions a control makes; they are
-//! **one fact about the control**, and [`Preview<T>`] is that fact — a pair of
-//! function pointers, named once in the table below.
+//! Both halves carry the same [`Edit`], so a control that previews one thing and
+//! commits another cannot be written — the failure is silent where it happens,
+//! since both halves work on their own. What a row here adds is the control's own
+//! shape: which `Edit` the value it holds becomes, named once in the table below.
 //!
-//! Written as control flow instead, it was written out repeatedly: the commit
-//! spelled at three `settle` call sites per slider, the preview spelled again in
-//! the `oninput` beside them, and the *drop* — the third command, the one a
-//! half-composed gesture needs when it is abandoned — spelled somewhere else
-//! again, in `crate::modes`, behind a `match` on which mode was in hand. Four
-//! copies of one pairing, and nothing anywhere to say they had to agree.
-//!
-//! # What the type rules out
-//!
-//! A control that previews with one command and commits with another. That is not
-//! a hypothetical: it is silent when it happens, because both halves work — the
-//! canvas shows the right thing under the hand, and the release lays down
-//! something else, or nothing at all. Holding the two in one value means a caller
-//! can only name the pair.
-//!
-//! It does not rule out *forgetting to settle* a canvas drag, which has to wire
-//! [`Preview::settle`] to every event that can end it — hence the method is
-//! idempotent. A slider cannot forget: [`PreviewSlider`](crate::widgets::PreviewSlider)
+//! What the type does not rule out is *forgetting to settle* a canvas drag, which
+//! has to wire [`Preview::settle`] to every event that can end it — hence the method
+//! is idempotent. A slider cannot forget: [`PreviewSlider`](crate::widgets::PreviewSlider)
 //! owns its three.
 
 use dioxus::prelude::*;
 use stark_model::{Srgb, SubstrateScale};
 
 use crate::state::{AppState, dispatch};
-use stark_engine::command::{DocCommand, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, ViewCommand};
 use stark_model::document::LayerId;
 use stark_model::document::{
     BlendMode, FillOp, Filter, GuideId, Parcel, PerspectiveGuide, TransformMap,
 };
 use stark_model::geom::Vec2;
 
-/// One control's pair: the command that shows `T` on the canvas without logging
-/// it, and the command that lays it down.
+/// One control's edit: what the value it holds becomes, shown on the canvas without
+/// logging it or laid down.
 ///
-/// `Copy`, and a pair of function pointers wide, so the constants below are
-/// `const` and handing one to an event closure costs nothing — for every `T`, which
-/// is why the impls are written out: a derive would ask `T` to be `Copy` too.
+/// `Copy`, and a function pointer wide, so the constants below are `const` and
+/// handing one to an event closure costs nothing — for every `T`, which is why the
+/// impls are written out: a derive would ask `T` to be `Copy` too.
 pub struct Preview<T: 'static> {
-    /// `Some(value)` shows it; `None` drops whatever is shown.
-    show: fn(Option<T>) -> ViewCommand,
-    lay: fn(T) -> DocCommand,
+    edit: fn(T) -> Edit,
 }
 
 impl<T: 'static> Clone for Preview<T> {
@@ -68,22 +50,22 @@ impl<T: 'static> Clone for Preview<T> {
 
 impl<T: 'static> Copy for Preview<T> {}
 
-/// The same pair, by the addresses of its two commands — what a
+/// The same row, by the address of its edit — what a
 /// [`PreviewSlider`](crate::widgets::PreviewSlider) compares its props by.
 impl<T: 'static> PartialEq for Preview<T> {
     fn eq(&self, other: &Self) -> bool {
-        std::ptr::fn_addr_eq(self.show, other.show) && std::ptr::fn_addr_eq(self.lay, other.lay)
+        std::ptr::fn_addr_eq(self.edit, other.edit)
     }
 }
 
 impl<T: 'static> Preview<T> {
-    const fn new(show: fn(Option<T>) -> ViewCommand, lay: fn(T) -> DocCommand) -> Self {
-        Self { show, lay }
+    const fn new(edit: fn(T) -> Edit) -> Self {
+        Self { edit }
     }
 
     /// Show `value` on the canvas, logging nothing.
     pub fn show(self, state: AppState, value: T) {
-        dispatch(state, (self.show)(Some(value)));
+        dispatch(state, ViewCommand::Preview(Some((self.edit)(value))));
     }
 
     /// Drop whatever is being shown, laying nothing.
@@ -93,7 +75,7 @@ impl<T: 'static> Preview<T> {
     /// with a neutral value: dropping the preview restores the document, while
     /// committing a neutral would be an edit that says the artist chose it.
     pub fn clear(self, state: AppState) {
-        dispatch(state, (self.show)(None));
+        dispatch(state, ViewCommand::Preview(None));
     }
 
     /// Lay `value` down — one logged action, one undo step.
@@ -101,7 +83,7 @@ impl<T: 'static> Preview<T> {
     /// The commit supersedes the preview engine-side, so nothing has to drop it
     /// first and there is no intermediate frame showing the document without it.
     pub fn commit(self, state: AppState, value: T) {
-        dispatch(state, (self.lay)(value));
+        dispatch(state, DocCommand::Set((self.edit)(value)));
     }
 }
 
@@ -142,9 +124,8 @@ impl<T: Clone + 'static> Preview<T> {
 
 // --- the table -------------------------------------------------------------
 //
-// Every previewing control in the app, as its pair. Adding one is a row here and
-// nothing else; what a row cannot express is a preview with no commit, or a
-// commit whose preview shows something different.
+// Every previewing control in the app, as the edit its value becomes. Adding one is
+// a row here and nothing else.
 
 /// The selection's overall strength — the selection bar's Opacity slider (§6.8).
 ///
@@ -155,92 +136,65 @@ impl<T: Clone + 'static> Preview<T> {
 /// the hand made once. What the preview buys is the bar — the engine reports the
 /// previewed number back through `observe`, so the track follows the pointer instead
 /// of snapping back to the committed value under it.
-pub const SELECTION_OPACITY: Preview<f32> = Preview::new(
-    ViewCommand::PreviewSelectionOpacity,
-    DocCommand::SetSelectionOpacity,
-);
+pub const SELECTION_OPACITY: Preview<f32> = Preview::new(Edit::SelectionOpacity);
 
 /// A layer's opacity — the Layers panel's slider (§14.6).
 pub const LAYER_OPACITY: Preview<(LayerId, f32)> =
-    Preview::new(ViewCommand::PreviewLayerOpacity, |(layer, opacity)| {
-        DocCommand::SetLayerOpacity(layer, opacity)
-    });
+    Preview::new(|(layer, opacity)| Edit::LayerOpacity(layer, opacity));
 
 /// A layer's blend mode — the Bend slider, which drags a parameter *of* the mode
 /// and so carries the whole mode (§18.0.4).
 pub const LAYER_BLEND: Preview<(LayerId, BlendMode)> =
-    Preview::new(ViewCommand::PreviewLayerBlend, |(layer, mode)| {
-        DocCommand::SetLayerBlend(layer, mode)
-    });
+    Preview::new(|(layer, mode)| Edit::LayerBlend(layer, mode));
 
 /// A filter layer's settings — every knob on the filter bar (§21.6).
 pub const FILTER: Preview<(LayerId, Filter)> =
-    Preview::new(ViewCommand::PreviewFilter, |(layer, filter)| {
-        DocCommand::SetFilter(layer, filter)
-    });
+    Preview::new(|(layer, filter)| Edit::Filter(layer, filter));
 
 /// A frame's rect — the on-canvas handle drag (§15.7).
 pub const MATTE_RECT: Preview<(LayerId, Vec2, Vec2)> =
-    Preview::new(ViewCommand::PreviewMatteRect, |(layer, min, max)| {
-        DocCommand::SetMatteRect(layer, min, max)
-    });
+    Preview::new(|(layer, min, max)| Edit::MatteRect(layer, min, max));
 
 /// A matte's paint — the frame bar's color pop-out, and the gradient bar's axis
 /// when it is aimed at a matte (§15.4, §22.4).
 pub const MATTE_PAINT: Preview<(LayerId, Parcel)> =
-    Preview::new(ViewCommand::PreviewParcel, |(layer, paint)| {
-        DocCommand::SetMattePaint(layer, paint)
-    });
+    Preview::new(|(layer, paint)| Edit::MattePaint(layer, paint));
 
 /// The canvas substrate color — the Lighting panel's pop-out (§15.5).
-pub const BACKGROUND: Preview<Srgb> = Preview::new(
-    ViewCommand::PreviewSubstrateColor,
-    DocCommand::SetSubstrateColor,
-);
+pub const BACKGROUND: Preview<Srgb> = Preview::new(Edit::SubstrateColor);
 
 /// How large the canvas substrate is laid — the Lighting panel's scale slider (§6.4).
 ///
-/// The row where the bargain buys the most. Every other pair here spends an undo step
+/// The row where the bargain buys the most. Every other row here spends an undo step
 /// per pointer sample if it is got wrong; this one would also **bake a substrate** per
 /// sample, since a `Surface` is built from the substrate and its scale together
 /// (`stark-engine`'s `gpu::substrate::Substrate`). The preview costs one number in the
 /// media pass's uniform, because the height field a light reads is the same field
 /// however large it is laid — only the deposit's rise channels move with the scale,
 /// and nothing deposits while a slider is under the hand.
-pub const SUBSTRATE_SCALE: Preview<SubstrateScale> = Preview::new(
-    ViewCommand::PreviewSubstrateScale,
-    DocCommand::SetSubstrateScale,
-);
+pub const SUBSTRATE_SCALE: Preview<SubstrateScale> = Preview::new(Edit::SubstrateScale);
 
 /// A gradient fill of the selection — the gradient bar's composing axis (§22.4).
-pub const FILL: Preview<(LayerId, FillOp)> =
-    Preview::new(ViewCommand::PreviewFill, |(layer, op)| DocCommand::Fill {
-        layer,
-        op,
-    });
+pub const FILL: Preview<(LayerId, FillOp)> = Preview::new(|(layer, op)| Edit::Fill { layer, op });
 
 /// A drawing guide's camera — every control on the Perspective Guide bar, and
 /// every drag on the canvas while one is being shaped (§20.5).
 ///
 /// The whole camera travels, for the reason [`FILTER`]'s whole filter does: an
 /// orbit writes the rotation, the ring drag writes the focal length and the cell
-/// slider writes the lattice, and one pair covers all of them without a command
+/// slider writes the lattice, and one row covers all of them without an edit
 /// per knob.
 ///
 /// The newest row, and the one the table was waiting for: guides became document
 /// state after this module was written, which turned every control on that bar
 /// from a live view-state write into exactly the bargain described above.
 pub const GUIDE: Preview<(GuideId, PerspectiveGuide)> =
-    Preview::new(ViewCommand::PreviewGuide, |(id, guide)| {
-        DocCommand::SetGuide(id, guide)
-    });
+    Preview::new(|(id, guide)| Edit::Guide(id, guide));
 
 /// The transform gesture — the widget's whole composition, committed on "Done"
 /// (§16.6, §16.8, §16.9).
 pub const TRANSFORM: Preview<(LayerId, TransformMap)> =
-    Preview::new(ViewCommand::PreviewTransform, |(layer, map)| {
-        DocCommand::Transform { layer, map }
-    });
+    Preview::new(|(layer, map)| Edit::Transform { layer, map });
 
 /// A layer's place on the canvas — the pick-and-translate drag (§16.11, §14.12).
 ///
@@ -248,160 +202,4 @@ pub const TRANSFORM: Preview<(LayerId, TransformMap)> =
 /// property write, so this preview moves no tile where that one resampled the
 /// layer per changed sample — the whole of what the frame field buys.
 pub const TRANSLATE: Preview<(LayerId, stark_model::geom::IVec2)> =
-    Preview::new(ViewCommand::PreviewTranslate, |(layer, to)| {
-        DocCommand::TranslateLayer { layer, to }
-    });
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use stark_model::document::{ActorId, SelectionShape};
-
-    /// One row of [`a_pair_shows_and_lays_the_same_value`]: send `value` through
-    /// both halves of `pair` and assert the two commands came out carrying it.
-    ///
-    /// A macro because what has to be compared is the *payload inside two
-    /// different enums*, which only a `match` can reach — and a macro because
-    /// the alternative is a twenty-line block per row, which is how three of the
-    /// nine rows went missing without anyone noticing. Written out, the check is
-    /// one call per row and the call list sits beside [the table](self), where a
-    /// gap is visible rather than buried.
-    macro_rules! check_pair {
-        ($pair:ident, $value:expr, $show:pat, $lay:pat => ($shown:expr, $laid:expr)) => {{
-            let value = $value;
-            match (($pair.show)(Some(value.clone())), ($pair.lay)(value)) {
-                ($show, $lay) => assert_eq!($shown, $laid),
-                _ => panic!(concat!(stringify!($pair), " is not a pair")),
-            }
-        }};
-    }
-
-    /// The claim the type makes, asked of **every** pair in the table: the
-    /// command that shows a value and the command that lays it down carry the
-    /// same value.
-    ///
-    /// This is the failure the pairing exists to rule out, and it is worth
-    /// pinning because it is silent: both halves work on their own, so a
-    /// mismatched pair shows the right thing under the hand and lays something
-    /// else on release.
-    ///
-    /// One call per row, in the table's own order. Adding a row to the table
-    /// without adding one here still compiles — nothing can make it not — but
-    /// the omission is now a hole in a column of ten, not a missing paragraph.
-    #[test]
-    fn a_pair_shows_and_lays_the_same_value() {
-        let id = LayerId::solo(7);
-
-        check_pair!(
-            LAYER_OPACITY,
-            (id, 0.25),
-            ViewCommand::PreviewLayerOpacity(Some(shown)),
-            DocCommand::SetLayerOpacity(layer, opacity) => (shown, (layer, opacity))
-        );
-        check_pair!(
-            LAYER_BLEND,
-            (id, BlendMode::Drago { k: 1.5 }),
-            ViewCommand::PreviewLayerBlend(Some(shown)),
-            DocCommand::SetLayerBlend(layer, laid) => (shown, (layer, laid))
-        );
-        check_pair!(
-            FILTER,
-            (id, Filter::ALL[1].clone()),
-            ViewCommand::PreviewFilter(Some(shown)),
-            DocCommand::SetFilter(layer, laid) => (shown, (layer, laid))
-        );
-        check_pair!(
-            MATTE_RECT,
-            (id, Vec2::new(-3.0, -4.0), Vec2::new(5.0, 6.0)),
-            ViewCommand::PreviewMatteRect(Some(shown)),
-            DocCommand::SetMatteRect(layer, lo, hi) => (shown, (layer, lo, hi))
-        );
-        check_pair!(
-            MATTE_PAINT,
-            (id, Parcel::Solid(Srgb::new([0.1, 0.2, 0.3]))),
-            ViewCommand::PreviewParcel(Some(shown)),
-            DocCommand::SetMattePaint(layer, laid) => (shown, (layer, laid))
-        );
-        check_pair!(
-            BACKGROUND,
-            Srgb::new([0.93, 0.91, 0.86]),
-            ViewCommand::PreviewSubstrateColor(Some(shown)),
-            DocCommand::SetSubstrateColor(laid) => (shown, laid)
-        );
-        check_pair!(
-            SUBSTRATE_SCALE,
-            SubstrateScale::new(160),
-            ViewCommand::PreviewSubstrateScale(Some(shown)),
-            DocCommand::SetSubstrateScale(laid) => (shown, laid)
-        );
-        check_pair!(
-            FILL,
-            (id, FillOp::new(SelectionShape::All, 2.0, Srgb::new([0.2, 0.4, 0.6]), 0.75)),
-            ViewCommand::PreviewFill(Some(shown)),
-            DocCommand::Fill { layer, op } => (shown, (layer, op))
-        );
-        check_pair!(
-            GUIDE,
-            (
-                GuideId(stark_model::document::ActionId {
-                    lamport: 3,
-                    actor: ActorId(1),
-                }),
-                PerspectiveGuide::default(),
-            ),
-            ViewCommand::PreviewGuide(Some(shown)),
-            DocCommand::SetGuide(guide, laid) => (shown, (guide, laid))
-        );
-        check_pair!(
-            TRANSFORM,
-            (
-                id,
-                TransformMap::Affine(stark_model::geom::Affine2::from_scale(Vec2::new(2.0, 3.0))),
-            ),
-            ViewCommand::PreviewTransform(Some(shown)),
-            DocCommand::Transform { layer, map } => (shown, (layer, map))
-        );
-        check_pair!(
-            TRANSLATE,
-            (id, stark_model::geom::IVec2::new(40, -8)),
-            ViewCommand::PreviewTranslate(Some(shown)),
-            DocCommand::TranslateLayer { layer, to } => (shown, (layer, to))
-        );
-    }
-
-    /// Dropping a preview is the **same command** that shows it, with nothing in
-    /// it — not a separate command a pair could get wrong, and not a commit of
-    /// some neutral value, which would be an edit the artist never made.
-    #[test]
-    fn clearing_is_the_showing_command_with_nothing_in_it() {
-        assert!(matches!(
-            (LAYER_OPACITY.show)(None),
-            ViewCommand::PreviewLayerOpacity(None)
-        ));
-        assert!(matches!(
-            (FILTER.show)(None),
-            ViewCommand::PreviewFilter(None)
-        ));
-        assert!(matches!((FILL.show)(None), ViewCommand::PreviewFill(None)));
-        assert!(matches!(
-            (TRANSFORM.show)(None),
-            ViewCommand::PreviewTransform(None)
-        ));
-        assert!(matches!(
-            (TRANSLATE.show)(None),
-            ViewCommand::PreviewTranslate(None)
-        ));
-        assert!(matches!(
-            (MATTE_PAINT.show)(None),
-            ViewCommand::PreviewParcel(None)
-        ));
-        assert!(matches!(
-            (GUIDE.show)(None),
-            ViewCommand::PreviewGuide(None)
-        ));
-        assert!(matches!(
-            (SUBSTRATE_SCALE.show)(None),
-            ViewCommand::PreviewSubstrateScale(None)
-        ));
-    }
-}
+    Preview::new(|(layer, to)| Edit::Translate { layer, to });

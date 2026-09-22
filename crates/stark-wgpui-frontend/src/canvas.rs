@@ -15,7 +15,7 @@
 use stark_engine::ObservableState;
 use stark_engine::ViewTransform;
 use stark_engine::command::{
-    DocCommand, GestureCommand, HoverReport, InputSample, Tool, ViewCommand,
+    DocCommand, Edit, GestureCommand, HoverReport, InputSample, Tool, ViewCommand,
 };
 use stark_model::AssetNeed;
 use stark_model::document::{BrushShape, FillOp, GuideId, SelectionOp, ShapeAction};
@@ -1318,12 +1318,12 @@ impl Canvas {
     /// One command per pointer move and one undo step for the whole drag is what
     /// `preview` buys the web app (§14.6); this sends the document command each time,
     /// which is honest but coarse — the engine coalesces nothing, so a drag is a run
-    /// of history entries. The preview pair is a stage of its own.
+    /// of history entries. Previewing is a stage of its own.
     pub(crate) fn set_opacity(&mut self, opacity: f32, cx: &mut Context<'_, Self>) {
         let Some(id) = self.obs.as_ref().map(|o| o.active_layer) else {
             return;
         };
-        self.send(DocCommand::SetLayerOpacity(id, opacity), cx);
+        self.send(DocCommand::Set(Edit::LayerOpacity(id, opacity)), cx);
     }
 
     /// Set the selected layer's blend mode — the panel's drop-down (`crate::controls`).
@@ -1335,7 +1335,7 @@ impl Canvas {
         let Some(id) = self.obs.as_ref().map(|o| o.active_layer) else {
             return;
         };
-        self.send(DocCommand::SetLayerBlend(id, mode), cx);
+        self.send(DocCommand::Set(Edit::LayerBlend(id, mode)), cx);
     }
 
     // --- the Lighting shelf (§6.3, §6.4, §6.5) --------------------------------
@@ -1362,11 +1362,11 @@ impl Canvas {
             }
             // Document state, and sent per sample: the engine coalesces nothing, so a
             // drag is a run of history entries. Honest but coarse, exactly as the
-            // layer opacity above is, and the preview pair is the same stage of its
+            // layer opacity above is, and previewing is the same stage of its
             // own for both.
             light::Dial::Scale => {
                 let scale = stark_model::SubstrateScale::new(v.round().max(0.0) as u16);
-                self.send(DocCommand::SetSubstrateScale(scale), cx);
+                self.send(DocCommand::Set(Edit::SubstrateScale(scale)), cx);
             }
             // Shown but not kept: a headroom is written down when the hand comes off
             // it ([`settle_light`]), so one drag is one write rather than one a frame.
@@ -1441,7 +1441,7 @@ impl Canvas {
             // `crate::lighting` for why the well takes rather than picks.
             lighting::Region::SubstrateColor => {
                 let color = lighting::take_color(self.brush.tune.color);
-                self.send(DocCommand::SetSubstrateColor(color), cx);
+                self.send(DocCommand::Set(Edit::SubstrateColor(color)), cx);
             }
             lighting::Region::Hdr => self.toggle_hdr(window, cx),
         }
@@ -1450,7 +1450,7 @@ impl Canvas {
     // --- the Guides shelf (§20.5) ---------------------------------------------
 
     /// Move one of the Guides shelf's tracks: a whole edit of the camera in hand,
-    /// because that is the shape `DocCommand::SetGuide` takes.
+    /// because that is the shape `Edit::Guide` takes.
     pub(crate) fn turn_guide(
         &mut self,
         dial: stark_ui::guides::Dial,
@@ -1460,7 +1460,7 @@ impl Canvas {
         let Some((id, camera)) = self.held_guide() else {
             return;
         };
-        self.send(DocCommand::SetGuide(id, dial.write(camera, v)), cx);
+        self.send(DocCommand::Set(Edit::Guide(id, dial.write(camera, v))), cx);
     }
 
     /// The guide this client has taken up, and its camera as the engine holds it now.
@@ -2537,7 +2537,10 @@ impl Canvas {
     fn compose(&mut self, ui: TransformUi, cx: &mut Context<'_, Self>) {
         self.mode = Some(ui);
         self.send(
-            ViewCommand::PreviewTransform(Some((ui.layer(), ui.map()))),
+            ViewCommand::Preview(Some(Edit::Transform {
+                layer: ui.layer(),
+                map: ui.map(),
+            })),
             cx,
         );
     }
@@ -2597,10 +2600,10 @@ impl Canvas {
                 // commit clears the preview itself — so there is no frame showing
                 // the document untransformed between the two.
                 self.send(
-                    DocCommand::Transform {
+                    DocCommand::Set(Edit::Transform {
                         layer: ui.layer(),
                         map,
-                    },
+                    }),
                     cx,
                 );
                 self.hold(then, cx);
@@ -2614,13 +2617,13 @@ impl Canvas {
         if ui.is_identity() {
             // Nothing composed: drop the preview rather than spend an undo step on a
             // transform that would change no pixel.
-            self.send(ViewCommand::PreviewTransform(None), cx);
+            self.send(ViewCommand::Preview(None), cx);
         } else {
             self.send(
-                DocCommand::Transform {
+                DocCommand::Set(Edit::Transform {
                     layer: ui.layer(),
                     map: ui.map(),
-                },
+                }),
                 cx,
             );
         }
@@ -2646,7 +2649,7 @@ impl Canvas {
     /// ([`press`](Self::press)) — and it now grabs a mode that is gone.
     fn leave_mode(&mut self, cx: &mut Context<'_, Self>) {
         if self.mode.take().is_some() {
-            self.send(ViewCommand::PreviewTransform(None), cx);
+            self.send(ViewCommand::Preview(None), cx);
             self.held = None;
         }
     }
@@ -2685,7 +2688,7 @@ impl Canvas {
             // strength is the document's, so a drag that logged per sample would
             // spend a hundred undo steps crossing the track.
             stark_ui::selection::Dial::MaskOpacity => {
-                self.send(ViewCommand::PreviewSelectionOpacity(Some(v)), cx)
+                self.send(ViewCommand::Preview(Some(Edit::SelectionOpacity(v))), cx)
             }
         }
     }
@@ -2700,8 +2703,11 @@ impl Canvas {
         cx: &mut Context<'_, Self>,
     ) {
         if dial == stark_ui::selection::Dial::MaskOpacity {
-            self.send(ViewCommand::PreviewSelectionOpacity(None), cx);
-            self.send(DocCommand::SetSelectionOpacity(dial.value_at(fraction)), cx);
+            self.send(ViewCommand::Preview(None), cx);
+            self.send(
+                DocCommand::Set(Edit::SelectionOpacity(dial.value_at(fraction))),
+                cx,
+            );
         }
     }
 
@@ -3210,9 +3216,11 @@ impl Canvas {
             // makes: a fill lays the paint in hand. How far it covers is not a
             // question this act asks — it fills the selection, so the selection's own
             // coverage answers it.
-            Command::FillSelection => self.obs.as_ref().map(|o| DocCommand::Fill {
-                layer: o.active_layer,
-                op: FillOp::of_selection(Srgb::new(self.brush.tune.color)),
+            Command::FillSelection => self.obs.as_ref().map(|o| {
+                DocCommand::Set(Edit::Fill {
+                    layer: o.active_layer,
+                    op: FillOp::of_selection(Srgb::new(self.brush.tune.color)),
+                })
             }),
             _ => None,
         };

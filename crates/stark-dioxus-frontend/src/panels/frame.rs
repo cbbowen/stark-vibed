@@ -36,7 +36,7 @@ use crate::panels::color::OklabPicker;
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
 use crate::widgets::{ActChip, Bar, Chip, PopoutId, toggle_popout, use_popout};
-use stark_engine::command::{DocCommand, PeerCommand};
+use stark_engine::command::{DocCommand, Edit, PeerCommand};
 use stark_engine::{LayerInfo, MatteInfo};
 use stark_model::document::{MatteRegion, Parcel, Place};
 use stark_model::geom::Vec2;
@@ -172,7 +172,7 @@ pub fn FrameBar() -> Element {
     let dims = matte.dims();
     let current_aspect = dims.map(matched_aspect);
     let set_rect = move |min: Vec2, max: Vec2| {
-        dispatch(state, DocCommand::SetMatteRect(info.id, min, max));
+        dispatch(state, DocCommand::Set(Edit::MatteRect(info.id, min, max)));
     };
     let c = matte.paint.swatch();
     let swatch = crate::cards::swatch_style(c.get());

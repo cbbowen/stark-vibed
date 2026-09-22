@@ -9,7 +9,9 @@
 use crate::common::palette::{BLACK, RED_SOFT};
 use crate::common::*;
 use stark_engine::command::Tool;
-use stark_engine::command::{DocCommand, GestureCommand, InputSample, PeerCommand, ViewCommand};
+use stark_engine::command::{
+    DocCommand, Edit, GestureCommand, InputSample, PeerCommand, ViewCommand,
+};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Background, Engine, ExportScale, Offscreen, Rendered, RgbaImage};
 use stark_model::Srgb;
@@ -241,7 +243,9 @@ fn export_uses_the_documents_substrate() {
         "default substrate is near-white"
     );
 
-    engine.process(DocCommand::SetSubstrateColor(Srgb::new([0.02, 0.02, 0.03])));
+    engine.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new([
+        0.02, 0.02, 0.03,
+    ]))));
     let ink = pollster::block_on(
         engine
             .export(
@@ -470,11 +474,11 @@ fn impossible_exports_are_errors() {
     };
     let frame = add_frame(&mut engine);
 
-    engine.process(DocCommand::SetMatteRect(
+    engine.process(DocCommand::Set(Edit::MatteRect(
         frame,
         Vec2::ZERO,
         Vec2::new(0.2, 0.2),
-    ));
+    )));
     assert!(
         engine
             .export_plan(Some(frame), ExportScale::Factor(1.0))
@@ -482,11 +486,11 @@ fn impossible_exports_are_errors() {
         "a sub-pixel frame cannot be exported"
     );
 
-    engine.process(DocCommand::SetMatteRect(
+    engine.process(DocCommand::Set(Edit::MatteRect(
         frame,
         Vec2::new(-60.0, -40.0),
         Vec2::new(60.0, 40.0),
-    ));
+    )));
     assert!(
         engine
             .export_plan(Some(frame), ExportScale::Factor(1000.0))
@@ -524,11 +528,11 @@ fn the_export_limit_is_the_devices_own() {
 
     // A square frame `limit` px on a side: at 1:1 that is the largest export this
     // device can make, whatever this device happens to be.
-    engine.process(DocCommand::SetMatteRect(
+    engine.process(DocCommand::Set(Edit::MatteRect(
         frame,
         Vec2::ZERO,
         Vec2::splat(limit as f32),
-    ));
+    )));
     let plan = engine
         .export_plan(Some(frame), ExportScale::Factor(1.0))
         .expect("an export exactly at the device limit is allowed");
@@ -548,11 +552,11 @@ fn the_export_limit_is_the_devices_own() {
     assert_eq!((img.width, img.height), (limit, limit));
 
     // One pixel more is refused in the engine's words, not wgpu's.
-    engine.process(DocCommand::SetMatteRect(
+    engine.process(DocCommand::Set(Edit::MatteRect(
         frame,
         Vec2::ZERO,
         Vec2::splat(limit as f32 + 1.0),
-    ));
+    )));
     let err = engine
         .export_plan(Some(frame), ExportScale::Factor(1.0))
         .expect_err("one px past the device limit must be refused");
@@ -579,11 +583,11 @@ fn a_piece_past_the_export_limit_still_has_an_overview() {
     let frame = add_frame(&mut engine);
     // Past any device's texture limit, and not square, so the fit has to respect the
     // binding axis rather than whichever it looked at first.
-    engine.process(DocCommand::SetMatteRect(
+    engine.process(DocCommand::Set(Edit::MatteRect(
         frame,
         Vec2::ZERO,
         Vec2::new(20000.0, 12000.0),
-    ));
+    )));
     assert!(
         engine
             .export_plan(Some(frame), ExportScale::Factor(1.0))
@@ -874,9 +878,9 @@ fn doc_revision_tracks_commits_and_not_gestures() {
 
     // Panning is not, and neither is an unlogged preview drag — but an undo is.
     engine.process(ViewCommand::CenterOn(Vec2::new(500.0, -250.0)));
-    engine.process(ViewCommand::PreviewSubstrateColor(Some(Srgb::new([
-        0.1, 0.1, 0.1,
-    ]))));
+    engine.process(ViewCommand::Preview(Some(Edit::SubstrateColor(Srgb::new(
+        [0.1, 0.1, 0.1],
+    )))));
     assert_eq!(engine.observe().doc_revision, committed);
     engine.process(DocCommand::Undo);
     assert_ne!(engine.observe().doc_revision, committed);

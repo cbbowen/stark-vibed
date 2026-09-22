@@ -17,7 +17,7 @@
 use crate::common::*;
 use stark_assetid::Picture;
 use stark_engine::command::Tool;
-use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{MediaParams, RgbaImage};
 use stark_model::document::BrushDynamics;
@@ -557,7 +557,7 @@ fn every_tile_writer_is_translation_invariant() {
     let cases: &[Case] = &[
         // The fill pass: a feathered region laid straight onto bare canvas.
         ("fill", |e, shift| {
-            e.process(DocCommand::Fill {
+            e.process(DocCommand::Set(Edit::Fill {
                 layer: e.observe().active_layer,
                 op: FillOp::new(
                     SelectionShape::rect_from_corners(
@@ -568,7 +568,7 @@ fn every_tile_writer_is_translation_invariant() {
                     Srgb::new([0.2, 0.7, 0.35]),
                     1.0,
                 ),
-            });
+            }));
         }),
         // The **selection mask** every tool acts through (§6.8), seen through a fill
         // that covers far more than the mask does — so what shapes the result is the
@@ -582,7 +582,7 @@ fn every_tile_writer_is_translation_invariant() {
                 ),
                 7.0,
             )));
-            e.process(DocCommand::Fill {
+            e.process(DocCommand::Set(Edit::Fill {
                 layer: e.observe().active_layer,
                 op: FillOp::new(
                     SelectionShape::rect_from_corners(
@@ -593,7 +593,7 @@ fn every_tile_writer_is_translation_invariant() {
                     Srgb::new([0.85, 0.4, 0.1]),
                     1.0,
                 ),
-            });
+            }));
         }),
         // The transform's resample. The map is expressed in canvas coordinates and
         // turns about `shift`, so the *content* it produces is the same picture at
@@ -604,10 +604,10 @@ fn every_tile_writer_is_translation_invariant() {
             let about = stark_model::geom::Affine2::from_angle_translation(0.0, shift)
                 * turn
                 * stark_model::geom::Affine2::from_angle_translation(0.0, -shift);
-            e.process(DocCommand::Transform {
+            e.process(DocCommand::Set(Edit::Transform {
                 layer: e.observe().active_layer,
                 map: TransformMap::Affine(about),
-            });
+            }));
         }),
         // The merge's tile rewrite (§14.11): two painted layers folded into one.
         ("merge", |e, shift| {

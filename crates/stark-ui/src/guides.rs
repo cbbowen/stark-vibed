@@ -287,7 +287,7 @@ impl Dial {
 
     /// The guide `value` asks for. Stated as a whole edit of the camera rather than as
     /// a field write, because that is the shape every act on a guide takes:
-    /// `DocCommand::SetGuide` carries the camera entire (§20.5).
+    /// `Edit::Guide` carries the camera entire (§20.5).
     pub fn write(self, guide: PerspectiveGuide, value: f32) -> PerspectiveGuide {
         match self {
             Dial::Cells => with_octave(guide, value),

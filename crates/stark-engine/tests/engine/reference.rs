@@ -20,7 +20,7 @@
 
 use crate::common::*;
 use stark_engine::MediaParams;
-use stark_engine::command::{DocCommand, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, ViewCommand};
 use stark_model::Srgb;
 use stark_model::document::{BrushParams, BrushShape};
 use stark_model::geom::Vec2;
@@ -87,7 +87,7 @@ fn reference_light_reproduces_the_substrate() {
     };
     engine.process(ViewCommand::SetMediaParams(REFERENCE));
     for &c in PROBES {
-        engine.process(DocCommand::SetSubstrateColor(Srgb::new(c)));
+        engine.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new(c))));
         let got = center_rgb(&mut engine);
         assert_reproduces("substrate", c, got);
     }
@@ -119,7 +119,7 @@ fn reference_light_reproduces_opaque_paint() {
 
     for &c in PROBES {
         for substrate in [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]] {
-            engine.process(DocCommand::SetSubstrateColor(Srgb::new(substrate)));
+            engine.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new(substrate))));
             let brush = BrushParams {
                 effect: stark_model::document::BrushEffect::painted([c[0], c[1], c[2]]),
                 size: 48.0,

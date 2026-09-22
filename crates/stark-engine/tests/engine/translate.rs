@@ -13,7 +13,7 @@
 use crate::common::palette::{GREEN_SOFT, RED};
 use crate::common::*;
 use stark_engine::RgbaImage;
-use stark_engine::command::{DocCommand, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, ViewCommand};
 use stark_model::document::{SelectionMode, SelectionOp, SelectionShape, TransformMap};
 use stark_model::geom::{Affine2, IVec2, Vec2};
 
@@ -44,7 +44,7 @@ fn select_rect(engine: &mut stark_engine::Engine, min: Vec2, max: Vec2, feather:
 
 fn translate_active(engine: &mut stark_engine::Engine, to: IVec2) {
     let layer = engine.observe().active_layer;
-    engine.process(DocCommand::TranslateLayer { layer, to });
+    engine.process(DocCommand::Set(Edit::Translate { layer, to }));
 }
 
 fn assert_identical(a: &RgbaImage, b: &RgbaImage, what: &str) {
@@ -101,10 +101,10 @@ fn a_translated_layer_renders_as_the_baked_move() {
     translate_active(&mut a, d);
 
     let layer = b.observe().active_layer;
-    b.process(DocCommand::Transform {
+    b.process(DocCommand::Set(Edit::Transform {
         layer,
         map: TransformMap::Affine(Affine2::from_translation(d.as_vec2())),
-    });
+    }));
 
     assert_identical(
         &a.render_to_image(),
@@ -151,9 +151,9 @@ fn a_translation_previews_as_its_commit() {
     blob(&mut engine, Vec2::new(10.0, -30.0));
     let layer = engine.observe().active_layer;
     let to = IVec2::new(-90, 55);
-    engine.process(ViewCommand::PreviewTranslate(Some((layer, to))));
+    engine.process(ViewCommand::Preview(Some(Edit::Translate { layer, to })));
     let previewed = engine.render_to_image();
-    engine.process(DocCommand::TranslateLayer { layer, to });
+    engine.process(DocCommand::Set(Edit::Translate { layer, to }));
     assert_identical(
         &previewed,
         &engine.render_to_image(),
@@ -357,10 +357,10 @@ fn a_perspective_in_a_frame_lands_under_the_hand() {
     blob(&mut b, Vec2::new(-10.0, 5.0));
     translate_active(&mut a, d);
     let layer = b.observe().active_layer;
-    b.process(DocCommand::Transform {
+    b.process(DocCommand::Set(Edit::Transform {
         layer,
         map: TransformMap::Affine(Affine2::from_translation(d.as_vec2())),
-    });
+    }));
 
     let map = {
         use stark_model::document::{PerspectiveMap, rect_corners};
@@ -377,10 +377,10 @@ fn a_perspective_in_a_frame_lands_under_the_hand() {
     for e in [&mut a, &mut b] {
         select_rect(e, Vec2::new(0.0, -40.0), Vec2::new(70.0, 30.0), 4.0);
         let layer = e.observe().active_layer;
-        e.process(DocCommand::Transform {
+        e.process(DocCommand::Set(Edit::Transform {
             layer,
             map: map.clone(),
-        });
+        }));
     }
     assert_within(
         &a.render_to_image(),
@@ -442,18 +442,18 @@ fn a_float_dragged_and_merged_back_is_the_baked_move() {
     let source = a.observe().active_layer;
     a.process(DocCommand::FloatSelection { layer: source });
     let child = a.observe().active_layer;
-    a.process(DocCommand::TranslateLayer {
+    a.process(DocCommand::Set(Edit::Translate {
         layer: child,
         to: d,
-    });
+    }));
     a.process(DocCommand::MergeLayerDown(child));
 
     // The old path: one cut/paste, then deselect to match the consumed mask.
     let layer = b.observe().active_layer;
-    b.process(DocCommand::Transform {
+    b.process(DocCommand::Set(Edit::Transform {
         layer,
         map: TransformMap::Affine(Affine2::from_translation(d.as_vec2())),
-    });
+    }));
     b.process(DocCommand::Select(SelectionOp::new(
         SelectionMode::Replace,
         SelectionShape::All,

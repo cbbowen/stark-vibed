@@ -21,7 +21,7 @@ use crate::preview;
 use crate::state::{AppState, dispatch, use_obs};
 use crate::widgets::{Chip, CommandButton, InlineRename, PreviewSlider, Select};
 use stark_engine::LayerInfo;
-use stark_engine::command::{DocCommand, PeerCommand};
+use stark_engine::command::{DocCommand, Edit, PeerCommand};
 use stark_model::document::{BlendMode, LayerId};
 use stark_ui::collab::Peer;
 use stark_ui::commands::Command;
@@ -202,7 +202,7 @@ fn SelectedLayerControls(layer: LayerInfo, blend_inert: bool, clip_inert: bool) 
                     options: modes,
                     selected: mode,
                     onchange: move |i: usize| {
-                        dispatch(state, DocCommand::SetLayerBlend(id, BlendMode::ALL[i]));
+                        dispatch(state, DocCommand::Set(Edit::LayerBlend(id, BlendMode::ALL[i])));
                     },
                 }
                 // Inert only where there is nothing beneath, where a clip would erase the layer

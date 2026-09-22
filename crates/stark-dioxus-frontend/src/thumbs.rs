@@ -45,7 +45,7 @@ use stark_model::Srgb;
 use stark_engine::Extent2;
 use stark_engine::ViewTransform;
 use stark_engine::command::InputSample;
-use stark_engine::command::{DocCommand, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, ViewCommand};
 use stark_engine::{Background, Engine, EnvironmentId, MediaParams, Offscreen, Rendered};
 use stark_model::SubstrateId;
 use stark_model::document::{FillOp, SelectionShape};
@@ -240,7 +240,9 @@ async fn generate(state: AppState, key: Key) -> Result<Picture, NoRenderer> {
             // The document opened on the donor's substrate (`Engine::new_sharing`),
             // so the substrate is set back explicitly.
             engine.process(DocCommand::SetSubstrate(SubstrateId::default()));
-            engine.process(DocCommand::SetSubstrateColor(Srgb::new([1.0, 1.0, 1.0])));
+            engine.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new([
+                1.0, 1.0, 1.0,
+            ]))));
             engine.process(ViewCommand::SetEnvironment(EnvironmentId::default()));
             engine.process(ViewCommand::SetMediaParams(MediaParams::default()));
             *guard = Some(Rig {
@@ -261,7 +263,7 @@ async fn generate(state: AppState, key: Key) -> Result<Picture, NoRenderer> {
         // rounding of the view's edges; the halves meet exactly at x = 0.
         let (over_x, over_y) = (h.x * 1.05, h.y * 1.05);
         for (min_x, max_x, color) in [(-over_x, 0.0, LIGHT_PAINT), (0.0, over_x, DARK_PAINT)] {
-            rig.engine.process(DocCommand::Fill {
+            rig.engine.process(DocCommand::Set(Edit::Fill {
                 layer,
                 op: FillOp::new(
                     SelectionShape::rect_from_corners(
@@ -272,7 +274,7 @@ async fn generate(state: AppState, key: Key) -> Result<Picture, NoRenderer> {
                     Srgb::new(color),
                     1.0,
                 ),
-            });
+            }));
         }
         // The key's tune, normalized by [`Key::new`]: the tune the cache files this
         // under is the tune the stroke is laid at.

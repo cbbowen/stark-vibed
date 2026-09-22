@@ -24,7 +24,7 @@
 //! is true, and was being kept true by hand.
 
 use stark_engine::ObservableState;
-use stark_engine::command::{DocCommand, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, ViewCommand};
 use stark_model::document::{GuideId, Lens, PerspectiveGuide};
 use stark_ui::commands::{Bindings, Command};
 use stark_ui::guides::{AXIS_NAMES, Dial, PAIR_AXES, label};
@@ -343,7 +343,7 @@ pub fn act(
             let (id, mut guide) = held()?;
             let on = *guide.pairs.get(k)?;
             guide.pairs[k] = !on;
-            Act::Doc(DocCommand::SetGuide(id, guide))
+            Act::Doc(DocCommand::Set(Edit::Guide(id, guide)))
         }
         Region::Lens => {
             let (id, mut guide) = held()?;
@@ -351,7 +351,7 @@ pub fn act(
                 Lens::Rectilinear => Lens::Fisheye,
                 Lens::Fisheye => Lens::Rectilinear,
             };
-            Act::Doc(DocCommand::SetGuide(id, guide))
+            Act::Doc(DocCommand::Set(Edit::Guide(id, guide)))
         }
     })
 }
@@ -402,7 +402,7 @@ mod tests {
             Some(Act::View(ViewCommand::SetGuideVisible(_, true)))
         ));
         match act(Region::Pair(1), &guides, taken, Default::default()) {
-            Some(Act::Doc(DocCommand::SetGuide(_, g))) => {
+            Some(Act::Doc(DocCommand::Set(Edit::Guide(_, g)))) => {
                 assert!(!g.pairs[1], "the chip toggles the plane it names");
                 assert!(g.pairs[0] && g.pairs[2], "and leaves the other two alone");
             }

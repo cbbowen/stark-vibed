@@ -29,7 +29,7 @@
 //! Everything before "Done" is a **lossless preview**: every change previews
 //! through `preview::TRANSFORM` — the same renderer the commit
 //! runs, over the committed tiles, so what is on screen is exactly what "Done"
-//! will produce. "Done" commits a single `DocCommand::Transform`: one undo
+//! will produce. "Done" commits a single `Edit::Transform`: one undo
 //! step per gesture, like the frame drag (§15.7).
 //!
 //! While the mode is active the full-viewport catcher owns the pointer, so a

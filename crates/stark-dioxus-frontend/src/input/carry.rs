@@ -39,7 +39,7 @@ struct InFlight {
 /// mine?*.
 ///
 /// It holds no transform state of its own: the drag is a target frame for the
-/// layer, previewed and committed through the one [`preview::TRANSLATE`] pair
+/// layer, previewed and committed through the one [`preview::TRANSLATE`] row
 /// (§14.12), so what the canvas shows mid-drag is what the release will lay down,
 /// by construction.
 ///

@@ -17,7 +17,7 @@
 
 use crate::common::palette::RED_SOFT;
 use crate::common::*;
-use stark_engine::command::{DocCommand, PeerCommand, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, PeerCommand, ViewCommand};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::Srgb;
 use stark_model::document::{
@@ -298,7 +298,7 @@ fn a_hidden_or_faded_filter_changes_no_pixel() {
     );
 
     engine.process(DocCommand::SetLayerVisible(id, true));
-    engine.process(DocCommand::SetLayerOpacity(id, 0.0));
+    engine.process(DocCommand::Set(Edit::LayerOpacity(id, 0.0)));
     assert!(
         images_match(&before, &engine.render_to_image(), 0),
         "a filter at zero strength still changed the picture",
@@ -539,7 +539,7 @@ fn a_filter_undoes() {
     let Some(mut engine) = painted() else { return };
     let plain = engine.render_to_image();
     let id = add_filter(&mut engine, None, NEUTRAL);
-    engine.process(DocCommand::SetFilter(id, GREY));
+    engine.process(DocCommand::Set(Edit::Filter(id, GREY)));
     let grey = engine.render_to_image();
     assert!(!images_match(&plain, &grey, 0), "the filter did nothing");
 
@@ -577,7 +577,7 @@ fn dragging_a_filter_previews_without_logging() {
             saturation: 1.0 - i as f32 / 8.0,
             ..ColorAdjust::NEUTRAL
         });
-        engine.process(ViewCommand::PreviewFilter(Some((id, filter.clone()))));
+        engine.process(ViewCommand::Preview(Some(Edit::Filter(id, filter.clone()))));
         shown = Some(filter);
     }
     assert_eq!(
@@ -593,7 +593,10 @@ fn dragging_a_filter_previews_without_logging() {
     assert_eq!(info.filter, shown, "observe() should report the preview");
     drop(obs);
 
-    engine.process(DocCommand::SetFilter(id, shown.expect("eight samples")));
+    engine.process(DocCommand::Set(Edit::Filter(
+        id,
+        shown.expect("eight samples"),
+    )));
     assert_eq!(
         engine.scrub_range().expect("solo timeline").1,
         steps + 1,
@@ -834,7 +837,7 @@ fn a_filter_survives_save_and_load() {
     let id = add_filter(&mut engine, None, NEUTRAL);
     // Set through the command rather than added already-dialled, so both of the two
     // new actions are in the log this saves.
-    engine.process(DocCommand::SetFilter(
+    engine.process(DocCommand::Set(Edit::Filter(
         id,
         // Every field distinct, and the tint's two distinct from each other: five
         // floats and a pair of them, so any two swapped in the reading decode as a
@@ -846,7 +849,7 @@ fn a_filter_survives_save_and_load() {
             hue: 0.6,
             tint: [0.09, -0.04],
         }),
-    ));
+    )));
     // A second filter of the **other kind** rides the same log, so the *enum* is
     // exercised and not just one variant's fields: a filter read as the wrong kind is
     // a different picture rather than an error.
@@ -855,35 +858,35 @@ fn a_filter_survives_save_and_load() {
         None,
         Filter::Chromatic(ChromaticAberration::NEUTRAL),
     );
-    engine.process(DocCommand::SetFilter(
+    engine.process(DocCommand::Set(Edit::Filter(
         chroma,
         Filter::Chromatic(ChromaticAberration {
             spread: 9.5,
             angle: -1.2,
         }),
-    ));
+    )));
     // And a third of the third kind: the gradient map is the first filter whose
     // payload has a *length* (a stop list) and an `Option` around it — two more shapes
     // to get wrong, each a fresh way to come back as a different ramp. Three stops,
     // every number distinct.
     let map = add_filter(&mut engine, None, Filter::GradientMap(None));
-    engine.process(DocCommand::SetFilter(
+    engine.process(DocCommand::Set(Edit::Filter(
         map,
         Filter::GradientMap(Some(ramp(&[
             (0.0, [0.12, 0.34, 0.56]),
             (0.4, [0.9, 0.62, 0.21]),
             (1.0, [0.05, 0.77, 0.43]),
         ]))),
-    ));
+    )));
     // And a fourth of the fourth kind, so the enum stays exercised whole.
     let blur = add_filter(&mut engine, None, Filter::FocalBlur(FocalBlur::NEUTRAL));
-    engine.process(DocCommand::SetFilter(
+    engine.process(DocCommand::Set(Edit::Filter(
         blur,
         Filter::FocalBlur(FocalBlur {
             radius: 4.5,
             aperture: Aperture::Disc { obstruction: 0.0 },
         }),
-    ));
+    )));
     let before = engine.render_to_image();
     let bytes = engine.save_bytes().expect("serialize");
 
@@ -958,10 +961,10 @@ fn a_black_to_white_gradient_map_is_the_lightness_preserving_greyscale() {
     let id = add_filter(&mut engine, None, GREY);
     let desaturated = engine.render_to_image();
 
-    engine.process(DocCommand::SetFilter(
+    engine.process(DocCommand::Set(Edit::Filter(
         id,
         Filter::GradientMap(Some(ramp(&[(0.0, [0.0; 3]), (1.0, [1.0; 3])]))),
-    ));
+    )));
     let mapped = engine.render_to_image();
     assert!(
         images_match(&desaturated, &mapped, 1),
@@ -1026,18 +1029,18 @@ fn a_rampless_gradient_map_changes_no_pixel() {
 
     // Dialling a ramp in must change the picture, and Neutral must put it back —
     // the same out-and-back every other kind's bar makes.
-    engine.process(DocCommand::SetFilter(
+    engine.process(DocCommand::Set(Edit::Filter(
         id,
         Filter::GradientMap(Some(ramp(&[
             (0.0, [0.1, 0.1, 0.6]),
             (1.0, [1.0, 0.9, 0.4]),
         ]))),
-    ));
+    )));
     assert!(
         !images_match(&before, &engine.render_to_image(), 0),
         "the ramp has to grade the picture for the second half to mean anything",
     );
-    engine.process(DocCommand::SetFilter(id, Filter::GradientMap(None)));
+    engine.process(DocCommand::Set(Edit::Filter(id, Filter::GradientMap(None))));
     assert!(
         images_match(&before, &engine.render_to_image(), 0),
         "putting the ramp back to none did not restore the picture",
@@ -1140,7 +1143,7 @@ fn a_focal_blur_is_the_identity_on_a_uniform_field() {
         return;
     };
     let layer = engine.observe().active_layer;
-    engine.process(DocCommand::Fill {
+    engine.process(DocCommand::Set(Edit::Fill {
         layer,
         op: stark_model::document::FillOp::new(
             stark_model::document::SelectionShape::rect_from_corners(
@@ -1151,7 +1154,7 @@ fn a_focal_blur_is_the_identity_on_a_uniform_field() {
             Srgb::new(RED_SOFT),
             1.0,
         ),
-    });
+    }));
     let before = engine.render_to_image();
     add_filter(&mut engine, None, BLUR);
     let after = engine.render_to_image();
@@ -1187,13 +1190,13 @@ fn each_aperture_spreads_the_light_differently() {
         .into_iter()
         .chain([Aperture::Disc { obstruction: 0.5 }])
         .map(|aperture| {
-            engine.process(DocCommand::SetFilter(
+            engine.process(DocCommand::Set(Edit::Filter(
                 filter,
                 Filter::FocalBlur(FocalBlur {
                     radius: 14.0,
                     aperture,
                 }),
-            ));
+            )));
             (aperture, engine.render_to_image())
         })
         .collect();
@@ -1226,7 +1229,7 @@ fn an_oval_aperture_reaches_further_along_its_long_axis() {
         return;
     };
     let layer = engine.observe().active_layer;
-    engine.process(DocCommand::Fill {
+    engine.process(DocCommand::Set(Edit::Fill {
         layer,
         op: stark_model::document::FillOp::new(
             stark_model::document::SelectionShape::rect_from_corners(
@@ -1237,7 +1240,7 @@ fn an_oval_aperture_reaches_further_along_its_long_axis() {
             Srgb::new(RED_SOFT),
             1.0,
         ),
-    });
+    }));
     let bare = engine.render_to_image();
     let filter = add_filter(&mut engine, None, Filter::FocalBlur(FocalBlur::NEUTRAL));
 
@@ -1260,7 +1263,7 @@ fn an_oval_aperture_reaches_further_along_its_long_axis() {
     };
 
     let set = |engine: &mut Engine, angle: f32| {
-        engine.process(DocCommand::SetFilter(
+        engine.process(DocCommand::Set(Edit::Filter(
             filter,
             Filter::FocalBlur(FocalBlur {
                 radius: 24.0,
@@ -1269,7 +1272,7 @@ fn an_oval_aperture_reaches_further_along_its_long_axis() {
                     angle,
                 },
             }),
-        ));
+        )));
         engine.render_to_image()
     };
 

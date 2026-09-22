@@ -56,7 +56,7 @@ use crate::presets;
 use crate::render::Renderer;
 use crate::state::{AppState, update_brush};
 use crate::widgets::{AssetCard, AssetGallery, Choice, Face, Modal, Segmented, Slider, Thumb};
-use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, GestureCommand, ViewCommand};
 use stark_ui::brush_config::{BrushConfig, BrushEffectType, Transient};
 use stark_ui::brush_editor::{
     self, ModRow, PREVIEW_STROKE_COLOR, PREVIEW_STROKE_SEED, Row, SECTIONS, Section, Shown,
@@ -831,9 +831,9 @@ async fn init_preview(state: AppState, mut preview: Preview) {
                 return;
             }
         };
-        r.process(DocCommand::SetSubstrateColor(
+        r.process(DocCommand::Set(Edit::SubstrateColor(
             main.desk.engine().observe().substrate_color,
-        ));
+        )));
         r
     };
 

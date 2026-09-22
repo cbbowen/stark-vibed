@@ -65,7 +65,7 @@ use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
 use crate::widgets::{ActChip, Bar, Chip, Choice, Face, PreviewSlider, Segmented, SliderShape};
 use stark_engine::LayerInfo;
-use stark_engine::command::DocCommand;
+use stark_engine::command::{DocCommand, Edit};
 use stark_model::document::LayerId;
 use stark_model::document::{Aperture, ChromaticAberration, ColorAdjust, Filter, FocalBlur};
 use stark_model::gradient::Gradient;
@@ -118,7 +118,7 @@ fn aperture_run(state: AppState, id: LayerId, blur: FocalBlur) -> Element {
                     want
                 };
                 let next = FocalBlur { aperture, ..blur };
-                dispatch(state, DocCommand::SetFilter(id, Filter::FocalBlur(next)));
+                dispatch(state, DocCommand::Set(Edit::Filter(id, Filter::FocalBlur(next))));
             },
         }
     }
@@ -181,7 +181,7 @@ pub fn apply_ramp(state: AppState) {
     };
     dispatch(
         state,
-        DocCommand::SetFilter(info.id, Filter::GradientMap(Some(g))),
+        DocCommand::Set(Edit::Filter(info.id, Filter::GradientMap(Some(g)))),
     );
 }
 
@@ -789,10 +789,8 @@ fn map_rows(state: AppState, id: LayerId, ramp: Option<Gradient>) -> Element {
                     title: "Run the ramp the other way \u{2014} what dark paint \
                             takes trades places with what light paint takes",
                     onclick: move |_| {
-                        dispatch(
-                            state,
-                            DocCommand::SetFilter(id, Filter::GradientMap(Some(g.reversed()))),
-                        );
+                        let reversed = Filter::GradientMap(Some(g.reversed()));
+                        dispatch(state, DocCommand::Set(Edit::Filter(id, reversed)));
                     },
                     {icon(stark_ui::icons::SWAP)}
                     {label("Reverse")}
@@ -899,7 +897,7 @@ pub fn FilterBar() -> Element {
                         doing nothing, until it is dialled again",
                 disabled: at_neutral,
                 onclick: move |_| {
-                    dispatch(state, DocCommand::SetFilter(info.id, neutral.clone()));
+                    dispatch(state, DocCommand::Set(Edit::Filter(info.id, neutral.clone())));
                 },
                 {icon(stark_ui::icons::RESET)}
                 {label("Neutral")}

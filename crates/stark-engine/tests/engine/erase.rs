@@ -15,7 +15,7 @@
 // at the target coverage.
 use crate::common::palette::RED;
 use crate::common::*;
-use stark_engine::command::DocCommand;
+use stark_engine::command::{DocCommand, Edit};
 use stark_model::Srgb;
 use stark_model::document::{
     BrushEffect, BrushParams, EraseEffect, FillOp, LayerId, ModSource, Modulation, SelectionShape,
@@ -41,7 +41,7 @@ fn eraser(opacity: f32, radius: f32) -> BrushParams {
 /// test's stated-coverage reference.
 fn fill_canvas(engine: &mut stark_engine::Engine, color: [f32; 3], opacity: f32) {
     let layer = engine.observe().active_layer;
-    engine.process(DocCommand::Fill {
+    engine.process(DocCommand::Set(Edit::Fill {
         layer,
         op: FillOp::new(
             SelectionShape::rect_from_corners(Vec2::new(-128.0, -128.0), Vec2::new(128.0, 128.0)),
@@ -49,7 +49,7 @@ fn fill_canvas(engine: &mut stark_engine::Engine, color: [f32; 3], opacity: f32)
             Srgb::new(color),
             opacity,
         ),
-    });
+    }));
 }
 
 /// A full-strength eraser returns the canvas to bare — the very pixels it showed
