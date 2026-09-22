@@ -574,17 +574,10 @@ impl Materialize for DocState {
     /// applied after it survive. Tiles come back as the same shared handles
     /// (copy-on-write means identity is equality), so this re-renders nothing.
     ///
-    /// **Audited like the fold**, and it is the direction §12.6 is really about: what
-    /// this writes becomes the replay base for every later version, and a peer that
-    /// patched differently diverges with no pixel able to say so. Same checker, gated
-    /// the way the fold's is: on [`AUDITED`](Materialize::AUDITED), which only a debug
-    /// build sets (see [`super::audit`]).
-    fn unfold(&mut self, action: &Action, footprint: &Footprint, previous: &DocState) {
-        let before = Self::AUDITED.then(|| self.clone());
+    /// Held to that footprint by `Logged::inverse`, where the fold's own audit is
+    /// (§12.6).
+    fn unfold(&mut self, footprint: &Footprint, previous: &DocState) {
         *self = super::patch::unapply(footprint, previous, self);
-        if let Some(before) = before {
-            Self::audit(&before, self, action, footprint);
-        }
     }
 }
 

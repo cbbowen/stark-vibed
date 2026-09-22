@@ -34,21 +34,22 @@ pub trait Materialize: Clone {
     /// declines it identically.
     fn fold(self, action: &Action, ctx: &mut Self::Ctx) -> Self;
 
-    /// Restore what `action` changed, given the state as it stood before it.
+    /// Restore what an action changed, given the state as it stood before it.
     ///
     /// The default clones the whole previous state, which is always correct; an
     /// implementor that restores only what its footprint names makes history surgery
     /// cheaper (§12.6) without changing what it means. `footprint` is the one the
-    /// [`Logged`] already carries, so it cannot disagree with the one the fold claimed.
-    fn unfold(&mut self, action: &Action, footprint: &Footprint, previous: &Self) {
-        let _ = (action, footprint);
+    /// [`Logged`] already carries, so it cannot disagree with the one the fold claimed
+    /// — and the one [`inverse`](history::Action::inverse) then audits this against.
+    fn unfold(&mut self, footprint: &Footprint, previous: &Self) {
+        let _ = footprint;
         self.clone_from(previous);
     }
 
-    /// Check, in debug builds only, that folding `action` changed nothing outside what
-    /// its [`Footprint`] declared (§12.6) — the one rule here nothing structural
-    /// holds, since the compiler cannot say a footprint is the one its `apply` arm
-    /// honours.
+    /// Check, in debug builds only, that folding — or unfolding — `action` changed
+    /// nothing outside what its [`Footprint`] declared (§12.6) — the one rule here
+    /// nothing structural holds, since the compiler cannot say a footprint is the one
+    /// its `apply` arm honours.
     ///
     /// A no-op by default, and free by default: the caller clones the previous state
     /// only when an implementor has something to compare. Debug-only because the
@@ -155,8 +156,18 @@ impl<S: Materialize> history::Action for Logged<S> {
         Ok(after)
     }
 
+    /// **Audited exactly as [`apply`](history::Action::apply) is**, and it is the
+    /// direction §12.6 is really about: what an unfold writes becomes the replay base
+    /// for every later version, so a patch that reached past the footprint diverges
+    /// peers with no pixel able to say so.
     fn inverse(&self, previous_state: &S, state: &mut S) {
-        state.unfold(&self.action, &self.footprint, previous_state);
+        #[cfg(debug_assertions)]
+        let before = S::AUDITED.then(|| state.clone());
+        state.unfold(&self.footprint, previous_state);
+        #[cfg(debug_assertions)]
+        if let Some(before) = before {
+            S::audit(&before, state, &self.action, &self.footprint);
+        }
     }
 }
 

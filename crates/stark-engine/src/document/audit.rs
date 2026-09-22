@@ -1,9 +1,10 @@
 //! **Every `apply` touches only what its `Footprint` declares** (§12.6), checked on
 //! every fold — and every *unfold* — of every debug build.
 //!
-//! `Materialize::audit` is called from `Logged::apply` behind
-//! `cfg(debug_assertions)`, so every action any test in the workspace folds is held
-//! to its own declaration — in shapes no hand-written vocabulary enumerates.
+//! `Materialize::audit` is called from `Logged::apply` and `Logged::inverse` behind
+//! `cfg(debug_assertions)`, so every action any test in the workspace folds — or
+//! unfolds — is held to its own declaration, in shapes no hand-written vocabulary
+//! enumerates.
 //!
 //! # What it costs
 //!
@@ -80,7 +81,8 @@ pub(super) fn changes_nothing(before: &DocState, after: &DocState) -> bool {
     differences(before, after).is_empty()
 }
 
-/// Panic unless every difference `action` made lies inside a resource it declared.
+/// Panic unless every difference `action` made — folding or unfolding — lies inside a
+/// resource it declared.
 #[cfg(debug_assertions)]
 pub(super) fn audit(before: &DocState, after: &DocState, action: &Action, footprint: &Footprint) {
     let loose = undeclared(before, after, footprint);
