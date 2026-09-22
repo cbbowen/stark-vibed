@@ -15,6 +15,7 @@
 
 use super::Engine;
 use crate::gpu::channels::Targets;
+use crate::gpu::composite::CompositeGroup;
 use crate::view::{Extent2, ViewTransform};
 use stark_model::document::LayerId;
 use stark_model::geom::TileRect;
@@ -548,7 +549,7 @@ impl Engine {
         // optimization declining to help ([`patch_cull`]'s stance): it is the
         // point itself being unaddressable — non-finite, or past the far edge of
         // the tile grid — and there is no paint out there to point at.
-        let lists: Vec<(LayerId, Vec<crate::gpu::CompositeGroup>)> = match view.visible_tiles() {
+        let lists: Vec<(LayerId, Vec<CompositeGroup>)> = match view.visible_tiles() {
             None => Vec::new(),
             Some(cull) => {
                 let doc = self.presented();

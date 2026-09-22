@@ -13,12 +13,18 @@ use crate::colorspace::ColorSpace;
 use crate::document::{ApplyCtx, DocState, LinearTimeline, Timeline};
 use crate::gpu::channels::Zeroes;
 use crate::gpu::composite::ViewSettings;
+use crate::gpu::composite::{BlendPass, Compositor, CompositorPipeline, FilterPass};
+use crate::gpu::context::GpuContext;
+use crate::gpu::environment::{Environment, EnvironmentId};
+use crate::gpu::fill::FillRenderer;
+use crate::gpu::merge::MergeRenderer;
+use crate::gpu::registry::Registry;
 use crate::gpu::scratch::ScratchPool;
-use crate::gpu::{
-    BlendPass, Compositor, CompositorPipeline, Environment, EnvironmentId, FillRenderer,
-    FilterPass, GpuContext, MergeRenderer, Registry, SelectionRenderer, StrokeRenderer, Substrate,
-    SubstrateMap, TilePool, TransformRenderer,
-};
+use crate::gpu::selection::SelectionRenderer;
+use crate::gpu::stroke::StrokeRenderer;
+use crate::gpu::substrate::{Substrate, SubstrateMap};
+use crate::gpu::tile::TilePool;
+use crate::gpu::transform::TransformRenderer;
 use crate::peer::Peers;
 use crate::pictures::PictureStore;
 use crate::projection::{Memo, Revision};
@@ -427,7 +433,7 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
     let merge = MergeRenderer::new(&gpu, cs.as_ref(), zeroes, blend, filter, scratch.clone());
     // No pipeline and no layout: a placed image's tiles are computed on the CPU
     // (§23), so this is the color space and the queue and nothing else.
-    let place = crate::gpu::PlaceRenderer::new(&gpu, cs.clone());
+    let place = crate::gpu::place::PlaceRenderer::new(&gpu, cs.clone());
     // `passes` and `settings` are read off the pipeline that was just built, never
     // assembled beside it: they are the two things `EngineShared` keeps *of* the
     // compositor, and a second source for either is how a rebuild leaves a sibling

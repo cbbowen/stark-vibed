@@ -126,7 +126,7 @@ impl<K: PartialEq, V: Clone> Memo<K, V> {
     /// an `Arc` bump ([`Projected`]) and the draw list an `Arc<[CompositeGroup]>`. A
     /// memo whose value is expensive to hand out gives back what it saved.
     ///
-    /// [`CompositeGroup`]: crate::gpu::CompositeGroup
+    /// [`CompositeGroup`]: crate::gpu::composite::CompositeGroup
     pub(crate) fn get_or_build(&self, key: K, build: impl FnOnce() -> V) -> V {
         if let Some(hit) = self.hit(&key) {
             return hit;

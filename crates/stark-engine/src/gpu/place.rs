@@ -235,7 +235,7 @@ mod tests {
     /// second half this would pass just as well if the hazard were imaginary.
     #[test]
     fn a_distant_tile_addresses_the_image_exactly() {
-        use crate::gpu::mask_tex_origin;
+        use crate::gpu::tile::mask_tex_origin;
         use stark_model::geom::TileCoord;
 
         // Far enough out that a tile origin needs more than the 24 bits of mantissa an

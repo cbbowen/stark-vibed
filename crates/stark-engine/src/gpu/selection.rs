@@ -23,7 +23,7 @@ use std::sync::{Arc, OnceLock};
 use crate::document::selection::Selection;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
-use crate::gpu::mask_tex_origin;
+use crate::gpu::tile::mask_tex_origin;
 use crate::view::Extent2;
 use stark_model::document::{SelectionOp, SelectionShape};
 use stark_model::geom::{TILE_TEX, TileCoord, Vec2};

@@ -41,12 +41,12 @@ use stark_shaders::Lane;
 
 mod accum;
 mod budget;
-pub(crate) mod dynamics;
-pub(crate) mod erase;
+mod dynamics;
+mod erase;
 mod incremental;
 mod region;
 mod segments;
-pub(crate) mod swept;
+mod swept;
 mod tips;
 
 use crate::gpu::scratch::ScratchPool;
@@ -58,16 +58,10 @@ use segments::{Segment, generate_segments_in};
 use swept::{SweptKit, build_swept_kit};
 use tips::{ResolvedTip, TipCache};
 
-// The module's substrate, re-exported so callers name `gpu::stroke::X` rather than the
-// file X happens to live in — the split below is about where a maintainer reads, not
-// about what the engine depends on.
+// The submodules are private; callers name `gpu::stroke::X`.
 pub(crate) use budget::WARP_CONTRACTION;
 pub use budget::{max_stretch, max_tip_reach};
-pub(crate) use incremental::{Progress, StrokeCarry, StrokeSpans, ToolState};
-// Not part of the module's public surface: the engine calls it, nothing outside the
-// crate does, and keeping it crate-visible is what lets its doc comment point at the
-// `segments` internals the rule is actually about.
-pub(crate) use incremental::safe_frozen;
+pub(crate) use incremental::{Progress, StrokeCarry, StrokeSpans, ToolState, safe_frozen};
 
 #[derive(Clone)]
 pub struct StrokeRenderer {

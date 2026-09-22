@@ -52,8 +52,11 @@ use crate::colorspace::ColorSpace;
 use crate::command::InputCommand;
 use crate::document::{ApplyCtx, DocState, Timeline};
 use crate::gpu::composite::ViewSettings;
+use crate::gpu::composite::{Compositor, CompositorPipeline};
+use crate::gpu::context::GpuContext;
+use crate::gpu::environment::EnvironmentId;
+use crate::gpu::registry::Registry;
 use crate::gpu::scratch::ScratchPool;
-use crate::gpu::{Compositor, CompositorPipeline, EnvironmentId, GpuContext, Registry};
 use crate::peer::Peers;
 use crate::projection::{Memo, Revision};
 use crate::view::ViewTransform;
@@ -166,7 +169,7 @@ pub struct Engine {
     /// The compositor's draw list and the key it was built from — the largest of the
     /// three memos, and the only one whose value is not a projection
     /// ([`Engine::draw_list`]).
-    draw_cache: Memo<render::DrawKey, std::sync::Arc<[crate::gpu::CompositeGroup]>>,
+    draw_cache: Memo<render::DrawKey, std::sync::Arc<[crate::gpu::composite::CompositeGroup]>>,
     /// The layer roster and the key it was built from ([`Engine::projected_layers`]).
     layer_cache: Memo<ShownKey, Layers>,
     /// The guide roster this client sees, on the roster above's terms plus one
@@ -293,7 +296,7 @@ impl Engine {
     /// that holds the engine and has no projection to hand. The collaboration pump is
     /// that caller: it services peer traffic without taking an observation each time
     /// (§17.5), and must stop applying anything once the device has died.
-    pub fn gpu_failure(&self) -> Option<crate::gpu::DeviceFailure> {
+    pub fn gpu_failure(&self) -> Option<crate::gpu::context::DeviceFailure> {
         self.shared.gpu.health().failure()
     }
 

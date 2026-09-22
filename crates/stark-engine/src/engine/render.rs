@@ -12,10 +12,11 @@ use super::Engine;
 use crate::Result;
 use crate::document::{CompositeParams, DocState, Layer, LayerContent};
 use crate::error::{ExportError, Produces};
-use crate::gpu::{
-    CompositeGroup, CompositeItem, CompositeScene, FilterDraw, GpuContext, MatteDraw, Offscreen,
-    Output, SelectionOutline,
+use crate::gpu::composite::{
+    CompositeGroup, CompositeItem, CompositeScene, FilterDraw, MatteDraw, Offscreen, Output,
+    SelectionOutline,
 };
+use crate::gpu::context::GpuContext;
 use crate::image::RgbaImage;
 use crate::view::{Extent2, ViewTransform};
 use stark_model::document::{GradientParcel, GuideScene, LayerId};
@@ -45,7 +46,7 @@ enum Chrome {
     Hidden,
 }
 
-/// Which [`Compositor`](crate::gpu::Compositor) a render's offscreen attachments come
+/// Which [`Compositor`](crate::gpu::composite::Compositor) a render's offscreen attachments come
 /// from.
 ///
 /// Pass-A attachments are the size of the target, so *whose* they are decides who
@@ -146,7 +147,7 @@ impl ExportPlan {
 /// ([`MAX_TEXTURE_DIM_2D`](crate::gpu::context::MAX_TEXTURE_DIM_2D)), so any literal
 /// agrees with one of them and not the other.
 ///
-/// [`GpuContext::headless`]: crate::gpu::GpuContext::headless
+/// [`GpuContext::headless`]: crate::gpu::context::GpuContext::headless
 fn max_export_dim(gpu: &GpuContext) -> u32 {
     gpu.device.limits().max_texture_dimension_2d
 }
@@ -418,7 +419,7 @@ impl Engine {
         // SDR, so this format is the whole of what makes an export one.
         let target = self.offscreen_target(
             "stark export target",
-            crate::gpu::export_format(self.shared.target_format),
+            crate::gpu::composite::export_format(self.shared.target_format),
             size,
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         );

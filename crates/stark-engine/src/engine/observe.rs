@@ -9,7 +9,7 @@ use std::sync::Arc;
 use super::Engine;
 use crate::command::Tool;
 use crate::document::{CanvasBounds, Layer, LayerContent};
-use crate::gpu::EnvironmentId;
+use crate::gpu::environment::EnvironmentId;
 use crate::projection::{Projected, Revision};
 use crate::view::ViewTransform;
 use stark_model::document::{GuideId, LayerId, PerspectiveGuide, ShapeAction};
@@ -274,10 +274,10 @@ pub struct ObservableState {
     //
     // Projected for `history_budget`'s reason (§4).
     /// Media/lighting parameters of the painterly pass (§6.3).
-    pub media: crate::gpu::MediaParams,
+    pub media: crate::gpu::composite::MediaParams,
     /// The display the screen is presented on (§6.5) — what
     /// [`ViewCommand::SetOutput`](crate::command::ViewCommand) set.
-    pub output: crate::gpu::Output,
+    pub output: crate::gpu::composite::Output,
     /// The HDR lighting environment in use (§6.3).
     pub environment: EnvironmentId,
 
@@ -302,7 +302,7 @@ pub struct ObservableState {
     /// memory, so a frontend told this can still write the file: it should stop
     /// dispatching and offer to save, and must not keep painting, since nothing past
     /// this point reaches a pixel.
-    pub gpu_failure: Option<Arc<crate::gpu::DeviceFailure>>,
+    pub gpu_failure: Option<Arc<crate::gpu::context::DeviceFailure>>,
 }
 
 impl Engine {

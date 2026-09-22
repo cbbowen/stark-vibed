@@ -18,7 +18,7 @@ use stark_model::document::{Action, ActionId, ActionKind, LayerId, StrokeRecord}
 /// is ~640 KB.
 ///
 /// **A bound on a cost that has not been measured**, in the sense
-/// [`MAX_RELEASE_PER_EPOCH`](crate::gpu::TilePool) is: 2 GiB is about 3200 tile pairs,
+/// [`MAX_RELEASE_PER_EPOCH`](crate::gpu::tile::TilePool) is: 2 GiB is about 3200 tile pairs,
 /// well past what an ordinary session reaches. Raising it costs memory and buys undo
 /// depth; the honest way to change it is to measure a session and say so.
 ///

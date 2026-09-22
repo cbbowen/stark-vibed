@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::Engine;
 use crate::document::{ApplyCtx, DocState, PreparedStroke};
-use crate::gpu::StrokeSpans;
 use crate::gpu::stroke::Progress;
+use crate::gpu::stroke::StrokeSpans;
 use crate::peer::{GestureView, LiveGesture, Peer};
 use crate::projection::Revision;
 use stark_model::document::{ActorId, LayerId, StrokeRecord};

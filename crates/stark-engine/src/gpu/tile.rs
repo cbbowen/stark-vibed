@@ -883,7 +883,7 @@ impl TilePool {
     /// first space to choose otherwise meets `acquire_tex`'s "unsupported format" panic
     /// on its first stroke.
     ///
-    /// [`StrokeRenderer::acquire_tile`]: crate::gpu::StrokeRenderer
+    /// [`StrokeRenderer::acquire_tile`]: crate::gpu::stroke::StrokeRenderer
     pub fn new(ctx: GpuContext, formats: impl IntoIterator<Item = wgpu::TextureFormat>) -> Self {
         let mut format_pools: Vec<(wgpu::TextureFormat, Arc<Mutex<PoolInner>>)> = Vec::new();
         for f in formats

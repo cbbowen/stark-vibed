@@ -16,7 +16,7 @@ use stark_model::document::{BrushEffect, BrushParams};
 use super::budget::{MIN_SEGMENT_LEN, Shortened, fit_len, flatten_budget};
 
 mod bleed;
-pub(crate) mod kit;
+mod kit;
 mod liquify;
 mod plan;
 mod run;

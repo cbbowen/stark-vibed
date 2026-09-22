@@ -12,7 +12,7 @@ use stark_model::DocError;
 use super::{Authoring, Engine, ROOT_LAYER};
 use crate::Result;
 use crate::document::{DocState, LinearTimeline, Timeline};
-use crate::gpu::EnvironmentId;
+use crate::gpu::environment::EnvironmentId;
 use crate::gpu::substrate::Substrate;
 use stark_model::AssetId;
 use stark_model::AssetNeed;
@@ -615,7 +615,7 @@ impl Engine {
         let pictures = &self.shared.apply.pictures;
         self.shared.apply.pictures = pictures.keeping(|id| named.contains(&AssetNeed::Picture(id)));
         self.shared.apply.pool.release_idle();
-        self.compositor = crate::gpu::Compositor::new(&self.compositor_pipeline);
+        self.compositor = crate::gpu::composite::Compositor::new(&self.compositor_pipeline);
     }
 
     /// Commit one already-built action onto the timeline (replays its GPU work).

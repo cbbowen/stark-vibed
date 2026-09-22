@@ -1,10 +1,9 @@
 //! GPU subsystem: device context, the recycling tile pool, stroke rasterization,
 //! selection masks, and compositing/media (§6, §7).
 //!
-//! `gpu` is itself `pub(crate)` (see [`crate`]), and its modules are too, so a `pub`
-//! item inside one reaches the rest of the engine only once the re-export list below
-//! names it. A module is `pub(crate)` **or** re-exported, never both: two public names
-//! for one type is two ways to spell one import.
+//! `gpu` and its modules are `pub(crate)`, and inside the crate an item is named by
+//! its module path. The re-exports below are the names that leave the crate, for the
+//! root to offer.
 
 pub(crate) mod channels;
 pub(crate) mod composite;
@@ -30,21 +29,7 @@ pub(crate) mod tile;
 pub(crate) mod transform;
 pub(crate) mod uniforms;
 
-// A name earns a line here by being reached from *another* module.
-pub(crate) use composite::{BlendPass, FilterPass, export_format};
-pub use composite::{
-    CompositeGroup, CompositeItem, CompositeScene, Compositor, CompositorPipeline, FilterDraw,
-    MatteDraw, MediaParams, Offscreen, Output, SelectionOutline, Transfer,
-};
+pub use composite::{MediaParams, Offscreen, Output, Transfer};
 pub use context::{DeviceFailure, FailureKind, GpuContext, GpuHealth};
-pub use environment::{Environment, EnvironmentId};
-pub use fill::FillRenderer;
-pub use merge::MergeRenderer;
-pub use place::PlaceRenderer;
-pub use registry::Registry;
-pub use selection::SelectionRenderer;
-pub(crate) use stroke::StrokeSpans;
-pub use stroke::{StrokeRenderer, max_stretch, max_tip_reach};
-pub use substrate::{Substrate, SubstrateMap};
-pub use tile::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE, TilePool, mask_tex_origin};
-pub use transform::TransformRenderer;
+pub use environment::EnvironmentId;
+pub use stroke::{max_stretch, max_tip_reach};

@@ -1621,7 +1621,7 @@ pub(super) fn region_selection(
     let (_, view) = scope.take_piece(Key {
         size: (w, h),
         format: crate::gpu::tile::MASK_FORMAT,
-        usage: crate::gpu::SelectionRenderer::REGION_MASK_USAGE,
+        usage: crate::gpu::selection::SelectionRenderer::REGION_MASK_USAGE,
         label: "stark selection region mask",
     });
     r.selection.region_mask(

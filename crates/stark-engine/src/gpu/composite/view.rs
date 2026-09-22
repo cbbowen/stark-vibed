@@ -10,8 +10,8 @@
 
 use super::display::Transfer;
 use crate::gpu::desc::Bindings;
+use crate::gpu::tile::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE};
 use crate::gpu::uniforms::UniformSlots;
-use crate::gpu::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE};
 use crate::view::ViewTransform;
 use stark_model::geom::TILE_SIZE;
 use stark_shaders::mirror::view::binding as vb;

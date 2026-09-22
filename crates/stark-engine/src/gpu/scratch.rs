@@ -28,7 +28,7 @@
 //!
 //! [`SubmitScope`] is also what the renderers that rewrite whole tiles record
 //! through — the transform, the merge, the fill, the selection. Those four take
-//! their working tiles from [`TilePool`](crate::gpu::TilePool) rather than from
+//! their working tiles from [`TilePool`](crate::gpu::tile::TilePool) rather than from
 //! here; what they get from this type is the ordering.
 //!
 //! Contents are **not** zeroed on reuse, and no consumer may rely on the

@@ -40,7 +40,7 @@ pub enum EngineError {
     ///
     /// [`DeviceFailure`]: crate::DeviceFailure
     #[error("{0}")]
-    Gpu(crate::gpu::DeviceFailure),
+    Gpu(crate::gpu::context::DeviceFailure),
 
     /// A GPU operation failed while the device reports nothing wrong with itself.
     ///

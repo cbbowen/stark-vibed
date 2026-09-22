@@ -64,7 +64,8 @@ impl Tool {
     }
 }
 
-use crate::gpu::{EnvironmentId, MediaParams, Output};
+use crate::gpu::composite::{MediaParams, Output};
+use crate::gpu::environment::EnvironmentId;
 use crate::view::Extent2;
 use stark_model::AssetId;
 use stark_model::Srgb;

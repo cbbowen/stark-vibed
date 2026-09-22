@@ -39,7 +39,7 @@ use crate::gpu::tile::TileMap;
 /// to take them apart. The projection ([`LayerInfo`]) keeps them flat instead — that
 /// is a list of fields for a panel to hang one widget on each.
 ///
-/// [`CompositeGroup`]: crate::gpu::CompositeGroup
+/// [`CompositeGroup`]: crate::gpu::composite::CompositeGroup
 /// [`LayerInfo`]: crate::LayerInfo
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct CompositeParams {

@@ -205,7 +205,7 @@ pub struct CompositeScene<'a> {
     /// Document state the media pass reads (§6.4, §15.5), so it follows an unlogged
     /// preview without anything having to be rebuilt.
     ///
-    /// [`Substrate::uv_scale`]: crate::gpu::Substrate::uv_scale
+    /// [`Substrate::uv_scale`]: crate::gpu::substrate::Substrate::uv_scale
     pub substrate_uv_scale: f32,
     /// The visible layers, bottom-to-top, cut into blend groups.
     pub groups: &'a [CompositeGroup],
