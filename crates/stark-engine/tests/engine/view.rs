@@ -16,16 +16,15 @@ use stark_engine::command::{
 };
 use stark_engine::document::CanvasBounds;
 use stark_engine::path::DEFAULT_TOLERANCE;
-use stark_engine::testing::{CompositeParams, Guide, Layer, LayerContent};
+use stark_engine::testing::{Guide, Layer, PropValue};
 use stark_engine::{Background, Engine, ExportScale, Offscreen, Rendered, RgbaImage};
 use stark_model::Srgb;
 use stark_model::document::{
     BlendMode, ColorAdjust, FillOp, Filter, GuideId, LayerId, MatteRegion, Parcel,
-    PerspectiveGuide, Place, SelectionMode, SelectionOp, SelectionShape, TransformMap,
+    PerspectiveGuide, Place, Prop, SelectionMode, SelectionOp, SelectionShape, TransformMap,
 };
 use stark_model::geom::{Affine2, IVec2, Vec2};
 use stark_model::{SubstrateId, SubstrateScale};
-use std::sync::Arc;
 
 /// Channel dominance, with the margin `stroke.rs` justifies: over the blue substrate,
 /// this cleanly separates lit paint from lit substrate.
@@ -245,20 +244,16 @@ impl Seed {
     }
 }
 
-/// A layer's every committed property, its tiles standing in as the tile map's
-/// revision: `with_tiles` mints a fresh one, so a transform or a fill that reached
-/// the timeline shows here as surely as an opacity would.
+/// A layer's every committed property — read over [`Prop::ALL`], so a property added
+/// later is compared without being listed here — and its tiles, standing in as the
+/// tile map's revision: `with_tiles` mints a fresh one, so a transform or a fill that
+/// reached the timeline shows here as surely as an opacity would.
 #[derive(Debug, PartialEq)]
 struct LayerRow {
     id: LayerId,
     depth: usize,
-    composite: CompositeParams,
-    visible: bool,
-    name: Option<Arc<str>>,
-    translation: IVec2,
+    props: Vec<Option<PropValue>>,
     tiles: Option<u64>,
-    matte: Option<(MatteRegion, Parcel)>,
-    filter: Option<Filter>,
 }
 
 /// One reading of each thing a preview could reach if it leaked: the log's length,
@@ -282,20 +277,11 @@ impl Committed {
         let doc = engine.document();
         let mut layers = Vec::new();
         doc.visit(&mut |l: &Layer, depth: usize| {
-            let matte = match &l.content {
-                LayerContent::Matte { region, paint } => Some((*region, paint.clone())),
-                LayerContent::Paint(_) | LayerContent::Filter(_) => None,
-            };
             layers.push(LayerRow {
                 id: l.id,
                 depth,
-                composite: l.composite,
-                visible: l.visible,
-                name: l.name.clone(),
-                translation: l.translation,
+                props: Prop::ALL.iter().map(|p| l.prop(*p)).collect(),
                 tiles: l.content_revision(),
-                matte,
-                filter: l.filter(),
             });
         });
         let selection = doc.selection_of(engine.actor());

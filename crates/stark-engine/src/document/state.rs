@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use rpds::{HashTrieMap, Vector};
 
-use super::layer::{CompositeParams, Layer, LayerContent};
+use super::layer::{CompositeParams, Layer, LayerContent, PropValue};
 use super::selection::Selection;
 use stark_model::Srgb;
 use stark_model::document::ActorId;
@@ -799,9 +799,8 @@ impl DocState {
     }
 
     /// Replace a matte layer's region wholesale — undo's restore path
-    /// (`patch::PatchOp::Matte`), which must put back the
-    /// *value* rather than route through a rect the region may not have. A
-    /// no-op on a paint layer or an absent id, like every setter here.
+    /// ([`set_prop`](Self::set_prop)). A no-op on a paint layer or an absent id, like
+    /// every setter here.
     pub(crate) fn set_matte_region(&self, id: LayerId, region: MatteRegion) -> Self {
         self.map_content(id, |c| match c {
             LayerContent::Matte { paint, .. } => Some(LayerContent::Matte {
@@ -888,6 +887,25 @@ impl DocState {
         match remove_in(&self.layers, id) {
             Some((layers, _)) => self.with_layers(layers),
             None => self.clone(),
+        }
+    }
+
+    /// Write one property of a layer — the inverse of [`Layer::prop`], through the
+    /// setter that owns it, so a restored value meets the refusals a folded one does.
+    pub(crate) fn set_prop(&self, id: LayerId, value: PropValue) -> Self {
+        match value {
+            PropValue::Blend(blend) => self.set_layer_blend(id, blend),
+            PropValue::Clip(clip) => self.set_layer_clip(id, clip),
+            PropValue::Opacity(opacity) => self.set_layer_opacity(id, opacity),
+            PropValue::Visible(visible) => self.set_layer_visible(id, visible),
+            PropValue::Name(name) => self.set_layer_name(id, name),
+            // The *value*, not the rect: a region restored through its rect could not
+            // round-trip `Everything`, which has none.
+            PropValue::Matte(region, paint) => {
+                self.set_matte_region(id, region).set_matte_paint(id, paint)
+            }
+            PropValue::Filter(filter) => self.set_filter(id, filter),
+            PropValue::Translation(to) => self.translate_layers(&[(id, to)]),
         }
     }
 

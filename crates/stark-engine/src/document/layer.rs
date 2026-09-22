@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use rpds::{HashTrieMap, Vector};
 
-use stark_model::document::{BlendMode, LayerId, MatteRegion, Parcel};
+use stark_model::document::{BlendMode, LayerId, MatteRegion, Parcel, Prop};
 use stark_model::geom::IVec2;
 
 use super::liquify::LiquifyRun;
@@ -196,6 +196,26 @@ pub enum LayerContent {
     /// paint already there should be, never where there is paint. Inert for a filter
     /// that is a function of one texel, live for one that displaces (§21.10).
     Filter(Filter),
+}
+
+/// The value of one [`Prop`] on a layer — the granularity the footprint names a
+/// layer's properties at, and so the one undo restores and the audit compares at
+/// (§12.6).
+///
+/// [`Layer::prop`] is the one place a `Prop` is matched to the fields that hold it, so
+/// every walk over [`Prop::ALL`] — the audit's diff, the patch's capture, a test's
+/// round trip — reads values rather than fields and cannot skip one.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PropValue {
+    Blend(BlendMode),
+    Clip(bool),
+    Opacity(f32),
+    Visible(bool),
+    Name(Option<Arc<str>>),
+    /// A matte's region and paint together — one resource, [`Prop::Matte`].
+    Matte(MatteRegion, Parcel),
+    Filter(Filter),
+    Translation(IVec2),
 }
 
 /// The canvas extent of everything a layer **carries** (§14.12), derived with
@@ -432,6 +452,30 @@ impl Layer {
             LayerContent::Filter(f) => Some(f.clone()),
             LayerContent::Paint(_) | LayerContent::Matte { .. } => None,
         }
+    }
+
+    /// This layer's value for `prop`, or `None` where the layer has no such property:
+    /// [`Prop::Matte`] on anything but a matte, [`Prop::Filter`] on anything but a
+    /// filter.
+    ///
+    /// Exhaustive with no `_` arm, so a new [`Prop`] stops this compiling until it
+    /// names its field — and with it every reader of [`PropValue`].
+    pub fn prop(&self, prop: Prop) -> Option<PropValue> {
+        Some(match prop {
+            // Split finer than `CompositeParams`: undo restores each of the three on
+            // its own, so a clip toggle commutes with a blend change (§12.6).
+            Prop::Blend => PropValue::Blend(self.composite.blend),
+            Prop::Clip => PropValue::Clip(self.composite.clip),
+            Prop::Opacity => PropValue::Opacity(self.composite.opacity),
+            Prop::Visible => PropValue::Visible(self.visible),
+            Prop::Name => PropValue::Name(self.name.clone()),
+            Prop::Matte => match &self.content {
+                LayerContent::Matte { region, paint } => PropValue::Matte(*region, paint.clone()),
+                LayerContent::Paint(_) | LayerContent::Filter(_) => return None,
+            },
+            Prop::Filter => PropValue::Filter(self.filter()?),
+            Prop::Translation => PropValue::Translation(self.translation),
+        })
     }
 
     /// Whether strokes may be painted onto this layer. Neither a matte nor a filter

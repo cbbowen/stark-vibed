@@ -12,19 +12,17 @@
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::sync::Arc;
 
 use rpds::Vector;
 
-use super::layer::{Layer, LayerContent};
+use super::layer::{Layer, PropValue};
 use super::liquify::LiquifyRun;
 use super::selection::Selection;
 use super::state::{DocState, Guide, LayerSite};
 use crate::gpu::tile::TilePairHandle;
 use stark_model::Srgb;
 use stark_model::document::ActorId;
-use stark_model::document::Filter;
-use stark_model::document::{BlendMode, LayerId, MatteRegion};
+use stark_model::document::LayerId;
 use stark_model::document::{Footprint, Prop, Resource};
 use stark_model::geom::{TileCoord, TileRect};
 use stark_model::{SubstrateId, SubstrateScale};
@@ -56,18 +54,8 @@ enum PatchOp {
     /// several layers' relative positions at once and `StackOrder` is the single
     /// coarse resource that covers all of them (`footprint.rs`).
     Structure(Vec<(LayerId, Option<LayerId>)>),
-    Blend(LayerId, BlendMode),
-    Clip(LayerId, bool),
-    Opacity(LayerId, f32),
-    Visible(LayerId, bool),
-    Name(LayerId, Option<Arc<str>>),
-    /// Where the layer's frame sat on the canvas (§14.12).
-    Translation(LayerId, stark_model::geom::IVec2),
-    /// A matte's region and color together — one footprint resource.
-    Matte(LayerId, MatteRegion, stark_model::document::Parcel),
-    /// A filter layer's settings (§21) — one footprint resource, because the action
-    /// that writes them carries the filter entire.
-    Filter(LayerId, Filter),
+    /// One property of one layer — [`Resource::Prop`] exactly.
+    Prop(LayerId, PropValue),
     Selection(ActorId, Selection),
     /// The canvas substrate **and the size it is laid at** — one op, because
     /// `Resource::Substrate` is one resource for the two (§6.4): the tooth reads the
@@ -115,18 +103,7 @@ impl PatchOp {
             PatchOp::Absent(id) => state.remove_layer(*id),
             PatchOp::Present { site, layer } => state.restore_layer(site, layer.clone()),
             PatchOp::Structure(shape) => restore_structure(state, shape),
-            PatchOp::Blend(id, v) => state.set_layer_blend(*id, *v),
-            PatchOp::Clip(id, v) => state.set_layer_clip(*id, *v),
-            PatchOp::Opacity(id, v) => state.set_layer_opacity(*id, *v),
-            PatchOp::Visible(id, v) => state.set_layer_visible(*id, *v),
-            PatchOp::Name(id, v) => state.set_layer_name(*id, v.clone()),
-            PatchOp::Translation(id, v) => state.translate_layers(&[(*id, *v)]),
-            // The *value*, not the rect: a region restored through its rect could
-            // not round-trip `Everything`, which has none.
-            PatchOp::Matte(id, region, paint) => state
-                .set_matte_region(*id, *region)
-                .set_matte_paint(*id, paint.clone()),
-            PatchOp::Filter(id, filter) => state.set_filter(*id, filter.clone()),
+            PatchOp::Prop(id, value) => state.set_prop(*id, value.clone()),
             PatchOp::Selection(actor, selection) => state.with_selection(*actor, selection.clone()),
             PatchOp::Substrate(id, scale) => state.with_substrate(*id).with_substrate_scale(*scale),
             PatchOp::SubstrateColor(rgb) => state.with_substrate_color(*rgb),
@@ -192,27 +169,9 @@ fn capture_resource(resource: &Resource, to: &DocState, from: &DocState, ops: &m
             _ => {}
         },
         Resource::Prop(id, prop) => {
-            let Some(l) = to.layer(*id) else {
-                return;
-            };
-            ops.push(match prop {
-                Prop::Blend => PatchOp::Blend(*id, l.composite.blend),
-                Prop::Clip => PatchOp::Clip(*id, l.composite.clip),
-                Prop::Opacity => PatchOp::Opacity(*id, l.composite.opacity),
-                Prop::Visible => PatchOp::Visible(*id, l.visible),
-                Prop::Name => PatchOp::Name(*id, l.name.clone()),
-                Prop::Matte => match &l.content {
-                    LayerContent::Matte { region, paint } => {
-                        PatchOp::Matte(*id, *region, paint.clone())
-                    }
-                    LayerContent::Paint(_) | LayerContent::Filter(_) => return,
-                },
-                Prop::Filter => match l.filter() {
-                    Some(f) => PatchOp::Filter(*id, f),
-                    None => return,
-                },
-                Prop::Translation => PatchOp::Translation(*id, l.translation),
-            });
+            if let Some(value) = to.layer(*id).and_then(|l| l.prop(*prop)) {
+                ops.push(PatchOp::Prop(*id, value));
+            }
         }
         // The coarse claim expands into the fine ones it stands for, so a footprint
         // that *writes* a whole layer restores a whole layer. Five kinds write one:
@@ -402,8 +361,8 @@ mod tests {
     }
     use super::super::apply::{Folded, apply_pure};
     use super::super::audit::undeclared;
-    use stark_model::document::Place;
     use stark_model::document::{Action, ActionId, ActionKind, ActionTag, GuideId};
+    use stark_model::document::{BlendMode, Filter, MatteRegion, Place};
     use stark_model::{AssetId, SubstrateId, SubstrateScale};
 
     const A: LayerId = LayerId::ROOT;
@@ -430,28 +389,8 @@ mod tests {
     /// Everything a [`Prop`] can name about one layer, as one comparable value —
     /// so a round trip is asserted on all of them at once and a property the
     /// comparison forgot cannot pass by looking unchanged.
-    type Props = (
-        super::super::layer::CompositeParams,
-        bool,
-        Option<Arc<str>>,
-        Option<Filter>,
-        Option<(MatteRegion, stark_model::document::Parcel)>,
-        stark_model::geom::IVec2,
-    );
-
-    fn props(l: &Layer) -> Props {
-        let matte = match &l.content {
-            LayerContent::Matte { region, paint } => Some((*region, paint.clone())),
-            LayerContent::Paint(_) | LayerContent::Filter(_) => None,
-        };
-        (
-            l.composite,
-            l.visible,
-            l.name.clone(),
-            l.filter(),
-            matte,
-            l.translation,
-        )
+    fn props(l: &Layer) -> Vec<Option<PropValue>> {
+        Prop::ALL.iter().map(|p| l.prop(*p)).collect()
     }
 
     /// Three layers in the root stack, bottom to top: A, B, C.

@@ -25,7 +25,7 @@ use stark_model::document::Action;
 use stark_model::document::{Footprint, LayerId, Prop, Resource};
 use stark_model::geom::TileCoord;
 
-use super::layer::{Layer, LayerContent};
+use super::layer::Layer;
 use super::liquify::LiquifyRun;
 use super::selection::Selection;
 use super::state::DocState;
@@ -144,42 +144,6 @@ fn selections_agree(a: &Selection, b: &Selection) -> bool {
     a.same(b)
 }
 
-/// Which presentation properties differ — at exactly the granularity [`Prop`] splits
-/// them into, since that is the granularity undo restores them at.
-fn props(a: &Layer, b: &Layer) -> Vec<Prop> {
-    Prop::ALL
-        .iter()
-        .copied()
-        .filter(|p| differs(a, b, *p))
-        .collect()
-}
-
-/// Whether `p` names something these two layers disagree about.
-///
-/// A `match` rather than a chain of comparisons, so a new [`Prop`] variant cannot
-/// slip past the one checker that carries §12.6 on every fold.
-///
-/// Its order is [`Prop::ALL`]'s, which is why [`props`] can collect straight from it.
-fn differs(a: &Layer, b: &Layer, p: Prop) -> bool {
-    let matte_of = |l: &Layer| match &l.content {
-        LayerContent::Matte { region, paint } => Some((*region, paint.clone())),
-        LayerContent::Paint(_) | LayerContent::Filter(_) => None,
-    };
-    match p {
-        // Split finer than the struct: `CompositeParams` travels as one value through
-        // compositing, but undo restores each of the three on its own — a clip toggle has
-        // to commute with a blend change on the same layer (§12.6).
-        Prop::Blend => a.composite.blend != b.composite.blend,
-        Prop::Clip => a.composite.clip != b.composite.clip,
-        Prop::Opacity => a.composite.opacity != b.composite.opacity,
-        Prop::Visible => a.visible != b.visible,
-        Prop::Name => a.name != b.name,
-        Prop::Matte => matte_of(a) != matte_of(b),
-        Prop::Filter => a.filter() != b.filter(),
-        Prop::Translation => a.translation != b.translation,
-    }
-}
-
 /// Everything that differs between two states, as resources.
 fn differences(before: &DocState, after: &DocState) -> Vec<Diff> {
     let mut out = Vec::new();
@@ -224,8 +188,10 @@ fn differences(before: &DocState, after: &DocState) -> Vec<Diff> {
             out.push(Diff::Named(Resource::Existence(id)));
             continue;
         };
-        for p in props(x, y) {
-            out.push(Diff::Named(Resource::Prop(id, p)));
+        // At exactly the granularity [`Prop`] splits a layer into, since that is the
+        // granularity undo restores it at.
+        for p in Prop::ALL.iter().filter(|p| x.prop(**p) != y.prop(**p)) {
+            out.push(Diff::Named(Resource::Prop(id, *p)));
         }
         // A layer the fold did not touch still holds the *same persistent root*
         // (`Layer::with_tiles`), so the common case is one pointer test rather than
