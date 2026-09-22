@@ -84,6 +84,49 @@ fn the_mark_appears_and_commits_nothing() {
     );
 }
 
+/// **Retuning with nothing folded moves nothing a frame is cached on** (§17.6).
+///
+/// A brush, a tool or an active layer can re-lay the mark, so each marks the fold
+/// stale — and the draw list is keyed on how often the fold has moved what is shown.
+/// With nothing folded before or after, the fold shows nothing new, so dragging a
+/// brush-panel slider must not rebuild the whole draw list at pointer rate.
+///
+/// Both halves, so the probe is not vacuous: with a mark up, the same brush change
+/// re-lays it, and taking the mark down is a move too.
+#[test]
+fn retuning_with_nothing_folded_keeps_the_fold() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    engine.process(ViewCommand::set_brush(brush(RED_SOFT, 10.0)));
+    let idle = engine.preview_fold();
+    engine.process(ViewCommand::set_brush(brush(RED_SOFT, 20.0)));
+    engine.process(ViewCommand::SetTool(Tool::Brush));
+    engine.process(PeerCommand::SetActiveLayer(top(&engine)));
+    assert_eq!(
+        engine.preview_fold(),
+        idle,
+        "retuning with nothing in flight moved the fold"
+    );
+
+    hover_ab(&mut engine);
+    let marked = engine.preview_fold();
+    assert!(marked > idle, "the hover folded no mark");
+    engine.process(ViewCommand::set_brush(brush(RED_SOFT, 10.0)));
+    let relaid = engine.preview_fold();
+    assert!(relaid > marked, "a brush change did not re-lay the mark");
+    engine.process(ViewCommand::PreviewHover(None));
+    let dropped = engine.preview_fold();
+    assert!(dropped > relaid, "taking the mark down did not refold");
+
+    engine.process(ViewCommand::set_brush(brush(RED_SOFT, 20.0)));
+    assert_eq!(
+        engine.preview_fold(),
+        dropped,
+        "retuning after the mark came down moved the fold"
+    );
+}
+
 /// The mark is red because the brush is: the claim that what is folded is the
 /// brush's own paint, not a chrome-colored stand-in. Color-reading, so gated
 /// off under the tail tint (see the module doc).

@@ -63,6 +63,11 @@ impl Probe for Engine {
         self.preview.epoch()
     }
 
+    fn preview_fold(&mut self) -> u64 {
+        Engine::flush_live(self);
+        self.preview.fold()
+    }
+
     fn substrate_bearing(&self, id: SubstrateId, give: f32, softness: f32, dir: Vec2) -> f32 {
         let substrate = Substrate {
             id,

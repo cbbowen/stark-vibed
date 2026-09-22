@@ -50,7 +50,7 @@ pub use render::{Background, ExportPlan, ExportScale, Rendered};
 use crate::Result;
 use crate::colorspace::ColorSpace;
 use crate::command::InputCommand;
-use crate::document::{ApplyCtx, DocState, Timeline};
+use crate::document::{ApplyCtx, DocState};
 use crate::gpu::composite::ViewSettings;
 use crate::gpu::composite::{Compositor, CompositorPipeline};
 use crate::gpu::context::GpuContext;
@@ -135,7 +135,9 @@ pub struct Engine {
     /// describes the empty document that the log is replayed onto, and is not
     /// itself a logged change.
     initial_substrate: SubstrateId,
-    timeline: Timeline,
+    /// The action log and the committed document it folds to — changed only through
+    /// [`Engine::change_committed`] (see [`commit::Committed`]).
+    timeline: commit::Committed,
     session: crate::session::Session,
     /// Everyone else in the session (§17.4). Empty when solo.
     peers: Peers,

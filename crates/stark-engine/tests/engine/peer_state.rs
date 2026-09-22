@@ -844,6 +844,79 @@ fn every_replacement_of_the_preview_base_moves_the_epoch() {
     moved(&mut engine, e6, "a load");
 }
 
+/// **The converse: a command that changes nothing replaces nothing** (§17.6), so it
+/// moves neither the epoch nor the fold.
+///
+/// Each of these is the release or the refusal of an edit — a slider let go on its own
+/// value, an undo with nothing behind it, a seek to where the playhead stands, a
+/// degenerate transform, a drag released having changed nothing. None moves the
+/// document or takes down a drag, so none may throw away the cached heads or the memos
+/// keyed on the epoch.
+#[test]
+fn a_command_that_changes_nothing_moves_no_epoch() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let root = engine.observe().layers[0].clone();
+    let revision = engine.observe().doc_revision;
+    let (epoch, fold) = (engine.preview_epoch(), engine.preview_fold());
+    let still = |engine: &mut Engine, what: &str| {
+        assert_eq!(engine.preview_epoch(), epoch, "{what} moved the epoch");
+        assert_eq!(engine.preview_fold(), fold, "{what} refolded");
+    };
+
+    engine.process(DocCommand::SetLayerOpacity(root.id, root.opacity));
+    still(&mut engine, "a setter on its own value");
+    engine.process(DocCommand::Undo);
+    still(&mut engine, "an undo with nothing to undo");
+    let at = engine.scrub_range().map_or(0, |(at, _)| at);
+    engine.process(DocCommand::Seek(at));
+    still(&mut engine, "a seek to where the playhead stands");
+    engine.process(DocCommand::Transform {
+        layer: root.id,
+        map: stark_model::document::TransformMap::Affine(stark_model::geom::Affine2::ZERO),
+    });
+    still(&mut engine, "a refused transform");
+    engine.process(ViewCommand::PreviewLayerOpacity(None));
+    still(&mut engine, "releasing a drag that was never up");
+    assert_eq!(
+        engine.observe().doc_revision,
+        revision,
+        "nothing was committed"
+    );
+}
+
+/// **A peer's settled head survives a local command that changes nothing** (§17.6).
+///
+/// The head is the incremental repaint of a collaborator's stroke: discarding it makes
+/// the next fold render that whole stroke again. A slider released on its own value
+/// logs nothing, so it has nothing to discard it for.
+#[test]
+fn a_peers_head_survives_a_local_no_op_commit() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    engine.start_collaboration(ActorId(1));
+    assert!(engine.merge_presence(ActorId(2), stroking(1, &CROSSING), 0.0));
+    assert_eq!(engine.live_head_count(), 1, "the peer's stroke is folded");
+    let (epoch, fold) = (engine.preview_epoch(), engine.preview_fold());
+
+    let root = engine.observe().layers[0].clone();
+    engine.process(DocCommand::SetLayerOpacity(root.id, root.opacity));
+
+    assert_eq!(
+        engine.preview_epoch(),
+        epoch,
+        "a no-op commit discarded the peer's head"
+    );
+    assert_eq!(engine.live_head_count(), 1);
+    assert_eq!(
+        engine.preview_fold(),
+        fold,
+        "nothing moved, so nothing refolds"
+    );
+}
+
 /// A collaborator's selection outline is off by default and drawn only when this
 /// client asks for it — a view setting, so it changes what you look at and nothing
 /// about the drawing (§17.3). Your own outline is unaffected either way.

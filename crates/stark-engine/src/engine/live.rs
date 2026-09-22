@@ -23,9 +23,10 @@ use stark_model::geom::{TileCoord, TileRect};
 /// showing it affordable (§17.6).
 ///
 /// The two fields that can invalidate a cached head — the drag-preview document and
-/// the committed one underneath it — move only through
-/// [`set_doc`](Self::set_doc) and [`invalidate`](Self::invalidate), each of which
-/// bumps the epoch as it goes.
+/// the committed one underneath it — move only through [`set_doc`](Self::set_doc),
+/// [`invalidate`](Self::invalidate) and [`supersede`](Self::supersede), each of which
+/// bumps the epoch and marks the fold stale as it goes: a fold over a replaced base is
+/// stale by definition.
 #[derive(Default)]
 pub(super) struct Preview {
     /// The unlogged document edit in flight: a whole document standing in for the
@@ -47,7 +48,7 @@ pub(super) struct Preview {
     /// Bumped whenever the document the previews are composited onto changes. A
     /// [`FrozenHead`] stamped with an older epoch is stale and discarded.
     epoch: Revision,
-    /// Bumped every time the fold is **rebuilt** — "what is shown has moved", where
+    /// Bumped every time the fold moves what is shown — built, or dropped — where
     /// [`epoch`](Self::epoch) is "what is shown was *replaced*".
     ///
     /// The two cannot be one: bumping the epoch per fold would discard every live
@@ -56,8 +57,9 @@ pub(super) struct Preview {
     /// alone would hold the frame at the moment the stroke began (C4).
     fold: Revision,
     /// Whether the fold no longer reflects the gestures and document it folds — set
-    /// by [`Engine::mark_live_stale`], cleared by the [`Engine::flush_live`] that
-    /// services it, so N mutations per frame cost one fold.
+    /// by [`invalidate`](Self::invalidate) and [`Engine::mark_live_stale`], cleared by
+    /// the [`Engine::flush_live`] that services it, so N mutations per frame cost one
+    /// fold.
     stale: bool,
     /// This client's own stroke as the last fold drew it, for its commit to take
     /// rather than render again ([`PreparedStroke`], §6.2). Filled only by a fold
@@ -69,16 +71,29 @@ pub(super) struct Preview {
 
 impl Preview {
     /// Note that the document the previews are drawn over has been replaced, so
-    /// every cached head is stale.
+    /// every cached head is stale and the fold has to be rebuilt.
     pub(super) fn invalidate(&mut self) {
         self.epoch.bump();
         self.prepared = None;
+        self.stale = true;
+    }
+
+    /// [`invalidate`](Self::invalidate), taking the drag in flight down with it — for
+    /// a local edit, which supersedes the drag (`Engine::commit`). One replacement,
+    /// one epoch.
+    pub(super) fn supersede(&mut self) {
+        self.doc = None;
+        self.invalidate();
     }
 
     /// Install (or, with `None`, drop) the stand-in document for an unlogged edit in
-    /// flight. **The only way to move that slot**, so the epoch cannot be left
-    /// behind: the gesture previews are composited onto this.
+    /// flight. The gesture previews are composited onto it, so moving it invalidates;
+    /// dropping a slot that is already empty moves nothing, which is what lets a
+    /// declined commit keep every cached head.
     pub(super) fn set_doc(&mut self, doc: Option<DocState>) {
+        if doc.is_none() && self.doc.is_none() {
+            return;
+        }
         self.doc = doc;
         self.invalidate();
     }
@@ -158,18 +173,21 @@ impl Preview {
         local: ActorId,
         gestures: Vec<GestureView>,
     ) {
-        // Before the early return as much as after it: dropping the fold is a change
-        // to what is shown exactly as building one is, and it is the transition a
-        // pen-up makes.
-        self.fold.bump();
         // The last fold's prepared tiles are not the ones to commit: this fold either
         // draws the stroke afresh below, or has no such stroke.
         self.prepared = None;
         if gestures.is_empty() {
-            self.live = None;
+            // Dropping a fold changes what is shown exactly as building one does — the
+            // transition a pen-up makes. Finding none to drop does not: a brush slider
+            // marks the fold stale at pointer rate with nothing in flight, and
+            // `DrawKey` keys on this counter.
+            if self.live.take().is_some() {
+                self.fold.bump();
+            }
             self.heads.clear();
             return;
         }
+        self.fold.bump();
         let base = self.doc.clone().unwrap_or_else(|| committed.clone());
         let mut out = base.clone();
         // Last fold's cache to draw from, and this fold's to fill: what is not moved
@@ -532,15 +550,9 @@ impl Engine {
         Some(doc.map_layer(layer, |l| l.with_tiles(tiles)))
     }
 
-    /// Install (or, with `None`, drop) the unlogged edit in flight and refold — the
-    /// shared tail of every `Preview*` command.
-    pub(super) fn set_doc_preview(&mut self, preview: Option<DocState>) {
-        self.preview.set_doc(preview);
-        self.mark_live_stale();
-    }
-
-    /// Note that the fold no longer shows what is there — the one call every
-    /// mutation that can change what is on screen ends with.
+    /// Note that the fold no longer shows what is there — the call every change to the
+    /// *gestures* it folds ends with. A change to the document under them marks it
+    /// through [`Preview::invalidate`] instead.
     ///
     /// A note, not a rebuild: mutations arrive at input rate while presentation is
     /// one frame per rAF, so [`flush_live`](Self::flush_live) rebuilds the fold at the

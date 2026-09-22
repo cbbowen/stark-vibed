@@ -10,6 +10,7 @@
 //!
 //! The engine owns the merge semantics and these hooks; `stark-net` owns the wire.
 
+use super::commit::Drag;
 use super::{Engine, ROOT_LAYER};
 use crate::Result;
 use crate::document::{DocState, LinearTimeline, ReplicatedTimeline, Timeline};
@@ -95,15 +96,15 @@ impl Engine {
         // default — same base state `reset_document` builds, so re-hosting a document
         // that was created on a non-default canvas doesn't silently move it.
         let initial = DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate);
-        let ctx = &mut self.shared.apply;
-        self.timeline =
-            Timeline::Replicated(ReplicatedTimeline::from_log(actor, initial, log, ctx));
+        // The document is re-materialized from its log, which supersedes a drag over it.
+        self.change_committed(Drag::Supersede, |timeline, ctx| {
+            *timeline =
+                Timeline::Replicated(ReplicatedTimeline::from_log(actor, initial, log, ctx));
+            true
+        });
         self.authoring.actor = actor;
         self.session.adopt_identity(identity);
         self.authoring.outbox = Some(Vec::new());
-        self.preview.set_doc(None);
-        self.committed_changed();
-        self.mark_live_stale();
         true
     }
 
@@ -133,22 +134,23 @@ impl Engine {
         // Everything the shared log needs before it can be replayed, in the order that
         // makes it a replay rather than an approximation.
         self.adopt(validated);
-        let ctx = &mut self.shared.apply;
         let initial = DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate);
-        self.timeline = Timeline::Replicated(ReplicatedTimeline::from_log(
-            actor,
-            initial,
-            file.actions.clone(),
-            ctx,
-        ));
+        // `adopt` has already cleared the preview, drag and all.
+        self.change_committed(Drag::Keep, |timeline, ctx| {
+            *timeline = Timeline::Replicated(ReplicatedTimeline::from_log(
+                actor,
+                initial,
+                file.actions.clone(),
+                ctx,
+            ));
+            true
+        });
         self.authoring.actor = actor;
         self.session.adopt_identity(identity);
         self.resync_counters(&file.actions);
         self.authoring.outbox = Some(Vec::new());
         // Whatever the replayed log left the document on.
         self.apply_document_substrate();
-        self.committed_changed();
-        self.mark_live_stale();
         Ok(())
     }
 
@@ -182,13 +184,15 @@ impl Engine {
         // `unshare` consumes, which is what leaves nothing behind still claiming a
         // shared log; the swap therefore needs somewhere to park, and an empty timeline
         // is the cheapest valid thing there is (a `DocState` is persistent maps, §5.1).
-        let parked = Timeline::Linear(LinearTimeline::new(DocState::with_layer(ROOT_LAYER)));
-        self.timeline = std::mem::replace(&mut self.timeline, parked).unshare();
-        // What the document's history *offers* moved with it: a peer's stroke is this
-        // document's to undo now, and the scrubber comes back. The pixels are untouched,
-        // so nothing else in the projection would say so.
-        self.committed_changed();
-        self.mark_live_stale();
+        //
+        // A committed change although the pixels are untouched: what the history
+        // *offers* moved with it — a peer's stroke is this document's to undo now, and
+        // the scrubber comes back — and nothing else in the projection would say so.
+        self.change_committed(Drag::Keep, |timeline, _| {
+            let parked = Timeline::Linear(LinearTimeline::new(DocState::with_layer(ROOT_LAYER)));
+            *timeline = std::mem::replace(timeline, parked).unshare();
+            true
+        });
         true
     }
 
@@ -198,21 +202,12 @@ impl Engine {
     pub fn merge_remote(&mut self, action: Action) -> bool {
         self.authoring.clock = self.authoring.clock.max(action.id.lamport + 1);
         let author = action.id.actor;
-        let ctx = &mut self.shared.apply;
-        let merged = self.timeline.merge(action, ctx);
+        let merged = self.change_committed(Drag::Keep, |timeline, ctx| timeline.merge(action, ctx));
         if merged {
-            // Replaces the document every frozen head was composited onto — and
-            // repoints the brush if the arriving action took the layer this client was
-            // painting on. Asked of the document rather than of the action's *variant*:
-            // `merge_apply` ends in `remove_layer(source)`, so keying on `RemoveLayer`
-            // would answer a question about deletion by naming one of the two actions
-            // that delete (§17.9).
-            self.committed_changed();
             // A gesture is a thing that becomes an action, so the action's arrival is
             // the end-of-gesture signal — no id to correlate, and no window in which
             // both the live copy and the committed one are drawn.
             self.peers.clear_gesture(author);
-            self.mark_live_stale();
         }
         // A peer may have switched the substrate (§6.4).
         self.apply_document_substrate();

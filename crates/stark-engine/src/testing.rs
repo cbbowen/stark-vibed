@@ -91,6 +91,10 @@ pub trait Probe {
     /// in-flight gestures composite onto is replaced, including by an unlogged drag.
     fn preview_epoch(&self) -> u64;
 
+    /// How many times the preview fold has moved what is shown (§17.6), after a flush —
+    /// the term the draw list's cache key adds for a gesture in flight.
+    fn preview_fold(&mut self) -> u64;
+
     /// The share of substrate `id`, at the document's scale, that a tip with this
     /// `give` and contact `softness` stands on travelling along `dir` (§6.4). Builds
     /// the substrate on the first ask.

@@ -10,7 +10,7 @@ use super::{
 use crate::Result;
 use crate::assets::AssetStore;
 use crate::colorspace::ColorSpace;
-use crate::document::{ApplyCtx, DocState, LinearTimeline, Timeline};
+use crate::document::{ApplyCtx, DocState};
 use crate::gpu::channels::Zeroes;
 use crate::gpu::composite::ViewSettings;
 use crate::gpu::composite::{BlendPass, Compositor, CompositorPipeline, FilterPass};
@@ -107,14 +107,13 @@ impl Engine {
 
         let initial = DocState::with_layer(ROOT_LAYER);
         let initial_substrate = initial.substrate;
-        let timeline = Timeline::Linear(LinearTimeline::new(initial));
 
         Ok(Self::assemble(
             built.shared,
             built.compositor,
             built.compositor_pipeline,
             initial_substrate,
-            timeline,
+            initial,
             viewport,
         ))
     }
@@ -156,11 +155,9 @@ impl Engine {
     pub fn on_shared(shared: EngineShared, viewport: Extent2) -> Self {
         let substrate = shared.apply.substrates.id();
         let initial_substrate = substrate.id;
-        let timeline = Timeline::Linear(LinearTimeline::new(
-            DocState::with_layer(ROOT_LAYER)
-                .with_substrate(initial_substrate)
-                .with_substrate_scale(substrate.scale),
-        ));
+        let initial = DocState::with_layer(ROOT_LAYER)
+            .with_substrate(initial_substrate)
+            .with_substrate_scale(substrate.scale);
         // Its own view settings over the shared passes — the whole of what a
         // sibling's compositor costs — seeded from `shared` so it opens mirroring the
         // canvas it came from.
@@ -176,7 +173,7 @@ impl Engine {
             compositor,
             compositor_pipeline,
             initial_substrate,
-            timeline,
+            initial,
             viewport,
         )
     }
@@ -195,7 +192,7 @@ impl Engine {
         compositor: Compositor,
         compositor_pipeline: CompositorPipeline,
         initial_substrate: SubstrateId,
-        timeline: Timeline,
+        initial: DocState,
         viewport: Extent2,
     ) -> Self {
         let mut engine = Self {
@@ -203,7 +200,7 @@ impl Engine {
             compositor,
             compositor_pipeline,
             initial_substrate,
-            timeline,
+            timeline: super::commit::Committed::opening(initial),
             // An engine opens on its viewport, aimed at the root layer its timeline
             // was seeded with.
             session: crate::session::Session::new(ViewTransform::identity(viewport), ROOT_LAYER),

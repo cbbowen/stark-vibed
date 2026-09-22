@@ -7,8 +7,47 @@
 //! gone, and the undo depth given up to memory.
 
 use super::Engine;
-use crate::document::{Step, Stepped};
+use crate::document::{ApplyCtx, DocState, LinearTimeline, Step, Stepped, Timeline};
 use stark_model::document::{Action, ActionId, ActionKind, LayerId, StrokeRecord};
+
+/// The committed timeline: readable anywhere in the engine, **writable only through
+/// [`Engine::change_committed`]**, which is where every cache over the committed
+/// document is dropped — so no mutation can forget to (§5, §17.6).
+pub(super) struct Committed(Timeline);
+
+impl Committed {
+    /// The timeline an engine opens on, for `Engine::assemble`. A timeline replaced
+    /// later goes through the door.
+    pub(super) fn opening(initial: DocState) -> Self {
+        Self(Timeline::Linear(LinearTimeline::new(initial)))
+    }
+
+    /// Fold away the oldest undo steps. History behind the playhead rather than the
+    /// committed document, which stays as it is, so nothing over it is invalidated.
+    fn forget_oldest(&mut self, count: usize) -> usize {
+        self.0.forget_oldest(count)
+    }
+}
+
+impl std::ops::Deref for Committed {
+    type Target = Timeline;
+
+    fn deref(&self) -> &Timeline {
+        &self.0
+    }
+}
+
+/// What a change to the committed document does to the drag preview in flight
+/// (§17.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Drag {
+    /// A local edit supersedes the drag — whether or not anything moved, for
+    /// [`commit`](Engine::commit)'s reason.
+    Supersede,
+    /// A change the hand did not make — a peer's action, a replay — leaves it up: the
+    /// next pointer sample re-previews over the new document.
+    Keep,
+}
 
 /// How much resident tile memory the engine will let **history retention** hold
 /// before it starts giving up undo depth (§5).
@@ -61,25 +100,37 @@ pub const DEFAULT_FAST_COMMIT: bool = true;
 const MIN_UNDO_DEPTH: usize = 10;
 
 impl Engine {
-    /// Note that the **committed** document has been replaced: every cached
-    /// [`FrozenHead`](super::live::FrozenHead) built against the old one is stale, and
-    /// anything the frontend derived from it is out of date.
-    ///
-    /// One call rather than two counters bumped side by side at each of seven sites —
-    /// a commit, either half of undo/redo, a merge, a share, a join, a reset — because
-    /// "these advance together" is the property that has to hold. The preview path
-    /// deliberately does *not* come through here: it moves what is drawn without
-    /// changing the document
-    /// (see [`ObservableState::doc_revision`](super::ObservableState::doc_revision)).
+    /// **The one door a change to the committed timeline goes through** — a commit,
+    /// an undo, a merge, a share, a join, a reset, a replayed action. `f` makes the
+    /// change and answers whether the committed document moved; only then are the
+    /// caches over it dropped: the preview's epoch and fold, and `doc_revision`, which
+    /// keys every memo and says the document was edited.
     ///
     /// **Repointing the brush belongs here too.** The rule is not "a `RemoveLayer`
     /// removes a layer" — an undo of an `AddLayer` withdraws one, a merge folds one
     /// away, a peer's merge arrives having done the same, and a seek crosses additions
     /// wholesale (§17.9). All of them come through here, and none has to know it.
-    pub(super) fn committed_changed(&mut self) {
-        self.preview.invalidate();
-        self.doc_revision += 1;
-        self.repoint_active_layer();
+    ///
+    /// The drag preview does *not* come through here: it moves what is drawn without
+    /// changing the document
+    /// (see [`ObservableState::doc_revision`](super::ObservableState::doc_revision)).
+    pub(super) fn change_committed(
+        &mut self,
+        drag: Drag,
+        f: impl FnOnce(&mut Timeline, &mut ApplyCtx) -> bool,
+    ) -> bool {
+        let moved = f(&mut self.timeline.0, &mut self.shared.apply);
+        match (moved, drag) {
+            (true, Drag::Supersede) => self.preview.supersede(),
+            (true, Drag::Keep) => self.preview.invalidate(),
+            (false, Drag::Supersede) => self.preview.set_doc(None),
+            (false, Drag::Keep) => {}
+        }
+        if moved {
+            self.doc_revision += 1;
+            self.repoint_active_layer();
+        }
+        moved
     }
 
     /// Move the history playhead: [`DocCommand::Undo`](crate::command::DocCommand::Undo),
@@ -91,18 +142,23 @@ impl Engine {
     /// discards the heads and memos keyed on the revision. The drag preview is dropped
     /// either way, for [`commit`](Self::commit)'s reason.
     pub(super) fn navigate(&mut self, step: Step) {
-        self.preview.set_doc(None);
-        match self.timeline.step(step, &mut self.shared.apply) {
-            Stepped::Stayed => return,
-            // Also repoints the brush when the step withdrew its layer (§17.9).
-            Stepped::Moved => self.committed_changed(),
-            // The unconditional door: a step the timeline has just said it can take
-            // must land, and a declined `Undo` would report a move the playhead did
-            // not make.
-            Stepped::Log(target) => {
-                let id = self.next_action_id();
-                self.commit_with_id(id, ActionKind::Undo(target));
+        let mut logged = None;
+        self.change_committed(Drag::Supersede, |timeline, ctx| {
+            match timeline.step(step, ctx) {
+                Stepped::Stayed => false,
+                Stepped::Moved => true,
+                // Nothing has moved yet: the step is an action to log, below.
+                Stepped::Log(target) => {
+                    logged = Some(target);
+                    false
+                }
             }
+        });
+        // The unconditional door: a step the timeline has just said it can take must
+        // land, and a declined `Undo` would report a move the playhead did not make.
+        if let Some(target) = logged {
+            let id = self.next_action_id();
+            self.commit_with_id(id, ActionKind::Undo(target));
         }
         // A step across a `SetSubstrate` — or a `SetSubstrateScale` — moves the
         // document's substrate (§6.4).
@@ -113,9 +169,9 @@ impl Engine {
     /// ([`is_noop_on`](crate::document::apply::is_noop_on)), in which case nothing is
     /// logged and the drag in flight is still dropped.
     ///
-    /// **One door, so an arm of [`process_doc_inner`](Self::process_doc_inner) is one
-    /// word.** A second entry point that skipped the no-op question would make which
-    /// door an arm reaches for a per-arm judgement nothing checks. Ruling the class out
+    /// **One door, so an arm of [`process_doc`](Self::process_doc) is one word.** A
+    /// second entry point that skipped the no-op question would make which door an arm
+    /// reaches for a per-arm judgement nothing checks. Ruling the class out
     /// costs nothing here, because every kind that would want the unchecked door — a
     /// stroke, a fill, a transform, a selection, a removal, a merge, a move — sits in
     /// `is_noop_on`'s exhaustive `false` arm and answers by construction (CLAUDE.md).
@@ -177,7 +233,6 @@ impl Engine {
         // underneath already answer — `stroke.range` for a stroke that had to render,
         // where one that took its preview's tiles has none.
         crate::timing::span!("doc.commit");
-        self.preview.set_doc(None);
         // `kind` arrives through the **minted** half of the sanitizing funnel (§21.5);
         // `Logged::new` is the "enters state" half. Sanitizing happens in the two doors
         // above rather than inside the timeline so that the log and the wire carry
@@ -189,11 +244,10 @@ impl Engine {
         // carries the stroke's whole fitted control-point list, the largest thing in
         // the log, and a solo session has nowhere to put it.
         let broadcast = self.is_shared().then(|| action.clone());
-        let ctx = &mut self.shared.apply;
-        self.timeline.push(action, ctx);
-        // The committed document is what every in-flight preview is drawn over, so
-        // every cached head built against the old one is now stale.
-        self.committed_changed();
+        self.change_committed(Drag::Supersede, |timeline, ctx| {
+            timeline.push(action, ctx);
+            true
+        });
         if let Some(action) = broadcast
             && let Some(outbox) = self.authoring.outbox.as_mut()
         {
@@ -201,7 +255,7 @@ impl Engine {
         }
         // Committing is the only thing that grows the undo stack, so it is the only
         // place retention has to be reconsidered — and deliberately not
-        // `committed_changed`, which an undo also comes through: giving up undo depth
+        // `change_committed`, which an undo also comes through: giving up undo depth
         // *while the user is undoing* is the one moment it would be felt.
         self.trim_history();
     }

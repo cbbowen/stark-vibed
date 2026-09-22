@@ -267,15 +267,10 @@ impl Engine {
     }
 
     /// Document-state mutations: every arm here either commits an action or
-    /// navigates the history that holds them.
+    /// navigates the history that holds them. Neither marks the fold stale by hand:
+    /// the doors that change the document under it do (`change_committed`), and an arm
+    /// that changes nothing leaves the fold and its cached heads alone.
     pub(super) fn process_doc(&mut self, command: DocCommand) {
-        self.process_doc_inner(command);
-        // Every arm changes the document the in-flight previews are drawn over, so the
-        // fold is marked stale once here rather than at each of a dozen call sites.
-        self.mark_live_stale();
-    }
-
-    fn process_doc_inner(&mut self, command: DocCommand) {
         match command {
             DocCommand::Undo => self.navigate(Step::Undo),
             DocCommand::Redo => self.navigate(Step::Redo),
@@ -588,7 +583,7 @@ impl Engine {
                 &mut self.shared.apply,
             )
         });
-        self.set_doc_preview(preview);
+        self.preview.set_doc(preview);
     }
 
     /// View-state mutations: nothing here is logged, replicated, or reachable by
@@ -682,14 +677,14 @@ impl Engine {
             }
             ViewCommand::PreviewTransform(t) => {
                 let preview = t.and_then(|(layer, map)| self.preview_transform(layer, &map));
-                self.set_doc_preview(preview);
+                self.preview.set_doc(preview);
             }
             ViewCommand::PreviewTranslate(set) => {
                 self.preview_setter(set.map(|(layer, to)| Setter::Translate(layer, to)));
             }
             ViewCommand::PreviewFill(f) => {
                 let preview = f.and_then(|(layer, op)| self.preview_fill(layer, &op));
-                self.set_doc_preview(preview);
+                self.preview.set_doc(preview);
             }
             ViewCommand::PreviewHover(report) => match report {
                 Some(r) => {

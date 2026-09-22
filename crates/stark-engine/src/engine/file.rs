@@ -9,6 +9,7 @@
 
 use stark_model::DocError;
 
+use super::commit::Drag;
 use super::{Authoring, Engine, ROOT_LAYER};
 use crate::Result;
 use crate::document::{DocState, LinearTimeline, Timeline};
@@ -576,18 +577,20 @@ impl Engine {
     /// bundling it. Everything else the closed document held goes — see
     /// [`release_closed_document`](Self::release_closed_document).
     fn reset_document(&mut self, named: &[AssetNeed]) {
-        self.timeline = Timeline::Linear(LinearTimeline::new(
-            DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate),
-        ));
+        let initial = DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate);
+        // The preview is cleared outright below, drag and all.
+        self.change_committed(Drag::Keep, |timeline, _| {
+            *timeline = Timeline::Linear(LinearTimeline::new(initial));
+            true
+        });
         self.preview.clear();
         self.peers.clear();
         // Built over the closed document's tiles; the next frame builds its own.
         self.draw_cache = Default::default();
-        self.committed_changed();
-        // The baseline later edits are measured against, taken after
-        // `committed_changed` moves the counter it copies. A load re-states it once its
-        // replay is done; a join does not, because actions reaching a joiner over the
-        // wire *are* edits to a document no file of theirs holds.
+        // The baseline later edits are measured against, taken after the change above
+        // moves the counter it copies. A load re-states it once its replay is done; a
+        // join does not, because actions reaching a joiner over the wire *are* edits
+        // to a document no file of theirs holds.
         self.doc_origin = self.doc_revision;
         // One assignment: who this client is and what it owes the wire go back to
         // what a fresh engine starts with, which is the same statement the two
@@ -620,14 +623,15 @@ impl Engine {
 
     /// Commit one already-built action onto the timeline (replays its GPU work).
     fn replay_one(&mut self, action: Action) {
-        let ctx = &mut self.shared.apply;
-        self.timeline.push(action, ctx);
         // A replayed action is a committed change like any other, and anything reading
         // the counter per frame depends on it: the timelapse renders after each action,
         // and with the revision frozen every frame after the first draws the first
         // one's list. Cheap — `repoint_active_layer` returns on its first line while
         // the layer exists, which through a replay from an empty document it does.
-        self.committed_changed();
+        self.change_committed(Drag::Keep, |timeline, ctx| {
+            timeline.push(action, ctx);
+            true
+        });
     }
 
     /// After loading, advance the Lamport clock past everything in the log so new
