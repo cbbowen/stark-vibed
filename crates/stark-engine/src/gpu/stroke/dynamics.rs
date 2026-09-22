@@ -16,6 +16,7 @@ mod kit;
 mod liquify;
 mod plan;
 mod run;
+mod trio;
 
 pub(in crate::gpu::stroke) use bleed::BLEED_TRAVEL_QUANTUM;
 pub(super) use kit::{DynamicsKit, build_dynamics_kit};

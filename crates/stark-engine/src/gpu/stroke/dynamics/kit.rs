@@ -14,6 +14,32 @@ use stark_shaders::mirror::dynamics::decl as d;
 use stark_shaders::mirror::dynamics_common::decl as sd;
 use stark_shaders::mirror::slice::decl as sld;
 use stark_shaders::mirror::stamp_common::decl as scd;
+
+/// **One texture, three declarations.** A region's channels are filled by the composite
+/// below — whose targets are [`ChannelFormats`] over [`SCRATCH_AUX_FORMAT`] — then
+/// storage-written by the loop through `region_*_w`, then copied texel-for-texel into
+/// tiles. A texture has one format, so all of that has to name one, and nothing at run
+/// time would say otherwise: `create_texture` takes whichever the host passed.
+///
+/// `wgpu::TextureFormat` has no `const` equality — `PartialEq` is not a `const` trait,
+/// and the enum carries payloads, so it cannot be cast to compare — so the declarations
+/// are pinned against one pattern rather than against each other. Either side moving
+/// fails this.
+const _: () = {
+    const fn region_format(f: wgpu::TextureFormat) -> bool {
+        matches!(f, wgpu::TextureFormat::Rgba16Float)
+    }
+    assert!(
+        region_format(sd::REGION_COLOR_W.storage_format())
+            && region_format(sd::REGION_AUX_W.storage_format())
+            && region_format(sd::REGION_RESID_W.storage_format())
+            && region_format(TILE_COLOR_FORMAT)
+            && region_format(SCRATCH_AUX_FORMAT),
+        "the region composite writes the trio at `TILE_COLOR_FORMAT`/`SCRATCH_AUX_FORMAT` \
+         and the loop storage-writes the same textures through `region_*_w`",
+    );
+};
+
 /// GPU objects for the brush-dynamics stamp loop (§6.2), built once. All handles are
 /// `Arc`-backed, so the kit is cheap to clone with its renderer.
 ///
@@ -106,15 +132,6 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     composite_tile_bgl: desc::Bindings,
 ) -> DynamicsKit {
     let device = &ctx.device;
-    // The loop stores a tile's color through `region_color_w` and copies the region
-    // back into tiles texel-for-texel, which is legal only where the tile color format
-    // *is* the format that slot declares. Compared against the shader's own declaration
-    // rather than a literal (§6.10), so either side drifting is caught.
-    debug_assert_eq!(
-        TILE_COLOR_FORMAT,
-        sd::REGION_COLOR_W.storage_format(),
-        "the loop stores tile color through `region_color_w`; tiles are not that format",
-    );
     // ---- Region composite: the `composite` shader over region-sized targets
     // (color + the wide aux, so nothing is narrowed until the write-back).
     let composite = stark_shaders::composite(color_space.resid());

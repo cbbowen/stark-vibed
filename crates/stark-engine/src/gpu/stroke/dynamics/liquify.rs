@@ -40,24 +40,34 @@ use super::super::segments::Segment;
 use super::super::{Painted, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene};
 use super::plan::{PlanCtx, SlotKind, dispatch_over, liquify_plan};
 use super::run::{
-    LOOP_USAGE, RegionBox, RegionChannels, composite_tiles, region_selection, slice_region,
-    upload_stamps,
+    LOOP_USAGE, REGION_WRITES, RegionBox, RegionChannels, composite_tiles, region_selection,
+    slice_region, upload_stamps,
 };
+use super::trio::{Life, Trio};
 use crate::document::liquify::LiquifyRun;
-use crate::gpu::channels::Targets;
 use crate::gpu::desc;
 use crate::gpu::scratch::{Key, LeasedTex, SubmitScope};
 use crate::gpu::tile::{AllocSource, FIELD_FORMAT, TileMap};
 use crate::gpu::uniforms::UniformSlots;
 use stark_shaders::mirror::dynamics_common::binding as sb;
-use stark_shaders::mirror::dynamics_common::decl as sd;
 use stark_shaders::mirror::liquify::binding as lb;
+use stark_shaders::mirror::liquify::decl as ld;
 
 /// The most tiles a stroke's declared reach may span for its run to be kept
 /// (§6.13). Past it the stroke re-bases every time — the picture is resampled per
 /// stroke, as every other tool resamples — rather than recording a base for a rect
 /// no run could compose over. A stroke that long is many thousands of px across.
 const MAX_RUN_TILES: u64 = 4096;
+
+/// **One texture, two declarations**, the region trio's case again (`kit`): the field a
+/// piece composes is storage-written through `field_w` and copied to and from
+/// [`FIELD_FORMAT`] tiles, and a copy between two formats is not a copy.
+const _: () = assert!(
+    matches!(FIELD_FORMAT, wgpu::TextureFormat::Rg32Float)
+        && matches!(ld::FIELD_W.storage_format(), wgpu::TextureFormat::Rg32Float),
+    "the liquify field is cut into `FIELD_FORMAT` tiles and storage-written through \
+     `field_w`",
+);
 
 impl StrokeRenderer {
     /// Render a range of a liquify stroke (§6.13): compose its segments into the
@@ -354,19 +364,22 @@ impl<'a> LiquifyDraw<'a> {
         }
         let base_usage =
             wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let mut base_tex = |label: &'static str| {
-            self.scope
-                .take_piece(Key {
-                    size: (bw, bh),
-                    format: sd::REGION_COLOR_W.storage_format(),
-                    usage: base_usage,
-                    label,
-                })
-                .view
-        };
-        let base_color = base_tex("stark liquify base color");
-        let base_aux = base_tex("stark liquify base aux");
-        let base_resid = resid.then(|| base_tex("stark liquify base resid"));
+        // A region composite's destination, so the region's own formats
+        // ([`REGION_WRITES`]) — it is only ever sampled, and a sampled declaration
+        // names no format for it to take instead.
+        let base_region = Trio::take(
+            &mut self.scope,
+            Life::Piece,
+            (bw, bh),
+            base_usage,
+            REGION_WRITES,
+            [
+                "stark liquify base color",
+                "stark liquify base aux",
+                "stark liquify base resid",
+            ],
+            resid,
+        );
         {
             crate::timing::span!("stroke.region");
             composite_tiles(
@@ -379,11 +392,7 @@ impl<'a> LiquifyDraw<'a> {
                     w: bw,
                     h: bh,
                 },
-                Targets {
-                    color: &base_color,
-                    aux: &base_aux,
-                    resid: base_resid.as_ref(),
-                },
+                base_region.targets(),
             );
         }
 
@@ -391,28 +400,27 @@ impl<'a> LiquifyDraw<'a> {
         // the field over it — cleared to the identity, then the run's field tiles laid
         // in, clipped to the region.
         let region_usage = LOOP_USAGE | wgpu::TextureUsages::COPY_SRC;
-        let mut region_tex = |label: &'static str| {
-            self.scope.take_piece(Key {
-                size: (w, h),
-                format: sd::REGION_COLOR_W.storage_format(),
-                usage: region_usage,
-                label,
-            })
-        };
-        let LeasedTex {
-            tex: color_tex,
-            view: color,
-        } = region_tex("stark liquify region color");
-        let aux = region_tex("stark liquify region aux").view;
-        let (resid_tex, resid_view) = resid
-            .then(|| region_tex("stark liquify region resid"))
-            .map(|LeasedTex { tex, view }| (tex, view))
-            .unzip();
+        let region = Trio::take(
+            &mut self.scope,
+            Life::Piece,
+            (w, h),
+            region_usage,
+            REGION_WRITES,
+            [
+                "stark liquify region color",
+                "stark liquify region aux",
+                "stark liquify region resid",
+            ],
+            resid,
+        );
         let LeasedTex {
             tex: field_tex,
             view: field,
         } = self.scope.take_piece(Key {
             size: (w, h),
+            // The tiles the field is cut into are `FIELD_FORMAT`, and a copy between
+            // two formats is not a copy; `field_w` is what the composition writes it
+            // through.
             format: FIELD_FORMAT,
             usage: LOOP_USAGE
                 | wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -491,7 +499,7 @@ impl<'a> LiquifyDraw<'a> {
                     .scope
                     .take_piece(Key {
                         size: (plan.dsize, plan.dsize),
-                        format: FIELD_FORMAT,
+                        format: ld::UNDER_FIELD_W.storage_format(),
                         usage: LOOP_USAGE,
                         label: "stark liquify under field",
                     })
@@ -527,12 +535,12 @@ impl<'a> LiquifyDraw<'a> {
                     .group(device, "stark liquify warp apply bg", |s| match s {
                         sb::ST => params.clone(),
                         lb::FIELD => view(&field),
-                        lb::BASE_COLOR => view(&base_color),
-                        lb::BASE_AUX => view(&base_aux),
-                        lb::BASE_RESID => view(base_resid.as_ref().expect("a residual build")),
-                        sb::REGION_COLOR_W => view(&color),
-                        sb::REGION_AUX_W => view(&aux),
-                        sb::REGION_RESID_W => view(resid_view.as_ref().expect("a residual build")),
+                        lb::BASE_COLOR => view(&base_region.color.view),
+                        lb::BASE_AUX => view(&base_region.aux.view),
+                        lb::BASE_RESID => view(base_region.resid_view().expect("a residual build")),
+                        sb::REGION_COLOR_W => view(&region.color.view),
+                        sb::REGION_AUX_W => view(&region.aux.view),
+                        sb::REGION_RESID_W => view(region.resid_view().expect("a residual build")),
                         other => unreachable!("warp_apply reads no binding {other}"),
                     });
                 (
@@ -596,9 +604,9 @@ impl<'a> LiquifyDraw<'a> {
             coords,
             lo,
             RegionChannels {
-                color_tex: &color_tex,
-                aux: &aux,
-                resid_tex: resid_tex.as_ref(),
+                color_tex: &region.color.tex,
+                aux: &region.aux.view,
+                resid_tex: region.resid_tex(),
             },
         );
         let mut displaced = Vec::with_capacity(coords.len());

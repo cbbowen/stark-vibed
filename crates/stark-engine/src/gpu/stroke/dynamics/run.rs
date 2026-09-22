@@ -30,6 +30,7 @@ use super::plan::{
     LoopDispatch, PlanCtx, SLOT, STAMP_STRIDE, SlotKind, cell_scratch_size, dispatch_over,
     dynamics_plan,
 };
+use super::trio::{Life, Trio};
 use crate::gpu::scratch::{BufKey, Kept, Key, LeasedTex, SubmitScope};
 use stark_shaders::mirror::stamp::SegmentInstance;
 use stark_shaders::mirror::stamp_common::SWEEP_VERTS;
@@ -72,7 +73,9 @@ use stark_shaders::mirror::composite::Instance as TileInstance;
 /// extent from this key ([`Key::extent`]).
 const fn fresh_key() -> Key {
     Key::tile(
-        wgpu::TextureFormat::Rgba16Float,
+        // The region aux's own format: these blocks are cut from and seeded into it,
+        // and a copy between two formats is not a copy (§6.10).
+        sd::REGION_AUX_W.storage_format(),
         wgpu::TextureUsages::COPY_SRC.union(wgpu::TextureUsages::COPY_DST),
         "stark dynamics fresh",
     )
@@ -322,26 +325,20 @@ struct DynamicsRun<'a> {
     prefix_bg: wgpu::BindGroup,
     depth: wgpu::TextureView,
     noise: super::super::tips::NoiseLease,
-    /// The tool reservoir ping-pong, and which half currently holds the tool.
-    brush_color_tex: [wgpu::Texture; 2],
-    brush_aux_tex: [wgpu::Texture; 2],
-    brush_color: [wgpu::TextureView; 2],
-    brush_aux: [wgpu::TextureView; 2],
-    /// The reservoir's **residual** half (§6.7), ping-ponged in step with the color
-    /// above — the tip carries the rest of the color it picked up, or a pigment
-    /// space's black would come back off the tool as the grey its concentrations
-    /// alone describe. `None` in a space with no residual, which allocates nothing.
-    brush_resid_tex: Option<[wgpu::Texture; 2]>,
-    brush_resid: Option<[wgpu::TextureView; 2]>,
+    /// The tool reservoir ping-pong — one whole channel trio per half, the residual
+    /// among them (§6.7), so the tip carries the rest of the color it picked up rather
+    /// than the grey a pigment space's concentrations alone describe — and which half
+    /// currently holds the tool.
+    brush: [Trio; 2],
     cur: usize,
     /// The segment's swept reservoir prefixes (fp32, so the per-fragment difference
-    /// keeps its precision — `bake_load_w` is declared `rgba32float`). Rebuilt per
-    /// segment, so a single
-    /// pair serves the whole stroke: nothing reads the last segment's bake.
+    /// keeps its precision — each is created at its own `bake_*_w` declaration's
+    /// format). Rebuilt per segment, so a single set serves the whole stroke: nothing
+    /// reads the last segment's bake.
     bake_load: wgpu::TextureView,
     bake_latm: wgpu::TextureView,
-    /// The residual's own swept prefix, `∫res·m·dτ` — same format, same differencing,
-    /// and recovered against the very denominator `bake_latm` is.
+    /// The residual's own swept prefix, `∫res·m·dτ` — same differencing, and recovered
+    /// against the very denominator `bake_latm` is.
     bake_rlm: Option<wgpu::TextureView>,
     /// The opacity ceiling's mint-budget tiles ([`LoopCarry::fresh`]), evolving
     /// with the run: resumed entries first, each piece replacing the tiles it
@@ -356,8 +353,8 @@ struct DynamicsRun<'a> {
     /// over the region (§6.2). `None` unless the pen drives the ceiling.
     lane: Option<LaneBinds>,
     /// [`upload_plan`](Self::upload_plan)'s staging bytes, kept across the fold's
-    /// pieces: a plan is `MAX_STAMPS × STAMP_STRIDE` at the top — a megabyte — so
-    /// a fresh `vec!` per piece was an allocation of that size per pointer move.
+    /// pieces: a full plan is `MAX_STAMPS × STAMP_STRIDE`, so a fresh `vec!` per piece
+    /// was that allocation per pointer move.
     stamps: Vec<u8>,
 }
 
@@ -412,46 +409,44 @@ impl<'a> DynamicsRun<'a> {
             | wgpu::TextureUsages::RENDER_ATTACHMENT
             | wgpu::TextureUsages::COPY_SRC
             | wgpu::TextureUsages::COPY_DST;
-        // A ping-pong pair out of the pool: fully written (cleared, copied into, or
-        // stored texel-for-texel by the reservoir passes) before anything reads it,
-        // which is the pool's no-zero-init contract (`scratch`).
-        let brush_pair = |scope: &mut SubmitScope, labels: [&'static str; 2]| {
-            let pair = labels.map(|label| {
-                scope.take_run(Key {
-                    size: (BRUSH_RES, BRUSH_RES),
-                    format: d::BRUSH_DST_COLOR_W.storage_format(),
-                    usage: brush_usage,
-                    label,
-                })
-            });
-            let [a, b] = pair;
-            ([a.tex, b.tex], [a.view, b.view])
+        // A ping-pong pair out of the pool, one whole trio a half: fully written
+        // (cleared, copied into, or stored texel-for-texel by the reservoir passes)
+        // before anything reads it, which is the pool's no-zero-init contract
+        // (`scratch`).
+        let resid = r.color_space.has_resid();
+        let brush_half = |scope: &mut SubmitScope, labels: [&'static str; 3]| {
+            Trio::take(
+                scope,
+                Life::Run,
+                (BRUSH_RES, BRUSH_RES),
+                brush_usage,
+                [
+                    d::BRUSH_DST_COLOR_W,
+                    d::BRUSH_DST_AUX_W,
+                    d::BRUSH_DST_RESID_W,
+                ],
+                labels,
+                resid,
+            )
         };
-        let (brush_color_tex, brush_color) = brush_pair(
-            &mut scope,
-            [
-                "stark dynamics brush color a",
-                "stark dynamics brush color b",
-            ],
-        );
-        let (brush_aux_tex, brush_aux) = brush_pair(
-            &mut scope,
-            ["stark dynamics brush aux a", "stark dynamics brush aux b"],
-        );
-        // The residual's half of the ping-pong, allocated only where there is one.
-        let (brush_resid_tex, brush_resid) = r
-            .color_space
-            .has_resid()
-            .then(|| {
-                brush_pair(
-                    &mut scope,
-                    [
-                        "stark dynamics brush resid a",
-                        "stark dynamics brush resid b",
-                    ],
-                )
-            })
-            .unzip();
+        let brush = [
+            brush_half(
+                &mut scope,
+                [
+                    "stark dynamics brush color a",
+                    "stark dynamics brush aux a",
+                    "stark dynamics brush resid a",
+                ],
+            ),
+            brush_half(
+                &mut scope,
+                [
+                    "stark dynamics brush color b",
+                    "stark dynamics brush aux b",
+                    "stark dynamics brush resid b",
+                ],
+            ),
+        ];
         // The ceiling lane (§6.2), on a wet stroke whose ceiling the pen drives: the
         // carried tiles, and the swept sweep's own bind groups for drawing the lane
         // over the region — the brush bound exactly as the fast path binds it, so the
@@ -478,18 +473,18 @@ impl<'a> DynamicsRun<'a> {
             // when the previous range stopped.
             scope.encoder().copy_texture_to_texture(
                 t.reservoir.color.tex().as_image_copy(),
-                brush_color_tex[0].as_image_copy(),
+                brush[0].color.tex.as_image_copy(),
                 RESERVOIR_EXTENT,
             );
             scope.encoder().copy_texture_to_texture(
                 t.reservoir.aux.tex().as_image_copy(),
-                brush_aux_tex[0].as_image_copy(),
+                brush[0].aux.tex.as_image_copy(),
                 RESERVOIR_EXTENT,
             );
-            if let (Some(src), Some(dst)) = (&t.reservoir.resid, &brush_resid_tex) {
+            if let (Some(src), Some(dst)) = (&t.reservoir.resid, brush[0].resid_tex()) {
                 scope.encoder().copy_texture_to_texture(
                     src.tex().as_image_copy(),
-                    dst[0].as_image_copy(),
+                    dst.as_image_copy(),
                     RESERVOIR_EXTENT,
                 );
             }
@@ -505,7 +500,7 @@ impl<'a> DynamicsRun<'a> {
                     label: Some("stark dynamics brush init"),
                     color_attachments: &[
                         Some(desc::attach(
-                            &brush_color[0],
+                            &brush[0].color.view,
                             desc::clear_to(wgpu::Color {
                                 r: consts.channels[0] as f64,
                                 g: consts.channels[1] as f64,
@@ -514,7 +509,7 @@ impl<'a> DynamicsRun<'a> {
                             }),
                         )),
                         Some(desc::attach(
-                            &brush_aux[0],
+                            &brush[0].aux.view,
                             desc::clear_to(wgpu::Color {
                                 // Carried height = the pre-`charge` glob; the rest of
                                 // the reservoir aux is unused (height is the only
@@ -532,9 +527,9 @@ impl<'a> DynamicsRun<'a> {
                         // A freshly charged tip holds the brush's own color, and that
                         // color's residual with it — the same clear, off the same
                         // constants (§6.7).
-                        brush_resid.as_ref().map(|v| {
+                        brush[0].resid_view().map(|v| {
                             desc::attach(
-                                &v[0],
+                                v,
                                 desc::clear_to(wgpu::Color {
                                     r: consts.resid[0] as f64,
                                     g: consts.resid[1] as f64,
@@ -543,27 +538,25 @@ impl<'a> DynamicsRun<'a> {
                                 }),
                             )
                         }),
-                    ][..2 + usize::from(brush_resid.is_some())],
+                    ][..brush[0].targets().count()],
                     ..Default::default()
                 });
             BTreeMap::new()
         };
-        let mut bake = |label: &'static str| {
+        // Each at the format its own `bake_*_w` declaration names (§6.10).
+        let mut bake = |at: stark_shaders::Binding, label: &'static str| {
             scope
                 .take_run(Key {
                     size: (BAKE_RES, BAKE_RES),
-                    format: d::BAKE_LOAD_W.storage_format(),
+                    format: at.storage_format(),
                     usage: LOOP_USAGE,
                     label,
                 })
                 .view
         };
-        let bake_load = bake("stark dynamics bake load");
-        let bake_latm = bake("stark dynamics bake latm");
-        let bake_rlm = r
-            .color_space
-            .has_resid()
-            .then(|| bake("stark dynamics bake rlm"));
+        let bake_load = bake(d::BAKE_LOAD_W, "stark dynamics bake load");
+        let bake_latm = bake(d::BAKE_LATM_W, "stark dynamics bake latm");
+        let bake_rlm = resid.then(|| bake(d::BAKE_RLM_W, "stark dynamics bake rlm"));
         Self {
             r,
             rec,
@@ -575,12 +568,7 @@ impl<'a> DynamicsRun<'a> {
             prefix_bg,
             depth,
             noise,
-            brush_color_tex,
-            brush_aux_tex,
-            brush_color,
-            brush_aux,
-            brush_resid_tex,
-            brush_resid,
+            brush,
             cur: 0,
             bake_load,
             bake_latm,
@@ -660,7 +648,7 @@ impl<'a> DynamicsRun<'a> {
         // reads the lanes.
         if self.consts.capped {
             self.fresh
-                .seed(&mut self.scope, coords, lo, &region.aux_tex);
+                .seed(&mut self.scope, coords, lo, &region.channels.aux.tex);
         }
         // …and the ceiling lane's carried tiles over the cleared lane (§6.2), the
         // same cut.
@@ -760,8 +748,13 @@ impl<'a> DynamicsRun<'a> {
         // carried tiles themselves are never written, which is what lets the
         // live tail resume the same frozen totals every pointer move.
         if self.consts.capped {
-            self.fresh
-                .extract(self.r, &mut self.scope, coords, lo, &region.aux_tex);
+            self.fresh.extract(
+                self.r,
+                &mut self.scope,
+                coords,
+                lo,
+                &region.channels.aux.tex,
+            );
         }
         // The ceiling lane's new sums, cut the same way and held the same way.
         if let Some(levels_tex) = &region.levels_tex {
@@ -779,9 +772,9 @@ impl<'a> DynamicsRun<'a> {
     /// the selection over it.
     ///
     /// Composited from the base tiles of the affected set plus a one-tile ring, so
-    /// rewritten tiles' aprons read real neighbour content (§6.4). Rgba16Float
-    /// throughout: it is both filterable and a core storage format, and matches the
-    /// tile color format of both color spaces (asserted in `build_dynamics_kit`).
+    /// rewritten tiles' aprons read real neighbour content (§6.4). Each channel at the
+    /// format the loop storage-writes it through ([`REGION_WRITES`]), which is also the
+    /// format the composite fills it at and the tiles are cut from it in (`kit`).
     fn composite_region(
         &mut self,
         base: &TileMap,
@@ -801,31 +794,19 @@ impl<'a> DynamicsRun<'a> {
             | wgpu::TextureUsages::COPY_SRC
             | wgpu::TextureUsages::COPY_DST
             | LOOP_USAGE;
-        let mut region_tex = |label: &'static str| {
-            self.scope.take_piece(Key {
-                size: (w, h),
-                format: sd::REGION_COLOR_W.storage_format(),
-                usage: region_usage,
-                label,
-            })
-        };
-        let LeasedTex {
-            tex: color_tex,
-            view: color,
-        } = region_tex("stark dynamics region color");
-        let LeasedTex {
-            tex: aux_tex,
-            view: aux,
-        } = region_tex("stark dynamics region aux");
-        // The region's residual (§6.7), in the same format for the same reason: it is
-        // the rest of the color beside it, and the loop reads and writes the two at
-        // exactly the same points.
-        let (resid_tex, resid) = r
-            .color_space
-            .has_resid()
-            .then(|| region_tex("stark dynamics region resid"))
-            .map(|LeasedTex { tex, view }| (tex, view))
-            .unzip();
+        let channels = Trio::take(
+            &mut self.scope,
+            Life::Piece,
+            (w, h),
+            region_usage,
+            REGION_WRITES,
+            [
+                "stark dynamics region color",
+                "stark dynamics region aux",
+                "stark dynamics region resid",
+            ],
+            r.color_space.has_resid(),
+        );
         // The ceiling lane over the region (§6.2), on a stroke whose ceiling the
         // pen drives: **drawn** into per segment, so a render attachment rather
         // than storage, and read by the deposits between draws. Cleared here —
@@ -858,27 +839,11 @@ impl<'a> DynamicsRun<'a> {
             w,
             h,
         };
-        composite_tiles(
-            r,
-            &mut self.scope,
-            base,
-            halo,
-            rect,
-            Targets {
-                color: &color,
-                aux: &aux,
-                resid: resid.as_ref(),
-            },
-        );
+        composite_tiles(r, &mut self.scope, base, halo, rect, channels.targets());
         let sel_mask = region_selection(r, &mut self.scope, self.scene.selection, halo, rect);
 
         Region {
-            color_tex,
-            color,
-            aux_tex,
-            aux,
-            resid_tex,
-            resid,
+            channels,
             levels_tex,
             levels,
             sel_mask,
@@ -892,26 +857,20 @@ impl<'a> DynamicsRun<'a> {
     /// largest rect the piece will actually dispatch, rounded to the pool's quantum —
     /// so it is a maximum over the rects rather than a bound they must respect, and
     /// nothing needs asserting or clamping.
-    fn snapshot_scratch(&mut self, size: u32) -> Snapshot {
-        let r = self.r;
-        let mut under_tex = |label: &'static str| {
-            self.scope
-                .take_piece(Key {
-                    size: (size, size),
-                    format: sd::REGION_COLOR_W.storage_format(),
-                    usage: LOOP_USAGE,
-                    label,
-                })
-                .view
-        };
-        Snapshot {
-            color: under_tex("stark dynamics under color"),
-            aux: under_tex("stark dynamics under aux"),
-            resid: r
-                .color_space
-                .has_resid()
-                .then(|| under_tex("stark dynamics under resid")),
-        }
+    fn snapshot_scratch(&mut self, size: u32) -> Trio {
+        Trio::take(
+            &mut self.scope,
+            Life::Piece,
+            (size, size),
+            LOOP_USAGE,
+            [d::UNDER_COLOR_W, d::UNDER_AUX_W, d::UNDER_RESID_W],
+            [
+                "stark dynamics under color",
+                "stark dynamics under aux",
+                "stark dynamics under resid",
+            ],
+            self.r.color_space.has_resid(),
+        )
     }
 
     /// The bleed pair's mobility scratch (§6.2): where `bleed_weight` leaves the weight
@@ -939,23 +898,24 @@ impl<'a> DynamicsRun<'a> {
     fn cell_scratch(&mut self, dsize: u32) -> Cells {
         let r = self.r;
         let size = cell_scratch_size(dsize);
-        let mut tex = |label: &'static str| {
+        // Each at the format its own `cell_*_w` declaration names (§6.10).
+        let mut tex = |at: stark_shaders::Binding, label: &'static str| {
             self.scope
                 .take_piece(Key {
                     size: (size, size),
-                    format: d::BAKE_LOAD_W.storage_format(),
+                    format: at.storage_format(),
                     usage: LOOP_USAGE,
                     label,
                 })
                 .view
         };
         Cells {
-            tool: tex("stark dynamics cell tool"),
-            lat: tex("stark dynamics cell lat"),
+            tool: tex(d::CELL_TOOL_W, "stark dynamics cell tool"),
+            lat: tex(d::CELL_LAT_W, "stark dynamics cell lat"),
             res: r
                 .color_space
                 .has_resid()
-                .then(|| tex("stark dynamics cell res")),
+                .then(|| tex(d::CELL_RES_W, "stark dynamics cell res")),
         }
     }
 
@@ -987,7 +947,7 @@ impl<'a> DynamicsRun<'a> {
     fn bind_piece<'p>(
         &'p self,
         region: &'p Region,
-        under: &'p Snapshot,
+        under: &'p Trio,
         stamp_buf: &'p wgpu::Buffer,
         cells: Option<&'p Cells>,
         bleed: Option<&'p wgpu::TextureView>,
@@ -1022,12 +982,12 @@ impl<'a> DynamicsRun<'a> {
                 b::BAKE_LOAD => view(&self.bake_load),
                 b::BAKE_LATM => view(&self.bake_latm),
                 b::BAKE_RLM => opt(self.bake_rlm.as_ref(), "bake"),
-                b::UNDER_COLOR => view(&under.color),
-                b::UNDER_AUX => view(&under.aux),
-                b::UNDER_RESID => opt(under.resid.as_ref(), "snapshot"),
-                sb::REGION_COLOR_W => view(&region.color),
-                sb::REGION_AUX_W => view(&region.aux),
-                sb::REGION_RESID_W => opt(region.resid.as_ref(), "region"),
+                b::UNDER_COLOR => view(&under.color.view),
+                b::UNDER_AUX => view(&under.aux.view),
+                b::UNDER_RESID => opt(under.resid_view(), "snapshot"),
+                sb::REGION_COLOR_W => view(&region.channels.color.view),
+                sb::REGION_AUX_W => view(&region.channels.aux.view),
+                sb::REGION_RESID_W => opt(region.channels.resid_view(), "region"),
                 sb::SEL_MASK => view(&region.sel_mask),
                 b::SUBSTRATE_TEX => view(&self.scene.substrate.view),
                 // The real scratch on a piece that fires, the kit's 1×1 otherwise — a
@@ -1045,12 +1005,12 @@ impl<'a> DynamicsRun<'a> {
         let snapshot = needs.snapshot.then(|| {
             kit.snapshot_bgl
                 .group(device, "stark dynamics snapshot bg", |s| match s {
-                    b::REGION_COLOR => view(&region.color),
-                    b::REGION_AUX => view(&region.aux),
-                    b::REGION_RESID => opt(region.resid.as_ref(), "region"),
-                    b::UNDER_COLOR_W => view(&under.color),
-                    b::UNDER_AUX_W => view(&under.aux),
-                    b::UNDER_RESID_W => opt(under.resid.as_ref(), "snapshot"),
+                    b::REGION_COLOR => view(&region.channels.color.view),
+                    b::REGION_AUX => view(&region.channels.aux.view),
+                    b::REGION_RESID => opt(region.channels.resid_view(), "region"),
+                    b::UNDER_COLOR_W => view(&under.color.view),
+                    b::UNDER_AUX_W => view(&under.aux.view),
+                    b::UNDER_RESID_W => opt(under.resid_view(), "snapshot"),
                     other => common(other).expect("snapshot reads no other binding"),
                 })
         });
@@ -1061,24 +1021,20 @@ impl<'a> DynamicsRun<'a> {
             std::array::from_fn(|i| {
                 kit.exchange_bgl
                     .group(device, "stark dynamics exchange bg", |s| match s {
-                        b::REGION_COLOR => view(&region.color),
-                        b::REGION_AUX => view(&region.aux),
-                        b::REGION_RESID => opt(region.resid.as_ref(), "region"),
-                        b::UNDER_COLOR_W => view(&under.color),
-                        b::UNDER_AUX_W => view(&under.aux),
-                        b::UNDER_RESID_W => opt(under.resid.as_ref(), "snapshot"),
+                        b::REGION_COLOR => view(&region.channels.color.view),
+                        b::REGION_AUX => view(&region.channels.aux.view),
+                        b::REGION_RESID => opt(region.channels.resid_view(), "region"),
+                        b::UNDER_COLOR_W => view(&under.color.view),
+                        b::UNDER_AUX_W => view(&under.aux.view),
+                        b::UNDER_RESID_W => opt(under.resid_view(), "snapshot"),
                         b::SAMP => samp(&kit.exchange_sampler),
                         b::DEPTH_TEX => view(&self.depth),
-                        b::BRUSH_SRC_COLOR => view(&self.brush_color[i]),
-                        b::BRUSH_SRC_AUX => view(&self.brush_aux[i]),
-                        b::BRUSH_SRC_RESID => {
-                            opt(self.brush_resid.as_ref().map(|v| &v[i]), "reservoir")
-                        }
-                        b::BRUSH_DST_COLOR_W => view(&self.brush_color[1 - i]),
-                        b::BRUSH_DST_AUX_W => view(&self.brush_aux[1 - i]),
-                        b::BRUSH_DST_RESID_W => {
-                            opt(self.brush_resid.as_ref().map(|v| &v[1 - i]), "reservoir")
-                        }
+                        b::BRUSH_SRC_COLOR => view(&self.brush[i].color.view),
+                        b::BRUSH_SRC_AUX => view(&self.brush[i].aux.view),
+                        b::BRUSH_SRC_RESID => opt(self.brush[i].resid_view(), "reservoir"),
+                        b::BRUSH_DST_COLOR_W => view(&self.brush[1 - i].color.view),
+                        b::BRUSH_DST_AUX_W => view(&self.brush[1 - i].aux.view),
+                        b::BRUSH_DST_RESID_W => opt(self.brush[1 - i].resid_view(), "reservoir"),
                         other => common(other).expect("exchange reads no other binding"),
                     })
             })
@@ -1090,11 +1046,9 @@ impl<'a> DynamicsRun<'a> {
                 kit.bake_bgl
                     .group(device, "stark dynamics bake bg", |s| match s {
                         b::SAMP => samp(&kit.exchange_sampler),
-                        b::BRUSH_SRC_COLOR => view(&self.brush_color[i]),
-                        b::BRUSH_SRC_AUX => view(&self.brush_aux[i]),
-                        b::BRUSH_SRC_RESID => {
-                            opt(self.brush_resid.as_ref().map(|v| &v[i]), "reservoir")
-                        }
+                        b::BRUSH_SRC_COLOR => view(&self.brush[i].color.view),
+                        b::BRUSH_SRC_AUX => view(&self.brush[i].aux.view),
+                        b::BRUSH_SRC_RESID => opt(self.brush[i].resid_view(), "reservoir"),
                         b::BAKE_LOAD_W => view(&self.bake_load),
                         b::BAKE_LATM_W => view(&self.bake_latm),
                         b::BAKE_RLM_W => opt(self.bake_rlm.as_ref(), "bake"),
@@ -1374,9 +1328,9 @@ impl<'a> DynamicsRun<'a> {
             coords,
             lo,
             RegionChannels {
-                color_tex: &region.color_tex,
-                aux: &region.aux,
-                resid_tex: region.resid_tex.as_ref(),
+                color_tex: &region.channels.color.tex,
+                aux: &region.channels.aux.view,
+                resid_tex: region.channels.resid_tex(),
             },
         )
     }
@@ -1390,19 +1344,18 @@ impl<'a> DynamicsRun<'a> {
     /// the drop that returns one is provably behind the resuming run's submit.
     fn capture_tool(&mut self) -> ToolState {
         let r = self.r;
-        let cur = self.cur;
-        let (color_src, aux_src) = (
-            self.brush_color_tex[cur].clone(),
-            self.brush_aux_tex[cur].clone(),
-        );
-        let resid_src = self.brush_resid_tex.as_ref().map(|t| t[cur].clone());
+        let held = &self.brush[self.cur];
+        let (color_src, aux_src) = (held.color.tex.clone(), held.aux.tex.clone());
+        let resid_src = held.resid_tex().cloned();
         let scope = &mut self.scope;
-        let mut copy_out = |src: &wgpu::Texture, label: &'static str| {
+        // Each copy's destination at the format of the reservoir half it is cut from,
+        // which is that half's own `brush_dst_*_w` declaration (§6.10).
+        let mut copy_out = |src: &wgpu::Texture, at: stark_shaders::Binding, label| {
             let dst = r.scratch.keep(
                 &r.ctx.device,
                 Key {
                     size: (BRUSH_RES, BRUSH_RES),
-                    format: sd::REGION_COLOR_W.storage_format(),
+                    format: at.storage_format(),
                     usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
                     label,
                 },
@@ -1416,14 +1369,14 @@ impl<'a> DynamicsRun<'a> {
         };
         ToolState(Carried::Loop(Box::new(LoopCarry {
             reservoir: Reservoir {
-                color: copy_out(&color_src, "stark tool state color"),
-                aux: copy_out(&aux_src, "stark tool state aux"),
+                color: copy_out(&color_src, d::BRUSH_DST_COLOR_W, "stark tool state color"),
+                aux: copy_out(&aux_src, d::BRUSH_DST_AUX_W, "stark tool state aux"),
                 // Carried across ranges with the color, and for the same reason: a tip
                 // that lifted black paint has to still be carrying black when the next
                 // pointer move resumes it (§6.7).
                 resid: resid_src
                     .as_ref()
-                    .map(|t| copy_out(t, "stark tool state resid")),
+                    .map(|t| copy_out(t, d::BRUSH_DST_RESID_W, "stark tool state resid")),
             },
             // The mint budget rides as the leases the last piece extracted —
             // already copies of the run's own state, so nothing more to copy
@@ -1729,23 +1682,12 @@ pub(super) fn upload_stamps(
 }
 /// One piece's canvas region: a 1:1 copy of the canvas under its segments, which the
 /// loop evolves in place before [`DynamicsRun::write_back`] slices it into tiles.
-///
-/// The color and residual carry their textures beside the views: the write-back
-/// cuts tiles out of them by texture copy, and a copy is addressed by texture where
-/// every pass binding is addressed by view. Both handles are `Arc`-backed clones of
-/// the one piece-scoped allocation.
 struct Region {
-    color_tex: wgpu::Texture,
-    color: wgpu::TextureView,
-    /// The aux's texture beside its view, the color's reason: the opacity
-    /// ceiling's mint budget is seeded into and extracted out of it by copy
-    /// (§6.2, `LoopCarry::fresh`).
-    aux_tex: wgpu::Texture,
-    aux: wgpu::TextureView,
-    /// The region's residual (§6.7), in a space that has one — evolved in place by the
-    /// same dispatches that evolve the color, and sliced back with it.
-    resid_tex: Option<wgpu::Texture>,
-    resid: Option<wgpu::TextureView>,
+    /// The evolving paint itself (§6.7). Each channel carries its texture beside its
+    /// view because the loop does both to it: a pass binds the view, while the
+    /// write-back cuts tiles out of the colour and residual and the mint budget is
+    /// seeded into and extracted out of the aux — and a copy is addressed by texture.
+    channels: Trio,
     /// The ceiling lane over the region (§6.2), on a stroke whose ceiling the pen
     /// drives: drawn per segment, read by the deposits, seeded from and extracted
     /// into the carry by copy like the mint budget — never written back, being
@@ -1755,16 +1697,6 @@ struct Region {
     /// The selection over the region (§6.8) — its own gathered mask, or the 1×1
     /// constant that stands in for an unrestricted selection.
     sel_mask: wgpu::TextureView,
-}
-
-/// The extent snapshot scratch. It does not carry the square it was sized to: that
-/// number is the plan's ([`DynamicsPlan::dsize`](super::plan::DynamicsPlan)), and the
-/// scratch is allocated *from* it rather than the plan checked against it.
-struct Snapshot {
-    color: wgpu::TextureView,
-    aux: wgpu::TextureView,
-    /// The snapshot's residual half, copied on exactly the texels the color is.
-    resid: Option<wgpu::TextureView>,
 }
 
 /// The extent-cell scratch (§6.2): the coarse deposit's per-cell means, sized by
@@ -1887,6 +1819,12 @@ struct CoarseBindings {
 /// dispatch, storage-written by the next.
 pub(super) const LOOP_USAGE: wgpu::TextureUsages =
     wgpu::TextureUsages::TEXTURE_BINDING.union(wgpu::TextureUsages::STORAGE_BINDING);
+
+/// The three declarations the loop storage-writes a region's channels through — the
+/// formats a region trio, and anything a region is composited into, is created at
+/// (§6.10, and the `kit` assertion that ties them to the composite's own targets).
+pub(super) const REGION_WRITES: [stark_shaders::Binding; 3] =
+    [sd::REGION_COLOR_W, sd::REGION_AUX_W, sd::REGION_RESID_W];
 
 /// The reservoir textures' shape — [`BRUSH_RES`]² of the tile color format, which
 /// is what makes a [`ToolState`] copyable into and out of the loop's ping-pong.
