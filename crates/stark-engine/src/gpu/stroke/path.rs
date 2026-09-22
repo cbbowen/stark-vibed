@@ -63,7 +63,7 @@ impl StrokePlan {
     /// them, or a live tail takes the stamp loop while its commit degrades to the swept
     /// deposit and the stroke redraws the moment the pointer comes up. Nothing about
     /// the piece in hand or the stroke's length may enter. `rise` is the tip's
-    /// (`tips::ResolvedTip::rise`), content-addressed and so as fixed as the brush is;
+    /// (`volume::ResolvedTip::rise`), content-addressed and so as fixed as the brush is;
     /// only a liquify brush's budget reads it (§6.13).
     ///
     /// Size decides nothing: an oversized stroke is drawn one region-sized piece at a

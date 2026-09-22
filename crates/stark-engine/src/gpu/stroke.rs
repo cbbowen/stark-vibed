@@ -49,6 +49,9 @@ mod region;
 mod segments;
 mod swept;
 mod tips;
+// Crate-wide, alone among these: the asset store builds an image brush's volumes
+// through it (`assets::AssetStore::mask_views`).
+pub(crate) mod volume;
 
 use crate::gpu::desc;
 use crate::gpu::scratch::ScratchPool;
@@ -58,10 +61,10 @@ use incremental::Resume;
 use path::{StrokePath, StrokePlan};
 use segments::{Segment, generate_segments_in};
 use swept::SweepKit;
-use tips::{ResolvedTip, TipCache};
+use tips::TipCache;
+use volume::ResolvedTip;
 
-// The submodules are private; callers name `gpu::stroke::X`.
-pub(crate) use budget::WARP_CONTRACTION;
+// The rest of the submodules are private; callers name `gpu::stroke::X`.
 pub use budget::{max_stretch, max_tip_reach};
 pub(crate) use incremental::{Progress, StrokeCarry, StrokeSpans, ToolState, safe_frozen};
 

@@ -16,7 +16,7 @@ use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX};
 use super::dynamics::BLEED_TRAVEL_QUANTUM;
 
 /// The optical depth one full pass of an opaque tip lays over a point — the ceiling
-/// `assets::tau_of` holds a saturated mask texel to.
+/// `volume::tau_of` holds a saturated mask texel to.
 ///
 /// Every exchange in the stamp loop is a rate *per unit optical depth*, that being the
 /// currency the swept integral is denominated in (§6.2). But τ ≈ 7 for a single pass,
@@ -298,7 +298,7 @@ pub(super) fn dynamics_len(b: &BrushParams) -> f32 {
 /// shear is a bijection at any slope: two rows sliding past each other never occupy one
 /// place.
 ///
-/// Also what defines a tip's **rise** (`tips::round_rise`, `assets::mask_rise`): the
+/// Also what defines a tip's **rise** (`tips::round_rise`, `volume::mask_rise`): the
 /// travel over which its coverage climbs by this much. The two are one number on
 /// purpose — at strength 1 the step is the rise, and the climb over it is the bound by
 /// definition — so a change here is a change to both.
@@ -316,7 +316,7 @@ pub(super) const LIQUIFY_RISE_FLOOR_PX: f32 = 1.0;
 /// [`MIN_SEGMENT_LEN`]. What [`flatten_budget`] spends for the liquify path, exactly as
 /// [`dynamics_len`] is for the loop.
 ///
-/// `rise` is the tip's (`tips::ResolvedTip::rise`), in radii: the shortest travel over
+/// `rise` is the tip's (`volume::ResolvedTip::rise`), in radii: the shortest travel over
 /// which its coverage climbs by [`WARP_CONTRACTION`], measured off the mask the brush
 /// names rather than assumed of it. The follow at a texel is `strength · ∫coverage`
 /// over the texel's stretch of the pass, so its gradient along the travel is `strength`

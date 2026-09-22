@@ -41,7 +41,7 @@ const _: () = assert!(
 // The per-tile uniform, generated from `stamp_common.wesl`'s own declaration
 // (§6.7): the tile *texture's* top-left in canvas px + canvas→NDC scale, plus the
 // brush's stroke-constant color channels.
-use super::tips::ResolvedTip;
+use super::volume::ResolvedTip;
 use stark_shaders::mirror::integrate::Integrate;
 use stark_shaders::mirror::stamp_common::TileXform;
 

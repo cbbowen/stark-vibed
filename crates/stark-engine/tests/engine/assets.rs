@@ -113,7 +113,7 @@ fn a_capped_shape_paints_and_survives_save_load() {
 ///
 /// The two are separate bakes: follow-stroke is the mask as it stands, one layer,
 /// while pen is the same mask rotated per relative angle on its own grid
-/// (`assets::rotate_layers` — sound unpadded because a canonical mask's content lies
+/// (`volume::rotate_layers` — sound unpadded because a canonical mask's content lies
 /// inside its inscribed disc, which a rotation maps to itself). At a **relative angle
 /// of zero** they stand for the identical tip, so the marks have to land on top of
 /// one another — the one comparison that pins the rotation arithmetic, the τ

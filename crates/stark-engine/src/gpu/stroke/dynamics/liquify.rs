@@ -9,7 +9,7 @@
 //! pristine base. A stroke of any length, and any number of strokes in a run, cost
 //! the picture one clamped Catmull-Rom generation. The step reads the tip's own
 //! coverage, through the **coverage prefix** the tip resolves for a liquify brush
-//! ([`ResolvedTip::warp`](super::super::tips::ResolvedTip)) bound where every other
+//! ([`ResolvedTip::warp`](super::super::volume::ResolvedTip)) bound where every other
 //! kernel binds its prefix-τ.
 //!
 //! Three things are decided on the CPU before a piece is drawn, and all three are

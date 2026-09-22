@@ -11,12 +11,14 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::assets::{AssetStore, COVERAGE_PREFIX_LABEL, build_depth_r16, build_prefix};
+use crate::assets::AssetStore;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use stark_model::document::{BrushParams, BrushShape, ColorDynamics, NoiseKind};
 
-use crate::unpoisoned;
+use super::volume::{
+    COVERAGE_PREFIX_LABEL, Lru, ResolvedTip, build_depth_r16, build_prefix, cached,
+};
 
 /// Resolution of the generated round-tip prefix texture.
 pub(super) const ROUND_RES: u32 = 256;
@@ -40,21 +42,15 @@ const ROUND_TIPS_KEPT: usize = 4;
 /// texture is not a freed one (`gpu::scratch`).
 const NOISE_TILES_KEPT: usize = 4;
 
-/// One of [`TipCache`]'s two least-recently-used lists: newest last, shared across the
-/// renderer's clones, bounded by the `*_KEPT` constant beside the field. A `Vec` rather
-/// than a map because the bound is four — a linear scan beats a hash, and the order *is*
-/// the recency.
-type Lru<K, V> = Arc<Mutex<Vec<(K, V)>>>;
-
 /// The brush textures both paths resolve, and the lazily-baked caches behind them.
 #[derive(Clone)]
 pub(super) struct TipCache {
     ctx: GpuContext,
     /// The round tips' baked textures, keyed by the **effective** hardness's bits — the
-    /// brush's own floored by its size (`budget::effective_hardness`, §6.6) — an LRU of
+    /// brush's own floored by its size (`effective_hardness`, §6.6) — an LRU of
     /// [`ROUND_TIPS_KEPT`], newest last. Only a brush the floor binds (hard *and* small)
     /// re-bakes as its size changes.
-    round_tip: Lru<u32, RoundTip>,
+    round_tip: Lru<u32, ResolvedTip>,
     /// Color dynamics (§6.2): the shared wrap/linear sampler, the 1×1 zero tile
     /// bound when a brush's jitter is off, and the per-stroke baked fields — an LRU
     /// of [`NOISE_TILES_KEPT`] keyed by (kind, stroke seed), newest last.
@@ -97,29 +93,18 @@ impl TipCache {
     /// The **orientation source** is part of the question for an image brush (§6.6):
     /// follow-stroke reads a single identity layer, pen a stack of them. A round tip is
     /// rotation-invariant and answers both with one slice, so it is asked only for its
-    /// hardness — floored by the brush's own size (`budget::effective_hardness`), so a
+    /// hardness — floored by the brush's own size ([`effective_hardness`]), so a
     /// hard edge keeps a ~px of antialiased rim at any radius.
     pub(super) fn resolve(&self, assets: &AssetStore, brush: &BrushParams) -> Option<ResolvedTip> {
         let warping = brush.liquify().is_some();
         match brush.shape {
-            BrushShape::Stamp(id) => {
-                assets
-                    .mask_views(id, brush.orientation, warping)
-                    .map(|views| ResolvedTip {
-                        prefix: views.prefix,
-                        depth: views.depth,
-                        warp: views.warp,
-                        rise: views.rise,
-                    })
-            }
+            BrushShape::Stamp(id) => assets.mask_views(id, brush.orientation, warping),
             BrushShape::Round { hardness } => {
-                let tip = self.round_tip(effective_hardness(hardness, brush.size));
-                Some(ResolvedTip {
-                    prefix: tip.prefix,
-                    depth: tip.depth,
-                    warp: warping.then_some(tip.warp),
-                    rise: tip.rise,
-                })
+                let mut tip = self.round_tip(effective_hardness(hardness, brush.size));
+                if !warping {
+                    tip.warp = None;
+                }
+                Some(tip)
             }
         }
     }
@@ -132,20 +117,18 @@ impl TipCache {
     /// each would run again for the same hardness, and held apart the stamp loop could
     /// find its prefix hot and its depth cold. The coverage prefix is baked with them
     /// rather than on a liquify brush's first ask — one linear pass over a field already
-    /// in hand.
+    /// in hand — so a round tip's `warp` is always `Some`, and [`resolve`](Self::resolve)
+    /// is what drops it for a brush that does not warp.
     ///
     /// **The depth is the field and the coverage is a reading of it**, not the other way
     /// round: the prefix-τ integrates `κ` as [`round_depth`] states it, where handing it
-    /// the coverage and letting `assets::tau_of` recover `κ` capped the core at that
-    /// function's mask ceiling (τ ≈ 6.9). The two orderings agree wherever `κ` stays
-    /// under the ceiling and nowhere else — over the disc where it does not, the
-    /// recovered field was flat, which the sweep laid as a plateau across the middle of
-    /// every stroke. That disc is 0.07 of the radius at hardness 0 and 0.71 at 0.95.
-    fn round_tip(&self, hardness: f32) -> RoundTip {
+    /// the coverage and recovering `κ` back out capped the core at the mask ceiling
+    /// (`volume::tau_of`).
+    fn round_tip(&self, hardness: f32) -> ResolvedTip {
         let (tip, _evicted) = cached(&self.round_tip, hardness.to_bits(), ROUND_TIPS_KEPT, || {
-            // The profile once for both readings of it: `RoundProfile::of` scans a few
-            // hundred shoulders and quadratures a normalizing integral, and the depth
-            // field and the rise are the same tip.
+            // The profile once for both readings of it: `RoundProfile::of` scans a
+            // few hundred shoulders and quadratures a normalizing integral, and the
+            // depth field and the rise are the same tip.
             let profile = RoundProfile::of(hardness);
             let depth = round_depth(&profile, ROUND_RES);
             // The round tip is rotation-invariant, so a single orientation layer
@@ -160,9 +143,9 @@ impl TipCache {
                 "stark round tip prefix-tau",
             );
             let depth_view = build_depth_r16(&self.ctx, ROUND_RES, ROUND_RES, &depth);
-            // The coverage prefix a liquify follow reads (§6.13) is the one place the
-            // tip is wanted *as* a coverage: a follow is a fraction of how long the tip
-            // covered a texel, which saturates exactly as a coverage does.
+            // The coverage prefix a liquify follow reads (§6.13) is the one place
+            // the tip is wanted *as* a coverage: a follow is a fraction of how long
+            // the tip covered a texel, which saturates exactly as a coverage does.
             let cov: Vec<f32> = depth.iter().map(|&k| 1.0 - (-k).exp()).collect();
             let warp = build_prefix(
                 &self.ctx,
@@ -172,10 +155,10 @@ impl TipCache {
                 &cov,
                 COVERAGE_PREFIX_LABEL,
             );
-            RoundTip {
+            ResolvedTip {
                 prefix,
                 depth: depth_view,
-                warp,
+                warp: Some(warp),
                 rise: round_rise(&profile),
             }
         });
@@ -210,46 +193,6 @@ impl TipCache {
         drop(evicted);
         NoiseLease(tile)
     }
-}
-
-/// `key`'s entry in a small LRU held as a `Vec` newest-last — the hit moved to the
-/// back, or `build`'s result pushed there — and, past `kept` entries, the oldest
-/// handed back for the caller to release. A GPU resource dropped is not one freed
-/// (`gpu::scratch`), so which release it gets is the caller's to say.
-///
-/// **`build` runs with the lock released**, because a bake is milliseconds — 256² × 16
-/// samples of the round tip's profile — and every clone of the renderer shares this
-/// list: a hardness slider dragged on one engine would otherwise stall a sibling's
-/// stroke for the length of each frame's bake. Two callers may then bake one key at
-/// once; the first insert is what both read and what the cache keeps, and the loser's
-/// value comes back in the release slot beside an eviction. One wasted bake against a
-/// held lock, and the cache never holds two answers to one key.
-fn cached<K: PartialEq, V: Clone>(
-    lru: &Lru<K, V>,
-    key: K,
-    kept: usize,
-    build: impl FnOnce() -> V,
-) -> (V, Option<V>) {
-    if let Some(v) = hit(&mut unpoisoned(lru.lock()), &key) {
-        return (v, None);
-    }
-    let built = build();
-    let mut cache = unpoisoned(lru.lock());
-    if let Some(v) = hit(&mut cache, &key) {
-        return (v, Some(built));
-    }
-    cache.push((key, built.clone()));
-    let evicted = (cache.len() > kept).then(|| cache.remove(0).1);
-    (built, evicted)
-}
-
-/// `key`'s value if the list holds it, moved to the back as the newest.
-fn hit<K: PartialEq, V: Clone>(cache: &mut Vec<(K, V)>, key: &K) -> Option<V> {
-    let i = cache.iter().position(|(k, _)| k == key)?;
-    let entry = cache.remove(i);
-    let v = entry.1.clone();
-    cache.push(entry);
-    Some(v)
 }
 
 /// One stroke's baked color-dynamics field: the texture kept beside its view so an
@@ -298,40 +241,6 @@ impl NoiseLease {
     }
 }
 
-/// The textures selected together for one brush: the prefix-τ volume the swept
-/// deposit differences and the tip's own depth the wet loop's tool side reads — one
-/// field, integrated and not — and, for a liquify brush alone, the coverage prefix its
-/// follow reads (§6.13), with the tip's **rise** beside it.
-pub(super) struct ResolvedTip {
-    pub(super) prefix: wgpu::TextureView,
-    /// The tip's `κ` per unit travel (`assets::build_depth_r16`): what a reservoir
-    /// texel's exposure is (`dynamics.wesl::depth_at`), and the field `prefix` is the
-    /// travel integral of. Bound by the wet loop alone — the swept path differences
-    /// the prefix instead.
-    pub(super) depth: wgpu::TextureView,
-    /// The **coverage prefix**: the same volume as
-    /// `prefix`, integrated linearly over the coverage, which the liquify `warp` kernel reads at the
-    /// prefix-τ's own binding so a follow is the mask's mean over the pass rather
-    /// than its optical depth. `None` on every other effect, which never asks.
-    pub(super) warp: Option<wgpu::TextureView>,
-    /// The tip's rise (§6.13), radii: the shortest travel over which its coverage
-    /// climbs by `budget::WARP_CONTRACTION`. What the liquify step budget prices
-    /// (`budget::liquify_len`); measured off the mask, whichever kind it is.
-    pub(super) rise: f32,
-}
-
-/// A baked round tip: the **prefix-τ** volume both render paths integrate the swept
-/// deposit against, the **depth** the stamp loop's reservoir texels weigh their exposure
-/// by, the **coverage prefix** the liquify follow reads (§6.13), and the tip's rise. One
-/// type because they are one thing — the same depth field, read four ways.
-#[derive(Clone)]
-struct RoundTip {
-    prefix: wgpu::TextureView,
-    depth: wgpu::TextureView,
-    warp: wgpu::TextureView,
-    rise: f32,
-}
-
 /// What a noise tile is cached by: the brush's kind and the stroke's seed.
 type NoiseKey = (NoiseKind, u32);
 
@@ -364,7 +273,7 @@ const SOFT_PEAK_DEPTH: f32 = 2.0;
 const SOFT_FALLOFF: f32 = 2.5;
 
 /// The 10–90 width of the softest tip's profile, in radii — the widest falloff the
-/// dial offers, and the constant `budget::shoulder_per_radius` reports scaled by
+/// dial offers, and the constant [`shoulder_per_radius`] reports scaled by
 /// `1 − hardness`.
 ///
 /// Just under the widest this family can draw at the soft end's own peak (0.524, at
