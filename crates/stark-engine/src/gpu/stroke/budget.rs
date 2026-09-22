@@ -843,7 +843,8 @@ mod tests {
             let floor = want / (1.0 + MAX_TIP_TURN * want / (WARP_CONTRACTION * 100.0));
             assert!(
                 len <= want + 1e-3 && len >= floor - 1e-3,
-                "hardness {hardness}: a full-strength step should be the rise ({want} px)                  less the turn's share ({floor} px), not {len}",
+                "hardness {hardness}: a full-strength step should be the rise ({want} px) \
+                 less the turn's share ({floor} px), not {len}",
             );
             last = len;
         }

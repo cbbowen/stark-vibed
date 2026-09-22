@@ -758,12 +758,8 @@ mod tests {
 
         for brush in [wet, liquify] {
             let rec = StrokeRecord {
-                layer: stark_model::document::LayerId::ROOT,
-                brush,
                 path: pts.clone(),
-                seed: 0,
-                start: 0.0,
-                translation: stark_model::geom::IVec2::ZERO,
+                ..record(brush, &[])
             };
             let tol = flatten_tolerance(&rec.brush);
             let (segs, _) = generate_segments_in(&rec, tol, StrokeSpans::whole(&rec));
@@ -830,17 +826,14 @@ mod tests {
                 cp
             })
             .collect();
+        let brush = BrushParams {
+            size: 500.0,
+            drain: 0.0,
+            ..BrushParams::default()
+        };
         let rec = StrokeRecord {
-            layer: stark_model::document::LayerId::ROOT,
-            brush: BrushParams {
-                size: 500.0,
-                drain: 0.0,
-                ..BrushParams::default()
-            },
             path,
-            seed: 0,
-            start: 0.0,
-            translation: stark_model::geom::IVec2::ZERO,
+            ..record(brush, &[])
         };
         let segs = whole(&rec);
         assert_outline_is_continuous(&segs);
@@ -888,27 +881,18 @@ mod tests {
 
     /// A stroke bending through `sweep` radians of a circle of radius `curve_radius`.
     fn curved_record(radius: f32, curve_radius: f32, sweep: f32) -> StrokeRecord {
-        let path: Vec<stark_model::path::ControlPoint> = (0..=12)
+        let pts: Vec<Vec2> = (0..=12)
             .map(|i| {
                 let t = i as f32 / 12.0 * sweep;
-                stark_model::path::ControlPoint::at(Vec2::new(
-                    curve_radius * t.sin(),
-                    curve_radius * (1.0 - t.cos()),
-                ))
+                Vec2::new(curve_radius * t.sin(), curve_radius * (1.0 - t.cos()))
             })
             .collect();
-        StrokeRecord {
-            layer: stark_model::document::LayerId::ROOT,
-            brush: BrushParams {
-                size: radius,
-                drain: 0.0,
-                ..BrushParams::default()
-            },
-            path,
-            seed: 0,
-            start: 0.0,
-            translation: stark_model::geom::IVec2::ZERO,
-        }
+        let brush = BrushParams {
+            size: radius,
+            drain: 0.0,
+            ..BrushParams::default()
+        };
+        record(brush, &pts)
     }
 
     /// Densely sampled points of the true curve — the ground truth the two stand-ins

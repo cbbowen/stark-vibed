@@ -132,23 +132,17 @@ pub(in crate::gpu::stroke) fn tapered_record(
     // Enough control points that the curve has spans to freeze part of, and
     // straight so arc length is the chord and the taper zones are easy to reason
     // about.
-    let path: Vec<stark_model::path::ControlPoint> = (0..=12)
-        .map(|i| stark_model::path::ControlPoint::at(Vec2::new(i as f32 / 12.0 * len, 0.0)))
+    let pts: Vec<Vec2> = (0..=12)
+        .map(|i| Vec2::new(i as f32 / 12.0 * len, 0.0))
         .collect();
-    StrokeRecord {
-        layer: stark_model::document::LayerId::ROOT,
-        brush: BrushParams {
-            size: radius,
-            drain: 0.0,
-            start_taper_length: start,
-            end_taper_length: end,
-            ..BrushParams::default()
-        },
-        path,
-        seed: 0,
-        start: 0.0,
-        translation: stark_model::geom::IVec2::ZERO,
-    }
+    let brush = BrushParams {
+        size: radius,
+        drain: 0.0,
+        start_taper_length: start,
+        end_taper_length: end,
+        ..BrushParams::default()
+    };
+    record(brush, &pts)
 }
 
 /// Every segment of a stroke, as [`Segment`]s — what the chunker and the tile
