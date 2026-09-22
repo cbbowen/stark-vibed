@@ -66,7 +66,7 @@ pub fn SelectPanel() -> Element {
         ),
         (
             stark_ui::icons::SELECTION_ADD,
-            "Add this region to the selection (or hold shift). With nothing \n             selected, this selects just the region",
+            "Add this region to the selection (or hold shift). With nothing selected, this selects just the region",
         ),
         (
             stark_ui::icons::SELECTION_SUB,

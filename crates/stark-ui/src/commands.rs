@@ -2259,7 +2259,7 @@ mod tests {
         assert_eq!(
             ALL.len(),
             expected,
-            "ALL has {} rows for {} acts — a command was added without one, and              it is unfindable in the palette until it has one (§25.2 step 5)",
+            "ALL has {} rows for {} acts — a command was added without one, and it is unfindable in the palette until it has one (§25.2 step 5)",
             ALL.len(),
             expected
         );

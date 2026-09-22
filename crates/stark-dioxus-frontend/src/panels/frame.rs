@@ -499,7 +499,7 @@ pub fn FrameOverlay() -> Element {
     // mirror too — the north-west handle really is at the north-west of the picture.
     let o = view.orientation();
     let box_style = format!(
-        "left: {}px; top: {}px; width: {}px; height: {}px;          transform: matrix({}, {}, {}, {}, 0, 0);",
+        "left: {}px; top: {}px; width: {}px; height: {}px; transform: matrix({}, {}, {}, {}, 0, 0);",
         center.x - 0.5 * w,
         center.y - 0.5 * h,
         w,
