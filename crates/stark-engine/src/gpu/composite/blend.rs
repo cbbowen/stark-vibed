@@ -233,7 +233,7 @@ pub(super) struct ScratchLevel {
     /// **Three things invalidate one:** a rebuilt accumulator (`ensure_targets` drops
     /// the whole scratch with it); each patch of a pick's trace, a target of its own
     /// ([`Compositor::composite_channels`] drops the groups before it); and a replaced
-    /// uniform buffer — a frame with more merges than any before it replaces the pass's
+    /// uniform buffer — a frame with more merges than the buffer holds replaces the pass's
     /// ([`UniformSlots::write`]), which `Streams::upload` reports for its callers to
     /// invalidate.
     ///

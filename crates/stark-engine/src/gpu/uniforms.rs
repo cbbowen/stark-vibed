@@ -10,7 +10,8 @@
 //! JS GC cannot keep up with — or one buffer of **dynamic-offset slots**.
 //!
 //! **Only the compositor grows its own.** Its per-frame uniforms live as long as the
-//! compositor does, so a [`UniformSlots`] keeps one buffer at the high-water mark. An
+//! compositor does, so a [`UniformSlots`] keeps one buffer, grown past the high-water
+//! mark by powers of two. An
 //! *operation's* uniforms — a fill's, a merge's, a stroke's — are leased instead,
 //! through the `SubmitScope` in `gpu::scratch` (`run_slots` and its siblings), from a
 //! pool that recycles them across operations and releases each only behind the submit
@@ -20,7 +21,7 @@
 //!
 //! An [`InstanceStream`] obeys no slot law — a vertex buffer is indexed by the draw's
 //! own instance range, not by an aligned offset — and shares the other half of what
-//! `UniformSlots` is: *allocate to the high-water mark, never shrink within a session,
+//! `UniformSlots` is: *grow past the high-water mark, never shrink within a session,
 //! write the whole of this frame before the submit*.
 
 /// The dynamic-offset alignment every backend accepts
@@ -77,6 +78,16 @@ pub(crate) fn stage_slots<'a, T: bytemuck::Pod>(
     for (slot, uniform) in into.chunks_exact_mut(stride).zip(uniforms) {
         slot[..std::mem::size_of::<T>()].copy_from_slice(bytemuck::bytes_of(uniform));
     }
+}
+
+/// The capacity a buffer holding `have` records grows to so it fits `want`, or `None`
+/// when it already does.
+///
+/// **Geometric**, to the next power of two: grown to the exact count, a zoom-out that
+/// brings a few more tiles into view every frame would replace the buffer on every one
+/// of those frames — and with it every bind group that names it.
+fn grown(have: usize, want: usize) -> Option<usize> {
+    (want > have).then(|| want.next_power_of_two())
 }
 
 /// A grow-on-demand buffer of uniform [`Slot`]s, one per pass — the compositor's
@@ -147,8 +158,8 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
         self.group.as_ref()
     }
 
-    /// Write one uniform per slot, growing the buffer first if this frame has more
-    /// of them than any before it. Every slot is written before the frame's single
+    /// Write one uniform per slot, growing the buffer first (`grown`) if this frame
+    /// has more of them than it holds. Every slot is written before the frame's single
     /// submit, which is the whole reason slots exist.
     ///
     /// **Returns whether the buffer moved.** Growing *replaces* the buffer, so any bind
@@ -165,16 +176,16 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
         if uniforms.is_empty() {
             return false;
         }
-        let moved = uniforms.len() > self.slots;
-        if moved {
-            self.buf = Self::alloc(device, self.label, uniforms.len());
-            self.slots = uniforms.len();
+        let grown = grown(self.slots, uniforms.len());
+        if let Some(slots) = grown {
+            self.buf = Self::alloc(device, self.label, slots);
+            self.slots = slots;
             // The group named the buffer that is now gone.
             self.group = None;
         }
         stage_slots(uniforms, &mut self.staging);
         queue.write_buffer(&self.buf, 0, &self.staging);
-        moved
+        grown.is_some()
     }
 
     /// [`Slot::offset`].
@@ -204,7 +215,7 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
 /// Packed rather than padded: a vertex buffer is walked by the draw's own instance
 /// range against the stride the pipeline's `VertexBufferLayout` declares, so there is no
 /// alignment quantum to round up to and no offset for a caller to get wrong. The rest is
-/// `UniformSlots`' policy — allocate to the high-water mark, keep it, and write the
+/// `UniformSlots`' policy — grow past the high-water mark, keep it, and write the
 /// whole of this frame's records before the submit that draws them.
 ///
 /// The records past `items.len()` are left as whatever the last frame wrote, which is
@@ -226,16 +237,16 @@ impl<T: bytemuck::Pod> InstanceStream<T> {
         }
     }
 
-    /// Upload this frame's records, growing the buffer first if there are more of
-    /// them than any frame before it. Empty is a no-op: nothing is drawn from a
-    /// stream with no records, so there is nothing to overwrite.
+    /// Upload this frame's records, growing the buffer first (`grown`) if there are
+    /// more of them than it holds. Empty is a no-op: nothing is drawn from a stream
+    /// with no records, so there is nothing to overwrite.
     pub(crate) fn write(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, items: &[T]) {
         if items.is_empty() {
             return;
         }
-        if items.len() > self.cap {
-            self.buf = Self::alloc(device, self.label, items.len());
-            self.cap = items.len();
+        if let Some(cap) = grown(self.cap, items.len()) {
+            self.buf = Self::alloc(device, self.label, cap);
+            self.cap = cap;
         }
         queue.write_buffer(&self.buf, 0, bytemuck::cast_slice(items));
     }
@@ -300,5 +311,24 @@ mod tests {
         }
         stage_slots::<U>(&[], &mut staged);
         assert!(staged.is_empty(), "nothing staged for nothing");
+    }
+
+    /// A buffer that fits keeps its capacity; one that does not doubles past what it
+    /// is asked for, so a count creeping up a record a frame replaces it
+    /// logarithmically often rather than every frame.
+    #[test]
+    fn a_buffer_grows_by_powers_of_two() {
+        assert_eq!(grown(4, 3), None);
+        assert_eq!(grown(4, 4), None);
+        assert_eq!(grown(1, 3), Some(4));
+        assert_eq!(grown(4, 5), Some(8));
+        let replacements = (2..=1000)
+            .scan(1, |cap, want| {
+                let moved = grown(*cap, want).map(|c| *cap = c).is_some();
+                Some(moved)
+            })
+            .filter(|&moved| moved)
+            .count();
+        assert_eq!(replacements, 10, "1 → 1024 is ten doublings");
     }
 }

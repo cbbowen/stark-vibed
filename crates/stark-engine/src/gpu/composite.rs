@@ -525,13 +525,13 @@ struct Frame<'a> {
 
 /// The half of a [`Compositor`] sized by **what is drawn** rather than by the
 /// target: the view slots and the instance and uniform streams of passes A, C and
-/// D, each grown to the frame's count and written per render.
+/// D, each grown to fit the frame and written per render.
 struct Streams {
     /// The canvas → NDC mapping *this* render is drawing through, and the two group-0
     /// bind groups over it (§6.4). Per consumer, not per pipeline — see
     /// [`ViewBindings`].
     view: ViewBindings,
-    // Pass A's instance streams, grown to the frame's tile and matte counts.
+    // Pass A's instance streams, grown to fit the frame's tiles and mattes.
     instances: InstanceStream<Instance>,
     matte_instances: InstanceStream<MatteInstance>,
     /// One dynamic-offset slot per matte in the frame, holding its gradient ramp —
@@ -967,7 +967,7 @@ impl Streams {
             .map(|f| filter_uniform(f, view))
             .collect();
         let filter_moved = self.filter_uniforms.write(device, queue, &filters);
-        // A frame with more merges (or more filters) than any before it **replaces**
+        // A frame with more merges (or more filters) than the buffer holds **replaces**
         // those buffers rather than resizing them, so the bind groups the scratch is
         // holding name a buffer too small for the offsets they are about to be given
         // (`ScratchLevel::blend_bg`). Reported rather than acted on, because the
@@ -1155,7 +1155,7 @@ impl Compositor {
         let plan = Plan::build(groups);
         let (streams, buffers_moved) = self.streams.upload(p, view, &plan);
         // The screen's cache, not this pick's: the two share the uniform buffers,
-        // so a pick with more merges than any render has had stales the groups the
+        // so a pick with more merges than the buffer holds stales the groups the
         // screen's scratch holds (`Streams::upload`).
         if let Some(scratch) = self.sized.scratch.as_mut().filter(|_| buffers_moved) {
             scratch.invalidate_bind_groups();
