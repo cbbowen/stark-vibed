@@ -1,4 +1,5 @@
-//! The **prefix volumes** a brush tip is read through (§6.2, §6.6, §6.13).
+//! The **prefix volumes** a brush tip is read through, and the bound on the ones baked
+//! lazily (§6.2, §6.6, §6.13).
 //!
 //! One optical-depth field per tip, read four ways: integrated along the travel axis
 //! for the swept deposit, plain for the wet loop's tool side, integrated over the
@@ -6,8 +7,14 @@
 //! volumes are built from the coverage its id names ([`tau_of`]), the round tip's from
 //! its closed form (`tips::round_depth`) — so the arithmetic lives beside the stroke
 //! that reads it rather than inside either of the two callers.
+//!
+//! The small LRU both tip caches are held in is here for the same reason: bounding the
+//! mask volumes ([`VolumeCache`]) is what stopped it being the round tip's own.
 
 use std::sync::{Arc, Mutex};
+
+use stark_model::AssetId;
+use stark_model::document::OrientationSource;
 
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
@@ -38,7 +45,7 @@ pub(crate) struct ResolvedTip {
     pub(crate) rise: f32,
 }
 
-// ---- the small LRU the tip caches are held in ----------------------------------
+// ---- the small LRU both tip caches are held in ---------------------------------
 
 /// A least-recently-used list held as a `Vec`, newest last, shared across the clones of
 /// whatever holds it. A `Vec` rather than a map because the bounds here are small — a
@@ -46,33 +53,41 @@ pub(crate) struct ResolvedTip {
 pub(super) type Lru<K, V> = Arc<Mutex<Vec<(K, V)>>>;
 
 /// `key`'s entry in `lru` — the hit moved to the back, or `build`'s result pushed there
-/// — and, past `kept` entries, the oldest handed back for the caller to release. A GPU
-/// resource dropped is not one freed (`gpu::scratch`), so which release it gets is the
-/// caller's to say.
+/// — and, while `over` says the list holds too much, the oldest entries handed back for
+/// the caller to release. A GPU resource dropped is not one freed (`gpu::scratch`), so
+/// which release it gets is the caller's to say.
+///
+/// **What "too much" is belongs to the caller**: a count for the tip and noise caches,
+/// whose entries are all one size, and a byte budget for the mask volumes, which run
+/// sixty-fold apart ([`VolumeCache`]). The newest is never evicted — one larger than
+/// the whole budget would otherwise be baked and dropped again on every render.
 ///
 /// **`build` runs with the lock released**, because a bake is milliseconds — 256² × 16
 /// samples of the round tip's profile — and every clone of the renderer shares this
 /// list: a hardness slider dragged on one engine would otherwise stall a sibling's
 /// stroke for the length of each frame's bake. Two callers may then bake one key at
 /// once; the first insert is what both read and what the cache keeps, and the loser's
-/// value comes back in the release slot beside an eviction. One wasted bake against a
+/// value comes back in the release slot beside any eviction. One wasted bake against a
 /// held lock, and the cache never holds two answers to one key.
 pub(super) fn cached<K: PartialEq, V: Clone>(
     lru: &Lru<K, V>,
     key: K,
-    kept: usize,
+    over: impl Fn(&[(K, V)]) -> bool,
     build: impl FnOnce() -> V,
-) -> (V, Option<V>) {
+) -> (V, Vec<V>) {
     if let Some(v) = hit(&mut unpoisoned(lru.lock()), &key) {
-        return (v, None);
+        return (v, Vec::new());
     }
     let built = build();
     let mut cache = unpoisoned(lru.lock());
     if let Some(v) = hit(&mut cache, &key) {
-        return (v, Some(built));
+        return (v, vec![built]);
     }
     cache.push((key, built.clone()));
-    let evicted = (cache.len() > kept).then(|| cache.remove(0).1);
+    let mut evicted = Vec::new();
+    while cache.len() > 1 && over(&cache) {
+        evicted.push(cache.remove(0).1);
+    }
     (built, evicted)
 }
 
@@ -85,6 +100,94 @@ fn hit<K: PartialEq, V: Clone>(cache: &mut Vec<(K, V)>, key: &K) -> Option<V> {
     Some(v)
 }
 
+// ---- the mask volumes baked on first ask ---------------------------------------
+
+/// Which of a mask's volumes is baked lazily rather than at import: the pen-oriented
+/// prefix-τ (§6.6), and the coverage prefix either orientation's liquify follow reads
+/// (§6.13).
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub(crate) enum Lazy {
+    Pen,
+    Warp(OrientationSource),
+}
+
+/// What one lazily baked volume is kept under: the mask it was baked from, and which of
+/// that mask's volumes it is.
+type Key = (AssetId, Lazy);
+
+/// One baked volume and what it cost, so the budget below can be read off the list.
+#[derive(Clone)]
+struct Volume {
+    view: wgpu::TextureView,
+    bytes: u64,
+}
+
+/// How many bytes of lazily baked mask volume [`VolumeCache`] keeps at once.
+///
+/// Twice the largest live set one brush can ask for: a pen-oriented liquify brush reads
+/// a pen prefix-τ and a coverage prefix of the same extent, each held to
+/// [`PREFIX_BUDGET_BYTES`] by its layer count. Under that, a single stroke would evict
+/// the volume it had just been handed and re-bake it on the next pointer move; at twice
+/// it, two brushes alternating — two peers painting concurrently, or a replay
+/// interleaving strokes (§12) — keep both.
+const VOLUME_BUDGET_BYTES: u64 = 4 * PREFIX_BUDGET_BYTES;
+
+/// The mask volumes baked on first ask rather than at import, bounded by the bytes they
+/// hold.
+///
+/// Every one of them rebuilds from the coverage its id names, so an eviction costs a
+/// bake and never a picture — which is what makes a bound safe to have at all. Without
+/// one, a library of stamps banks a pen volume each and gives none of them back: the
+/// largest shape there is costs [`PREFIX_BUDGET_BYTES`] for its pen prefix-τ and as
+/// much again for its liquify twin.
+///
+/// Cheap to clone with the store — the list is `Arc`-backed.
+#[derive(Clone)]
+pub(crate) struct VolumeCache {
+    kept: Lru<Key, Volume>,
+    budget: u64,
+}
+
+impl Default for VolumeCache {
+    fn default() -> Self {
+        Self {
+            kept: Arc::new(Mutex::new(Vec::new())),
+            budget: VOLUME_BUDGET_BYTES,
+        }
+    }
+}
+
+impl VolumeCache {
+    /// `key`'s volume, `bake`d if the cache does not already hold it, with the oldest
+    /// entries dropped until the total is back inside the budget.
+    ///
+    /// `bytes` is what the bake will cost, which [`prefix_bytes`] answers from the
+    /// volume's extent before it exists — the only way to price an entry that is not
+    /// yet built.
+    pub(crate) fn baked(
+        &self,
+        key: Key,
+        bytes: u64,
+        bake: impl FnOnce() -> wgpu::TextureView,
+    ) -> wgpu::TextureView {
+        let budget = self.budget;
+        let (volume, evicted) = cached(
+            &self.kept,
+            key,
+            |kept| kept.iter().map(|(_, v)| v.bytes).sum::<u64>() > budget,
+            || Volume {
+                view: bake(),
+                bytes,
+            },
+        );
+        // An eviction is dropped rather than `destroy()`ed: a view keeps its own
+        // texture alive, so a stroke already holding one is unaffected, and these go at
+        // the rate the brush changes rather than per pointer move.
+        drop(evicted);
+        volume.view
+    }
+}
+
 // ---- the volumes themselves ----------------------------------------------------
 
 /// Largest number of orientation slices a brush's pen-oriented prefix-τ volume holds
@@ -93,11 +196,11 @@ fn hit<K: PartialEq, V: Clone>(cache: &mut Vec<(K, V)>, key: &K) -> Option<V> {
 const MAX_ORIENTATION_LAYERS: u32 = 64;
 
 /// Memory budget (bytes) for one brush's pen-oriented prefix-τ volume: the layer count
-/// is chosen so `width × height × layers × 8` ([`PREFIX_FORMAT`]) stays under it, so a
-/// large detailed stamp keeps its full resolution and trades orientation granularity
-/// instead. Only the pen volume is measured against it — the follow-stroke bake is a
-/// single layer and has nothing to trade.
-const PREFIX_BUDGET_BYTES: u32 = 64 << 20; // 64 MiB
+/// is chosen so the whole volume stays under it, so a large detailed stamp keeps its
+/// full resolution and trades orientation granularity instead. Only the pen volume is
+/// measured against it — the follow-stroke bake is a single layer and has nothing to
+/// trade.
+const PREFIX_BUDGET_BYTES: u64 = 64 << 20; // 64 MiB
 
 /// What a prefix volume is stored as: an `Rg32Float` **2D-array** texture, the array
 /// axis orientation ([`build_prefix`]).
@@ -114,11 +217,23 @@ pub(crate) const PREFIX_TAU_LABEL: &str = "stark brush prefix-tau";
 /// tip's core is exactly the travel.
 pub(crate) const COVERAGE_PREFIX_LABEL: &str = "stark brush coverage prefix";
 
+/// How many bytes a `width × height × layers` prefix volume uploads — what
+/// [`VolumeCache`] prices an entry at, off [`PREFIX_FORMAT`]'s own texel size so it
+/// cannot drift from what [`build_prefix`] creates.
+pub(crate) fn prefix_bytes(width: u32, height: u32, layers: u32) -> u64 {
+    let texel = u64::from(
+        PREFIX_FORMAT
+            .block_copy_size(None)
+            .expect("an uncompressed format has one aspect"),
+    );
+    u64::from(width) * u64::from(height) * u64::from(layers) * texel
+}
+
 /// How many orientation slices to build for a `width × height` volume: as many as
 /// [`PREFIX_BUDGET_BYTES`] allows, capped at [`MAX_ORIENTATION_LAYERS`] and at least 1.
 pub(crate) fn orientation_layers(width: u32, height: u32) -> u32 {
-    let per_layer = (width * height * 8).max(1);
-    (PREFIX_BUDGET_BYTES / per_layer).clamp(1, MAX_ORIENTATION_LAYERS)
+    let per_layer = prefix_bytes(width, height, 1).max(1);
+    (PREFIX_BUDGET_BYTES / per_layer).clamp(1, u64::from(MAX_ORIENTATION_LAYERS)) as u32
 }
 
 /// Pre-rotate a normalized `[-1, 1]²` coverage mask into `layers` orientation slices
@@ -483,5 +598,68 @@ mod tests {
             mask_rise(&vec![200u8; (w * h) as usize], w, h),
             f32::INFINITY
         );
+    }
+
+    /// **What an entry is priced at is what its upload costs**, so the budget bounds
+    /// the GPU memory it claims to and not some other number — and the layer count
+    /// really does hold a pen volume to [`PREFIX_BUDGET_BYTES`].
+    ///
+    /// Against [`desc::upload_len`] of the very descriptor [`build_prefix`] creates,
+    /// which is the one thing that says how many bytes a texture is made from.
+    #[test]
+    fn a_volume_is_priced_at_what_its_upload_costs() {
+        for (w, h, layers) in [(1u32, 1u32, 1u32), (256, 256, 64), (1024, 1024, 8)] {
+            let desc = desc::sampled_texture(PREFIX_TAU_LABEL, PREFIX_FORMAT, extent(w, h, layers));
+            assert_eq!(prefix_bytes(w, h, layers), desc::upload_len(&desc) as u64);
+        }
+        for (w, h) in [(64u32, 64u32), (160, 160), (512, 512), (1024, 1024)] {
+            let layers = orientation_layers(w, h);
+            assert!((1..=MAX_ORIENTATION_LAYERS).contains(&layers));
+            assert!(
+                prefix_bytes(w, h, layers) <= PREFIX_BUDGET_BYTES,
+                "a {w}×{h} pen volume of {layers} layers is past its own budget",
+            );
+        }
+    }
+
+    /// **A second brush's bake evicts the first once the budget is exceeded**, oldest
+    /// first, and the newest is kept whatever it cost — [`VolumeCache`]'s bound, over
+    /// the list [`cached`] keeps it in, with each entry's bytes standing in for its
+    /// view.
+    ///
+    /// Eviction is safe because a volume rebuilds from the coverage its id names, and
+    /// what comes back is what `build` returns: the cache never hands out a stale value
+    /// for a key it has dropped, and never holds two answers to one key.
+    #[test]
+    fn the_byte_budget_evicts_the_oldest_volume() {
+        const BUDGET: u64 = 100;
+        let lru: Lru<u32, u64> = Arc::new(Mutex::new(Vec::new()));
+        let over = |kept: &[(u32, u64)]| kept.iter().map(|(_, b)| b).sum::<u64>() > BUDGET;
+        let bake = |key: u32, bytes: u64| cached(&lru, key, over, || bytes);
+        let keys = || -> Vec<u32> { unpoisoned(lru.lock()).iter().map(|(k, _)| *k).collect() };
+
+        // Two that fit together, then a third that does not: the oldest goes.
+        assert_eq!(bake(1, 40), (40, vec![]));
+        assert_eq!(bake(2, 40), (40, vec![]));
+        assert_eq!(bake(3, 40), (40, vec![40]));
+        assert_eq!(keys(), vec![2, 3]);
+
+        // A hit is a hit — nothing baked, nothing evicted — and it is now the newest,
+        // so the next overflow takes the other one. The `0` would be the answer if it
+        // had baked.
+        assert_eq!(bake(2, 0), (40, vec![]));
+        assert_eq!(keys(), vec![3, 2]);
+        assert_eq!(bake(4, 40), (40, vec![40]));
+        assert_eq!(keys(), vec![2, 4]);
+
+        // The evicted one rebuilds to exactly what it was, and comes back as the only
+        // entry under its key.
+        assert_eq!(bake(3, 40), (40, vec![40]));
+        assert_eq!(keys(), vec![4, 3]);
+
+        // One larger than the whole budget is still handed back and still kept: baking
+        // it again on every render is the only other answer.
+        assert_eq!(bake(5, BUDGET * 2), (BUDGET * 2, vec![40, 40]));
+        assert_eq!(keys(), vec![5]);
     }
 }

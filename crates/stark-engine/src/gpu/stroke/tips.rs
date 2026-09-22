@@ -125,43 +125,48 @@ impl TipCache {
     /// the coverage and recovering `κ` back out capped the core at the mask ceiling
     /// (`volume::tau_of`).
     fn round_tip(&self, hardness: f32) -> ResolvedTip {
-        let (tip, _evicted) = cached(&self.round_tip, hardness.to_bits(), ROUND_TIPS_KEPT, || {
-            // The profile once for both readings of it: `RoundProfile::of` scans a
-            // few hundred shoulders and quadratures a normalizing integral, and the
-            // depth field and the rise are the same tip.
-            let profile = RoundProfile::of(hardness);
-            let depth = round_depth(&profile, ROUND_RES);
-            // The round tip is rotation-invariant, so a single orientation layer
-            // suffices — the shader's wrapping lookup reads it for every
-            // orientation (§6.6).
-            let prefix = build_prefix(
-                &self.ctx,
-                ROUND_RES,
-                ROUND_RES,
-                1,
-                &depth,
-                "stark round tip prefix-tau",
-            );
-            let depth_view = build_depth_r16(&self.ctx, ROUND_RES, ROUND_RES, &depth);
-            // The coverage prefix a liquify follow reads (§6.13) is the one place
-            // the tip is wanted *as* a coverage: a follow is a fraction of how long
-            // the tip covered a texel, which saturates exactly as a coverage does.
-            let cov: Vec<f32> = depth.iter().map(|&k| 1.0 - (-k).exp()).collect();
-            let warp = build_prefix(
-                &self.ctx,
-                ROUND_RES,
-                ROUND_RES,
-                1,
-                &cov,
-                COVERAGE_PREFIX_LABEL,
-            );
-            ResolvedTip {
-                prefix,
-                depth: depth_view,
-                warp: Some(warp),
-                rise: round_rise(&profile),
-            }
-        });
+        let (tip, _evicted) = cached(
+            &self.round_tip,
+            hardness.to_bits(),
+            |kept| kept.len() > ROUND_TIPS_KEPT,
+            || {
+                // The profile once for both readings of it: `RoundProfile::of` scans a
+                // few hundred shoulders and quadratures a normalizing integral, and the
+                // depth field and the rise are the same tip.
+                let profile = RoundProfile::of(hardness);
+                let depth = round_depth(&profile, ROUND_RES);
+                // The round tip is rotation-invariant, so a single orientation layer
+                // suffices — the shader's wrapping lookup reads it for every
+                // orientation (§6.6).
+                let prefix = build_prefix(
+                    &self.ctx,
+                    ROUND_RES,
+                    ROUND_RES,
+                    1,
+                    &depth,
+                    "stark round tip prefix-tau",
+                );
+                let depth_view = build_depth_r16(&self.ctx, ROUND_RES, ROUND_RES, &depth);
+                // The coverage prefix a liquify follow reads (§6.13) is the one place
+                // the tip is wanted *as* a coverage: a follow is a fraction of how long
+                // the tip covered a texel, which saturates exactly as a coverage does.
+                let cov: Vec<f32> = depth.iter().map(|&k| 1.0 - (-k).exp()).collect();
+                let warp = build_prefix(
+                    &self.ctx,
+                    ROUND_RES,
+                    ROUND_RES,
+                    1,
+                    &cov,
+                    COVERAGE_PREFIX_LABEL,
+                );
+                ResolvedTip {
+                    prefix,
+                    depth: depth_view,
+                    warp: Some(warp),
+                    rise: round_rise(&profile),
+                }
+            },
+        );
         // An eviction is dropped rather than `destroy()`ed: unlike the per-stroke
         // resources, they happen at the *rate the brush changes*, not per pointer
         // move, so JS GC keeps up fine.
@@ -179,7 +184,7 @@ impl TipCache {
         let (tile, evicted) = cached(
             &self.noise_tiles,
             (cd.noise, seed),
-            NOISE_TILES_KEPT,
+            |kept| kept.len() > NOISE_TILES_KEPT,
             || {
                 let baked = crate::noise::bake(cd.noise, seed);
                 Arc::new(NoiseTile::upload(

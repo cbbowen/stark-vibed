@@ -187,6 +187,59 @@ fn the_pen_bake_paints_what_the_follow_stroke_bake_does_at_zero_angle() {
     );
 }
 
+/// **One key, one volume** (§6.6): a mask's pen-oriented prefix-τ is baked on first ask
+/// and kept in a cache shared by every mask (`volume::VolumeCache`), so a stamp's mark
+/// has to survive another stamp's bake landing between two of its own.
+///
+/// Both shapes are drawn pen-oriented, so each takes a pen volume of its own. A key
+/// that collided, or an entry handed back under the wrong id, paints the second mark
+/// with the first shape — which nothing else here would notice, since either shape
+/// alone paints consistently. The two are deliberately different pictures: a round cone
+/// and one half as wide as it is tall, some 48 levels apart.
+///
+/// Against a **control** rather than against zero, because redrawing one stamp does not
+/// land on the bit: each replay is a fresh action, and a level or two of the mark moves
+/// with the seed it carries. The claim is that the oval's bake between the two costs no
+/// more than that.
+#[test]
+fn a_stamps_mark_survives_another_stamps_bake() {
+    let Some(mut engine) = engine_or_skip_blue() else {
+        return;
+    };
+    let round = engine.import_brush(&blob_png(160, 160)).expect("import");
+    let oval = engine.import_brush(&blob_png(200, 100)).expect("import");
+
+    let draw = |engine: &mut stark_engine::Engine, id| {
+        let mut b = brush(RED_SOFT, 60.0);
+        b.shape = BrushShape::Stamp(id);
+        b.orientation = OrientationSource::Pen;
+        replay_with(engine, b, &[Vec2::new(-70.0, 0.0), Vec2::new(70.0, 0.0)]);
+        let img = engine.render_to_image();
+        engine.process(stark_engine::command::DocCommand::Undo);
+        img
+    };
+
+    let first = draw(&mut engine, round);
+    let redrawn = draw(&mut engine, round);
+    let oval_mark = draw(&mut engine, oval);
+    let after = draw(&mut engine, round);
+
+    let control = diff_fraction(&first, &redrawn).1;
+    let apart = diff_fraction(&first, &oval_mark).1;
+    let moved = diff_fraction(&first, &after).1;
+    let noise = control.max(SEAM_LEVELS);
+    assert!(
+        u32::from(apart) > 8 * u32::from(noise),
+        "the two shapes are {apart} levels apart against {control} for a redraw — too \
+         close for a mix-up between them to show"
+    );
+    assert!(
+        moved <= noise,
+        "the round stamp's mark moved {moved} levels once the oval's volume was baked, \
+         where redrawing it costs {control} and the oval's own mark is {apart} away"
+    );
+}
+
 /// **A brush shape arriving mid-stroke is drawn by the stroke's commit** (§6.6, §6.2).
 ///
 /// A stroke whose shape has not loaded is deferred rather than drawn, so its preview
