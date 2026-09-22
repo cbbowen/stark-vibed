@@ -90,6 +90,7 @@ impl PlaceRenderer {
     /// the tile grid an `i32` can address — refused rather than clamped for a
     /// transform's reason (§16.1): a placement somewhere else is not the one asked for.
     pub(crate) fn render(&self, pool: &TilePool, at: IVec2, image: &Picture) -> Option<TileMap> {
+        crate::timing::span!("place.tiles");
         let coords = image_tiles(at, image)?;
         let mut tiles = TileMap::new();
 
@@ -184,11 +185,6 @@ fn texel(space: &dyn ColorSpace, rgba: [u8; 4]) -> Texel {
     // the imported image (§23).
     let l = space.rgb_to_latent(rgb);
 
-    // Where the slider ends, as mass: coverage is `1 − exp(−K·mass)` and reaches 1 only
-    // in the limit, so a fully opaque pixel asks for `OPAQUE_MASS` rather than for the
-    // infinity the inversion would otherwise return.
-    let want = (rgba[3] as f32 / 255.0).min(1.0 - (-OPACITY_K * OPAQUE_MASS).exp());
-    let height = -(1.0 - want).ln() / OPACITY_K;
     // Per-unit opacity 1: the paint itself is opaque, and how much of the substrate it
     // hides is the height above (§6.1). The channels are premultiplied by it, which at
     // 1 is the identity — written as a multiplication anyway so the representation is
@@ -196,9 +192,27 @@ fn texel(space: &dyn ColorSpace, rgba: [u8; 4]) -> Texel {
     let op = 1.0;
     Texel {
         color: [l.lat[0] * op, l.lat[1] * op, l.lat[2] * op, op],
-        height,
+        height: HEIGHT[rgba[3] as usize],
         resid: [l.res[0] * op, l.res[1] * op, l.res[2] * op, op],
     }
+}
+
+/// The mass a source alpha asks for, one entry per value a `u8` takes.
+///
+/// **A table because the argument is a byte.** [`height_of`] is two transcendentals,
+/// and the alpha it inverts has 256 possible values — where the picture has up to
+/// `MAX_PICTURE_DIM²` texels, paid on import *and* on every replay that crosses the
+/// placement (§23). The answers are the same 256 numbers either way, so this is the
+/// whole of the arithmetic rather than a cache of some of it.
+static HEIGHT: std::sync::LazyLock<[f32; 256]> =
+    std::sync::LazyLock::new(|| std::array::from_fn(|a| height_of(a as u8)));
+
+/// Where the slider ends, as mass: coverage is `1 − exp(−K·mass)` and reaches 1 only in
+/// the limit, so a fully opaque pixel asks for `OPAQUE_MASS` rather than for the
+/// infinity the inversion would otherwise return.
+fn height_of(alpha: u8) -> f32 {
+    let want = (alpha as f32 / 255.0).min(1.0 - (-OPACITY_K * OPAQUE_MASS).exp());
+    -(1.0 - want).ln() / OPACITY_K
 }
 
 fn write_half(out: &mut [u8], v: f32) {
@@ -260,6 +274,27 @@ mod tests {
             "the f32 origin was exact for every tile in this span, so this test is \
              guarding nothing — pick a span further out",
         );
+    }
+
+    /// **The table is the law it replaced, bit for bit.**
+    ///
+    /// The inversion used to run per texel; it now runs 256 times. That is only a
+    /// speed-up if it is the *same* answer — a placed image's tiles are the one thing
+    /// this engine produces identically on every adapter (§9, §23), so a mass that
+    /// moved by an ulp would be two peers with different bytes for one import.
+    #[test]
+    fn the_height_table_is_the_expression_it_replaced() {
+        for a in 0..=u8::MAX {
+            let want = (a as f32 / 255.0).min(1.0 - (-OPACITY_K * OPAQUE_MASS).exp());
+            assert_eq!(
+                HEIGHT[a as usize].to_bits(),
+                (-(1.0 - want).ln() / OPACITY_K).to_bits(),
+                "alpha {a}",
+            );
+        }
+        // Nothing asks for nothing, and the ceiling is the mass the slider ends at.
+        assert_eq!(HEIGHT[0], 0.0);
+        assert!((HEIGHT[255] - OPAQUE_MASS).abs() < 1e-3, "{}", HEIGHT[255]);
     }
 
     /// **The source's alpha is a coverage, and the paint laid reproduces it.**
