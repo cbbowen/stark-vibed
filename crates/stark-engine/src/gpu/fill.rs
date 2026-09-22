@@ -54,7 +54,7 @@ const _: () = assert!(
 );
 
 #[derive(Clone)]
-pub struct FillRenderer {
+pub(crate) struct FillRenderer {
     ctx: GpuContext,
     color_space: Arc<dyn ColorSpace>,
     /// The channel formats this fill's tiles carry — the color space's, resolved
@@ -121,7 +121,7 @@ impl FillRenderer {
     /// author's selection). `None` rejects the whole action — an unbounded fill, or
     /// more tiles than the cap allows — deterministically, so peers and replays
     /// agree (see [`crate::document::fill::plan`]).
-    pub fn apply(
+    pub(crate) fn apply(
         &self,
         pool: &TilePool,
         base: &TileMap,

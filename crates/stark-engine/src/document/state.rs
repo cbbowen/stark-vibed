@@ -228,7 +228,7 @@ pub const DEFAULT_SUBSTRATE_COLOR: Srgb = Srgb::new([0.85, 0.85, 0.85]);
 /// peers. The choice of opening substrate belongs to whoever holds the bytes: the
 /// frontend imports linen at startup and opens the document on it
 /// (`Engine::new_document`).
-pub const DEFAULT_SUBSTRATE: SubstrateId = SubstrateId::Flat;
+pub(crate) const DEFAULT_SUBSTRATE: SubstrateId = SubstrateId::Flat;
 
 impl DocState {
     /// An empty document with a single starting layer and nothing masked.

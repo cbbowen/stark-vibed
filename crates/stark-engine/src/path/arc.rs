@@ -38,7 +38,7 @@ const STATIONARY_SPEED: f32 = 1e-12;
 
 /// One flattened edge, as it will actually be swept.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct Arc {
+pub(crate) struct Arc {
     /// Unit tangent the arc leaves its start along.
     pub dir: Vec2,
     /// Signed curvature (1/canvas px), positive turning left of `dir`. Exactly 0 for
@@ -69,7 +69,7 @@ pub struct Arc {
 /// The end tangent is *not* pinned to the curve's tangent there, so consecutive arcs
 /// still meet with a small kink — second order in the turn, where the chord's was
 /// first order.
-pub fn fit_arc(vel: Vec2, v: Vec2, max_curvature: f32) -> Arc {
+pub(crate) fn fit_arc(vel: Vec2, v: Vec2, max_curvature: f32) -> Arc {
     let chord = v.length();
     if chord < 1e-5 {
         // No chord names no direction. Length 0 makes the edge a point, which is what
@@ -113,7 +113,7 @@ pub fn fit_arc(vel: Vec2, v: Vec2, max_curvature: f32) -> Arc {
 /// How far an arc bows away from its own chord: `|R|(1 − cos(θ/2))`, and 0 for a
 /// straight edge. What a bounding box has to add, since the two endpoints no longer
 /// bound the edge between them.
-pub fn arc_sagitta(curvature: f32, length: f32) -> f32 {
+pub(crate) fn arc_sagitta(curvature: f32, length: f32) -> f32 {
     if curvature == 0.0 {
         return 0.0;
     }
@@ -124,7 +124,7 @@ pub fn arc_sagitta(curvature: f32, length: f32) -> f32 {
 /// `s` of arc length, and the unit tangent it is travelling along there. The straight
 /// case is the exact limit and is taken as one, so a `curvature == 0` edge is stepped
 /// by plain addition.
-pub fn arc_at(start: Vec2, dir: Vec2, curvature: f32, s: f32) -> (Vec2, Vec2) {
+pub(crate) fn arc_at(start: Vec2, dir: Vec2, curvature: f32, s: f32) -> (Vec2, Vec2) {
     if curvature == 0.0 {
         return (start + dir * s, dir);
     }

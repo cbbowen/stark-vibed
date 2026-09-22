@@ -55,7 +55,7 @@ use stark_model::document::LayerId;
 ///
 /// [`Footprint`]: stark_model::document::Footprint
 #[derive(Clone, Debug, PartialEq)]
-pub struct MergePlan {
+pub(crate) struct MergePlan {
     pub source: LayerId,
     pub dest: LayerId,
     /// Which of the two merges this is, and everything that one of them needs.
@@ -69,7 +69,7 @@ pub struct MergePlan {
 /// speaks for both afterwards. A **filter** stacks nothing, so merging it **rewrites**
 /// the destination's channels and there is nothing to reconcile.
 #[derive(Clone, Debug, PartialEq)]
-pub enum MergeKind {
+pub(crate) enum MergeKind {
     /// The source's paint stacked into the destination's, through the source's own
     /// params (§14.11.3).
     Stack {
@@ -114,7 +114,7 @@ pub enum MergeKind {
 /// A **pure function of the state**, which is what lets the action carry only the two
 /// ids: every peer and every replay asks this of the same document and gets the same
 /// answer, so a merge is accepted or declined identically everywhere.
-pub fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
+pub(crate) fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
     let site = state.site_of(source)?;
     let s = state.layer(source)?;
     let (dest, backdrop_is_dest) = match site.carrier {

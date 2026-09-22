@@ -152,7 +152,7 @@ impl PatchOp {
 ///
 /// `Undo` falls out rather than needing an arm: it is never materialized, which
 /// is why its footprint is empty, so it restores nothing.
-pub fn unapply(footprint: &Footprint, previous: &DocState, state: &DocState) -> DocState {
+pub(crate) fn unapply(footprint: &Footprint, previous: &DocState, state: &DocState) -> DocState {
     let mut ops = Vec::new();
     // **Existence first**, whatever order a footprint happens to list its writes
     // in. A layer has to be back in the tree before anything can put its tiles,

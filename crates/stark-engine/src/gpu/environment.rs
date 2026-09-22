@@ -41,7 +41,7 @@ pub enum EnvironmentId {
 /// gloss-selected mip in the reflection direction for the paint's specular (§6.3).
 /// Cloning is cheap — the wgpu handles are reference-counted.
 #[derive(Clone)]
-pub struct Environment {
+pub(crate) struct Environment {
     pub view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
     /// Which mip the media pass reads for diffuse irradiance. Computed here, beside
@@ -66,7 +66,7 @@ impl Environment {
     /// dome, generated here rather than shipped as a file. Deliberately achromatic —
     /// every texel is grey — so it lights the relief without tinting the paint, which
     /// is what makes it usable as a color reference next to [`Self::load`]ed HDRs.
-    pub fn neutral(ctx: &GpuContext) -> Self {
+    pub(crate) fn neutral(ctx: &GpuContext) -> Self {
         let (px, w, h) = neutral_equirect();
         Self::from_equirect(ctx, &px, w, h)
     }
@@ -85,7 +85,7 @@ impl Environment {
     ///
     /// [`Engine::register_environment`]: crate::Engine::register_environment
     /// [`Resource::build`]: crate::gpu::registry::Resource::build
-    pub fn load(ctx: &GpuContext, hdr_bytes: &[u8]) -> Result<Self, String> {
+    pub(crate) fn load(ctx: &GpuContext, hdr_bytes: &[u8]) -> Result<Self, String> {
         let (px, w, h) = decode_hdr(hdr_bytes)?;
         Ok(Self::from_equirect(ctx, &px, w, h))
     }

@@ -21,7 +21,7 @@ use super::SubstrateId;
 ///
 /// The engine's entry point is
 /// [`Engine::import_substrate`](crate::Engine::import_substrate).
-pub fn canonicalize(png_bytes: &[u8]) -> Result<(SubstrateId, Vec<u8>)> {
+pub(crate) fn canonicalize(png_bytes: &[u8]) -> Result<(SubstrateId, Vec<u8>)> {
     let canonical = stark_assetid::height(png_bytes)?;
     Ok((SubstrateId::Image(canonical.id()), canonical.encode()?))
 }
@@ -30,7 +30,7 @@ pub fn canonicalize(png_bytes: &[u8]) -> Result<(SubstrateId, Vec<u8>)> {
 /// peer, which are kept verbatim. Derived rather than taken on trust: a substrate whose
 /// bytes did not hash to the id that asked for them is a substrate that would silently
 /// deposit the wrong tooth, so the caller gets the id the bytes *are* and compares.
-pub fn identify(png_bytes: &[u8]) -> Result<SubstrateId> {
+pub(crate) fn identify(png_bytes: &[u8]) -> Result<SubstrateId> {
     Ok(SubstrateId::Image(stark_assetid::height(png_bytes)?.id()))
 }
 

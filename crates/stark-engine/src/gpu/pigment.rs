@@ -34,7 +34,7 @@ const LUT_DIM: u32 = 512;
 
 /// The pigment LUT bound to the blend pass: a texture plus the sampler that reads
 /// it.
-pub struct PigmentLut {
+pub(crate) struct PigmentLut {
     pub view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
 }
@@ -48,7 +48,7 @@ impl PigmentLut {
     /// for it — there is nothing to stand in for, and no `needs_pigment_lut` for a space
     /// to answer twice. `lut` is the caller's own module's declaration, the two being
     /// different slots of different modules (§6.10).
-    pub fn of(ctx: &GpuContext, fs: EntryPoint, lut: Binding) -> Option<Self> {
+    pub(crate) fn of(ctx: &GpuContext, fs: EntryPoint, lut: Binding) -> Option<Self> {
         fs.reads(lut).then(|| Self::load(ctx))
     }
 

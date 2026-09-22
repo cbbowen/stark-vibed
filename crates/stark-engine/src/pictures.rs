@@ -37,12 +37,12 @@ struct Held {
 /// `Clone` (`Arc`-backed) so it rides in the `Action::Context` beside the tile pool
 /// and the renderers (§5).
 #[derive(Clone, Default)]
-pub struct PictureStore {
+pub(crate) struct PictureStore {
     inner: Arc<Mutex<HashMap<AssetId, Held>>>,
 }
 
 impl PictureStore {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
@@ -52,7 +52,7 @@ impl PictureStore {
     /// two people who encoded the same photograph differently land on one id and a
     /// reload of the stored form lands back on it (§19). The stored bytes are
     /// re-encoded from that canonical form for the same reason.
-    pub fn import(&self, png_bytes: &[u8]) -> Result<AssetId> {
+    pub(crate) fn import(&self, png_bytes: &[u8]) -> Result<AssetId> {
         self.load(png_bytes, None)
     }
 
@@ -63,7 +63,7 @@ impl PictureStore {
     /// `substrate::identify` derives a substrate's: bytes that do not hash to the id that
     /// asked for them are a different picture, and a caller comparing what it got
     /// against what it wanted is the whole of how that is caught (§19).
-    pub fn insert_bytes(&self, bytes: &[u8]) -> Result<AssetId> {
+    pub(crate) fn insert_bytes(&self, bytes: &[u8]) -> Result<AssetId> {
         self.load(bytes, Some(bytes.to_vec()))
     }
 
@@ -89,20 +89,20 @@ impl PictureStore {
     ///
     /// An `Arc`, so the caller reads it without holding the store's lock across a
     /// tile walk that visits sixty-five thousand texels a tile.
-    pub fn get(&self, id: AssetId) -> Option<Arc<Picture>> {
+    pub(crate) fn get(&self, id: AssetId) -> Option<Arc<Picture>> {
         unpoisoned(self.inner.lock())
             .get(&id)
             .map(|held| held.picture.clone())
     }
 
     /// Whether `id` is loaded in this store.
-    pub fn contains(&self, id: AssetId) -> bool {
+    pub(crate) fn contains(&self, id: AssetId) -> bool {
         unpoisoned(self.inner.lock()).contains_key(&id)
     }
 
     /// The canonical PNG bytes of one picture, if loaded — what a save file bundles
     /// and what a peer is served.
-    pub fn bytes(&self, id: AssetId) -> Option<Vec<u8>> {
+    pub(crate) fn bytes(&self, id: AssetId) -> Option<Vec<u8>> {
         unpoisoned(self.inner.lock())
             .get(&id)
             .map(|held| held.bytes.to_vec())
@@ -111,7 +111,7 @@ impl PictureStore {
     /// A store of its own holding only the pictures `keep` answers `true` for — what
     /// the next document starts with when this one closes (§23). The entries are
     /// shared, not copied.
-    pub fn keeping(&self, keep: impl Fn(AssetId) -> bool) -> Self {
+    pub(crate) fn keeping(&self, keep: impl Fn(AssetId) -> bool) -> Self {
         let kept = unpoisoned(self.inner.lock())
             .iter()
             .filter(|(id, _)| keep(**id))

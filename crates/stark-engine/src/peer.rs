@@ -250,7 +250,7 @@ impl PresenceChange {
 /// roster would make two sources of truth for the one thing `preview == committed`
 /// depends on. The engine merges the two at the point of use instead.
 #[derive(Default)]
-pub struct Peers {
+pub(crate) struct Peers {
     map: BTreeMap<ActorId, Peer>,
     /// Bumped on every change, so a caller notices the roster moved without rebuilding
     /// and comparing a projection of it once per pump tick.
@@ -258,12 +258,12 @@ pub struct Peers {
 }
 
 impl Peers {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
     /// A counter that changes whenever anything in the roster does.
-    pub fn revision(&self) -> u64 {
+    pub(crate) fn revision(&self) -> u64 {
         self.revision
     }
 
@@ -275,7 +275,7 @@ impl Peers {
     ///
     /// **The door.** The one way a frame becomes state anyone reads, and so where
     /// [`PeerFrame::sanitized`] is held — every arm below reads a filtered value.
-    pub fn merge(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> PresenceChange {
+    pub(crate) fn merge(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> PresenceChange {
         let change = self.merge_inner(actor, frame, now);
         self.revision += u64::from(change.roster);
         change
@@ -329,7 +329,7 @@ impl Peers {
     /// Everything expiry does reaches the canvas, and a stalled *gesture* changes it
     /// without changing the roster's size, so counting peers cannot substitute for the
     /// reported change.
-    pub fn tick(&mut self, now: f64) -> PresenceChange {
+    pub(crate) fn tick(&mut self, now: f64) -> PresenceChange {
         let mut change = PresenceChange::NONE;
         self.map.retain(|_, p| {
             let live = now - p.last_seen < PEER_TIMEOUT;
@@ -351,7 +351,7 @@ impl Peers {
     /// Whether [`tick`](Self::tick) would change anything — the cheap test, so a
     /// pump can skip the work on an idle session rather than take a mutable borrow
     /// to discover there was none.
-    pub fn expiry_due(&self, now: f64) -> bool {
+    pub(crate) fn expiry_due(&self, now: f64) -> bool {
         self.map.values().any(|p| {
             now - p.last_seen >= PEER_TIMEOUT
                 || (p.is_gesturing() && now - p.gesture_seen >= GESTURE_TIMEOUT)
@@ -361,7 +361,7 @@ impl Peers {
     /// A gesture is a thing that becomes an action, so an action from its author is
     /// the end-of-gesture signal — no id to correlate, and no window in which both
     /// the live copy and the committed one are drawn.
-    pub fn clear_gesture(&mut self, actor: ActorId) {
+    pub(crate) fn clear_gesture(&mut self, actor: ActorId) {
         if let Some(peer) = self.map.get_mut(&actor)
             && peer.is_gesturing()
         {
@@ -371,7 +371,7 @@ impl Peers {
     }
 
     /// Forget everyone — leaving a session, or loading a different document.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         if !self.map.is_empty() {
             self.map.clear();
             self.revision += 1;
@@ -381,7 +381,7 @@ impl Peers {
     /// Every peer, in ascending [`ActorId`] order. That order is what every client
     /// can compute alike, which is what makes the preview fold agree across clients
     /// (§17.6).
-    pub fn iter(&self) -> impl Iterator<Item = &Peer> {
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &Peer> {
         self.map.values()
     }
 

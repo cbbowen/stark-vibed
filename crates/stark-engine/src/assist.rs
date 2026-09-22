@@ -33,8 +33,8 @@ mod adjust;
 mod realize;
 mod recognize;
 
-pub use realize::PenProfile;
-pub use recognize::recognize;
+pub(crate) use realize::PenProfile;
+pub(crate) use recognize::recognize;
 
 use stark_model::document::AxisPlane;
 use stark_model::geom::Vec2;
@@ -45,7 +45,7 @@ use stark_model::geom::Vec2;
 /// committed is the path it produces, not the shape itself. Keeping it would start to
 /// pay for post-hoc stroke editing (§18.2.1), at the price of a wire-format change.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub enum AssistShape {
+pub(crate) enum AssistShape {
     /// A straight segment from `a` to `b`. `b` is the end the stroke finished at —
     /// the end under the pointer, and so the end a drag moves.
     Line {
@@ -122,7 +122,7 @@ impl AssistShape {
     }
 
     /// Which family this is.
-    pub fn family(&self) -> Assisted {
+    pub(crate) fn family(&self) -> Assisted {
         match self {
             AssistShape::Line { .. } => Assisted::Line,
             AssistShape::Ellipse { .. } => Assisted::Ellipse,

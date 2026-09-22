@@ -23,7 +23,7 @@ pub(super) use stark_shaders::mirror::overlay::OverlayInstance;
 
 /// One selection to outline, and whose it is (§17.3).
 #[derive(Copy, Clone)]
-pub struct SelectionOutline<'a> {
+pub(crate) struct SelectionOutline<'a> {
     pub selection: &'a Selection,
     /// `None` for the local actor — the marching ants. `Some(rgb)` for a peer's,
     /// drawn as a flat line in their color so the two never read as the same thing.

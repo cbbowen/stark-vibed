@@ -64,7 +64,7 @@ pub use budget::{max_stretch, max_tip_reach};
 pub(crate) use incremental::{Progress, StrokeCarry, StrokeSpans, ToolState, safe_frozen};
 
 #[derive(Clone)]
-pub struct StrokeRenderer {
+pub(crate) struct StrokeRenderer {
     ctx: GpuContext,
     color_space: Arc<dyn ColorSpace>,
 
@@ -182,7 +182,7 @@ impl Complaints {
 /// prefix-τ cache — so the mutable scene is handed in per call. These travel together
 /// through every entry point, so they are one parameter rather than four at each hop.
 #[derive(Copy, Clone)]
-pub struct StrokeScene<'a> {
+pub(crate) struct StrokeScene<'a> {
     pub pool: &'a TilePool,
     /// Read once, at the gate: the brush's shape resolves against it
     /// ([`render_range`](StrokeRenderer::render_range)), and the paths are handed
@@ -210,7 +210,7 @@ pub struct StrokeScene<'a> {
 /// fold reads as "keep the run in place" ([`Layer::with_painted`]).
 ///
 /// [`Layer::with_painted`]: crate::document::Layer::with_painted
-pub struct Painted {
+pub(crate) struct Painted {
     pub tiles: TileMap,
     pub liquify: Option<Rc<LiquifyRun>>,
 }
@@ -299,7 +299,7 @@ impl StrokeRenderer {
     /// receives the mask's fraction of whatever the stroke did there) and is what
     /// makes a feathered selection fade a stroke out instead of scaling its optical
     /// depth, which for an opaque brush would barely fade at all (§6.8).
-    pub fn render(&self, scene: StrokeScene<'_>, rec: &StrokeRecord) -> Painted {
+    pub(crate) fn render(&self, scene: StrokeScene<'_>, rec: &StrokeRecord) -> Painted {
         self.render_range(scene, rec, StrokeSpans::whole(rec), None)
             .0
     }

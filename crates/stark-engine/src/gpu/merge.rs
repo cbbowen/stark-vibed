@@ -54,7 +54,7 @@ fn view(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
 /// out at full opacity (§14.11); taking the two as one is what stops a call site
 /// pairing the destination's map with the source's slider.
 #[derive(Copy, Clone)]
-pub struct MergeSide<'a> {
+pub(crate) struct MergeSide<'a> {
     pub tiles: &'a TileMap,
     pub opacity: f32,
 }
@@ -65,7 +65,7 @@ pub struct MergeSide<'a> {
 /// `clip` are the **source layer's own** (§14.11): a merge folds the upper layer into
 /// the lower through exactly the merge the compositor would have run between them.
 #[derive(Copy, Clone)]
-pub struct MergeScene<'a> {
+pub(crate) struct MergeScene<'a> {
     pub lower: MergeSide<'a>,
     pub upper: MergeSide<'a>,
     pub blend: BlendMode,
@@ -87,7 +87,7 @@ impl MergeScene<'_> {
 }
 
 #[derive(Clone)]
-pub struct MergeRenderer {
+pub(crate) struct MergeRenderer {
     ctx: GpuContext,
     /// The channel formats this merge's tiles carry — the color space's, resolved
     /// once (§6.7).
@@ -197,7 +197,7 @@ impl MergeRenderer {
     /// Infallible, unlike the transform's and the fill's: there is no map to be
     /// unusable and no cap to exceed, because the result spans the union of two tile
     /// sets that the document already holds.
-    pub fn apply(&self, pool: &TilePool, scene: MergeScene<'_>) -> TileMap {
+    pub(crate) fn apply(&self, pool: &TilePool, scene: MergeScene<'_>) -> TileMap {
         let MergeScene {
             lower,
             upper,
@@ -280,7 +280,12 @@ impl MergeRenderer {
     /// opinion about every texel it can reach, so [`apply`](Self::apply)'s lopsided
     /// shortcut has no counterpart here. An empty destination merges to an empty
     /// destination.
-    pub fn apply_filter(&self, pool: &TilePool, dest: &TileMap, draw: &FilterDraw) -> TileMap {
+    pub(crate) fn apply_filter(
+        &self,
+        pool: &TilePool,
+        dest: &TileMap,
+        draw: &FilterDraw,
+    ) -> TileMap {
         // The law, not one kind that breaks it: any other gather named here would
         // pass a `kind` check and render through `fs_tile` with the blur pass's 1×1
         // stand-ins bound — an unfiltered tile, silently.

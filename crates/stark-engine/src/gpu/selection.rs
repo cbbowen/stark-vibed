@@ -88,7 +88,7 @@ use stark_shaders::mirror::mask_region::MaskInstance;
 const MODE_INVERT: f32 = stark_shaders::mirror::selection::MODE_INVERT as f32;
 
 #[derive(Clone)]
-pub struct SelectionRenderer {
+pub(crate) struct SelectionRenderer {
     ctx: GpuContext,
     rasterize_pipeline: wgpu::RenderPipeline,
     rasterize_bindings: desc::Bindings,
@@ -240,7 +240,7 @@ impl SelectionRenderer {
     /// [`mask_for`](Self::mask_for) asks once per tile of every fill, transform and
     /// stroke under a selection, and a partially selected plane (reachable only by
     /// inverting a partial selection, §6.8) asks for a byte between 0 and 255.
-    pub fn constant(&self, coverage: f32) -> wgpu::TextureView {
+    pub(crate) fn constant(&self, coverage: f32) -> wgpu::TextureView {
         let byte = (coverage.clamp(0.0, 1.0) * 255.0).round() as u8;
         self.constants[byte as usize]
             .get_or_init(|| {
@@ -264,7 +264,7 @@ impl SelectionRenderer {
     /// renderers read (§6.2). This is asked per tile and has nowhere per-tile to put
     /// a scalar. The transform must not apply it at all — it carries coverage rather
     /// than gating by it, and the opacity rides on the moved selection instead (§16).
-    pub fn mask_for(&self, selection: &Selection, coord: TileCoord) -> MaskSource {
+    pub(crate) fn mask_for(&self, selection: &Selection, coord: TileCoord) -> MaskSource {
         match selection.tile(coord) {
             Some(handle) => MaskSource::Tile(handle.clone()),
             None => MaskSource::Constant(self.constant(selection.outside())),
@@ -274,7 +274,12 @@ impl SelectionRenderer {
     /// Apply `op` to `prev`, returning the new selection. `None` when the op's shape
     /// would need more than [`MAX_SELECTION_TILES`](stark_model::document::MAX_SELECTION_TILES)
     /// mask tiles — the caller leaves the selection alone rather than clipping it.
-    pub fn apply(&self, pool: &TilePool, prev: &Selection, op: &SelectionOp) -> Option<Selection> {
+    pub(crate) fn apply(
+        &self,
+        pool: &TilePool,
+        prev: &Selection,
+        op: &SelectionOp,
+    ) -> Option<Selection> {
         let plan = prev.plan(op)?;
         let edges = match &op.shape() {
             SelectionShape::Lasso(points) => lasso_edges(points),
@@ -319,7 +324,7 @@ impl SelectionRenderer {
     /// The level rides in the lane the shader reads an op's opacity from: an inversion
     /// has no shape, and both numbers are "the strength this mask is drawn at"
     /// (`selection.wesl`).
-    pub fn invert(&self, pool: &TilePool, prev: &Selection) -> Selection {
+    pub(crate) fn invert(&self, pool: &TilePool, prev: &Selection) -> Selection {
         let plan = prev.plan_invert();
         self.rasterize(
             pool,
@@ -342,7 +347,7 @@ impl SelectionRenderer {
     /// The usage a [`region_mask`](Self::region_mask) target needs: drawn into by the
     /// gather below, then sampled by the loop. Stated here rather than at the caller
     /// so the lease and the pass cannot disagree about it.
-    pub const REGION_MASK_USAGE: wgpu::TextureUsages =
+    pub(crate) const REGION_MASK_USAGE: wgpu::TextureUsages =
         wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::TEXTURE_BINDING);
 
     /// Gather `selection` into `into` — a region-sized mask for the stamp loop,
@@ -565,7 +570,7 @@ impl SelectionRenderer {
 /// after the `Selection` dropped would read a slot the pool has re-handed out — or,
 /// past a `tick` that `destroy()`ed it, nothing at all. A tile therefore answers with
 /// the handle, and the constant — which no pool owns — with its view.
-pub enum MaskSource {
+pub(crate) enum MaskSource {
     /// The selection's own tile at this coordinate.
     Tile(crate::gpu::tile::MaskHandle),
     /// The constant coverage that reigns outside its tile set ([`Selection::outside`]).
@@ -574,7 +579,7 @@ pub enum MaskSource {
 
 impl MaskSource {
     /// The coverage, to bind.
-    pub fn view(&self) -> &wgpu::TextureView {
+    pub(crate) fn view(&self) -> &wgpu::TextureView {
         match self {
             MaskSource::Tile(handle) => handle.view(),
             MaskSource::Constant(view) => view,

@@ -14,7 +14,7 @@ mod fixtures;
 mod hover;
 mod shape;
 
-pub use shape::ShapeResult;
+pub(crate) use shape::ShapeResult;
 
 use crate::assist::{AssistShape, PenProfile};
 use crate::command::InputSample;

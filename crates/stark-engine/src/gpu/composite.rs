@@ -164,9 +164,9 @@ fn view_groups(p: &CompositorPipeline) -> ViewGroups<'_> {
 }
 
 pub(crate) use blend::blend_uniform;
-pub use group::{CompositeGroup, CompositeItem, FilterDraw, MatteDraw};
+pub(crate) use group::{CompositeGroup, CompositeItem, FilterDraw, MatteDraw};
 pub use media::MediaParams;
-pub use overlay::SelectionOutline;
+pub(crate) use overlay::SelectionOutline;
 pub(crate) use view::view_uniform;
 
 /// What [`Streams::upload`] hands the encoder: the per-tile bind groups, and the
@@ -190,7 +190,7 @@ struct PreparedStreams<'a> {
 /// [`Engine::render_view`](crate::Engine) — and meaningless apart: the substrate
 /// belongs under the stack, the outlines over it, and `transparent` says whether the
 /// substrate is drawn at all.
-pub struct CompositeScene<'a> {
+pub(crate) struct CompositeScene<'a> {
     /// The substrate color in the document's working channels — the substrate under
     /// the paint (§15.5).
     pub substrate_color: [f32; 4],
@@ -243,7 +243,7 @@ pub struct CompositeScene<'a> {
 /// write and its submit with another render, which nothing here could enforce.
 ///
 /// [`Engine::new_sharing`]: crate::Engine::new_sharing
-pub struct CompositorPasses {
+pub(crate) struct CompositorPasses {
     ctx: GpuContext,
 
     /// The tile sampler passes A and C share — the whole of the view that is not
@@ -393,7 +393,7 @@ pub(crate) struct ViewSettings {
 /// holds no GPU-visible state that a render writes — every uniform a render fills in
 /// belongs to the [`Compositor`] doing it — so a consumer's `&CompositorPipeline` is
 /// a read of settled values and nothing else.
-pub struct CompositorPipeline {
+pub(crate) struct CompositorPipeline {
     /// The pipelines, shared: this engine's alone after [`Self::new`], a sibling
     /// engine's too after [`Self::sharing`].
     passes: Arc<CompositorPasses>,
@@ -460,7 +460,7 @@ fn next_generation() -> u64 {
 /// renders beside it: an export, the navigator's miniature. Sharing one across
 /// targets of different sizes means each render resizes the attachments the other
 /// just built, so the cost is paid twice per alternation rather than once ever.
-pub struct Compositor {
+pub(crate) struct Compositor {
     sized: TargetSized,
     streams: Streams,
 }
@@ -683,23 +683,23 @@ impl CompositorPipeline {
     }
 
     /// The current media/lighting parameters (§6.3).
-    pub fn media(&self) -> MediaParams {
+    pub(crate) fn media(&self) -> MediaParams {
         self.settings.media
     }
 
     /// Adjust the media/lighting parameters (§6.3).
-    pub fn set_media(&mut self, media: MediaParams) {
+    pub(crate) fn set_media(&mut self, media: MediaParams) {
         self.settings.media = media;
     }
 
     /// The display the screen is presented on (§6.5).
-    pub fn output(&self) -> Output {
+    pub(crate) fn output(&self) -> Output {
         self.settings.output
     }
 
     /// State the display the screen is presented on (§6.5). No attachment is
     /// rebuilt; the next render reads it into its uniforms.
-    pub fn set_output(&mut self, output: Output) {
+    pub(crate) fn set_output(&mut self, output: Output) {
         self.settings.output = output;
     }
 
@@ -727,13 +727,13 @@ impl CompositorPipeline {
     /// binding stamp moved, rather than being told: the consumer that would be
     /// forgotten is exactly the one nobody is looking at. Its attachments are
     /// untouched — see [`CompositorPipeline::bindings`].
-    pub fn set_substrate(&mut self, substrate: SubstrateMap) {
+    pub(crate) fn set_substrate(&mut self, substrate: SubstrateMap) {
         self.substrate = substrate;
         self.bindings = next_generation();
     }
 
     /// Swap the HDR lighting environment so the next render samples it (§6.3).
-    pub fn set_environment(&mut self, environment: Environment) {
+    pub(crate) fn set_environment(&mut self, environment: Environment) {
         self.environment = environment;
         self.bindings = next_generation();
     }
@@ -1199,7 +1199,7 @@ impl Compositor {
     /// layouts, the decoded pigment LUT) lives in the pipeline and is only borrowed,
     /// and everything *sized* waits for the first render, which is the only thing that
     /// knows the zoom.
-    pub fn new(pipeline: &CompositorPipeline) -> Self {
+    pub(crate) fn new(pipeline: &CompositorPipeline) -> Self {
         Self {
             sized: TargetSized::new(&pipeline.ctx.device),
             streams: Streams::new(pipeline),
@@ -1344,7 +1344,7 @@ impl Compositor {
     ///
     /// The target's format picks the passes; the scene says what display it is for,
     /// and an 8-bit target is given no headroom whatever it was asked for (§6.5).
-    pub fn render(
+    pub(crate) fn render(
         &mut self,
         p: &CompositorPipeline,
         target: &wgpu::TextureView,

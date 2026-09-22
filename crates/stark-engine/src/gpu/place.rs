@@ -42,7 +42,7 @@ use stark_shaders::mirror::paint_common::{OPACITY_K, OPAQUE_MASS};
 /// Holds no pipeline and no bind group layout — there is no pass. `Clone` like its
 /// siblings so it rides in the `Action::Context` (§5).
 #[derive(Clone)]
-pub struct PlaceRenderer {
+pub(crate) struct PlaceRenderer {
     ctx: GpuContext,
     color_space: Arc<dyn ColorSpace>,
     /// The channel formats this document's tiles carry — the color space's, resolved
@@ -89,7 +89,7 @@ impl PlaceRenderer {
     /// `None` refuses the whole action, deterministically, when the placement falls off
     /// the tile grid an `i32` can address — refused rather than clamped for a
     /// transform's reason (§16.1): a placement somewhere else is not the one asked for.
-    pub fn render(&self, pool: &TilePool, at: IVec2, image: &Picture) -> Option<TileMap> {
+    pub(crate) fn render(&self, pool: &TilePool, at: IVec2, image: &Picture) -> Option<TileMap> {
         let coords = image_tiles(at, image)?;
         let mut tiles = TileMap::new();
 

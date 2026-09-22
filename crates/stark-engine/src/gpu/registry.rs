@@ -63,7 +63,7 @@ use stark_model::DocError;
 const BUILT_BUDGET: u64 = 256 << 20;
 
 /// A resource the frontend supplies bytes for.
-pub trait Resource: Copy + Eq + Hash + std::fmt::Debug {
+pub(crate) trait Resource: Copy + Eq + Hash + std::fmt::Debug {
     /// The live GPU object built from the bytes. `Clone` because the registry hands
     /// out owned handles — the objects are reference-counted wgpu views plus a few
     /// scalars, so a clone is a handful of atomic bumps.
@@ -121,7 +121,7 @@ pub trait Resource: Copy + Eq + Hash + std::fmt::Debug {
 /// What a build is given for a registered id: the bytes, and the decode of them
 /// [`Registry::register`] already paid for. Both, because which one a build reads is the
 /// resource's business — see [`Resource::Decoded`].
-pub struct Registered<'a, R: Resource> {
+pub(crate) struct Registered<'a, R: Resource> {
     pub bytes: &'a [u8],
     pub decoded: &'a R::Decoded,
 }
@@ -270,7 +270,7 @@ fn evict_order(entries: &[(u64, u64, bool)], total: u64, budget: u64) -> Vec<usi
 /// `Clone` is a **sibling**, not a copy: the clone shares this registry's store —
 /// every registered byte string and every built object, past and future — and takes
 /// its own current id, starting where this one stands (see the module note).
-pub struct Registry<R: Resource> {
+pub(crate) struct Registry<R: Resource> {
     store: Arc<Mutex<Store<R>>>,
     id: R,
 }
@@ -294,7 +294,7 @@ impl<R: Resource> Drop for Registry<R> {
 impl<R: Resource> Registry<R> {
     /// A registry holding only `id`, which must therefore be a builtin (nothing has
     /// been registered yet).
-    pub fn new(gpu: &GpuContext, id: R) -> Self {
+    pub(crate) fn new(gpu: &GpuContext, id: R) -> Self {
         debug_assert!(id.is_builtin(), "a fresh registry can only hold a builtin");
         let obj = id.build(gpu, None);
         let mut store = Store {
@@ -320,12 +320,12 @@ impl<R: Resource> Registry<R> {
     }
 
     /// Which resource is in use.
-    pub fn id(&self) -> R {
+    pub(crate) fn id(&self) -> R {
         self.id
     }
 
     /// The live GPU object — the one `id()` names.
-    pub fn current(&self) -> R::Gpu {
+    pub(crate) fn current(&self) -> R::Gpu {
         self.store()
             .hit(self.id)
             .expect("the id in use is pinned, so always built")
@@ -341,7 +341,7 @@ impl<R: Resource> Registry<R> {
     /// have just invalidated — they call this and drop the result.
     ///
     /// The build runs with the lock released (the module note).
-    pub fn get(&self, gpu: &GpuContext, id: R) -> R::Gpu {
+    pub(crate) fn get(&self, gpu: &GpuContext, id: R) -> R::Gpu {
         let registered = {
             let mut store = self.store();
             if let Some(hit) = store.hit(id) {
@@ -364,14 +364,14 @@ impl<R: Resource> Registry<R> {
 
     /// Whether `id` is ready to use: builtins always are, everything else once its
     /// bytes have been [`register`](Self::register)ed.
-    pub fn is_loaded(&self, id: R) -> bool {
+    pub(crate) fn is_loaded(&self, id: R) -> bool {
         id.is_builtin() || self.store().bytes.contains_key(&id.content())
     }
 
     /// The registered bytes for `content`, if any — what a save file bundles and what
     /// a peer is served (§8, §12.4). `None` for a builtin, which has none by
     /// definition, and for content whose image has not arrived.
-    pub fn bytes(&self, content: R::Content) -> Option<Vec<u8>> {
+    pub(crate) fn bytes(&self, content: R::Content) -> Option<Vec<u8>> {
         self.store().bytes.get(&content).map(|e| e.bytes.clone())
     }
 
@@ -388,7 +388,7 @@ impl<R: Resource> Registry<R> {
     /// Every id standing on this content is rebuilt, siblings' included — they are
     /// pinned, and a pinned id is always built. A sibling still keeps its stale
     /// *binding* until it next rebinds.
-    pub fn register(
+    pub(crate) fn register(
         &self,
         gpu: &GpuContext,
         content: R::Content,
@@ -421,7 +421,7 @@ impl<R: Resource> Registry<R> {
 
     /// Switch to `id`. Returns `true` if it changed (and so was rebuilt); switching
     /// to what is already in use is a no-op, not a rebuild.
-    pub fn set(&mut self, gpu: &GpuContext, id: R) -> bool {
+    pub(crate) fn set(&mut self, gpu: &GpuContext, id: R) -> bool {
         if id == self.id {
             return false;
         }

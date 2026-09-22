@@ -210,7 +210,7 @@ pub enum LayerContent {
 /// What the type rules out is a literal that names *both*: nothing outside this
 /// module can spell a fresh one.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct CarriedBounds(CanvasBounds);
+pub(crate) struct CarriedBounds(CanvasBounds);
 
 /// A single layer: its content, what it carries, and its presentation
 /// properties.

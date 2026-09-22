@@ -37,7 +37,7 @@ impl AssistShape {
     ///   degree of freedom on is not there to spend. Its eccentricity and tilt on the
     ///   canvas follow from where on the plane it sits, which is why this cannot be done
     ///   by scaling the drawn ellipse.
-    pub fn adjust(self, grip: Vec2, pointer: Vec2) -> Self {
+    pub(crate) fn adjust(self, grip: Vec2, pointer: Vec2) -> Self {
         match self {
             Self::Line { a, b, on_axis } => {
                 let end = b + (pointer - grip);
@@ -119,7 +119,7 @@ impl AssistShape {
     /// Not the pointer's own position: it is the shape that moves from here on, so the
     /// grip has to be a point *of the shape*, or the first adjustment would apply the
     /// fit residual as a jump.
-    pub fn grip(&self) -> Vec2 {
+    pub(crate) fn grip(&self) -> Vec2 {
         match *self {
             Self::Line { b, .. } => b,
             // The seam: where the loop starts, which is where the hand is holding it.

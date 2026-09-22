@@ -368,7 +368,7 @@ fn base_rect(base: &TileMap) -> stark_model::geom::TileRect {
 }
 
 #[derive(Clone)]
-pub struct TransformRenderer {
+pub(crate) struct TransformRenderer {
     ctx: GpuContext,
     /// The channel formats this transform's tiles carry — the color space's,
     /// resolved once (§6.7).
@@ -601,7 +601,7 @@ impl TransformRenderer {
     /// outline land together on the canvas. `None` rejects the whole action —
     /// an unusable map, or more tiles than the caps allow — deterministically,
     /// so peers and replays agree (§16.1).
-    pub fn apply(
+    pub(crate) fn apply(
         &self,
         pool: &TilePool,
         base: &TileMap,
@@ -628,7 +628,7 @@ impl TransformRenderer {
     /// texel centre (§16.4's second exactness property, which the mask pass
     /// shares with the parcel). A zero translation and a universal mask are both
     /// the mask itself, by handle: no pass runs.
-    pub fn shifted_selection(
+    pub(crate) fn shifted_selection(
         &self,
         pool: &TilePool,
         selection: &Selection,
@@ -685,7 +685,7 @@ impl TransformRenderer {
     /// list: the destinations are enumerated from the mask's own tiles — a
     /// stroke's gate stays the stroke's size however large the layer is, and a
     /// claim of the whole layer (`TileRect::ALL`) stays the mask's.
-    pub fn shifted_selection_in(
+    pub(crate) fn shifted_selection_in(
         &self,
         pool: &TilePool,
         selection: &Selection,
@@ -705,7 +705,7 @@ impl TransformRenderer {
     /// lift, fully-covered tiles cross **by handle**, and only the boundary
     /// tiles pay a parcel and two combines. `None` rejects the action — nothing
     /// selected over the layer, or past the cap — deterministically.
-    pub fn float(
+    pub(crate) fn float(
         &self,
         pool: &TilePool,
         base: &TileMap,

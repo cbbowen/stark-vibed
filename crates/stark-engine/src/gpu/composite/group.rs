@@ -14,7 +14,7 @@ use stark_model::geom::Vec2;
 // No `Debug`: the mirrored `Ramp` (§6.10) derives only what `bytemuck`
 // needs, and 544 bytes of stop lanes would be noise in a dump anyway.
 #[derive(Clone)]
-pub struct MatteDraw {
+pub(crate) struct MatteDraw {
     /// The region's rect in canvas px: `min.xy, max.xy`. For a frame this is the
     /// *hole* — the fill covers everything outside it. Zeros, never read, when
     /// `flags` says the region is the whole plane.
@@ -44,7 +44,7 @@ pub struct MatteDraw {
 /// place in the stack — a frame over the painting, a substrate under it (§15.4.4).
 /// Tiles already cost one draw each, so interleaving mattes adds no per-tile overhead.
 #[derive(Clone)]
-pub enum CompositeItem {
+pub(crate) enum CompositeItem {
     Tile {
         /// Where the tile's interior sits **on the canvas**: its own origin plus the
         /// layer's translation (§14.12), resolved by the item builder because that is
@@ -83,7 +83,7 @@ impl CompositeItem {
 /// [`CompositeGroup`], because a filter merges nothing outward for them to describe
 /// (see [`GroupContent::Filter`]): they are settings of a pass.
 #[derive(Clone, Debug, PartialEq)]
-pub struct FilterDraw {
+pub(crate) struct FilterDraw {
     /// The filter's shader code — see `filter_common.wesl`.
     pub kind: u32,
     /// Whether this filter **gathers**: reads texels other than the one it writes
@@ -118,7 +118,7 @@ const MAX_MAP_STOPS: usize = stark_model::gradient::MAX_STOPS;
 impl FilterDraw {
     /// Whether this is the focal blur (§21.12) — the one kind whose pass is preceded
     /// by a convolution.
-    pub fn is_focal_blur(&self) -> bool {
+    pub(crate) fn is_focal_blur(&self) -> bool {
         self.kind == stark_shaders::mirror::filter_common::FILTER_FOCAL_BLUR
     }
 
@@ -131,7 +131,7 @@ impl FilterDraw {
     /// (§6.10), never a literal. A kind the shader does not declare has no constant to
     /// name here, so this match fails to compile rather than rendering as whichever
     /// kind happens to share its index.
-    pub fn new(filter: Filter, composite: CompositeParams) -> Self {
+    pub(crate) fn new(filter: Filter, composite: CompositeParams) -> Self {
         // Named apart from the `params` lanes below, which are the *filter's* own
         // numbers and have nothing to do with the layer's.
         let (strength, clip) = (composite.opacity, composite.clip);
@@ -241,7 +241,7 @@ fn aperture_lanes(aperture: Aperture) -> (f32, f32, f32) {
 /// the prerequisite for richer modes, recursed: [`GroupContent::Stack`] is a group
 /// whose members are themselves groups.
 #[derive(Clone)]
-pub struct CompositeGroup {
+pub(crate) struct CompositeGroup {
     /// How this group's composited result merges into everything below it — the
     /// **layer's own** params, applied once, to the whole (§14.4.3).
     ///
@@ -257,7 +257,7 @@ pub struct CompositeGroup {
 /// What a [`CompositeGroup`] is made of — and the fast path, expressed as a
 /// shape rather than as a condition inside the encoder.
 #[derive(Clone)]
-pub enum GroupContent {
+pub(crate) enum GroupContent {
     /// A run of the stack that composites internally under plain premultiplied
     /// "over", with **no isolation**.
     ///
@@ -295,7 +295,7 @@ impl CompositeGroup {
     /// [`Self::stack`], which concatenates runs whose opacities are already folded in.
     /// A caller turning *one layer* into a run wants [`Self::leaf`], which folds that
     /// layer's opacity in.
-    pub fn run(params: CompositeParams, items: Vec<CompositeItem>) -> Self {
+    pub(crate) fn run(params: CompositeParams, items: Vec<CompositeItem>) -> Self {
         Self {
             params,
             content: GroupContent::Run(items),
@@ -313,7 +313,7 @@ impl CompositeGroup {
     /// **Equivalent, and therefore exclusive.** The opacity comes *off* the params on
     /// the way past, so what is folded is never also applied at a merge — the double
     /// fade §14.7 describes, which this constructor exists to make unrepresentable.
-    pub fn leaf(params: CompositeParams, mut items: Vec<CompositeItem>) -> Self {
+    pub(crate) fn leaf(params: CompositeParams, mut items: Vec<CompositeItem>) -> Self {
         for item in &mut items {
             item.set_opacity(params.opacity);
         }
@@ -330,7 +330,7 @@ impl CompositeGroup {
     /// (§21) — see [`GroupContent::Filter`] for why the params are fixed rather than
     /// taken from the layer, and [`FilterDraw`] for where the two the layer really
     /// does state have gone.
-    pub fn filter(draw: FilterDraw) -> Self {
+    pub(crate) fn filter(draw: FilterDraw) -> Self {
         Self {
             params: CompositeParams::IDENTITY,
             content: GroupContent::Filter(draw),
@@ -351,7 +351,7 @@ impl CompositeGroup {
     /// The condition cannot be relaxed to "the group itself is normal": a member with
     /// a mode of its own *does* blend against a different backdrop once isolated, and
     /// that difference is the feature (§14.5).
-    pub fn stack(params: CompositeParams, members: Vec<Self>) -> Self {
+    pub(crate) fn stack(params: CompositeParams, members: Vec<Self>) -> Self {
         if params.is_free() && members.iter().all(|m| m.as_direct_run().is_some()) {
             let items = members
                 .into_iter()
@@ -384,7 +384,7 @@ impl CompositeGroup {
     /// **Returning the run is what deletes the invariant rather than checking it.** A
     /// `bool` `is_direct` leaves every call site to re-match the content, and a call
     /// site that gets that wrong silently drops the merge.
-    pub fn as_direct_run(&self) -> Option<&[CompositeItem]> {
+    pub(crate) fn as_direct_run(&self) -> Option<&[CompositeItem]> {
         match &self.content {
             GroupContent::Run(items) if self.is_free() => Some(items),
             _ => None,
@@ -393,7 +393,7 @@ impl CompositeGroup {
 
     /// [`Self::as_direct_run`] for a caller that appends to the run it gets back —
     /// the stack builder folding a group into the one below it.
-    pub fn as_direct_run_mut(&mut self) -> Option<&mut Vec<CompositeItem>> {
+    pub(crate) fn as_direct_run_mut(&mut self) -> Option<&mut Vec<CompositeItem>> {
         let free = self.is_free();
         match &mut self.content {
             GroupContent::Run(items) if free => Some(items),

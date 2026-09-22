@@ -52,7 +52,7 @@ use std::num::NonZeroU8;
 
 /// Texels per side of a baked 2-D noise tile. Enough for fields that vary
 /// smoothly across a cell; [`NoiseKind::Mosaic`] needs more (see [`MOSAIC_RES`]).
-pub const NOISE_RES: u32 = 64;
+pub(crate) const NOISE_RES: u32 = 64;
 /// Texels per side of the mosaic tile. Its cell walls are *steps*, and a step
 /// is only ever as sharp as the tile is fine — at [`NOISE_RES`] a wall would be
 /// a staircase of 4 canvas px treads at frequency 1. Baking it 4× finer puts the
@@ -61,7 +61,7 @@ const MOSAIC_RES: u32 = 256;
 /// Stroke-local pixels (across the stroke and along its arc) spanned by one
 /// noise tile at frequency 1. The shader lookup is
 /// `coord · frequency / NOISE_TILE_PX`.
-pub const NOISE_TILE_PX: f32 = 256.0;
+pub(crate) const NOISE_TILE_PX: f32 = 256.0;
 /// Simplex lattice units per noise tile — the tile holds this many noise
 /// "features" per side. Must be a multiple of 3 (see the module docs).
 const SIMPLEX_PERIOD: i32 = 6;
@@ -97,7 +97,7 @@ const MOSAIC_VALUE_SALT: u32 = 0x51ab_1e12;
 
 /// Bake `kind` for the stroke seeded `seed` and upload it as an `Rgba8Snorm`
 /// 2-D texture.
-pub fn build_noise_texture(
+pub(crate) fn build_noise_texture(
     ctx: &GpuContext,
     kind: NoiseKind,
     seed: u32,
@@ -117,7 +117,7 @@ fn tile_res(kind: NoiseKind) -> u32 {
 
 /// A 1×1 zero tile: sampled offset is exactly 0, so binding it makes the
 /// jitter a no-op without a second shader path.
-pub fn dummy_noise_texture(ctx: &GpuContext) -> (wgpu::Texture, wgpu::TextureView) {
+pub(crate) fn dummy_noise_texture(ctx: &GpuContext) -> (wgpu::Texture, wgpu::TextureView) {
     upload_2d(ctx, 1, &[0u8; 4], "stark noise dummy")
 }
 

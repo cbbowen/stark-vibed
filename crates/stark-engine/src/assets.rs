@@ -144,13 +144,13 @@ struct Inner {
 
 /// GPU-resident cache of content-addressed coverage masks.
 #[derive(Clone)]
-pub struct AssetStore {
+pub(crate) struct AssetStore {
     ctx: GpuContext,
     inner: Arc<Mutex<Inner>>,
 }
 
 impl AssetStore {
-    pub fn new(ctx: GpuContext) -> Self {
+    pub(crate) fn new(ctx: GpuContext) -> Self {
         Self {
             ctx,
             inner: Arc::new(Mutex::new(Inner::default())),
@@ -160,14 +160,14 @@ impl AssetStore {
     /// Import a brush image (any PNG), returning its content id. The id is the
     /// hash of the *decoded coverage* (not the file bytes), so it is independent
     /// of source encoding — and the asset is stored as a compact grayscale PNG.
-    pub fn import(&self, bytes: &[u8]) -> Result<AssetId> {
+    pub(crate) fn import(&self, bytes: &[u8]) -> Result<AssetId> {
         // Canonicalize: stored form is re-encoded from the coverage.
         self.load(bytes, None)
     }
 
     /// Re-insert an asset from its saved (already-canonical grayscale PNG) bytes
     /// when loading a document — keeps the stored bytes verbatim.
-    pub fn insert_bytes(&self, bytes: &[u8]) -> Result<AssetId> {
+    pub(crate) fn insert_bytes(&self, bytes: &[u8]) -> Result<AssetId> {
         self.load(bytes, Some(bytes.to_vec()))
     }
 
@@ -254,13 +254,13 @@ impl AssetStore {
     }
 
     /// Whether `id` is loaded in this store.
-    pub fn contains(&self, id: AssetId) -> bool {
+    pub(crate) fn contains(&self, id: AssetId) -> bool {
         unpoisoned(self.inner.lock()).masks.contains_key(&id)
     }
 
     /// The canonical PNG bytes of one asset, if loaded — what a peer mirror or
     /// a second (preview) engine needs to reproduce the shape.
-    pub fn bytes(&self, id: AssetId) -> Option<Vec<u8>> {
+    pub(crate) fn bytes(&self, id: AssetId) -> Option<Vec<u8>> {
         unpoisoned(self.inner.lock())
             .masks
             .get(&id)
@@ -268,7 +268,7 @@ impl AssetStore {
     }
 
     /// Source bytes of every loaded asset, for bundling into the save file (§8).
-    pub fn all_bytes(&self) -> Vec<(AssetId, Vec<u8>)> {
+    pub(crate) fn all_bytes(&self) -> Vec<(AssetId, Vec<u8>)> {
         unpoisoned(self.inner.lock())
             .masks
             .iter()

@@ -40,8 +40,8 @@ use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 /// apron'd texture: `uv = corner * INTERIOR_UV_SCALE + INTERIOR_UV_BIAS`. The
 /// compositor and presenter sample only the interior sub-rect; bilinear taps at
 /// the interior edge then fall into the apron (neighbor content), not a clamp.
-pub const INTERIOR_UV_SCALE: f32 = TILE_SIZE as f32 / TILE_TEX as f32;
-pub const INTERIOR_UV_BIAS: f32 = TILE_APRON as f32 / TILE_TEX as f32;
+pub(crate) const INTERIOR_UV_SCALE: f32 = TILE_SIZE as f32 / TILE_TEX as f32;
+pub(crate) const INTERIOR_UV_BIAS: f32 = TILE_APRON as f32 / TILE_TEX as f32;
 
 /// The tile geometry a mask tile is rasterized over: its texture's top-left in canvas
 /// px (the interior origin, shifted out by the apron — §6.4).
@@ -60,7 +60,7 @@ pub const INTERIOR_UV_BIAS: f32 = TILE_APRON as f32 / TILE_TEX as f32;
 /// been demonstrated, and the bound is not asserted: it is approximate out there, not
 /// a failure. A caller needing an exact offset between two large canvas positions must
 /// derive it in integers, as [`gpu::place::offset`](crate::gpu::place) does.
-pub fn mask_tex_origin(coord: TileCoord) -> Vec2 {
+pub(crate) fn mask_tex_origin(coord: TileCoord) -> Vec2 {
     coord.texture_box().0
 }
 
@@ -72,13 +72,13 @@ const CHANNEL_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
 /// The aux format a brush-dynamics *scratch* tile uses: wider than the persistent
 /// `aux` so the deposit can stash an extra channel (the smear-lifted height) for the
 /// integrate to read, without disturbing the compact persistent layout (§6.2).
-pub const SCRATCH_AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+pub(crate) const SCRATCH_AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 /// The format of a **selection mask** tile (§6.8): one unsigned-normalized
 /// coverage channel. Same `TILE_TEX` geometry (apron included) as a paint tile, so a
 /// mask texel is 1:1 with the tile texel it gates and the mask is pooled and recycled
 /// exactly like paint.
-pub const MASK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+pub(crate) const MASK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
 /// The format of a liquify run's **displacement field** tiles (§6.13): two f32 lanes,
 /// the displacement in canvas px. Full float rather than half because the field is
@@ -86,7 +86,7 @@ pub const MASK_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 /// the store's rounding: a displacement of a few hundred px at f16 has a sixteenth of
 /// a texel of slack, which is visible in a resample. Pooled like paint, in the same
 /// `TILE_TEX` block with the same apron (§6.4).
-pub const FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Float;
+pub(crate) const FIELD_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg32Float;
 
 /// What a texture was taken out of the pool *for*.
 ///
@@ -425,7 +425,7 @@ struct TilePair {
 /// A layer's painted tiles: sparse, so only populated ones exist, and persistent,
 /// so a `DocState` snapshot of one costs a handful of `Arc` bumps (§5.1, §6.1).
 /// The sparsity *is* the infinite canvas.
-pub type TileMap = rpds::HashTrieMap<stark_model::geom::TileCoord, TilePairHandle>;
+pub(crate) type TileMap = rpds::HashTrieMap<stark_model::geom::TileCoord, TilePairHandle>;
 
 /// One tile's channels, decoded to `f32` — what [`TilePairHandle::read_channels`]
 /// hands back. `TILE_TEX`² texels each, apron included, row-major.
@@ -449,7 +449,7 @@ pub struct TileChannels {
 
 /// A selection's coverage tiles, in the very same sparse map the paint lives in —
 /// which is what lets a mask be feathered, unbounded, and free to snapshot (§6.8).
-pub type MaskMap = rpds::HashTrieMap<stark_model::geom::TileCoord, MaskHandle>;
+pub(crate) type MaskMap = rpds::HashTrieMap<stark_model::geom::TileCoord, MaskHandle>;
 
 /// A handle to a tile. Cloning is cheap (Arc bumps), which is what makes persistent
 /// `DocState` snapshots cheap (§5.1).

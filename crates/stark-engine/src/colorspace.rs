@@ -25,7 +25,7 @@ use stark_shaders::{Lane, Pigment, Resid};
 ///
 /// A free function rather than a method on the id, because the id is
 /// `stark-model`'s and an inherent impl may only be written where the type is (§2).
-pub fn make(id: ColorSpaceId) -> Option<Arc<dyn ColorSpace>> {
+pub(crate) fn make(id: ColorSpaceId) -> Option<Arc<dyn ColorSpace>> {
     match id {
         ColorSpaceId::Oklab => Some(Arc::new(OkLabColorSpace)),
         #[cfg(feature = "mixbox")]
@@ -62,7 +62,7 @@ pub fn all_available() -> impl Iterator<Item = ColorSpaceId> {
 /// opacity — a property of the *paint*, not of the color (§6.1) — and call sites
 /// write it themselves rather than take it from a conversion with no opinion on it.
 #[derive(Copy, Clone, Debug, Default, PartialEq)]
-pub struct Latent {
+pub(crate) struct Latent {
     /// The space's three color channels, pre-coverage: Oklab's `L, a, b`, or the
     /// first three Mixbox pigment concentrations.
     pub lat: [f32; 3],
@@ -74,7 +74,7 @@ pub struct Latent {
 }
 
 /// A color space: tile layout + blend + picker conversions + GPU shaders.
-pub trait ColorSpace {
+pub(crate) trait ColorSpace {
     fn id(&self) -> ColorSpaceId;
 
     /// Tile color channel texture format.
@@ -219,7 +219,7 @@ fn additive() -> wgpu::BlendState {
 /// paint's *opacity* (in the color alpha), with paint height in a one-channel aux
 /// (§6.5/§6.1). The media pass derives visible alpha from opacity × thickness,
 /// where thickness is the difference between paint height and substrate height.
-pub struct OkLabColorSpace;
+pub(crate) struct OkLabColorSpace;
 
 impl ColorSpace for OkLabColorSpace {
     fn id(&self) -> ColorSpaceId {
@@ -277,7 +277,7 @@ impl ColorSpace for OkLabColorSpace {
 /// [`make`] for why the *id* cannot be gated even though the
 /// implementation can.
 #[cfg(feature = "mixbox")]
-pub struct MixboxColorSpace;
+pub(crate) struct MixboxColorSpace;
 
 #[cfg(feature = "mixbox")]
 impl ColorSpace for MixboxColorSpace {

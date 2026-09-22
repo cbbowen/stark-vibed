@@ -204,7 +204,7 @@ pub fn flatten(knots: &[ControlPoint], tol: FlattenTolerance) -> Vec<Intermediat
 /// exactly one point and their segments tile the stroke with no gap and no overlap —
 /// what an incremental renderer wants, with
 /// [`PathFitter::frozen_spans`](super::PathFitter::frozen_spans).
-pub fn flatten_spans(
+pub(crate) fn flatten_spans(
     knots: &[ControlPoint],
     spans: Range<usize>,
     dist0: f32,

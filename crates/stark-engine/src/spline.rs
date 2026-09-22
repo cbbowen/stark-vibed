@@ -39,7 +39,7 @@ pub(crate) const ORDER: usize = DEGREE + 1;
 /// on where the control points currently are except through the ridge prior, which is
 /// that same buffer.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct SplineIndex {
+pub(crate) struct SplineIndex {
     m: usize,
 }
 
@@ -49,7 +49,7 @@ pub struct SplineIndex {
 /// **Borrows its control points rather than owning them.** Nothing here mutates them,
 /// and the stroke fitter builds four of these per pointer report, so owning would make
 /// every construction an `O(stroke length)` copy on the interactive drawing path.
-pub struct CubicBSpline<'a, const D: usize> {
+pub(crate) struct CubicBSpline<'a, const D: usize> {
     index: SplineIndex,
     control_points: &'a OMatrix<f32, Dyn, Const<D>>,
 }
@@ -57,7 +57,7 @@ pub struct CubicBSpline<'a, const D: usize> {
 /// What one [`SplineIndex::fit_into`] is solved against: where each value sits on
 /// the curve, what it is, and how much of the subject it stands for.
 #[derive(Copy, Clone)]
-pub struct Observations<'a, const E: usize> {
+pub(crate) struct Observations<'a, const E: usize> {
     /// Curve parameter each value is assigned to. The caller declares the
     /// correspondence; nothing here searches for it.
     pub ts: &'a [f32],
@@ -73,7 +73,7 @@ pub struct Observations<'a, const E: usize> {
 
 impl<'a, const E: usize> Observations<'a, E> {
     /// Values with no measure of their own — an even sampling, weighted one each.
-    pub fn even(ts: &'a [f32], values: &'a [[f32; E]]) -> Self {
+    pub(crate) fn even(ts: &'a [f32], values: &'a [[f32; E]]) -> Self {
         Self {
             ts,
             values,
@@ -84,11 +84,11 @@ impl<'a, const E: usize> Observations<'a, E> {
 
 #[derive(Debug, thiserror::Error)]
 #[error("a B-spline needs at least 2 control points (got {0})")]
-pub struct NotEnoughControlPoints(pub usize);
+pub(crate) struct NotEnoughControlPoints(pub usize);
 
 impl SplineIndex {
     /// The structure over `m` control points.
-    pub fn new(m: usize) -> Result<Self, NotEnoughControlPoints> {
+    pub(crate) fn new(m: usize) -> Result<Self, NotEnoughControlPoints> {
         if m < 2 {
             return Err(NotEnoughControlPoints(m));
         }
@@ -98,12 +98,12 @@ impl SplineIndex {
     /// Spans a polygon of `m` control points has, **or zero when it is not a curve**
     /// — [`Self::new`] and [`Self::num_spans`] in the one expression every caller
     /// outside this module actually wants (`path::span_count`).
-    pub fn spans_for(m: usize) -> usize {
+    pub(crate) fn spans_for(m: usize) -> usize {
         Self::new(m).map_or(0, |ix| ix.num_spans())
     }
 
     /// Number of polynomial spans; the spline is parameterized over `[0, num_spans()]`.
-    pub fn num_spans(self) -> usize {
+    pub(crate) fn num_spans(self) -> usize {
         // The clamped view repeats each endpoint knot `DEGREE` times (that is,
         // `DEGREE - 1` extra copies per end), and a degree-p B-spline over v control
         // points has v - p fully supported spans.
@@ -217,7 +217,7 @@ impl SplineIndex {
     /// Panics if `values` is not exactly the control-point count, if `obs`'s
     /// parameters and values differ in length, if a non-empty set of weights is not
     /// that same length, or if `frozen` exceeds the control-point count.
-    pub fn fit_into<const E: usize>(
+    pub(crate) fn fit_into<const E: usize>(
         self,
         obs: Observations<'_, E>,
         values: &mut OMatrix<f32, Dyn, Const<E>>,
@@ -394,7 +394,7 @@ impl SplineIndex {
 
 impl<'a, const D: usize> CubicBSpline<'a, D> {
     /// A spline reading `control_points`, which it borrows for its lifetime.
-    pub fn new(
+    pub(crate) fn new(
         control_points: &'a OMatrix<f32, Dyn, Const<D>>,
     ) -> Result<Self, NotEnoughControlPoints> {
         Ok(Self {
@@ -404,12 +404,12 @@ impl<'a, const D: usize> CubicBSpline<'a, D> {
     }
 
     /// Number of polynomial spans; the spline is parameterized over `[0, num_spans()]`.
-    pub fn num_spans(&self) -> usize {
+    pub(crate) fn num_spans(&self) -> usize {
         self.index.num_spans()
     }
 
     /// The point on the curve at parameter `t`.
-    pub fn evaluate(&self, t: f32) -> SVector<f32, D> {
+    pub(crate) fn evaluate(&self, t: f32) -> SVector<f32, D> {
         // De Boor's algorithm. Only the `DEGREE + 1` conceptual control points
         // k..=k+DEGREE support span k; their backing rows come from the duplicating
         // knot view. On the uniform (cardinal) integer knot vector the recurrence

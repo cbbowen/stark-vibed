@@ -21,7 +21,7 @@ mod import;
 mod tooth;
 
 use import::canonical_height;
-pub use import::{canonicalize, identify};
+pub(crate) use import::{canonicalize, identify};
 use tooth::{Bearing, pack_substrate};
 
 /// Canvas pixels spanned by one full tile of the substrate texture **at natural
@@ -34,7 +34,7 @@ use tooth::{Bearing, pack_substrate};
 ///
 /// An integer, because the deposition tooth reads the map through an exact fraction of
 /// it ([`TexelsPerPx`]).
-pub const SUBSTRATE_TILE_PX: u32 = 1024;
+pub(crate) const SUBSTRATE_TILE_PX: u32 = 1024;
 
 /// Map texels per canvas px along each axis, as the exact fractions `num[axis] / den` —
 /// what the deposition tooth reads the map through (`paint_common.wesl::substrate_texel`,
@@ -44,7 +44,7 @@ pub const SUBSTRATE_TILE_PX: u32 = 1024;
 /// by the texel: in floats a fragment centre lands exactly on a map texel's edge, and
 /// rasterizer error chooses between the two.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TexelsPerPx {
+pub(crate) struct TexelsPerPx {
     pub num: [u32; 2],
     pub den: u32,
 }
@@ -52,7 +52,7 @@ pub struct TexelsPerPx {
 impl TexelsPerPx {
     /// No map to read: the shaders' guard sees `num == 0` and returns a gate of exactly 1
     /// before anything divides by `den`.
-    pub const NONE: Self = Self {
+    pub(crate) const NONE: Self = Self {
         num: [0; 2],
         den: 1,
     };
@@ -129,7 +129,7 @@ impl Substrate {
 /// A canvas substrate: the substrate texture (height + the rise ahead) plus a tiling
 /// sampler.
 #[derive(Clone)]
-pub struct SubstrateMap {
+pub(crate) struct SubstrateMap {
     pub view: wgpu::TextureView,
     pub sampler: wgpu::Sampler,
     /// How the deposit reads this map ([`TexelsPerPx`]), read through
@@ -156,7 +156,7 @@ impl SubstrateMap {
     /// A perfectly smooth substrate: a 1×1 *zero-height* texel. Paint always stands
     /// above it (so it shows everywhere) and the constant height has zero gradient
     /// (no relief) — exactly equivalent to having no substrate (§6.4).
-    pub fn flat(ctx: &GpuContext, substrate: Substrate) -> Self {
+    pub(crate) fn flat(ctx: &GpuContext, substrate: Substrate) -> Self {
         Self {
             relief: 0.0,
             ..Self::from_height(ctx, substrate, &[0u8], 1, 1)
@@ -166,7 +166,7 @@ impl SubstrateMap {
     /// How the deposition tooth reads this map (§6.4) — [`TexelsPerPx::NONE`] on a
     /// substrate with no relief, which the shaders gate on for a tooth of exactly 1, as
     /// [`bearing`](Self::bearing) answers 1 on the tool's side.
-    pub fn texels_per_px(&self) -> TexelsPerPx {
+    pub(crate) fn texels_per_px(&self) -> TexelsPerPx {
         if self.relief <= 0.0 {
             return TexelsPerPx::NONE;
         }
@@ -181,7 +181,7 @@ impl SubstrateMap {
     /// [`Bearing::at`], plus the one thing that is the *substrate's* business rather than
     /// the model's: a substrate with no relief has nothing to bite, whatever the tooth,
     /// and answers exactly 1.
-    pub fn bearing(&self, give: f32, softness: f32, dir: [f32; 2]) -> f32 {
+    pub(crate) fn bearing(&self, give: f32, softness: f32, dir: [f32; 2]) -> f32 {
         if self.relief <= 0.0 {
             return 1.0;
         }

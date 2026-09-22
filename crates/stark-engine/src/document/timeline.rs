@@ -24,7 +24,7 @@ use stark_model::document::{Targets, effective_indices, targets, undo_target_of,
 
 /// A versioned document: the source of the current [`DocState`] plus undo/redo —
 /// **solo or shared**, which are the only two it will ever be.
-pub enum Timeline {
+pub(crate) enum Timeline {
     /// One client's own history: a linear undo/redo stack (§5).
     Linear(LinearTimeline),
     /// A shared session's: a grow-only log, totally ordered, materialized through the
@@ -34,7 +34,7 @@ pub enum Timeline {
 
 /// One move of the history playhead ([`Timeline::step`]).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Step {
+pub(crate) enum Step {
     Undo,
     Redo,
     /// To this many applied actions, clamped to [`Timeline::scrub_range`]. Withdrawn
@@ -47,7 +47,7 @@ pub enum Step {
 /// What a [`Step`] did to the timeline.
 #[must_use]
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Stepped {
+pub(crate) enum Stepped {
     /// The playhead moved: the current document is a different one.
     Moved,
     /// There was nothing to step over, and nothing changed.
@@ -59,7 +59,7 @@ pub enum Stepped {
 
 impl Timeline {
     /// The current document state (`O(1)`).
-    pub fn current(&self) -> &DocState {
+    pub(crate) fn current(&self) -> &DocState {
         match self {
             Timeline::Linear(t) => t.current(),
             Timeline::Replicated(t) => t.current(),
@@ -67,7 +67,7 @@ impl Timeline {
     }
 
     /// Commit an action, advancing the timeline. Clears any redo stack.
-    pub fn push(&mut self, action: Action, ctx: &mut ApplyCtx) {
+    pub(crate) fn push(&mut self, action: Action, ctx: &mut ApplyCtx) {
         match self {
             Timeline::Linear(t) => t.push(action, ctx),
             Timeline::Replicated(t) => {
@@ -83,7 +83,7 @@ impl Timeline {
     /// of an `Undo`, so it answers [`Stepped::Log`] with the target and leaves the
     /// commit to the caller. It has no single playhead to [`Seek`](Step::Seek)
     /// (see [`scrub_range`](Self::scrub_range)), so a seek there stays put.
-    pub fn step(&mut self, step: Step, ctx: &mut ApplyCtx) -> Stepped {
+    pub(crate) fn step(&mut self, step: Step, ctx: &mut ApplyCtx) -> Stepped {
         let moved = match self {
             Timeline::Linear(t) => match step {
                 Step::Undo => t.undo(ctx),
@@ -106,14 +106,14 @@ impl Timeline {
         }
     }
 
-    pub fn can_undo(&self) -> bool {
+    pub(crate) fn can_undo(&self) -> bool {
         match self {
             Timeline::Linear(t) => t.can_undo(),
             Timeline::Replicated(t) => t.targets.undo.is_some(),
         }
     }
 
-    pub fn can_redo(&self) -> bool {
+    pub(crate) fn can_redo(&self) -> bool {
         match self {
             Timeline::Linear(t) => t.can_redo(),
             Timeline::Replicated(t) => t.targets.redo.is_some(),
@@ -124,7 +124,7 @@ impl Timeline {
     /// (§8). For a replicated timeline this is the **full** log, including `Undo`
     /// actions and the actions they suppress — exactly the payload a joining peer
     /// needs (§12.4).
-    pub fn clone_actions(&self) -> Vec<Action> {
+    pub(crate) fn clone_actions(&self) -> Vec<Action> {
         match self {
             Timeline::Linear(t) => t.actions().cloned().collect(),
             Timeline::Replicated(t) => t.log.clone(),
@@ -133,7 +133,7 @@ impl Timeline {
 
     /// Integrate an action authored elsewhere (§12.1). Returns whether it was new
     /// (false = a duplicate, or a solo timeline, which has no peers to hear from).
-    pub fn merge(&mut self, action: Action, ctx: &mut ApplyCtx) -> bool {
+    pub(crate) fn merge(&mut self, action: Action, ctx: &mut ApplyCtx) -> bool {
         match self {
             Timeline::Linear(_) => false,
             Timeline::Replicated(t) => t.insert(action, ctx),
@@ -146,7 +146,7 @@ impl Timeline {
     /// **The log does not come with it**: the `Undo` actions and the actions they
     /// suppress are dropped, so [`clone_actions`](Self::clone_actions) afterwards
     /// reports only the effective walk.
-    pub fn unshare(self) -> Self {
+    pub(crate) fn unshare(self) -> Self {
         match self {
             Timeline::Linear(t) => Timeline::Linear(t),
             Timeline::Replicated(t) => Timeline::Linear(LinearTimeline::from_history(t.history)),
@@ -160,7 +160,7 @@ impl Timeline {
     /// `None` rather than `(n, n)`: a [`ReplicatedTimeline`] has no single playhead —
     /// its materialization is a function of a log peers are still appending to — and a
     /// frontend has to tell that from a history that is merely empty.
-    pub fn scrub_range(&self) -> Option<(usize, usize)> {
+    pub(crate) fn scrub_range(&self) -> Option<(usize, usize)> {
         match self {
             Timeline::Linear(t) => Some((t.applied(), t.applied() + t.redo.len())),
             Timeline::Replicated(_) => None,
@@ -171,7 +171,7 @@ impl Timeline {
     /// [`scrub_range`](Self::scrub_range) reports — the withdrawn ones included, since
     /// a scrubber has to label the steps it can travel *to*. Empty where there is no
     /// scrubber, which is the shared case.
-    pub fn scrub_labels(&self) -> Vec<&'static str> {
+    pub(crate) fn scrub_labels(&self) -> Vec<&'static str> {
         match self {
             Timeline::Linear(t) => t.scrub_labels(),
             Timeline::Replicated(_) => Vec::new(),
@@ -181,7 +181,7 @@ impl Timeline {
     /// How materializations have been serviced (§12.6). A solo timeline reports zeros
     /// — the counters exist for the replicated fast paths, and there are none here to
     /// count.
-    pub fn stats(&self) -> TimelineStats {
+    pub(crate) fn stats(&self) -> TimelineStats {
         match self {
             Timeline::Linear(_) => TimelineStats::default(),
             Timeline::Replicated(t) => t.stats,
@@ -199,7 +199,7 @@ impl Timeline {
     /// May fold **fewer** than asked, or none. A shared session folds **nothing**, and
     /// must: its document is re-materialized from the whole log on every arriving
     /// action (§12.2), so a folded action is one the next merge cannot replay.
-    pub fn forget_oldest(&mut self, count: usize) -> usize {
+    pub(crate) fn forget_oldest(&mut self, count: usize) -> usize {
         match self {
             Timeline::Linear(t) => t.forget_oldest(count),
             Timeline::Replicated(_) => 0,
@@ -224,7 +224,7 @@ pub struct TimelineStats {
 }
 
 /// Single-user timeline: a linear undo/redo stack over `history::History`.
-pub struct LinearTimeline {
+pub(crate) struct LinearTimeline {
     history: History<Entry>,
     /// Actions popped by `undo`, awaiting `redo`. Cleared on a fresh `push`.
     redo: Vec<Action>,
@@ -239,7 +239,7 @@ pub struct LinearTimeline {
 }
 
 impl LinearTimeline {
-    pub fn new(initial: DocState) -> Self {
+    pub(crate) fn new(initial: DocState) -> Self {
         Self {
             history: History::new(initial),
             redo: Vec::new(),
@@ -262,7 +262,7 @@ impl LinearTimeline {
 
     /// Every action this timeline holds, oldest first — the folded prefix and then
     /// the live history.
-    pub fn actions(&self) -> impl Iterator<Item = &Action> {
+    pub(crate) fn actions(&self) -> impl Iterator<Item = &Action> {
         self.forgotten
             .iter()
             .chain(self.history.actions().map(|e| &**e))
@@ -386,7 +386,7 @@ impl LinearTimeline {
 /// [`ActionId`] `(lamport, actor)`. The canonical state is the deterministic replay of
 /// the *effective* actions in that order, so two peers that have seen the same set
 /// compute identical pixels (strong eventual consistency, §12.2).
-pub struct ReplicatedTimeline {
+pub(crate) struct ReplicatedTimeline {
     /// Whose undo/redo this timeline answers for ([`Timeline::step`]).
     actor: ActorId,
     /// The full log, sorted by id, no duplicates. Grow-only.
@@ -415,7 +415,7 @@ pub struct ReplicatedTimeline {
 impl ReplicatedTimeline {
     /// Build from a full shared log (a joining peer's snapshot, or the local
     /// linear history at share time). Replays the effective sequence.
-    pub fn from_log(
+    pub(crate) fn from_log(
         actor: ActorId,
         initial: DocState,
         log: Vec<Action>,

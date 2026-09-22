@@ -198,7 +198,7 @@ fn readback_failed(ctx: &GpuContext, detail: String) -> EngineError {
 
 /// Read an 8-bit, 4-channel (e.g. `Rgba8Unorm`) texture back to tightly-packed
 /// RGBA bytes.
-pub async fn read_rgba8(
+pub(crate) async fn read_rgba8(
     ctx: &GpuContext,
     texture: &wgpu::Texture,
     size: Extent2,
@@ -217,7 +217,11 @@ pub async fn read_rgba8(
 /// that makes calling it from the frontend a compile error rather than a runtime
 /// `OperationError`.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn read_rgba8_blocking(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<u8> {
+pub(crate) fn read_rgba8_blocking(
+    ctx: &GpuContext,
+    texture: &wgpu::Texture,
+    size: Extent2,
+) -> Vec<u8> {
     let (buffer, rows) = begin_read(ctx, &[texture], size);
     map_blocking(ctx, &buffer);
     take_rows(buffer, &rows)
@@ -229,7 +233,11 @@ pub fn read_rgba8_blocking(ctx: &GpuContext, texture: &wgpu::Texture, size: Exte
 /// top-down — on [`read_rgba8_blocking`]'s terms: native, for the suite. The format
 /// is asserted here for [`read_many_rgba16f`]'s reason.
 #[cfg(not(target_arch = "wasm32"))]
-pub fn read_rgba16f_blocking(ctx: &GpuContext, texture: &wgpu::Texture, size: Extent2) -> Vec<f32> {
+pub(crate) fn read_rgba16f_blocking(
+    ctx: &GpuContext,
+    texture: &wgpu::Texture,
+    size: Extent2,
+) -> Vec<f32> {
     assert_eq!(
         texture.format(),
         wgpu::TextureFormat::Rgba16Float,
@@ -279,7 +287,7 @@ pub(super) fn decode_rgba16f(bytes: &[u8]) -> Vec<f32> {
 /// would otherwise hand back a picture decoded at the wrong stride — not an error, a
 /// wrong colour. The formats come from this build's own pipeline, never from a file or
 /// a peer, so an assert is the right shape (§5).
-pub async fn read_many_rgba16f(
+pub(crate) async fn read_many_rgba16f(
     ctx: &GpuContext,
     textures: &[&wgpu::Texture],
     size: Extent2,

@@ -65,7 +65,7 @@ fn frozen_at(m: usize) -> usize {
 /// it scales as its **square** — input landing on a grid of `tolerance` leaves a
 /// residual whose *mean square* goes as `tolerance²`, so a price fixed in canvas px²
 /// would sit above the jitter at one zoom level and below it at another.
-pub const KNOT_COST: f32 = 0.06;
+pub(super) const KNOT_COST: f32 = 0.06;
 
 /// Distance after which the polygon gains a control point regardless of error, in
 /// units of the caller's input tolerance (`KNOT_SPACING × tolerance` canvas px).
@@ -78,7 +78,7 @@ pub const KNOT_COST: f32 = 0.06;
 /// long the free window may go without advancing, and the window's job is to average
 /// over a certain number of *input reports* — canvas px say nothing about how many of
 /// those a stretch of stroke holds.
-pub const KNOT_SPACING: f32 = 64.0;
+pub(super) const KNOT_SPACING: f32 = 64.0;
 
 /// The input tolerance assumed when a caller does not supply one: one canvas px,
 /// which is a mouse over a 1:1 view — what the two prices above were measured
@@ -109,7 +109,7 @@ pub const MAX_TOLERANCE: f32 = 64.0;
 /// it ([`PathFitter::with_tolerance`]), and the towed tip measures against it how far
 /// its own bend is still worth sampling (§6.11). Two copies of the bounds would let a
 /// rope be measured against a tolerance the fitter had already clamped away.
-pub fn clamp_tolerance(tolerance: f32) -> f32 {
+pub(crate) fn clamp_tolerance(tolerance: f32) -> f32 {
     if tolerance.is_finite() {
         tolerance.clamp(MIN_TOLERANCE, MAX_TOLERANCE)
     } else {

@@ -57,6 +57,8 @@
 // arises, and the compiler names this as the fix. Nothing here earned it — wgpu's
 // own nesting grew.
 #![recursion_limit = "256"]
+// Here rather than in the workspace `[lints]`, which every crate shares.
+#![warn(unreachable_pub)]
 
 pub(crate) mod assets;
 pub(crate) mod assist;
