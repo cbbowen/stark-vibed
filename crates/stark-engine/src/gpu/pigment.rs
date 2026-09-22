@@ -87,30 +87,19 @@ impl PigmentLut {
             other => panic!("pigment lut: unsupported PNG color type {other:?}"),
         };
 
-        let extent = wgpu::Extent3d {
+        let size = wgpu::Extent3d {
             width: LUT_DIM,
             height: LUT_DIM,
             depth_or_array_layers: 1,
         };
-        let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("stark pigment lut"),
-            size: extent,
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        ctx.queue.write_texture(
-            texture.as_image_copy(),
+        let texture = crate::gpu::desc::texture_with_data(
+            ctx,
+            &crate::gpu::desc::sampled_texture(
+                "stark pigment lut",
+                wgpu::TextureFormat::Rgba8Unorm,
+                size,
+            ),
             &rgba,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(4 * LUT_DIM),
-                rows_per_image: Some(LUT_DIM),
-            },
-            extent,
         );
 
         Self {

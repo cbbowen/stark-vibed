@@ -690,7 +690,89 @@ pub(crate) fn blended_target(
     })
 }
 
-// ---- constant textures ---------------------------------------------------------
+// ---- textures with data --------------------------------------------------------
+
+/// A 2D texture of `size` that shaders sample and an upload fills: one mip, one
+/// sample. A `size` deeper than 1 is an array of that many layers.
+pub(crate) fn sampled_texture(
+    label: &str,
+    format: wgpu::TextureFormat,
+    size: wgpu::Extent3d,
+) -> wgpu::TextureDescriptor<'_> {
+    wgpu::TextureDescriptor {
+        label: Some(label),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    }
+}
+
+/// A texture `desc` describes, created holding `data`: **the one way a texture is
+/// made with its contents** ([`create_texture_with_data`]).
+///
+/// `data` is tightly packed, layer by layer and each layer's mips in order
+/// ([`TextureDataOrder::LayerMajor`]); [`upload_len`] is its length. The bytes go
+/// through the queue rather than a buffer mapped at creation, so no mapping limit
+/// applies to their size.
+///
+/// # Panics
+/// If `data` is not exactly [`upload_len`] bytes. The util reads a prefix of a longer
+/// slice and indexes off the end of a shorter one; neither is an upload anyone meant.
+///
+/// [`create_texture_with_data`]: wgpu::util::DeviceExt::create_texture_with_data
+/// [`TextureDataOrder::LayerMajor`]: wgpu::util::TextureDataOrder::LayerMajor
+pub(crate) fn texture_with_data(
+    ctx: &GpuContext,
+    desc: &wgpu::TextureDescriptor<'_>,
+    data: &[u8],
+) -> wgpu::Texture {
+    use wgpu::util::DeviceExt as _;
+    assert_eq!(
+        data.len(),
+        upload_len(desc),
+        "`{}` is uploaded from the wrong number of bytes",
+        desc.label.unwrap_or("a texture"),
+    );
+    ctx.device.create_texture_with_data(
+        &ctx.queue,
+        desc,
+        wgpu::util::TextureDataOrder::LayerMajor,
+        data,
+    )
+}
+
+/// The bytes of every layer and mip of `desc`, tightly packed — what
+/// [`texture_with_data`] is handed.
+///
+/// # Panics
+/// For a compressed or depth-stencil format, which no upload here has.
+pub(crate) fn upload_len(desc: &wgpu::TextureDescriptor<'_>) -> usize {
+    assert_eq!(
+        desc.format.block_dimensions(),
+        (1, 1),
+        "an upload's format is uncompressed",
+    );
+    let texel = desc
+        .format
+        .block_copy_size(None)
+        .expect("an upload's format has one aspect") as usize;
+    let per_layer: usize = (0..desc.mip_level_count)
+        .map(|mip| {
+            let size = desc.mip_level_size(mip).expect("a mip below the count");
+            // A 2D level's depth counts layers, not texels.
+            let depth = match desc.dimension {
+                wgpu::TextureDimension::D3 => size.depth_or_array_layers,
+                _ => 1,
+            };
+            size.width as usize * size.height as usize * depth as usize
+        })
+        .sum();
+    texel * per_layer * desc.array_layer_count() as usize
+}
 
 /// A 1×1 texture of `format` holding one texel of `bytes`.
 ///
@@ -706,32 +788,13 @@ pub(crate) fn constant_texture(
     bytes: &[u8],
     label: &str,
 ) -> wgpu::TextureView {
-    let extent = wgpu::Extent3d {
+    let one = wgpu::Extent3d {
         width: 1,
         height: 1,
         depth_or_array_layers: 1,
     };
-    let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: extent,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    ctx.queue.write_texture(
-        texture.as_image_copy(),
-        bytes,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(bytes.len() as u32),
-            rows_per_image: Some(1),
-        },
-        extent,
-    );
-    texture.create_view(&wgpu::TextureViewDescriptor::default())
+    texture_with_data(ctx, &sampled_texture(label, format, one), bytes)
+        .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 /// [`constant_texture`] holding zeros — "no paint here", in whichever format the
@@ -780,5 +843,42 @@ mod tests {
             },
             "QUAD_STRIP culls a face the transform needs drawn",
         );
+    }
+
+    /// [`upload_len`] counts what `create_texture_with_data` reads: every mip of every
+    /// layer, a 2D level's depth as layers and a 3D level's as texels.
+    #[test]
+    fn an_upload_is_every_mip_of_every_layer() {
+        use wgpu::TextureFormat as F;
+        let size = |width, height, depth_or_array_layers| wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers,
+        };
+        assert_eq!(
+            upload_len(&sampled_texture("t", F::R8Unorm, size(1, 1, 1))),
+            1
+        );
+        // An array: three layers of 4×2 eight-byte texels.
+        let array = sampled_texture("t", F::Rg32Float, size(4, 2, 3));
+        assert_eq!(upload_len(&array), 4 * 2 * 8 * 3);
+        // A full chain on a non-square base: 8×2, 4×1, 2×1, 1×1.
+        let chain = wgpu::TextureDescriptor {
+            mip_level_count: 4,
+            ..sampled_texture("t", F::Rgba16Float, size(8, 2, 1))
+        };
+        assert_eq!(upload_len(&chain), (16 + 4 + 2 + 1) * 8);
+        // A volume's depth halves with its mips, where an array's layers do not.
+        let volume = wgpu::TextureDescriptor {
+            dimension: wgpu::TextureDimension::D3,
+            mip_level_count: 2,
+            ..sampled_texture("t", F::R8Unorm, size(4, 4, 4))
+        };
+        assert_eq!(upload_len(&volume), 64 + 8);
+        let mipped_array = wgpu::TextureDescriptor {
+            mip_level_count: 2,
+            ..array
+        };
+        assert_eq!(upload_len(&mipped_array), (4 * 2 + 2) * 8 * 3);
     }
 }

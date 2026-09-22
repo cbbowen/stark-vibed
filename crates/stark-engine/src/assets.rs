@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::error::Result;
 use crate::gpu::context::GpuContext;
+use crate::gpu::desc;
 use crate::unpoisoned;
 
 use stark_model::AssetId;
@@ -449,30 +450,16 @@ pub(crate) fn build_prefix(
     label: &'static str,
 ) -> wgpu::TextureView {
     let data = prefix_data(width, height, layers, field);
-    let extent = wgpu::Extent3d {
+    // `prefix_data` is layer-major, which is the upload's order for an array.
+    let size = wgpu::Extent3d {
         width,
         height,
         depth_or_array_layers: layers,
     };
-    let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: extent,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rg32Float,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    ctx.queue.write_texture(
-        texture.as_image_copy(),
+    let texture = desc::texture_with_data(
+        ctx,
+        &desc::sampled_texture(label, wgpu::TextureFormat::Rg32Float, size),
         bytemuck::cast_slice(&data),
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(width * 8),
-            rows_per_image: Some(height),
-        },
-        extent,
     );
     // Always a 2D-array view (even for the single-layer round tip) so the shader binds one
     // texture type for every brush.
@@ -540,36 +527,21 @@ pub(crate) fn build_depth_r16(
     height: u32,
     depth: &[f32],
 ) -> wgpu::TextureView {
-    let extent = wgpu::Extent3d {
+    let size = wgpu::Extent3d {
         width,
         height,
         depth_or_array_layers: 1,
     };
-    let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("stark brush depth"),
-        size: extent,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::R16Float,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
     let halves: Vec<u16> = depth
         .iter()
         .map(|&k| crate::gpu::half::f32_to_f16(k))
         .collect();
-    ctx.queue.write_texture(
-        texture.as_image_copy(),
+    desc::texture_with_data(
+        ctx,
+        &desc::sampled_texture("stark brush depth", wgpu::TextureFormat::R16Float, size),
         bytemuck::cast_slice(&halves),
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(width * 2),
-            rows_per_image: Some(height),
-        },
-        extent,
-    );
-    texture.create_view(&wgpu::TextureViewDescriptor::default())
+    )
+    .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
 #[cfg(test)]

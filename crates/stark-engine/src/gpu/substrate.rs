@@ -15,6 +15,7 @@
 //! filter.
 
 use crate::gpu::context::GpuContext;
+use crate::gpu::desc;
 use stark_model::{SubstrateId, SubstrateScale};
 
 mod import;
@@ -193,33 +194,15 @@ impl SubstrateMap {
     /// curve it implies.
     fn from_height(ctx: &GpuContext, substrate: Substrate, height: &[u8], w: u32, h: u32) -> Self {
         let packed = pack_substrate(height, w, h, substrate.tile_px());
-        let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("stark substrate map"),
-            size: wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        ctx.queue.write_texture(
-            texture.as_image_copy(),
+        let size = wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        };
+        let texture = desc::texture_with_data(
+            ctx,
+            &desc::sampled_texture("stark substrate map", wgpu::TextureFormat::Rgba8Unorm, size),
             &packed,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(w * 4),
-                rows_per_image: Some(h),
-            },
-            wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
         );
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());

@@ -1,9 +1,10 @@
 //! Tileable 2-D noise fields for color dynamics (§6.2).
 //!
 //! Each [`stark_model::document::NoiseKind`] is baked **on the CPU, per stroke
-//! from the stroke's seed**, into a small `Rgba8Snorm` 2-D texture (three
-//! independent signed channels; alpha unused) and sampled in the stamp shaders
-//! with a repeat sampler. Baking on the CPU keeps the field bit-identical across
+//! from the stroke's seed**, into a small tile of `Rgba8Snorm` texels (three
+//! independent signed channels; alpha unused), which the stroke renderer's tip
+//! cache uploads and the stamp shaders sample with a repeat sampler. Nothing here
+//! touches the GPU. Baking on the CPU keeps the field bit-identical across
 //! GPUs, runs and peers — the same determinism contract as the sRGB↔Oklab
 //! constants (§6.5) — and the bake uses only IEEE add/mul/floor/sqrt, all
 //! correctly rounded, so the bytes reproduce across platforms.
@@ -46,13 +47,12 @@
 //!   same way: the value, like the site, is hashed from the cell index modulo
 //!   `PERIOD`.
 
-use crate::gpu::context::GpuContext;
 use stark_model::document::NoiseKind;
 use std::num::NonZeroU8;
 
 /// Texels per side of a baked 2-D noise tile. Enough for fields that vary
 /// smoothly across a cell; [`NoiseKind::Mosaic`] needs more (see [`MOSAIC_RES`]).
-pub(crate) const NOISE_RES: u32 = 64;
+const NOISE_RES: u32 = 64;
 /// Texels per side of the mosaic tile. Its cell walls are *steps*, and a step
 /// is only ever as sharp as the tile is fine — at [`NOISE_RES`] a wall would be
 /// a staircase of 4 canvas px treads at frequency 1. Baking it 4× finer puts the
@@ -95,70 +95,28 @@ const CHANNEL_SALTS: [u32; 3] = [0x51ab_1e01, 0x51ab_1e02, 0x51ab_1e03];
 const MOSAIC_SITE_SALT: u32 = 0x51ab_1e11;
 const MOSAIC_VALUE_SALT: u32 = 0x51ab_1e12;
 
-/// Bake `kind` for the stroke seeded `seed` and upload it as an `Rgba8Snorm`
-/// 2-D texture.
-pub(crate) fn build_noise_texture(
-    ctx: &GpuContext,
-    kind: NoiseKind,
-    seed: u32,
-) -> (wgpu::Texture, wgpu::TextureView) {
-    let res = tile_res(kind);
-    let bytes = bake(kind, res, seed);
-    upload_2d(ctx, res, &bytes, "stark noise field")
+/// One stroke's field, baked: `res`² texels, row-major, each four signed bytes —
+/// three noise channels in ≈[-1, 1] and an unused fourth, the layout an `Rgba8Snorm`
+/// texture reads.
+pub(crate) struct Baked {
+    pub(crate) res: u32,
+    pub(crate) texels: Vec<u8>,
 }
 
-/// Texels per side of `kind`'s tile.
-fn tile_res(kind: NoiseKind) -> u32 {
-    match kind {
+/// Bake `kind` for the stroke seeded `seed`, at its kind's resolution.
+pub(crate) fn bake(kind: NoiseKind, seed: u32) -> Baked {
+    let res = match kind {
         NoiseKind::Mosaic => MOSAIC_RES,
         _ => NOISE_RES,
+    };
+    Baked {
+        res,
+        texels: bake_at(kind, res, seed),
     }
 }
 
-/// A 1×1 zero tile: sampled offset is exactly 0, so binding it makes the
-/// jitter a no-op without a second shader path.
-pub(crate) fn dummy_noise_texture(ctx: &GpuContext) -> (wgpu::Texture, wgpu::TextureView) {
-    upload_2d(ctx, 1, &[0u8; 4], "stark noise dummy")
-}
-
-fn upload_2d(
-    ctx: &GpuContext,
-    res: u32,
-    bytes: &[u8],
-    label: &str,
-) -> (wgpu::Texture, wgpu::TextureView) {
-    let extent = wgpu::Extent3d {
-        width: res,
-        height: res,
-        depth_or_array_layers: 1,
-    };
-    let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(label),
-        size: extent,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Snorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    ctx.queue.write_texture(
-        texture.as_image_copy(),
-        bytes,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(res * 4),
-            rows_per_image: Some(res),
-        },
-        extent,
-    );
-    let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    (texture, view)
-}
-
-/// Bake `kind` for the stroke seeded `seed` at `res`² texels: 4 bytes per texel
-/// (`Rgba8Snorm`), three signed noise channels in ≈[-1, 1] plus an unused alpha.
-fn bake(kind: NoiseKind, res: u32, seed: u32) -> Vec<u8> {
+/// [`bake`] at `res`² texels.
+fn bake_at(kind: NoiseKind, res: u32, seed: u32) -> Vec<u8> {
     let field = Field::new(kind, seed);
     let n = res as usize;
     let mut out = vec![0u8; n * n * 4];
@@ -596,7 +554,7 @@ mod tests {
         for c in 0..3 {
             let (mut sum, mut count) = (0.0f32, 0usize);
             for seed in SEEDS {
-                let a = bake(NoiseKind::Voronoi, n as u32, seed);
+                let a = bake_at(NoiseKind::Voronoi, n as u32, seed);
                 let vals: Vec<f32> = a[c..]
                     .iter()
                     .step_by(4)
@@ -658,7 +616,7 @@ mod tests {
 
     /// The distinct texel values of a `res`² mosaic bake — its facet colors.
     fn mosaic_facets(res: u32, seed: u32) -> std::collections::HashSet<[u8; 3]> {
-        bake(NoiseKind::Mosaic, res, seed)
+        bake_at(NoiseKind::Mosaic, res, seed)
             .as_chunks::<4>()
             .0
             .iter()
@@ -676,8 +634,8 @@ mod tests {
             NoiseKind::Voronoi,
             NoiseKind::Mosaic,
         ] {
-            let a = bake(kind, 16, SEEDS[2]);
-            let b = bake(kind, 16, SEEDS[2]);
+            let a = bake_at(kind, 16, SEEDS[2]);
+            let b = bake_at(kind, 16, SEEDS[2]);
             assert_eq!(a, b);
             for c in 0..3 {
                 let vals: Vec<i8> = a[c..].iter().step_by(4).map(|&b| b as i8).collect();
@@ -699,7 +657,7 @@ mod tests {
             NoiseKind::Voronoi,
             NoiseKind::Mosaic,
         ] {
-            let (a, b) = (bake(kind, 16, SEEDS[0]), bake(kind, 16, SEEDS[1]));
+            let (a, b) = (bake_at(kind, 16, SEEDS[0]), bake_at(kind, 16, SEEDS[1]));
             assert_ne!(a, b, "{kind:?} bakes one tile for two seeds");
         }
         assert_ne!(
@@ -750,7 +708,7 @@ mod tests {
         let n = 64usize;
         for seed in SEEDS {
             for kind in [NoiseKind::Simplex, NoiseKind::Voronoi] {
-                let a = bake(kind, n as u32, seed);
+                let a = bake_at(kind, n as u32, seed);
                 let texel = |x: usize, y: usize| a[(y * n + x) * 4] as i8 as i32;
                 let (mut interior_max, mut seam_max) = (0, 0);
                 for y in 0..n {

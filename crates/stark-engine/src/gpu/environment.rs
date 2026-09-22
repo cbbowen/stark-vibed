@@ -9,7 +9,10 @@
 //! (the engine embeds none); decoding and prefiltering happen here, on the CPU, once per
 //! environment.
 
+use std::borrow::Cow;
+
 use crate::gpu::context::GpuContext;
+use crate::gpu::desc;
 use crate::gpu::half::f32_to_f16;
 
 mod hdr;
@@ -95,37 +98,35 @@ impl Environment {
     fn from_equirect(ctx: &GpuContext, base: &[[f32; 3]], w: u32, h: u32) -> Self {
         let mip_count = 32 - (w.max(h)).leading_zeros(); // floor(log2(max))+1
         let diffuse_lod = diffuse_lod(mip_count);
-        let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("stark environment"),
-            size: wgpu::Extent3d {
-                width: w,
-                height: h,
-                depth_or_array_layers: 1,
-            },
+        let size = wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        };
+        let texture_desc = wgpu::TextureDescriptor {
             mip_level_count: mip_count,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba16Float,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+            ..desc::sampled_texture("stark environment", wgpu::TextureFormat::Rgba16Float, size)
+        };
 
         // Build the chain, capturing the diffuse level on the way past: the exposure
-        // normalization has to read the same texels the shader will.
-        let (mut level, mut lw, mut lh) = (base.to_vec(), w, h);
+        // normalization has to read the same texels the shader will. `downsample`
+        // halves as `mip_level_size` does, so each level is the size its mip is.
+        let mut texels = Vec::with_capacity(desc::upload_len(&texture_desc));
+        let (mut level, mut lw, mut lh) = (Cow::Borrowed(base), w, h);
         let mut flat_irradiance = 1.0f32;
         for mip in 0..mip_count {
-            write_mip(ctx, &texture, mip, &level, lw, lh);
+            push_mip(&mut texels, &level);
             if mip == diffuse_lod {
                 flat_irradiance = luminance(sample_center(&level, lw, lh)).max(1e-3);
             }
             if mip + 1 < mip_count {
                 let (next, nw, nh) = downsample(&level, lw, lh);
-                level = next;
+                level = Cow::Owned(next);
                 lw = nw;
                 lh = nh;
             }
         }
+        let texture = desc::texture_with_data(ctx, &texture_desc, &texels);
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let sampler = ctx.device.create_sampler(&wgpu::SamplerDescriptor {
@@ -223,34 +224,13 @@ fn neutral_equirect() -> (Vec<[f32; 3]>, u32, u32) {
     (px, W, H)
 }
 
-/// Upload one mip level (linear RGB → `Rgba16Float`, alpha = 1).
-fn write_mip(ctx: &GpuContext, texture: &wgpu::Texture, mip: u32, px: &[[f32; 3]], w: u32, h: u32) {
-    let mut data = Vec::with_capacity(px.len() * 4);
+/// Append one mip level's texels (linear RGB → `Rgba16Float`, alpha = 1).
+fn push_mip(texels: &mut Vec<u8>, px: &[[f32; 3]]) {
     for c in px {
-        data.extend_from_slice(&f32_to_f16(c[0]).to_le_bytes());
-        data.extend_from_slice(&f32_to_f16(c[1]).to_le_bytes());
-        data.extend_from_slice(&f32_to_f16(c[2]).to_le_bytes());
-        data.extend_from_slice(&f32_to_f16(1.0).to_le_bytes());
+        for channel in [c[0], c[1], c[2], 1.0] {
+            texels.extend_from_slice(&f32_to_f16(channel).to_le_bytes());
+        }
     }
-    ctx.queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture,
-            mip_level: mip,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &data,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(w * 8), // 4 channels × 2 bytes
-            rows_per_image: Some(h),
-        },
-        wgpu::Extent3d {
-            width: w,
-            height: h,
-            depth_or_array_layers: 1,
-        },
-    );
 }
 
 /// Box-downsample an equirect image by 2× (each axis ≥ 1). Averaging adjacent

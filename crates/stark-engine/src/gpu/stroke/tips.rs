@@ -13,6 +13,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::assets::{AssetStore, COVERAGE_PREFIX_LABEL, build_depth_r16, build_prefix};
 use crate::gpu::context::GpuContext;
+use crate::gpu::desc;
 use stark_model::document::{BrushParams, BrushShape, ColorDynamics, NoiseKind};
 
 use crate::unpoisoned;
@@ -73,15 +74,14 @@ impl TipCache {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let (dummy_tex, dummy_noise) = crate::noise::dummy_noise_texture(ctx);
+        // A 1×1 zero tile: the sampled offset is exactly 0, so binding it makes the
+        // jitter a no-op without a second shader path.
+        let dummy_noise = NoiseTile::upload(ctx, 1, &[0; 4], "stark noise dummy");
         Self {
             ctx: ctx.clone(),
             round_tip: Arc::new(Mutex::new(Vec::new())),
             noise_sampler,
-            dummy_noise: Arc::new(NoiseTile {
-                texture: dummy_tex,
-                view: dummy_noise,
-            }),
+            dummy_noise: Arc::new(dummy_noise),
             noise_tiles: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -192,8 +192,13 @@ impl TipCache {
         }
         let mut cache = unpoisoned(self.noise_tiles.lock());
         let (tile, evicted) = lru(&mut cache, (cd.noise, seed), NOISE_TILES_KEPT, || {
-            let (texture, view) = crate::noise::build_noise_texture(&self.ctx, cd.noise, seed);
-            Arc::new(NoiseTile { texture, view })
+            let baked = crate::noise::bake(cd.noise, seed);
+            Arc::new(NoiseTile::upload(
+                &self.ctx,
+                baked.res,
+                &baked.texels,
+                "stark noise field",
+            ))
         });
         drop(evicted);
         NoiseLease(tile)
@@ -227,6 +232,24 @@ fn lru<K: PartialEq, V: Clone>(
 struct NoiseTile {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
+}
+
+impl NoiseTile {
+    /// A `res`² tile of `texels`, as [`noise::bake`](crate::noise::bake) lays them.
+    fn upload(ctx: &GpuContext, res: u32, texels: &[u8], label: &str) -> Self {
+        let size = wgpu::Extent3d {
+            width: res,
+            height: res,
+            depth_or_array_layers: 1,
+        };
+        let texture = desc::texture_with_data(
+            ctx,
+            &desc::sampled_texture(label, wgpu::TextureFormat::Rgba8Snorm, size),
+            texels,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Self { texture, view }
+    }
 }
 
 impl Drop for NoiseTile {
