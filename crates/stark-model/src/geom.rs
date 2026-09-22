@@ -463,4 +463,28 @@ mod cover_tests {
             None
         );
     }
+
+    /// The cover is *counted* before it is walked, so a box far too large to list
+    /// is a refusal rather than a hang. 10⁷ canvas px is ~1.5×10⁹ tiles: the old
+    /// enumerate-then-check would have pushed every one of them before finding out.
+    #[test]
+    fn an_astronomical_cover_is_refused_without_being_enumerated() {
+        let huge = 1.0e7;
+        assert_eq!(
+            tiles_covering(
+                Vec2::splat(-huge),
+                Vec2::splat(huge),
+                1,
+                crate::document::MAX_SELECTION_TILES
+            ),
+            None
+        );
+        // And the budget is the real bound, not a rounding of it: a cover of
+        // exactly `budget` tiles is served, one past it is refused.
+        let side = TILE_SIZE as f32;
+        let span = |n: f32| Vec2::new(n * side - 2.0, n * side - 2.0);
+        let n = |v: Vec2, b: usize| tiles_covering(Vec2::splat(2.0), v, 0, b).map(|t| t.len());
+        assert_eq!(n(span(32.0), 32 * 32), Some(32 * 32));
+        assert_eq!(n(span(32.0), 32 * 32 - 1), None);
+    }
 }

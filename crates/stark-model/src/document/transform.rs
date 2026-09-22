@@ -465,6 +465,30 @@ mod tests {
         assert!(!convex_positive(&[base[1], base[0], base[2], base[3]]));
         // Collapsed onto a line: not thin, gone.
         assert!(!convex_positive(&[base[0], base[1], base[0], base[1]]));
+        // And it is the gate, not advice: none of the three resolves, so chrome asking
+        // `forward` is refused by the same predicate the fold is.
+        for corners in [
+            [base[1], base[0], base[3], base[2]],
+            [base[1], base[0], base[2], base[3]],
+            [base[0], base[1], base[0], base[1]],
+        ] {
+            let p = map(Vec2::ZERO, Vec2::splat(100.0), corners);
+            assert!(!p.usable(), "{corners:?} should be refused");
+            assert!(p.forward().is_none());
+        }
+    }
+
+    /// An affine that is not finite, or that collapses the plane onto a line, is
+    /// refused rather than applied: paint would vanish into a zero-area image.
+    #[test]
+    fn unusable_affines_are_rejected() {
+        assert!(!affine_usable(Affine2::from_scale(Vec2::new(0.0, 1.0))));
+        assert!(!affine_usable(Affine2::from_translation(Vec2::new(
+            f32::NAN,
+            0.0
+        ))));
+        assert!(affine_usable(Affine2::IDENTITY));
+        assert!(affine_usable(Affine2::from_angle(0.7)));
     }
 
     /// The gate half of [`PerspectiveMap::resolve`], which is not the solve half: an

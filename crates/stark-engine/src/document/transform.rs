@@ -748,17 +748,6 @@ mod tests {
     }
 
     #[test]
-    fn unusable_affines_are_rejected() {
-        assert!(!affine_usable(Affine2::from_scale(Vec2::new(0.0, 1.0))));
-        assert!(!affine_usable(Affine2::from_translation(Vec2::new(
-            f32::NAN,
-            0.0
-        ))));
-        assert!(affine_usable(Affine2::IDENTITY));
-        assert!(affine_usable(Affine2::from_angle(0.7)));
-    }
-
-    #[test]
     fn identity_quad_reaches_itself_and_its_ring_edges() {
         // The interior quad of (0,0) under identity overlaps only tiles whose
         // texture rect (apron included) it touches: itself and the 8 neighbours
@@ -809,106 +798,6 @@ mod tests {
             )
             .is_none(),
             "a 10_000× scale of one tile must be refused, not enumerated"
-        );
-    }
-
-    #[test]
-    fn perspective_identity_derives_the_literal_identity() {
-        let p = PerspectiveMap {
-            min: Vec2::new(-64.0, 32.0),
-            max: Vec2::new(192.0, 288.0),
-            corners: rect_corners(Vec2::new(-64.0, 32.0), Vec2::new(192.0, 288.0)),
-        };
-        assert!(p.usable());
-        let (f, i) = p.resolve().unwrap();
-        // Bitwise the identity matrix, not an approximation of it — §16.4's
-        // identity invariant rides on the fragment's arithmetic being exact.
-        assert_eq!(f, Homography::IDENTITY);
-        assert_eq!(i, Homography::IDENTITY);
-    }
-
-    #[test]
-    fn perspective_carries_the_corners_exactly_where_they_point() {
-        let (min, max) = (Vec2::new(0.0, 0.0), Vec2::new(200.0, 100.0));
-        let corners = [
-            Vec2::new(10.0, -5.0),
-            Vec2::new(180.0, 20.0),
-            Vec2::new(-20.0, 130.0),
-            Vec2::new(230.0, 90.0),
-        ];
-        let p = PerspectiveMap { min, max, corners };
-        assert!(p.usable());
-        let f = p.forward().unwrap();
-        for (src, dst) in rect_corners(min, max).into_iter().zip(corners) {
-            let got = f.apply(src);
-            assert!(
-                (got - dst).length() < 1e-2,
-                "{src:?} -> {got:?}, want {dst:?}"
-            );
-        }
-        // And the inverse really inverts, across the rect's interior.
-        let (_, inv) = p.resolve().unwrap();
-        for t in [
-            Vec2::new(0.3, 0.6),
-            Vec2::new(0.9, 0.1),
-            Vec2::new(0.5, 0.5),
-        ] {
-            let src = min + t * (max - min);
-            let round = inv.apply(f.apply(src));
-            assert!((round - src).length() < 1e-2, "{src:?} -> {round:?}");
-        }
-    }
-
-    #[test]
-    fn crossed_or_reflected_quads_are_refused() {
-        let (min, max) = (Vec2::ZERO, Vec2::new(100.0, 100.0));
-        let base = rect_corners(min, max);
-        // Swap two corners: a bow-tie.
-        let crossed = PerspectiveMap {
-            min,
-            max,
-            corners: [base[1], base[0], base[2], base[3]],
-        };
-        assert!(!crossed.usable());
-        // Mirror: negatively oriented.
-        let mirrored = PerspectiveMap {
-            min,
-            max,
-            corners: [base[1], base[0], base[3], base[2]],
-        };
-        assert!(!mirrored.usable());
-        // Collapse to a sliver.
-        let sliver = PerspectiveMap {
-            min,
-            max,
-            corners: [base[0], base[1], base[0], base[1]],
-        };
-        assert!(!sliver.usable());
-        // Chrome asks `forward`, which has to be the same gate: a mirrored quad is a
-        // parallelogram, so the solve alone derives a clean matrix for it and `w > 0`
-        // says nothing about orientation.
-        for p in [crossed, mirrored, sliver] {
-            assert!(p.forward().is_none());
-        }
-    }
-
-    #[test]
-    fn a_parallelogram_perspective_rides_the_affine_arithmetic() {
-        // An integer translation expressed as corners: the derived homography
-        // must carry a (0, 0, 1) bottom row, so its divide is by exactly 1.
-        let (min, max) = (Vec2::ZERO, Vec2::new(100.0, 50.0));
-        let shift = Vec2::new(384.0, -128.0);
-        let p = PerspectiveMap {
-            min,
-            max,
-            corners: rect_corners(min, max).map(|c| c + shift),
-        };
-        let (f, i) = p.resolve().unwrap();
-        assert_eq!(f.rows[2], [0.0, 0.0, 1.0]);
-        assert_eq!(i.rows[2], [0.0, 0.0, 1.0]);
-        assert_eq!(
-            f.apply(Vec2::new(37.0, 13.0)),
-            Vec2::new(37.0, 13.0) + shift
         );
     }
 

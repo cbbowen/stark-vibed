@@ -407,43 +407,6 @@ pub(crate) struct SelectionPlan {
 mod tests {
     use super::*;
     use stark_model::document::SelectionShape;
-    use stark_model::geom::TILE_SIZE;
-
-    /// The soft-set algebra still degrades to the booleans on hard coverages — the
-    /// property that lets a feathered mask and a hard one be the same code path.
-    #[test]
-    fn combine_matches_boolean_algebra_on_hard_coverage() {
-        let hard = |b: bool| if b { 1.0 } else { 0.0 };
-        for p in [false, true] {
-            for s in [false, true] {
-                let (pf, sf) = (hard(p), hard(s));
-                assert_eq!(SelectionMode::Replace.combine(pf, sf), hard(s));
-                assert_eq!(SelectionMode::Union.combine(pf, sf), hard(p || s));
-                assert_eq!(SelectionMode::Subtract.combine(pf, sf), hard(p && !s));
-                assert_eq!(SelectionMode::Intersect.combine(pf, sf), hard(p && s));
-            }
-        }
-    }
-
-    /// The unbounded shape cannot carry a strength: `outside` is where its coverage
-    /// lands, and a partial plane there would need a rewrite of every tile the
-    /// selection has (see [`SelectionOp::opacity`]). The constructor is what makes
-    /// that unrepresentable rather than a rule `plan` would have to remember.
-    #[test]
-    fn select_all_is_pinned_to_full_strength() {
-        let op = SelectionOp::at(SelectionMode::Replace, SelectionShape::All, 0.0, 0.25);
-        assert_eq!(op.opacity(), 1.0);
-        // A bounded shape keeps whatever it was given, clamped.
-        let rect = SelectionShape::rect_from_corners(Vec2::ZERO, Vec2::splat(10.0));
-        assert_eq!(
-            SelectionOp::at(SelectionMode::Replace, rect.clone(), 0.0, 0.25).opacity(),
-            0.25
-        );
-        assert_eq!(
-            SelectionOp::at(SelectionMode::Replace, rect, 0.0, 4.0).opacity(),
-            1.0
-        );
-    }
 
     /// Inverting reflects through the level, so the complement of a region selected
     /// at 0.4 is its outside selected at 0.4 — and inverting twice is the identity,
@@ -532,30 +495,6 @@ mod tests {
             plan.outside, 0.0,
             "replace leaves everything else deselected"
         );
-    }
-
-    /// The cover is *counted* before it is walked, so a box far too large to list
-    /// is a refusal rather than a hang. 10⁷ canvas px is ~1.5×10⁹ tiles: the old
-    /// enumerate-then-check would have pushed every one of them before finding out.
-    #[test]
-    fn an_astronomical_cover_is_refused_without_being_enumerated() {
-        let huge = 1.0e7;
-        assert_eq!(
-            tiles_covering(
-                Vec2::splat(-huge),
-                Vec2::splat(huge),
-                1,
-                MAX_SELECTION_TILES
-            ),
-            None
-        );
-        // And the budget is the real bound, not a rounding of it: a cover of
-        // exactly `budget` tiles is served, one past it is refused.
-        let side = TILE_SIZE as f32;
-        let span = |n: f32| Vec2::new(n * side - 2.0, n * side - 2.0);
-        let n = |v: Vec2, b: usize| tiles_covering(Vec2::splat(2.0), v, 0, b).map(|t| t.len());
-        assert_eq!(n(span(32.0), 32 * 32), Some(32 * 32));
-        assert_eq!(n(span(32.0), 32 * 32 - 1), None);
     }
 
     #[test]

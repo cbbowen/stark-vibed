@@ -501,4 +501,41 @@ mod tests {
             op,
         );
     }
+
+    /// The soft-set algebra still degrades to the booleans on hard coverages — the
+    /// property that lets a feathered mask and a hard one be the same code path.
+    #[test]
+    fn combine_matches_boolean_algebra_on_hard_coverage() {
+        let hard = |b: bool| if b { 1.0 } else { 0.0 };
+        for p in [false, true] {
+            for s in [false, true] {
+                let (pf, sf) = (hard(p), hard(s));
+                assert_eq!(SelectionMode::Replace.combine(pf, sf), hard(s));
+                assert_eq!(SelectionMode::Union.combine(pf, sf), hard(p || s));
+                assert_eq!(SelectionMode::Subtract.combine(pf, sf), hard(p && !s));
+                assert_eq!(SelectionMode::Intersect.combine(pf, sf), hard(p && s));
+            }
+        }
+    }
+
+    /// The unbounded shape cannot carry a strength: `outside` is where its coverage
+    /// lands, and a partial plane there would need a rewrite of every tile the
+    /// selection has (see [`SelectionOp::opacity`]). The constructor is what makes
+    /// that unrepresentable rather than a rule the engine's plan would have to
+    /// remember.
+    #[test]
+    fn select_all_is_pinned_to_full_strength() {
+        let op = SelectionOp::at(SelectionMode::Replace, SelectionShape::All, 0.0, 0.25);
+        assert_eq!(op.opacity(), 1.0);
+        // A bounded shape keeps whatever it was given, clamped.
+        let rect = SelectionShape::rect_from_corners(Vec2::ZERO, Vec2::splat(10.0));
+        assert_eq!(
+            SelectionOp::at(SelectionMode::Replace, rect.clone(), 0.0, 0.25).opacity(),
+            0.25
+        );
+        assert_eq!(
+            SelectionOp::at(SelectionMode::Replace, rect, 0.0, 4.0).opacity(),
+            1.0
+        );
+    }
 }
