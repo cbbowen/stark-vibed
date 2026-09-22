@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use super::Engine;
 use crate::command::Tool;
-use crate::document::{CanvasBounds, Layer, LayerContent};
+use crate::document::{CanvasBounds, DocState, Layer, LayerContent, merge};
 use crate::gpu::environment::EnvironmentId;
 use crate::projection::{Projected, Revision};
 use crate::view::ViewTransform;
@@ -317,11 +317,11 @@ impl Engine {
     }
 
     /// The layer roster for `shown`, **rebuilt only when the document it describes
-    /// has moved** — the walk in [`observe`](Self::observe) is a pure function of
-    /// `shown`, and [`ShownKey`] names exactly what `shown` is a function of.
-    fn projected_layers(&self, build: impl FnOnce() -> Vec<LayerInfo>) -> Layers {
+    /// has moved** — [`layer_rows`] is a pure function of `shown`, and [`ShownKey`]
+    /// names exactly what `shown` is a function of.
+    fn projected_layers(&self, shown: &DocState) -> Layers {
         self.layer_cache
-            .get_or_build(self.shown_key(), || build().into())
+            .get_or_build(self.shown_key(), || layer_rows(shown).into())
     }
 
     /// The drawing-guide roster this client sees, keyed on [`GuideKey`] — memoized
@@ -338,12 +338,6 @@ impl Engine {
 
     /// A snapshot of UI-facing state (§7).
     pub fn observe(&self) -> ObservableState {
-        /// Whether the compositor would draw anything at all for `l` — the same
-        /// culls `render.rs` applies, asked of the document rather than of a
-        /// viewport, so the answer does not change when the artist scrolls.
-        fn contributes(l: &Layer) -> bool {
-            l.is_shown() && (l.draws_content() || l.carries.iter().any(contributes))
-        }
         let doc = self.timeline.current();
         // Layers and the substrate color come off the *previewed* document when one is
         // in flight (§15.7, §15.5), so the frame's handles track a drag and the color
@@ -351,119 +345,7 @@ impl Engine {
         // `has_selection` must stay committed-only, or a marquee drag flashes the
         // selection bar in and out before anything is selected.
         let shown = self.preview.doc().unwrap_or(doc);
-        // Flattened in **composite order** — each stack bottom-to-top, a group's base
-        // before what it carries — with the tree carried alongside as `depth` and
-        // `carrier` (§14.6). That is the order a panel draws in and the order the
-        // compositor draws in, so one list means both.
-        /// What the walk knows about the stack it is currently in, one per depth.
-        /// Truncating on the way back up is what makes these per-*stack*: re-entering
-        /// depth `d` from deeper keeps them, descending to a new `d` starts a fresh one.
-        struct Cursor<'a> {
-            /// Whether this stack has anything drawable beneath the row being visited
-            /// — "would a filter here reach something" (§21.2), answered by the draw
-            /// list's culls (`render.rs`) rather than by row order: a hidden,
-            /// transparent or empty sibling fills nothing.
-            filled: bool,
-            /// The row visited before this one **in this stack** — a layer's lower
-            /// sibling, which is what it would merge down onto (§14.11).
-            below: Option<&'a Layer>,
-            /// How far up this stack the row being visited sits, counting from the
-            /// bottom — `LayerSite::index` without the search for it.
-            index: usize,
-        }
-        // Rebuilt only when the document it describes has moved; every other
-        // observation hands out the last one (see [`Engine::projected_layers`]).
-        let layers = self.projected_layers(|| {
-            let mut layers: Vec<LayerInfo> = Vec::new();
-            // The carrier chain down to the current row: the layer (whose id
-            // `LayerInfo::carrier` reports) and whether its own content draws anything —
-            // the seed for the stack its carries open, since a base composites at the
-            // bottom of its group (§14.1).
-            let mut carriers: Vec<(&Layer, bool)> = Vec::new();
-            let mut stack: Vec<Cursor<'_>> = Vec::new();
-            shown.visit(&mut |l, depth| {
-                carriers.truncate(depth);
-                if stack.len() > depth {
-                    stack.truncate(depth + 1);
-                } else {
-                    let filled = carriers.last().is_some_and(|&(_, draws)| draws);
-                    stack.push(Cursor {
-                        filled,
-                        below: None,
-                        index: 0,
-                    });
-                }
-                let has_underlay = stack[depth].filled;
-                stack[depth].filled = stack[depth].filled || contributes(l);
-                layers.push(LayerInfo {
-                    id: l.id,
-                    blend: l.composite.blend,
-                    clip: l.composite.clip,
-                    opacity: l.composite.opacity,
-                    visible: l.visible,
-                    carrier: carriers.last().map(|&(c, _)| c.id),
-                    depth,
-                    is_group: l.is_group(),
-                    // Composite order visits the bottom of the root stack first, and
-                    // that is the *only* layer with nothing beneath it (§14.4.3) —
-                    // every other one has a lower sibling or the content of the layer
-                    // carrying it. So "has a backdrop" is "is not the first row".
-                    has_backdrop: !layers.is_empty(),
-                    name: l.name.clone(),
-                    number: l.number,
-                    matte: match &l.content {
-                        // Placed onto the canvas, where the chrome lives: region and
-                        // paint are stated in the layer's frame (§15.2), and the mint
-                        // takes the same offset back out (`DocCommand::SetMatteRect`),
-                        // so the handles never do frame arithmetic.
-                        LayerContent::Matte { region, paint } => {
-                            let d = l.translation.as_vec2();
-                            Some(MatteInfo {
-                                rect: region.translated(d).rect(),
-                                paint: paint.translated(d),
-                            })
-                        }
-                        LayerContent::Paint(_) | LayerContent::Filter(_) => None,
-                    },
-                    filter: l.filter(),
-                    has_underlay,
-                    // Off the walk, which already holds what the question needs: the
-                    // lower sibling and the carrier. Asking `merge::plan` per row
-                    // costs a `site_of` — a walk of the whole tree — making this
-                    // projection quadratic in the layer count (79 µs at 60 layers
-                    // against 1.3 µs at 4).
-                    merge_down: stack[depth]
-                        .below
-                        .map(|d| (d, false))
-                        .or_else(|| carriers.last().map(|&(c, _)| (c, true)))
-                        .and_then(|(dest, dest_is_carrier)| {
-                            crate::document::merge::plan_at(&crate::document::merge::MergeSite {
-                                source: l,
-                                dest,
-                                // The destination is the whole backdrop where it carries
-                                // the source, and — in the root stack — where the source
-                                // sits second from the foot over an unclipped layer, whose
-                                // accumulator starts cleared (§14.11.2).
-                                backdrop_is_dest: dest_is_carrier
-                                    || (depth == 0
-                                        && stack[depth].index == 1
-                                        && !dest.composite.clip),
-                                dest_is_carrier,
-                            })
-                            .map(|p| p.dest)
-                        }),
-                    // Off the *shown* document like the rest of the row, so a thumbnail
-                    // tracks a drag preview's tiles rather than the committed ones
-                    // behind them.
-                    content_revision: l.content_revision(),
-                    translation: l.translation,
-                });
-                stack[depth].below = Some(l);
-                stack[depth].index += 1;
-                carriers.push((l, l.draws_content()));
-            });
-            layers
-        });
+        let layers = self.projected_layers(shown);
         ObservableState {
             can_undo: self.timeline.can_undo(),
             can_redo: self.timeline.can_redo(),
@@ -512,5 +394,375 @@ impl Engine {
             substrate_color: shown.substrate_color,
             gpu_failure: self.shared.gpu.health().failure().map(Arc::new),
         }
+    }
+}
+
+/// The layer roster of `shown` (§14.6): the whole tree flattened in **composite
+/// order** — each stack bottom-to-top, a group's base before what it carries — with the
+/// tree carried alongside as `depth` and `carrier`. That is the order a panel draws in
+/// and the order the compositor draws in, so one list means both.
+///
+/// One walk answers every row's questions from what it has already passed: the lower
+/// sibling and the carrier (`merge_down`), and whether anything drawable lies beneath
+/// in the same stack (`has_underlay`). Asking `merge::plan` per row instead costs a
+/// `site_of` — a walk of the whole tree — making this quadratic in the layer count
+/// (79 µs at 60 layers against 1.3 µs at 4).
+fn layer_rows(shown: &DocState) -> Vec<LayerInfo> {
+    let mut rows: Vec<LayerInfo> = Vec::new();
+    // The carrier chain down to the current row: the layer (whose id
+    // `LayerInfo::carrier` reports) and whether its own content draws anything — the
+    // seed for the stack its carries open, since a base composites at the bottom of its
+    // group (§14.1).
+    let mut carriers: Vec<(&Layer, bool)> = Vec::new();
+    let mut stack: Vec<Cursor<'_>> = Vec::new();
+    shown.visit(&mut |l, depth| {
+        carriers.truncate(depth);
+        if stack.len() > depth {
+            stack.truncate(depth + 1);
+        } else {
+            let filled = carriers.last().is_some_and(|&(_, draws)| draws);
+            stack.push(Cursor {
+                filled,
+                below: None,
+                index: 0,
+            });
+        }
+        let cursor = &mut stack[depth];
+        let has_underlay = cursor.filled;
+        cursor.filled = cursor.filled || contributes(l);
+        let merge_down = cursor
+            .below
+            .map(|d| (d, false))
+            .or_else(|| carriers.last().map(|&(c, _)| (c, true)))
+            .and_then(|(dest, dest_is_carrier)| {
+                merge::plan_at(&merge::MergeSite {
+                    source: l,
+                    dest,
+                    // The destination is the whole backdrop where it carries the
+                    // source, and — in the root stack — where the source sits second
+                    // from the foot over an unclipped layer, whose accumulator starts
+                    // cleared (§14.11.2).
+                    backdrop_is_dest: dest_is_carrier
+                        || (depth == 0 && cursor.index == 1 && !dest.composite.clip),
+                    dest_is_carrier,
+                })
+                .map(|p| p.dest)
+            });
+        cursor.below = Some(l);
+        cursor.index += 1;
+        rows.push(LayerInfo {
+            id: l.id,
+            blend: l.composite.blend,
+            clip: l.composite.clip,
+            opacity: l.composite.opacity,
+            visible: l.visible,
+            carrier: carriers.last().map(|&(c, _)| c.id),
+            depth,
+            is_group: l.is_group(),
+            // Composite order visits the bottom of the root stack first, and that is
+            // the *only* layer with nothing beneath it (§14.4.3) — every other one has
+            // a lower sibling or the content of the layer carrying it.
+            has_backdrop: !rows.is_empty(),
+            name: l.name.clone(),
+            number: l.number,
+            matte: match &l.content {
+                // Placed onto the canvas, where the chrome lives: region and paint are
+                // stated in the layer's frame (§15.2), and the mint takes the same
+                // offset back out (`DocCommand::SetMatteRect`), so the handles never do
+                // frame arithmetic.
+                LayerContent::Matte { region, paint } => {
+                    let d = l.translation.as_vec2();
+                    Some(MatteInfo {
+                        rect: region.translated(d).rect(),
+                        paint: paint.translated(d),
+                    })
+                }
+                LayerContent::Paint(_) | LayerContent::Filter(_) => None,
+            },
+            filter: l.filter(),
+            has_underlay,
+            merge_down,
+            // Off the *shown* document like the rest of the row, so a thumbnail tracks
+            // a drag preview's tiles rather than the committed ones behind them.
+            content_revision: l.content_revision(),
+            translation: l.translation,
+        });
+        carriers.push((l, l.draws_content()));
+    });
+    rows
+}
+
+/// What [`layer_rows`]' walk knows about the stack it is currently in, one per depth.
+/// Truncating on the way back up is what makes these per-*stack*: re-entering depth
+/// `d` from deeper keeps them, descending to a new `d` starts a fresh one.
+struct Cursor<'a> {
+    /// Whether this stack has anything drawable beneath the row being visited — "would
+    /// a filter here reach something" (§21.2), answered by the draw list's culls
+    /// (`render.rs`) rather than by row order: a hidden, transparent or empty sibling
+    /// fills nothing.
+    filled: bool,
+    /// The row visited before this one **in this stack** — a layer's lower sibling,
+    /// which is what it would merge down onto (§14.11).
+    below: Option<&'a Layer>,
+    /// How far up this stack the row being visited sits, counting from the bottom —
+    /// `LayerSite::index` without the search for it.
+    index: usize,
+}
+
+/// Whether the compositor would draw anything at all for `l` — the same culls
+/// `render.rs` applies, asked of the document rather than of a viewport, so the answer
+/// does not change when the artist scrolls.
+fn contributes(l: &Layer) -> bool {
+    l.is_shown() && (l.draws_content() || l.carries.iter().any(contributes))
+}
+
+#[cfg(test)]
+mod tests {
+    //! [`layer_rows`] on documents built from the fold's pure half — the `DocState`
+    //! calls `apply_pure` makes — so the roster's rules run where there is no GPU.
+
+    use super::*;
+    use stark_model::Srgb;
+    use stark_model::document::{
+        BlendMode, ChromaticAberration, ColorAdjust, Filter, MatteRegion, Parcel, Place,
+    };
+    use stark_model::geom::{IVec2, Vec2};
+
+    const A: LayerId = LayerId::ROOT;
+    const B: LayerId = LayerId::solo(1);
+    const C: LayerId = LayerId::solo(2);
+    const D: LayerId = LayerId::solo(3);
+    const E: LayerId = LayerId::solo(4);
+    const F: LayerId = LayerId::solo(5);
+
+    /// A point filter that does something, as the panel would offer to merge.
+    const GREY: Filter = Filter::Color(ColorAdjust {
+        saturation: 0.0,
+        ..ColorAdjust::NEUTRAL
+    });
+
+    /// A filter that reads its neighbours (§21.10), which never merges.
+    const FRINGE: Filter = Filter::Chromatic(ChromaticAberration {
+        spread: 8.0,
+        angle: 0.0,
+    });
+
+    /// Paint layers A, B, C in the root stack, bottom-to-top. None holds a tile, so
+    /// none draws anything.
+    fn flat() -> DocState {
+        DocState::with_layer(A)
+            .insert_layer(B, None, Some(A), None)
+            .insert_layer(C, None, Some(B), None)
+    }
+
+    /// `state` with a matte — the one content that draws without a tile — at `at` in
+    /// `carrier`'s stack.
+    fn with_matte(state: &DocState, id: LayerId, carrier: Option<LayerId>, at: Place) -> DocState {
+        state.insert_matte(
+            id,
+            carrier,
+            at,
+            MatteRegion::Everything,
+            Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
+        )
+    }
+
+    fn row(rows: &[LayerInfo], id: LayerId) -> &LayerInfo {
+        rows.iter().find(|r| r.id == id).expect("a row per layer")
+    }
+
+    fn underlay(state: &DocState, id: LayerId) -> bool {
+        row(&layer_rows(state), id).has_underlay
+    }
+
+    /// Composite order, with the tree alongside: a group's base comes before what it
+    /// carries, and only the foot of the document has nothing beneath it — the bottom
+    /// of a group has its carrier's content (§14.4.3).
+    #[test]
+    fn rows_are_in_composite_order_with_the_tree_alongside() {
+        // Root [A, B[C, D], E].
+        let state = DocState::with_layer(A)
+            .insert_layer(B, None, Some(A), None)
+            .insert_layer(E, None, Some(B), None)
+            .insert_layer(C, Some(B), None, None)
+            .insert_layer(D, Some(B), Some(C), None);
+        let shape: Vec<_> = layer_rows(&state)
+            .iter()
+            .map(|r| (r.id, r.depth, r.carrier, r.is_group, r.has_backdrop))
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (A, 0, None, false, false),
+                (B, 0, None, true, true),
+                (C, 1, Some(B), false, true),
+                (D, 1, Some(B), false, true),
+                (E, 0, None, false, true),
+            ]
+        );
+    }
+
+    /// **The walk's merge offer is the searched plan's**, row for row. The walk reads
+    /// the lower sibling and the carrier off what it has passed rather than asking
+    /// `merge::plan` per row, and the two must not come apart: the panel would offer a
+    /// merge the command refuses, or hide one it would make (§14.11).
+    #[test]
+    fn the_merge_offer_is_the_plans_on_every_row() {
+        let grouped = flat().move_layer(C, Some(B), Place::Top);
+        let fixtures = [
+            ("flat", flat()),
+            (
+                "mismatched modes",
+                flat().set_layer_blend(C, BlendMode::Multiply),
+            ),
+            ("clipped second", flat().set_layer_clip(B, true)),
+            ("clipped third", flat().set_layer_clip(C, true)),
+            ("clipped foot", flat().set_layer_clip(A, true)),
+            ("hidden", flat().set_layer_visible(B, false)),
+            ("grouped", grouped.clone()),
+            ("grouped and clipped", grouped.set_layer_clip(C, true)),
+            ("nested", grouped.insert_layer(D, Some(C), None, None)),
+            // Second in a carried stack is not the root's second: what lies beneath
+            // is the carrier's content as well as the sibling.
+            (
+                "clipped second in a group",
+                grouped
+                    .insert_layer(D, Some(B), Some(C), None)
+                    .set_layer_clip(D, true),
+            ),
+            (
+                "filter second in a group",
+                grouped.insert_filter(D, Some(B), Some(C), GREY),
+            ),
+            (
+                "filter at the foot",
+                DocState::with_layer(A).insert_filter(B, None, Some(A), GREY),
+            ),
+            (
+                "filter higher",
+                flat().insert_filter(D, None, Some(C), GREY),
+            ),
+            (
+                "filter carried",
+                DocState::with_layer(A).insert_filter(B, Some(A), None, GREY),
+            ),
+            (
+                "resampling filter",
+                DocState::with_layer(A).insert_filter(B, None, Some(A), FRINGE),
+            ),
+            (
+                "filter over a group",
+                DocState::with_layer(A)
+                    .insert_layer(C, Some(A), None, None)
+                    .insert_filter(B, None, Some(A), GREY),
+            ),
+            ("matte", with_matte(&flat(), D, None, Place::Above(B))),
+        ];
+        let mut offered = 0;
+        for (name, state) in &fixtures {
+            for r in layer_rows(state) {
+                let planned = merge::plan(state, r.id).map(|p| p.dest);
+                assert_eq!(r.merge_down, planned, "{name}: row {:?}", r.id);
+                offered += usize::from(planned.is_some());
+            }
+        }
+        assert!(
+            offered > 10,
+            "the fixtures offer too few merges to say much"
+        );
+    }
+
+    /// The offers a panel shows most: down onto the lower sibling, into the carrier
+    /// from the foot of a group, nothing from the foot of the document, and nothing
+    /// onto or from a matte.
+    #[test]
+    fn a_row_merges_onto_what_lies_directly_beneath_it() {
+        let down: Vec<_> = layer_rows(&flat()).iter().map(|r| r.merge_down).collect();
+        assert_eq!(down, [None, Some(A), Some(B)]);
+
+        let grouped = layer_rows(&flat().move_layer(C, Some(B), Place::Top));
+        assert_eq!(row(&grouped, C).merge_down, Some(B), "into the carrier");
+
+        let matte = layer_rows(&with_matte(&flat(), D, None, Place::Above(B)));
+        assert_eq!(row(&matte, D).merge_down, None, "a matte is not merged");
+        assert_eq!(row(&matte, C).merge_down, None, "nor merged into");
+    }
+
+    /// **An underlay is something the compositor would draw beneath, in the same
+    /// stack** (§21.2): paint never painted, a hidden layer and a transparent one fill
+    /// nothing.
+    #[test]
+    fn a_filter_has_an_underlay_only_where_something_draws_beneath_it() {
+        let over = |state: &DocState| state.insert_filter(E, None, None, GREY);
+        assert!(
+            !underlay(&over(&flat()), E),
+            "unpainted paint draws nothing"
+        );
+        let matte = with_matte(&flat(), D, None, Place::Top);
+        assert!(underlay(&over(&matte), E), "a matte draws");
+        assert!(
+            !underlay(&over(&matte.set_layer_visible(D, false)), E),
+            "a hidden matte draws nothing"
+        );
+        assert!(
+            !underlay(&over(&matte.set_layer_opacity(D, 0.0)), E),
+            "a transparent matte draws nothing"
+        );
+    }
+
+    /// Each stack is its own: a group's members see their carrier's content and each
+    /// other, never what lies beneath the group — and the root stack, re-entered past
+    /// the group, still holds what it held before it (§14.1, §21.2).
+    #[test]
+    fn an_underlay_is_counted_per_stack() {
+        // Root [D (matte), A, B[E], C, F].
+        let state = with_matte(&flat(), D, None, Place::Bottom)
+            .insert_filter(E, Some(B), None, GREY)
+            .insert_filter(F, None, Some(C), GREY);
+        assert!(!underlay(&state, E), "the group isolates its members");
+        assert!(underlay(&state, F), "the root stack still holds the matte");
+
+        // A matte carrying a filter: the base composites at the foot of its group.
+        let base = with_matte(&DocState::with_layer(A), D, None, Place::Top).insert_filter(
+            E,
+            Some(D),
+            None,
+            GREY,
+        );
+        assert!(underlay(&base, E), "the carrier's own content is beneath");
+
+        // A group that draws only through what it carries still fills its stack.
+        let carried =
+            with_matte(&flat(), D, Some(B), Place::Top).insert_filter(E, None, Some(C), GREY);
+        assert!(underlay(&carried, E), "the group draws through its matte");
+        assert!(
+            !underlay(&carried.set_layer_visible(D, false), E),
+            "…and not once the matte is hidden"
+        );
+    }
+
+    /// A matte row is placed on the canvas, where its handles are drawn: the region is
+    /// stored in the layer's frame (§14.12, §15.2).
+    #[test]
+    fn a_matte_row_is_placed_by_its_frame() {
+        let (min, max) = (Vec2::new(-40.0, -30.0), Vec2::new(40.0, 30.0));
+        let shift = IVec2::new(10, -5);
+        let state = DocState::with_layer(A)
+            .insert_matte(
+                B,
+                None,
+                Place::Top,
+                MatteRegion::OutsideRect { min, max },
+                Parcel::Solid(Srgb::new([0.2, 0.3, 0.4])),
+            )
+            .insert_filter(C, None, Some(B), GREY)
+            .translate_layers(&[(B, shift)]);
+        let rows = layer_rows(&state);
+        let d = shift.as_vec2();
+        let matte = row(&rows, B).matte.as_ref().expect("a matte row");
+        assert_eq!(matte.rect, Some((min + d, max + d)));
+        assert_eq!(row(&rows, B).translation, shift);
+        assert!(row(&rows, A).matte.is_none() && row(&rows, A).filter.is_none());
+        assert_eq!(row(&rows, C).filter, Some(GREY));
     }
 }
