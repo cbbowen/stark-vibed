@@ -846,6 +846,52 @@ fn a_heavy_hard_strokes_visible_edge_spans_a_px() {
     );
 }
 
+/// **A render that keeps no carry holds a few working parcels, not one per tile**
+/// (§6.2). A replay, a commit and the live tail capture nothing, so each tile's parcel
+/// is spent once its landing pass has read it; holding one per tile kept ~4 MB per
+/// tile of a supersampled stroke for the whole render. Pinned against a short stroke
+/// that already fills the ring, so the claim is "does not grow with length" rather
+/// than a byte count that depends on the formats.
+#[test]
+fn a_long_strokes_working_scratch_does_not_grow_with_its_length() {
+    use stark_model::document::BrushShape;
+    use stark_model::geom::TILE_SIZE;
+
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    // The heavy hard tip `a_heavy_hard_strokes_visible_edge_spans_a_px` measures,
+    // which supersamples; and a soft half-opacity wash, which does not.
+    let mut hard = brush(RED, 12.0);
+    hard.shape = BrushShape::Round { hardness: 1.0 };
+    hard.paint_mut().expect("a paint brush").flow = 2.5;
+    let mut half = brush(RED, 12.0);
+    half.shape = BrushShape::Round { hardness: 0.0 };
+    half.effect.set_opacity(0.5);
+
+    // A replay along one tile row, `tiles` tiles long.
+    let mut peak = |b: BrushParams, tiles: f32| {
+        engine.take_scratch_peak();
+        let y = TILE_SIZE as f32 / 2.0;
+        let run = tiles * TILE_SIZE as f32;
+        replay_with(
+            &mut engine,
+            b,
+            &[Vec2::new(8.0, y), Vec2::new(8.0 + run, y)],
+        );
+        engine.take_scratch_peak()
+    };
+    for (what, b) in [("supersampled", hard), ("half-opacity", half)] {
+        let short = peak(b, 4.0);
+        let long = peak(b, 40.0);
+        assert!(
+            long <= short + short / 2,
+            "{what}: a 40-tile replay held {long} B of scratch at once where a 4-tile \
+             one held {short} B — the working parcels grew with the stroke",
+        );
+    }
+}
+
 // --- the f16 scratch against the number of segments (§6.2) -------------------
 
 /// Total height and the per-column profile of the middle half of a straight **swept**

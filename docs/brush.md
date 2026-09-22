@@ -1103,14 +1103,16 @@ of the two piece-composable forms above, so the path takes the erase pass's
 shape (§6.12): the parcel — color, wide aux, residual — keeps accumulating
 across the pieces of a live stroke, and every piece's integrate re-derives its
 tiles from **pristine** paint under the whole of it (`ParcelCarry`, beside the
-reservoir in `ToolState`; `render_swept_scaled`). Same copy-on-resume contract,
-same no-seam result — literally the same, since the two effects that obey this
-law run one procedure (`accum::IncrementalTileAccumulator`) and differ only in
-what they rasterize, how many lanes their parcel has, what their landing pass
-computes, and what bare canvas means. What it costs is a persistent
-scratch pair per touched tile for the stroke's lifetime and the scratch ring's
-overlap — which is why the branch is on the brush, and the full-opacity path
-never pays it.
+reservoir in `ToolState`; `render_swept`'s carried branch). Same copy-on-resume
+contract, same no-seam result — literally the same, since every swept render
+lands its tiles through one procedure (`accum::land_tiles`) and the effects
+differ only in what they rasterize, how many lanes their parcel has, what their
+landing pass computes, and what bare canvas means. What it costs is a copy per
+resumed tile per piece and, for a head a later piece resumes, a parcel per
+touched tile kept for the stroke's lifetime — which is why the branch is on the
+brush, and the full-opacity path never pays it. A render nothing resumes — the
+live tail, the commit, a replay — keeps no parcel: its tiles land through a ring
+of three working parcels whichever branch it took.
 
 **The stamp loop mints the prefix differences of the same law**, because the
 fast path must be an optimization and never a semantics: nudge `deposit` off
@@ -2354,7 +2356,7 @@ in `ToolState`): per touched tile, the pristine handle (an `Arc` bump, tiles
 being copy-on-write) and the accumulator lease. That carry, and the whole of the
 bookkeeping around it, is shared with the scaled swept deposit — the other
 effect whose law is outside §6.2's two forms — in
-`accum::IncrementalTileAccumulator`; this pass is the `Skip` half of its
+`accum::land_tiles`; this pass is the `Skip` half of its
 bare-canvas decision, and `stamp.wesl::fs_erase` plus `erase.wesl` are what it
 contributes. A resuming piece **copies** the
 carried accumulator into a working texture and extends the copy — the carried

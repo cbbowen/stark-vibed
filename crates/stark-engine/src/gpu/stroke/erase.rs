@@ -27,11 +27,10 @@ use crate::gpu::desc;
 use crate::gpu::tile::TileMap;
 
 use super::accum::{
-    IncrementalTileAccumulator, Land, Landed, Landing, LaneKeys, ParcelEffect, Sweep, lane_key,
+    LandStep, Landing, LaneKeys, Lanes, ParcelEffect, SweepStep, land_tiles, lane_key,
 };
-use super::incremental::Carried;
 use super::swept::{SweepDraws, SweepPass, landing_pipeline, reaches_nothing};
-use super::{ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
+use super::{ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene};
 use crate::gpu::scratch::Key;
 
 /// The accumulator's format: one channel — the transparency mass — additive. f16
@@ -43,7 +42,7 @@ const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
 /// rasterizes the channel trio, with the ceiling lane — the coverage the stroke has
 /// claimed, each segment's share at its own ceiling — beside it under a pen-driven
 /// opacity (§6.2). [`parcel_keys`] fills them by these names, which keeps the attach
-/// order and the bind order one list ([`Parcel`](super::accum::Parcel)).
+/// order and the bind order one list ([`ParcelLanes`](super::accum::ParcelLanes)).
 const MASS: usize = 0;
 const CEILING: usize = 1;
 /// The moment of the whole mass over the pen's factor — the lane's companion,
@@ -117,7 +116,7 @@ impl StrokeRenderer {
         range: ResolvedRange<'_>,
     ) -> (TileMap, StrokeCarry) {
         crate::timing::span!("stroke.erase");
-        // The pool, the base and the selection are the accumulator's — it is what
+        // The pool, the base and the selection are `land_tiles`'s — it is what
         // acquires the copy-on-write destinations and gates each one by its mask
         // (§6.8).
         let StrokeScene { substrate, .. } = scene;
@@ -144,7 +143,7 @@ impl StrokeRenderer {
         // The stroke's ceiling, once per *call*: `StrokeConstants` resolved it with
         // the color and the mask's opacity folded in, so this path cannot disagree
         // with the others about what the dial said (`BrushEffect::opacity`, §6.8).
-        // Run tier: every tile of `accum::run` binds it.
+        // Run tier: every tile of `accum::land_tiles` binds it.
         let opacity = scope.run_uniform(
             "stark erase opacity",
             &stark_shaders::mirror::erase::Erase {
@@ -152,31 +151,26 @@ impl StrokeRenderer {
             },
         );
 
-        let keys = parcel_keys(k.ceiling_lane);
-
         // The shared procedure (§6.12, `accum`): resume what the pieces before this
         // one accumulated, extend it over this piece's tiles, and turn the total on
         // the pristine paint. A tile the layer does not have is nothing to erase —
         // no output, no accumulator, no entry in the carry — so a stroke over bare
         // canvas mints no tiles at all.
-        let effect = ParcelEffect::Erase;
-        let Landed { map, carry, dirty } = IncrementalTileAccumulator::resume(
+        land_tiles(
             self,
             scene,
             scope,
-            keys,
-            effect,
-            resume.prior.map(|t| t.parcels(effect)),
-        )
-        .run(
-            &Sweep {
+            Lanes::Resume(resume),
+            &SweepStep {
                 label: "stark erase sweep pass",
                 pipeline: self.swept.pipeline(SweepPass::erase(k.lane())),
                 draws: &draws,
+                keys: parcel_keys(k.ceiling_lane),
             },
-            &Land {
+            &LandStep {
                 label: "stark erase integrate",
                 pipeline: &self.erase.pipeline,
+                effect: ParcelEffect::Erase,
             },
             |l: &Landing<'_>| {
                 self.erase
@@ -203,12 +197,8 @@ impl StrokeRenderer {
                         other => unreachable!("the erase group holds no binding {other}"),
                     })
             },
-        );
-
-        let tool = resume
-            .capture
-            .then(|| ToolState(Carried::Parcel(effect, carry)));
-        (map, StrokeCarry::finished(end_dist, tool, dirty))
+        )
+        .finished(end_dist)
     }
 }
 

@@ -84,4 +84,8 @@ impl Probe for Engine {
     fn resident_tile_bytes(&self) -> u64 {
         self.shared.apply.pool.resident_bytes()
     }
+
+    fn take_scratch_peak(&mut self) -> u64 {
+        self.shared.scratch.take_peak()
+    }
 }

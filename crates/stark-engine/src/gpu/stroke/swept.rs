@@ -16,15 +16,14 @@ use stark_shaders::mirror::stamp_common::binding as sc;
 use stark_shaders::mirror::stamp_common::decl as sd;
 use stark_shaders::{EntryPoint, Lane, Stages};
 
-use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap, TilePairHandle};
+use crate::gpu::tile::{SCRATCH_AUX_FORMAT, TileMap};
 
 use super::accum::{
-    IncrementalTileAccumulator, Land, Landed, Landing, LaneKeys, ParcelEffect, Sweep, lane_key,
+    LandStep, Landing, LaneKeys, Lanes, ParcelEffect, SweepStep, land_tiles, lane_key,
 };
-use super::incremental::Carried;
 use super::region::tiles_with_segments;
 use super::segments::{Segment, SegmentInstance};
-use super::{ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
+use super::{ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene};
 use crate::gpu::scratch::{BufKey, Key, LeasedSlots, SubmitScope};
 use crate::gpu::substrate::SubstrateMap;
 
@@ -45,16 +44,6 @@ const _: () = assert!(
 use super::tips::ResolvedTip;
 use stark_shaders::mirror::integrate::Integrate;
 use stark_shaders::mirror::stamp_common::TileXform;
-
-/// How many scratch pairs the sweep rotates through (§6.2) — see
-/// [`render_swept`](StrokeRenderer::render_swept), where the ring is acquired.
-///
-/// At 1, tile `n+1`'s sweep waits on tile `n`'s integrate and the path's `2N` render
-/// passes cannot overlap at all; the ceiling is memory, one pair being `TILE_TEX²` of
-/// the color format plus the wide scratch aux plus a residual — ~1.5 MB in a pigment
-/// space. Three keeps a sweep, an integrate and a spare in flight, which is where the
-/// win flattens.
-const SCRATCH_RING: usize = 3;
 
 /// A pipeline over the sweep's three layouts (§6.2, §6.12) — its row of [`SWEEPS`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -317,10 +306,9 @@ pub(super) fn integrate_pass(device: &wgpu::Device, color_space: &dyn ColorSpace
 }
 
 impl StrokeRenderer {
-    /// [`Self::render_range`] through the plain swept fast path: no carried brush state
-    /// at all, so a range needs nothing from its predecessor but the arc length. The
-    /// segments and constants arrive already resolved and flattened
-    /// ([`ResolvedRange`]).
+    /// [`Self::render_range`] through the swept deposit. The segments and constants
+    /// arrive already resolved and flattened ([`ResolvedRange`]), and every tile lands
+    /// through [`land_tiles`].
     pub(super) fn render_swept(
         &self,
         scene: StrokeScene<'_>,
@@ -332,7 +320,6 @@ impl StrokeRenderer {
         // acquisition, the scope — rather than the loop.
         crate::timing::span!("stroke.swept");
         let StrokeScene {
-            pool,
             base,
             selection,
             substrate,
@@ -342,14 +329,16 @@ impl StrokeRenderer {
             rec,
             consts: k,
             end_dist,
+            resume,
             ..
         } = range;
 
-        // Below full opacity the parcel's finished coverage is scaled, which is
-        // neither of §6.2's two piece-composable forms — so the path stops being
-        // stateless and takes the erase pass's shape instead: the parcel accumulates
-        // across pieces, every piece re-derived from pristine paint under the whole of
-        // it (`accum::ParcelCarry`).
+        // At full opacity the parcel lands by one of §6.2's piece-composable forms, so
+        // a range needs nothing from its predecessor but the arc length. Below it the
+        // parcel's finished coverage is scaled, which is neither — so the path takes
+        // the erase pass's shape instead: the parcel accumulates across pieces, every
+        // piece re-derived from pristine paint under the whole of it
+        // (`accum::ParcelCarry`).
         //
         // A pen-driven ceiling is a claim the pieces build up together, and a soft
         // selection rim is the ceiling's other factor *per texel* (§6.8), scaling a
@@ -359,166 +348,54 @@ impl StrokeRenderer {
         // resolve averages the parcel's *finished* visible alpha, and an average of
         // per-piece parcels differs from the whole parcel averaged by the covariance of
         // the subsample alphas — worth a quarter of the alpha at a rim texel where
-        // pieces meet. That is why the ring below never supersamples.
+        // pieces meet.
         let ss = super::budget::supersample_scale(&rec.brush);
-        if k.opacity < 1.0 || k.ceiling_lane || selection.is_active() || ss > 1 {
-            return self.render_swept_scaled(scene, range, ss);
-        }
+        let carries = k.opacity < 1.0 || k.ceiling_lane || selection.is_active() || ss > 1;
 
-        // The submit scope: the per-stroke buffers and the shared scratch pair ride
-        // in it, and only the `finish` that submits the commands naming them can
-        // release them (`scratch::SubmitScope`).
-        let mut scope = self.scratch.scope(&self.ctx, "stark stroke commit");
-        // Always at 1×: a supersampled stroke never reaches this loop (the branch above).
-        let Some(draws) = SweepDraws::new(self, &mut scope, &range, substrate, 1) else {
-            return reaches_nothing(scope, base, end_dist);
-        };
-        // The integrate's opacity uniform, at this path's identity: the layout
-        // names it on every stroke, and the shader's exact branch at 1 is what
-        // keeps this path bit-for-bit what it was. No ceiling lane either — a
-        // stroke that has one never comes this way.
-        let opacity = opacity_uniform(&mut scope, 1.0, 1, false);
-
-        // Extent → cleared scratch tile: within-stroke accumulation of the parcel this
-        // stroke lays (the color target over-blends the parcel's visible alpha with the
-        // latent premultiplied by it, the aux accumulates its height and optical mass
-        // additively). The scratch aux is the wide format.
-        //
-        // **A ring, not one pair and not one per tile.** One shared pair is sound —
-        // each sweep pass clears both targets — but it serializes the path: tile
-        // `n+1`'s sweep writes the very texture tile `n`'s integrate reads, so the `2N`
-        // passes run strictly back to back. A ring of [`SCRATCH_RING`] lets that many
-        // tiles' work be in flight before the dependency comes round again, and a
-        // stroke touching fewer tiles takes only as many as it has.
-        //
-        // Leased on the **run** tier: the ring is the loop's running state, not the
-        // current tile's, and the piece tier is released at every `flush`. They are the
-        // very keys the scaled path's parcel lanes take, so the two share one warm set.
-        let ring: Vec<RingSlot> = (0..SCRATCH_RING.min(draws.coords().len()))
-            .map(|_| RingSlot::take(self, &mut scope))
-            .collect();
-
-        let mut new_map = base.clone();
-        for (i, coord) in draws.coords().iter().enumerate() {
-            // Round-robin, so the reuse distance is the ring's length.
-            let scratch = &ring[i % ring.len()];
-            {
-                let mut pass =
-                    desc::begin_pass(scope.encoder(), "stark sweep pass", scratch.targets());
-                draws.draw(&mut pass, self.swept.pipeline(SweepPass::Deposit), i);
-            }
-
-            // Integrate the scratch slab over the base into a fresh CoW tile, gated
-            // by this tile's selection coverage — its own mask if it has one, or the
-            // 1×1 constant standing in for the rest of the canvas (§6.8).
-            let dst = self.acquire_tile(pool, AllocSource::IntegrateDestination);
-            // The pristine paint under this tile, or the 1×1 zeroes where the layer
-            // has none: the integrate clamps its loads, so bare canvas costs no tile at
-            // all (§6.8's pattern).
-            let base_t = self.zeroes.or(base.get(coord).map(TilePairHandle::targets));
-            // The coverage alone: the mask's opacity is in `k.opacity` already
-            // (`stroke_constants`), which the integrate multiplies this by.
-            let mask_view = self.selection.mask_for(selection, *coord);
-            let integrate_bg = integrate_bind_group(
-                self,
-                base_t,
-                scratch.targets(),
-                mask_view.view(),
-                &opacity,
-                &self.zeroes.aux,
-            );
-            scope.fullscreen_pass(
-                "stark integrate",
-                dst.targets(),
-                &self.integrate.pipeline,
-                desc::Bound::one(&integrate_bg),
-            );
-            new_map = new_map.insert(*coord, dst);
-        }
-
-        // `finish` submits and releases everything behind that submit: the ring's
-        // leases back to the scratch pool, the destination tiles to theirs by drop, the
-        // per-stroke buffers by lease as well (`scratch::SubmitScope`).
-        scope.finish();
-        let dirty = draws.coords().to_vec();
-        (new_map, StrokeCarry::finished(end_dist, None, dirty))
-    }
-
-    /// [`Self::render_swept`] below full opacity (§6.2): the same sweep, but into a
-    /// **per-tile accumulator carried across the pieces of a live stroke**, every
-    /// piece's integrate re-deriving its tiles from pristine paint under the whole
-    /// parcel — the erase pass's shape (`erase.rs`), forced by the same theorem, that
-    /// the opacity scales the parcel's finished coverage and so pieces cannot stack
-    /// scaled parcels and be the whole.
-    ///
-    /// The bookkeeping is [`accum`](super::accum)'s; what stays here is
-    /// `integrate.wesl`'s slots, this path's pipelines, and the one decision that is
-    /// the deposit's own — a stroke onto nothing mints a tile
-    /// ([`ParcelEffect::Deposit`]), where an erase has nothing to erase.
-    ///
-    /// It costs a persistent scratch pair per touched tile for the stroke's lifetime, a
-    /// copy per resumed tile per piece, and no ring overlap, so every stroke at full
-    /// opacity stays on [`Self::render_swept`].
-    ///
-    /// `ss` is the supersampling factor (§6.2, `budget::supersample_scale`): at 2 the
-    /// parcel lanes hold 2 subsample texels per canvas px, the sweep rasterizes into
-    /// them with its pixel-footprint window halved to match (`TileXform::params.w`),
-    /// and the integrate box-resolves each destination texel from the finished 2×2
-    /// block (`integrate.wesl`). 1 is [`Self::render_swept`]'s rasterization to the bit.
-    fn render_swept_scaled(
-        &self,
-        scene: StrokeScene<'_>,
-        range: ResolvedRange<'_>,
-        ss: u32,
-    ) -> (TileMap, StrokeCarry) {
-        // The pool and the selection are the accumulator's, as in `erase.rs`; the
-        // base it reads pristine paint out of is too.
-        let StrokeScene {
-            base, substrate, ..
-        } = scene;
-        let ResolvedRange {
-            consts: k,
-            end_dist,
-            resume,
-            ..
-        } = range;
-        let mut scope = self.scratch.scope(&self.ctx, "stark stroke scaled commit");
+        // The per-stroke buffers and the working parcels ride in the scope, and only
+        // the `finish` that submits the commands naming them can release them
+        // (`scratch::SubmitScope`).
+        let mut scope = self.scratch.scope(&self.ctx, "stark swept stroke");
         let Some(draws) = SweepDraws::new(self, &mut scope, &range, substrate, ss) else {
             return reaches_nothing(scope, base, end_dist);
         };
-        let opacity = opacity_uniform(&mut scope, k.opacity, ss, k.ceiling_lane);
+        // Exactly 1 where nothing is carried: the integrate's identity branch, which
+        // the layout binds either way.
+        let opacity = opacity_uniform(
+            &mut scope,
+            if carries { k.opacity } else { 1.0 },
+            ss,
+            k.ceiling_lane,
+        );
 
-        // The carried parcel's lanes at `stamp.wesl`'s own targets ([`parcel_keys`]):
-        // the channels the unscaled path's ring pairs carry, from the scratch pool
-        // rather than the tile pool, since nothing here ever becomes a document tile.
-        // A supersampled stroke holds the same set at `ss` texels per px — the one
-        // place the 4× memory is paid, and it is transient.
+        // The parcel's lanes at `stamp.wesl`'s own targets ([`parcel_keys`]), from the
+        // scratch pool rather than the tile pool, since nothing here ever becomes a
+        // document tile. A supersampled stroke holds them at `ss` texels per px.
         let formats = ChannelFormats::of(self.color_space.as_ref());
         let keys = parcel_keys(formats.color, formats.resid, k.ceiling_lane)
             .map(|key| key.map(|key| key.scaled(ss)));
-
-        let effect = ParcelEffect::Deposit;
-        let Landed { map, carry, dirty } = IncrementalTileAccumulator::resume(
+        let lanes = if carries {
+            Lanes::Resume(resume)
+        } else {
+            Lanes::Fresh
+        };
+        land_tiles(
             self,
             scene,
             scope,
-            keys,
-            effect,
-            resume.prior.map(|t| t.parcels(effect)),
-        )
-        .run(
-            &Sweep {
+            lanes,
+            &SweepStep {
                 label: "stark sweep pass",
                 pipeline: self.swept.pipeline(SweepPass::deposit(k.lane())),
                 draws: &draws,
+                keys,
             },
-            &Land {
+            &LandStep {
                 label: "stark integrate",
                 pipeline: &self.integrate.pipeline,
+                effect: ParcelEffect::Deposit,
             },
             |l: &Landing<'_>| {
-                // The parcel's lanes as the trio they are, so this and the unscaled
-                // loop ask `integrate_bind_group` the same question.
                 let parcel = Targets {
                     color: l.parcel.lane(COLOR),
                     aux: l.parcel.lane(AUX),
@@ -531,12 +408,8 @@ impl StrokeRenderer {
                 };
                 integrate_bind_group(self, l.base, parcel, l.mask, &opacity, ceiling)
             },
-        );
-
-        let tool = resume
-            .capture
-            .then(|| ToolState(Carried::Parcel(effect, carry)));
-        (map, StrokeCarry::finished(end_dist, tool, dirty))
+        )
+        .finished(end_dist)
     }
 }
 
@@ -551,10 +424,10 @@ pub(super) fn reaches_nothing(
     (base.clone(), StrokeCarry::unchanged(dist))
 }
 
-/// The carried parcel's lanes (`render_swept_scaled`): the index is the shader's own
-/// `@location` in `stamp.wesl`, so the ceiling is at 3 with or without a residual at 2.
-/// [`parcel_keys`] fills them by these names, which keeps the attach order and the bind
-/// order one list ([`Parcel`](super::accum::Parcel)).
+/// The deposit parcel's lanes: the index is the shader's own `@location` in
+/// `stamp.wesl`, so the ceiling is at 3 with or without a residual at 2. [`parcel_keys`]
+/// fills them by these names, which keeps the attach order and the bind order one list
+/// ([`ParcelLanes`](super::accum::ParcelLanes)).
 const COLOR: usize = 0;
 const AUX: usize = 1;
 const RESID: usize = 2;
@@ -577,46 +450,11 @@ fn parcel_keys(
     keys
 }
 
-/// One carried-parcel lane's pool key — [`lane_key`]'s usages, at the parcel's own
-/// formats. One label for the three: they are one purpose, and the formats already
-/// give each its own line in the pool's free list (`scratch::Key`).
+/// One parcel lane's pool key — [`lane_key`]'s usages, at the parcel's own formats.
+/// One label for the lanes: they are one purpose, and the formats already give each
+/// its own line in the pool's free list (`scratch::Key`).
 fn parcel_key(format: wgpu::TextureFormat) -> Key {
     lane_key(format, "stark sweep parcel")
-}
-
-/// One slot of the sweep's scratch ring: the three working textures a tile's sweep
-/// writes and its integrate reads, leased for the piece. Views only; the leases live in
-/// the scope until the submit that releases them.
-pub(super) struct RingSlot {
-    color: wgpu::TextureView,
-    aux: wgpu::TextureView,
-    resid: Option<wgpu::TextureView>,
-}
-
-impl RingSlot {
-    /// Check one out. The **wide** scratch aux (§6.2), and the color space's own color
-    /// and residual beside it — the same trio a parcel lane carries, at the same keys,
-    /// which is what lets the two paths draw from one free list.
-    fn take(r: &StrokeRenderer, scope: &mut SubmitScope) -> Self {
-        let formats = ChannelFormats::of(r.color_space.as_ref());
-        let mut view = |format| scope.take_run(parcel_key(format)).view;
-        Self {
-            color: view(formats.color),
-            aux: view(SCRATCH_AUX_FORMAT),
-            resid: formats.resid.map(&mut view),
-        }
-    }
-
-    /// The slot's three views as the trio every consumer wants — the same shape a
-    /// parcel's lanes make, which is what lets one `integrate_bind_group` serve the
-    /// unscaled loop and the accumulator alike.
-    fn targets(&self) -> Targets<'_> {
-        Targets {
-            color: &self.color,
-            aux: &self.aux,
-            resid: self.resid.as_ref(),
-        }
-    }
 }
 
 /// The brush as the sweep binds it: the prefix-τ volume at group 1, and the noise and
@@ -659,8 +497,8 @@ pub(super) fn sweep_brush_groups(
 
 /// The integrate's opacity uniform (`integrate.wesl::Integrate`) for one piece:
 /// the stroke's ceiling — the effect's dial with the mask's opacity folded in
-/// (`stroke_constants`) — or exactly 1, the shader's identity branch, on the
-/// unscaled path, which binds it because the layout names it either way.
+/// (`stroke_constants`) — or exactly 1, the shader's identity branch, where nothing
+/// is carried.
 ///
 /// `ss` is how many subsample texels per canvas px the scratch holds (§6.2), which
 /// tells the shader whether to box-resolve the parcel — 1 is the plain 1:1 load.
@@ -668,7 +506,7 @@ pub(super) fn sweep_brush_groups(
 /// zero the shader must not read.
 ///
 /// Run tier: every tile of the piece binds it.
-pub(super) fn opacity_uniform(
+fn opacity_uniform(
     scope: &mut SubmitScope,
     opacity: f32,
     ss: u32,
@@ -683,10 +521,10 @@ pub(super) fn opacity_uniform(
 /// Everything one piece's sweep draws with: which tiles, each tile's contiguous
 /// instance range, the instance buffer, and the sweep's three bind groups.
 ///
-/// One derivation for every pass that rasterizes the swept extent — the plain deposit,
-/// its scaled sibling and the erase sweep — for
-/// [`StrokeConstants`](super::StrokeConstants)'s reason: they draw the *same* extent,
-/// gated by the same drain, tooth and jitter, and differ by pipeline alone.
+/// One derivation for every pass that rasterizes the swept extent — the deposit and the
+/// erase sweep — for [`StrokeConstants`](super::StrokeConstants)'s reason: they draw
+/// the *same* extent, gated by the same drain, tooth and jitter, and differ by pipeline
+/// alone.
 pub(super) struct SweepDraws {
     /// The tiles the piece's segments reach, texture (interior + apron) included —
     /// [`tiles_with_segments`]' answer, in its order, which `runs` is laid out to match.
@@ -896,14 +734,9 @@ pub(super) fn xform_group(
 /// otherwise (the uniform says which, and the shader reads the lane only when
 /// it does).
 ///
-/// **One derivation for both swept paths.** The unscaled loop's resident tile and ring
-/// slot and the scaled accumulator's `Targets` and parcel lanes are both trios, so what
-/// is left once they are asked for as trios is the one thing genuinely shared: what the
-/// integrate reads.
-///
-/// A residual build asks for both residual slots, and both callers have them: the
-/// base's residual, the zero standing in for it and the parcel's third lane are all
-/// present exactly when the space has one (§6.7).
+/// A residual build asks for both residual slots, and both are there: the base's
+/// residual, the zero standing in for it and the parcel's third lane are all present
+/// exactly when the space has one (§6.7).
 fn integrate_bind_group(
     r: &StrokeRenderer,
     base: Targets<'_>,

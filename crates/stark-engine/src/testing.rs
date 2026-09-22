@@ -102,6 +102,10 @@ pub trait Probe {
     /// The tile memory history retention measures against its budget, idle textures
     /// included (§5).
     fn resident_tile_bytes(&self) -> u64;
+
+    /// The most working-scratch bytes held out of the pool at once since the last
+    /// ask, which restarts the count — a render's transient working set (§6.2).
+    fn take_scratch_peak(&mut self) -> u64;
 }
 
 /// The environment variable that turns a missing GPU from a failure into a skip.

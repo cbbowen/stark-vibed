@@ -282,6 +282,10 @@ struct Inner {
     /// rather than a walk.
     bytes: u64,
     tick: u64,
+    /// Bytes checked out and not yet handed back.
+    leased: u64,
+    /// The most `leased` has reached since [`ScratchPool::take_peak`] last asked.
+    peak: u64,
 }
 
 /// The pool itself: shared by every clone of the renderer, so the live fold and the
@@ -331,7 +335,7 @@ impl ScratchPool {
             Lease::Tex { tex, key: had } if had.interchangeable(&key) => Some(tex.clone()),
             _ => None,
         });
-        reused.unwrap_or_else(|| {
+        let taken = reused.unwrap_or_else(|| {
             let tex = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(key.label),
                 size: key.extent(),
@@ -345,7 +349,9 @@ impl ScratchPool {
             let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
             let tex = LeasedTex { tex, view };
             (tex.clone(), Lease::Tex { tex, key })
-        })
+        });
+        self.lent(&taken.1);
+        taken
     }
 
     /// Check a buffer out: a free one [`BufKey::interchangeable`] with `key`, or a
@@ -355,7 +361,7 @@ impl ScratchPool {
             Lease::Buf { buf, key: had } if had.interchangeable(&key) => Some(buf.clone()),
             _ => None,
         });
-        reused.unwrap_or_else(|| {
+        let taken = reused.unwrap_or_else(|| {
             let buf = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some(key.label),
                 size: key.bucket(),
@@ -363,7 +369,24 @@ impl ScratchPool {
                 mapped_at_creation: false,
             });
             (buf.clone(), Lease::Buf { buf, key })
-        })
+        });
+        self.lent(&taken.1);
+        taken
+    }
+
+    /// Count `lease` as checked out.
+    fn lent(&self, lease: &Lease) {
+        let mut inner = unpoisoned(self.0.lock());
+        inner.leased += lease.bytes();
+        inner.peak = inner.peak.max(inner.leased);
+    }
+
+    /// The most bytes checked out at once since the last call, restarting the count
+    /// from what is checked out now.
+    pub(crate) fn take_peak(&self) -> u64 {
+        let mut inner = unpoisoned(self.0.lock());
+        let now = inner.leased;
+        std::mem::replace(&mut inner.peak, now)
     }
 
     /// Take the newest free entry `claim` accepts off the list, with the handles it
@@ -395,6 +418,7 @@ impl ScratchPool {
         for lease in leases {
             inner.tick += 1;
             let last = inner.tick;
+            inner.leased -= lease.bytes();
             inner.bytes += lease.bytes();
             inner.free.push(Entry { lease, last });
         }
@@ -445,10 +469,10 @@ impl Kept {
         &self.tex.tex
     }
 
-    /// The whole-texture view — what the erase pass binds its carried
-    /// accumulator by, and renders its working one through (§6.12).
-    pub(crate) fn view(&self) -> &wgpu::TextureView {
-        &self.tex.view
+    /// The texture with its whole-texture view, as a scope's own checkouts hand them
+    /// out — so one pass records against a kept lease and a run lease alike.
+    pub(crate) fn leased(&self) -> &LeasedTex {
+        &self.tex
     }
 }
 

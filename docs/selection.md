@@ -209,11 +209,11 @@ Two consequences, one per kind of paint:
 
 - **Minted paint takes the mask as a ceiling.** A scaled parcel is not
   piece-composable (§6.2), and every selection's rim is at least a pixel soft, so
-  the swept path takes its carried shape (`render_swept_scaled`) under *any* mask,
-  not only below full opacity — and the stamp loop carries its mint budget lanes
-  whenever a mask is in force (`DynamicsRun::capped`). The raw totals those lanes
-  hold advance by the whole attempt whatever the coverage; the ceiling, not the
-  lanes, is where the coverage decides what shows.
+  the swept path takes its carried shape (`render_swept`'s carried branch) under
+  *any* mask, not only below full opacity — and the stamp loop carries its mint
+  budget lanes whenever a mask is in force (`DynamicsRun::capped`). The raw totals
+  those lanes hold advance by the whole attempt whatever the coverage; the ceiling,
+  not the lanes, is where the coverage decides what shows.
 - **Moved paint takes the mask as a fraction.** The lift, the tool's deposit of
   carried paint, the pen-up settle, the bleed and the transform's cut conserve
   height, and a fraction is the one gate that does: the canvas gives up `sel` of
