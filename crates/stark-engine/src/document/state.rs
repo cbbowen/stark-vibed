@@ -10,14 +10,12 @@ use std::sync::Arc;
 
 use rpds::{HashTrieMap, Vector};
 
-use super::layer::{CompositeParams, Layer, LayerContent, PropValue};
+use super::layer::{Layer, LayerContent, PropValue};
 use super::selection::Selection;
 use stark_model::Srgb;
 use stark_model::document::ActorId;
 use stark_model::document::Filter;
-use stark_model::document::{
-    BlendMode, GuideId, LayerId, MatteRegion, Parcel, PerspectiveGuide, Place,
-};
+use stark_model::document::{GuideId, LayerId, MatteRegion, Parcel, PerspectiveGuide, Place};
 use stark_model::geom::{IVec2, TileCoord, Vec2};
 use stark_model::{SubstrateId, SubstrateScale};
 
@@ -489,7 +487,9 @@ impl DocState {
                 let layer = layers.get(index).expect(IN_RANGE);
                 return Some((layer, LayerSite { carrier, index }));
             }
-            layers.iter().find_map(|l| walk(&l.carries, id, Some(l.id)))
+            layers
+                .iter()
+                .find_map(|l| walk(l.carries(), id, Some(l.id)))
         }
         walk(&self.layers, id, None)
     }
@@ -585,10 +585,9 @@ impl DocState {
     /// same numbers. A freshly minted action must carry its own, or the commutation
     /// fast path and a canonical replay would disagree (§12.2).
     pub(crate) fn numbered(&self, id: LayerId, number: Option<u32>) -> Layer {
-        Layer {
-            number: Some(number.unwrap_or_else(|| self.next_layer_number())),
-            ..Layer::new(id)
-        }
+        let mut layer = Layer::new(id);
+        layer.number = Some(number.unwrap_or_else(|| self.next_layer_number()));
+        layer
     }
 
     /// Insert a matte layer the same way — §15.2. A frame is one of
@@ -619,7 +618,7 @@ impl DocState {
     /// Insert a **filter** layer the same way — §21. It rewrites whatever is
     /// composited beneath it in the stack it lands in.
     ///
-    /// Sanitized on the way in, as [`set_filter`](Self::set_filter) is — see there.
+    /// Sanitized on the way in, as a filter written by [`Layer::with_prop`] is.
     pub(crate) fn insert_filter(
         &self,
         id: LayerId,
@@ -665,7 +664,7 @@ impl DocState {
             // different document on a client whose tree is one action behind,
             // and "nothing happened" is at least the same nothing everywhere.
             Some(c) => map_in(&self.layers, c, &mut |l: &Layer| {
-                l.with_carries(splice(&l.carries, above, &layer))
+                l.with_carries(splice(l.carries(), above, &layer))
             }),
         };
         match layers {
@@ -746,7 +745,7 @@ impl DocState {
             // exactly as a removed carrier does: restored rather than lost.
             Some(_) if self.cannot_carry(site.carrier) => on_top(),
             Some(c) => map_in(&self.layers, c, &mut |l: &Layer| {
-                l.with_carries(insert_at(&l.carries, at(&l.carries), &layer))
+                l.with_carries(insert_at(l.carries(), at(l.carries()), &layer))
             })
             .unwrap_or_else(on_top),
         };
@@ -762,18 +761,13 @@ impl DocState {
     ///
     /// Deliberately narrower than [`map_layer`](Self::map_layer): a setter that can
     /// only change `content` cannot reach `composite`, `visible` or `name` by accident.
-    /// `set_layer_blend` and its neighbours are *not* written through this — they write
-    /// `composite`, and read `content` only to refuse (§21.4).
     fn map_content(
         &self,
         id: LayerId,
         f: impl FnOnce(&LayerContent) -> Option<LayerContent>,
     ) -> Self {
         self.map_layer(id, |l| match f(&l.content) {
-            Some(content) => Layer {
-                content,
-                ..l.clone()
-            },
+            Some(content) => l.with_content(content),
             None => l.clone(),
         })
     }
@@ -798,19 +792,6 @@ impl DocState {
         })
     }
 
-    /// Replace a matte layer's region wholesale — undo's restore path
-    /// ([`set_prop`](Self::set_prop)). A no-op on a paint layer or an absent id, like
-    /// every setter here.
-    pub(crate) fn set_matte_region(&self, id: LayerId, region: MatteRegion) -> Self {
-        self.map_content(id, |c| match c {
-            LayerContent::Matte { paint, .. } => Some(LayerContent::Matte {
-                region,
-                paint: paint.clone(),
-            }),
-            LayerContent::Paint(_) | LayerContent::Filter(_) => None,
-        })
-    }
-
     /// Set a matte layer's paint — a flat color or a gradient ramp (§15.4,
     /// §22.4). A no-op on a paint layer or an absent id.
     pub(crate) fn set_matte_paint(&self, id: LayerId, paint: Parcel) -> Self {
@@ -820,27 +801,6 @@ impl DocState {
                 paint: paint.clone(),
             }),
             LayerContent::Paint(_) | LayerContent::Filter(_) => None,
-        })
-    }
-
-    /// Retune a filter layer — §21. A no-op on anything that is not one, and on an
-    /// absent id, like every other content setter here.
-    ///
-    /// The whole filter travels rather than one knob, on the argument
-    /// [`set_guide`](Self::set_guide) makes for a guide's whole camera (§20.5): a
-    /// filter that grows a parameter needs no command of its own, and neither does the
-    /// next filter kind.
-    ///
-    /// **Sanitized here**, where every filter enters state — not only where a local
-    /// command is minted (§21.5). A loaded file's replay and a remote peer's action
-    /// reach this through `ActionKind::apply` without ever passing `Engine::process`,
-    /// and a NaN in a fullscreen pass has no coverage to hide behind: it would poison
-    /// every texel of the frame. Idempotent for any log this engine wrote, so replay
-    /// still puts back exactly what was applied.
-    pub(crate) fn set_filter(&self, id: LayerId, filter: Filter) -> Self {
-        self.map_content(id, |c| match c {
-            LayerContent::Filter(_) => Some(LayerContent::Filter(filter.sanitized())),
-            LayerContent::Paint(_) | LayerContent::Matte { .. } => None,
         })
     }
 
@@ -890,79 +850,12 @@ impl DocState {
         }
     }
 
-    /// Write one property of a layer — the inverse of [`Layer::prop`], through the
-    /// setter that owns it, so a restored value meets the refusals a folded one does.
+    /// Write one property of a layer (no-op if absent) — [`Layer::prop`]'s inverse,
+    /// refusing what [`Layer::with_prop`] refuses. What every property action folds
+    /// through and what undo restores one with, so the two cannot disagree about a
+    /// refusal.
     pub(crate) fn set_prop(&self, id: LayerId, value: PropValue) -> Self {
-        match value {
-            PropValue::Blend(blend) => self.set_layer_blend(id, blend),
-            PropValue::Clip(clip) => self.set_layer_clip(id, clip),
-            PropValue::Opacity(opacity) => self.set_layer_opacity(id, opacity),
-            PropValue::Visible(visible) => self.set_layer_visible(id, visible),
-            PropValue::Name(name) => self.set_layer_name(id, name),
-            // The *value*, not the rect: a region restored through its rect could not
-            // round-trip `Everything`, which has none.
-            PropValue::Matte(region, paint) => {
-                self.set_matte_region(id, region).set_matte_paint(id, paint)
-            }
-            PropValue::Filter(filter) => self.set_filter(id, filter),
-            PropValue::Translation(to) => self.translate_layers(&[(id, to)]),
-        }
-    }
-
-    /// Set the blend mode of a layer (no-op if absent).
-    ///
-    /// A no-op on a **filter** too, like paint on a matte (§15.7): a filter has no
-    /// source to meet a backdrop, and — since a filter never carries (§21.2) — no group
-    /// whose merge the mode could describe either. Refused here rather than in a
-    /// frontend rule, so replayed and replicated documents agree with local ones.
-    ///
-    /// **Not** the rule its neighbour [`Self::set_layer_clip`] follows: a clip asks a
-    /// question a filter can answer (§21.4.1), so only the mode is turned away here.
-    ///
-    /// The mode is **sanitized on the way in**, as a filter is (§21.5): a mode now
-    /// carries numbers of its own, and a file or a peer reaches this without passing
-    /// through `Engine::process`.
-    pub(crate) fn set_layer_blend(&self, id: LayerId, blend: BlendMode) -> Self {
-        let blend = blend.sanitized();
-        self.map_layer(id, |l| match &l.content {
-            LayerContent::Filter(_) => l.clone(),
-            LayerContent::Paint(_) | LayerContent::Matte { .. } => Layer {
-                composite: CompositeParams {
-                    blend,
-                    ..l.composite
-                },
-                ..l.clone()
-            },
-        })
-    }
-
-    /// Set whether a layer clips to the paint beneath it (no-op if absent) —
-    /// §14.4.
-    ///
-    /// **Live on a filter**, unlike [`Self::set_layer_blend`] beside it (§21.4). A
-    /// mode says how a *source* meets a backdrop and a filter has no source; a clip
-    /// says where the layer may land, which survives having no source. For a point
-    /// filter the flag is a bit-exact no-op; for one that *gathers* (§21.10) it is the
-    /// difference between a fringe held inside the silhouette and one spilling past it.
-    pub(crate) fn set_layer_clip(&self, id: LayerId, clip: bool) -> Self {
-        self.map_layer(id, |l| Layer {
-            composite: CompositeParams {
-                clip,
-                ..l.composite
-            },
-            ..l.clone()
-        })
-    }
-
-    /// Set a layer's opacity, clamped to [0, 1] (no-op if absent).
-    pub(crate) fn set_layer_opacity(&self, id: LayerId, opacity: f32) -> Self {
-        self.map_layer(id, |l| Layer {
-            composite: CompositeParams {
-                opacity: opacity.clamp(0.0, 1.0),
-                ..l.composite
-            },
-            ..l.clone()
-        })
+        self.map_layer(id, |l| l.with_prop(value))
     }
 
     /// Put each named layer's frame at a place on the canvas (§14.12) — absent entries
@@ -983,27 +876,6 @@ impl DocState {
             Some(layers) => self.with_layers(layers),
             None => self.clone(),
         }
-    }
-
-    /// Set a layer's visibility (no-op if absent).
-    pub(crate) fn set_layer_visible(&self, id: LayerId, visible: bool) -> Self {
-        self.map_layer(id, |l| Layer {
-            visible,
-            ..l.clone()
-        })
-    }
-
-    /// Set (or, with `None`, clear) a layer's name — no-op if absent.
-    ///
-    /// Takes whatever it is given: the name is normalized once where the action is
-    /// minted ([`Engine::process`](crate::Engine::process)), so replay puts back
-    /// exactly what was recorded rather than re-deriving it from rules that may have
-    /// changed since.
-    pub(crate) fn set_layer_name(&self, id: LayerId, name: Option<Arc<str>>) -> Self {
-        self.map_layer(id, |l| Layer {
-            name: name.clone(),
-            ..l.clone()
-        })
     }
 
     /// Move layer `id` into the stack carried by `carrier` (the root stack when
@@ -1045,7 +917,7 @@ impl DocState {
         let layers = match carrier {
             None => Some(splice(&remaining, at, &moved)),
             Some(c) => map_in(&remaining, c, &mut |l: &Layer| {
-                l.with_carries(splice(&l.carries, at, &moved))
+                l.with_carries(splice(l.carries(), at, &moved))
             }),
         };
         match layers {
@@ -1135,7 +1007,7 @@ fn map_in(
         return Some(layers.set(i, replaced).expect(IN_RANGE));
     }
     for (i, l) in layers.iter().enumerate() {
-        if let Some(carries) = map_in(&l.carries, id, f) {
+        if let Some(carries) = map_in(l.carries(), id, f) {
             return Some(layers.set(i, l.with_carries(carries)).expect(IN_RANGE));
         }
     }
@@ -1149,7 +1021,7 @@ fn map_in(
 fn translate_in(layers: &Vector<Layer>, moves: &BTreeMap<LayerId, IVec2>) -> Option<Vector<Layer>> {
     let mut out: Option<Vector<Layer>> = None;
     for (i, l) in layers.iter().enumerate() {
-        let carries = translate_in(&l.carries, moves);
+        let carries = translate_in(l.carries(), moves);
         let to = moves.get(&l.id).filter(|_| l.is_translatable());
         if carries.is_none() && to.is_none() {
             continue;
@@ -1176,22 +1048,20 @@ fn translate_in(layers: &Vector<Layer>, moves: &BTreeMap<LayerId, IVec2>) -> Opt
 /// to make impossible (§17.9).
 fn copy_subtree(layer: &Layer, ids: &[(LayerId, LayerId)], base: u32) -> Option<Layer> {
     let k = ids.iter().position(|(src, _)| *src == layer.id)?;
-    let id = ids[k].1;
     let mut carries = Vector::new();
-    for l in layer.carries.iter() {
+    for l in layer.carries().iter() {
         carries = carries.push_back(copy_subtree(l, ids, base)?);
     }
-    Some(Layer {
-        id,
-        // A copy takes the source's *name* verbatim (§14.8) and a number of its own,
-        // which is what keeps a duplicate of an unnamed layer two readable rows. The
-        // `map` is what leaves a matte or a filter copy unnumbered, as its source is:
-        // the run simply skips those positions. Saturating, as `next_layer_number` is.
-        number: layer
-            .number
-            .map(|_| base.saturating_add(u32::try_from(k).unwrap_or(u32::MAX))),
-        ..layer.with_carries(carries)
-    })
+    let mut copy = layer.with_carries(carries);
+    copy.id = ids[k].1;
+    // A copy takes the source's *name* verbatim (§14.8) and a number of its own, which
+    // is what keeps a duplicate of an unnamed layer two readable rows. The `map` is
+    // what leaves a matte or a filter copy unnumbered, as its source is: the run
+    // simply skips those positions. Saturating, as `next_layer_number` is.
+    copy.number = layer
+        .number
+        .map(|_| base.saturating_add(u32::try_from(k).unwrap_or(u32::MAX)));
+    Some(copy)
 }
 
 /// `layers` without the layer `id`, plus the subtree that came out of it.
@@ -1201,7 +1071,7 @@ fn remove_in(layers: &Vector<Layer>, id: LayerId) -> Option<(Vector<Layer>, Laye
         return Some((remove_at(layers, i), taken));
     }
     for (i, l) in layers.iter().enumerate() {
-        if let Some((carries, taken)) = remove_in(&l.carries, id) {
+        if let Some((carries, taken)) = remove_in(l.carries(), id) {
             let layers = layers.set(i, l.with_carries(carries)).expect(IN_RANGE);
             return Some((layers, taken));
         }
@@ -1267,7 +1137,7 @@ fn slot_after(roster: &Vector<Guide>, after: Option<GuideId>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stark_model::document::{DRAGO_K, DRAGO_K_RANGE};
+    use stark_model::document::{BlendMode, DRAGO_K, DRAGO_K_RANGE};
 
     fn at(x: i32, y: i32) -> TileCoord {
         TileCoord::new(x, y)
@@ -1351,7 +1221,7 @@ mod tests {
             inserted
                 .layer(FILTER)
                 .expect("filter exists")
-                .carries
+                .carries()
                 .is_empty(),
             "insert_layer attached a child to a filter",
         );
@@ -1365,7 +1235,7 @@ mod tests {
             moved
                 .layer(FILTER)
                 .expect("filter exists")
-                .carries
+                .carries()
                 .is_empty(),
             "move_layer attached a child to a filter",
         );
@@ -1389,8 +1259,8 @@ mod tests {
     #[test]
     fn a_filter_refuses_a_blend_and_takes_a_clip() {
         let state = with_filter()
-            .set_layer_blend(FILTER, BlendMode::Multiply)
-            .set_layer_clip(FILTER, true);
+            .set_prop(FILTER, PropValue::Blend(BlendMode::Multiply))
+            .set_prop(FILTER, PropValue::Clip(true));
         let filter = state.layer(FILTER).expect("filter exists");
         assert_eq!(
             filter.composite.blend,
@@ -1402,7 +1272,7 @@ mod tests {
         // trap, since clearing it is how a spilling fringe is asked for.
         assert!(
             !state
-                .set_layer_clip(FILTER, false)
+                .set_prop(FILTER, PropValue::Clip(false))
                 .layer(FILTER)
                 .expect("filter exists")
                 .composite
@@ -1410,8 +1280,8 @@ mod tests {
         );
         // …while a paint layer beside it still takes both.
         let state = state
-            .set_layer_blend(BASE, BlendMode::Multiply)
-            .set_layer_clip(BASE, true);
+            .set_prop(BASE, PropValue::Blend(BlendMode::Multiply))
+            .set_prop(BASE, PropValue::Clip(true));
         let base = state.layer(BASE).expect("base exists");
         assert_eq!(base.composite.blend, BlendMode::Multiply);
         assert!(base.composite.clip);
@@ -1440,11 +1310,11 @@ mod tests {
             "insert_filter installed an unsanitized filter",
         );
 
-        let set = with_filter().set_filter(FILTER, wild);
+        let set = with_filter().set_prop(FILTER, PropValue::Filter(wild));
         assert_eq!(
             set.layer(FILTER).and_then(Layer::filter),
             Some(expect),
-            "set_filter installed an unsanitized filter",
+            "set_prop installed an unsanitized filter",
         );
     }
 
@@ -1454,23 +1324,23 @@ mod tests {
     #[test]
     fn a_blend_mode_is_sanitized_wherever_it_enters_state() {
         let wild = BlendMode::Drago { k: f32::NAN };
-        let state = DocState::with_layer(BASE).set_layer_blend(BASE, wild);
+        let state = DocState::with_layer(BASE).set_prop(BASE, PropValue::Blend(wild));
         assert_eq!(
             state.layer(BASE).map(|l| l.composite.blend),
             Some(BlendMode::Drago { k: DRAGO_K }),
-            "set_layer_blend installed an unusable bend",
+            "set_prop installed an unusable bend",
         );
-        let state = state.set_layer_blend(BASE, BlendMode::Drago { k: 1e9 });
+        let state = state.set_prop(BASE, PropValue::Blend(BlendMode::Drago { k: 1e9 }));
         assert_eq!(
             state.layer(BASE).map(|l| l.composite.blend),
             Some(BlendMode::Drago { k: DRAGO_K_RANGE.1 }),
-            "set_layer_blend installed a bend past the end of its range",
+            "set_prop installed a bend past the end of its range",
         );
     }
     /// The box every layer carries for its subtree, recomputed from nothing.
     fn recomputed(l: &Layer) -> CanvasBounds {
         let mut out = l.bounds().shifted(l.translation);
-        for c in l.carries.iter() {
+        for c in l.carries().iter() {
             out.union(recomputed(c));
         }
         out
@@ -1479,7 +1349,7 @@ mod tests {
     fn each(layers: &Vector<Layer>, f: &mut impl FnMut(&Layer)) {
         for l in layers.iter() {
             f(l);
-            each(&l.carries, f);
+            each(l.carries(), f);
         }
     }
 
@@ -1625,7 +1495,7 @@ mod tests {
         let group = DocState::with_layer(BASE)
             .insert_layer(OTHER, None, None, None)
             .insert_layer(LayerId::solo(3), Some(OTHER), None, None)
-            .set_layer_name(OTHER, Some("Sky".into()));
+            .set_prop(OTHER, PropValue::Name(Some("Sky".into())));
 
         let ids = [
             (OTHER, LayerId::solo(10)),

@@ -133,7 +133,7 @@ pub(crate) fn plan(state: &DocState, source: LayerId) -> Option<MergePlan> {
         _ => {
             let stack = match site.carrier {
                 None => state.root(),
-                Some(carrier) => &state.layer(carrier)?.carries,
+                Some(carrier) => state.layer(carrier)?.carries(),
             };
             let below = stack.get(site.index - 1)?;
             (
@@ -326,6 +326,7 @@ fn is_plain_paint(l: &Layer) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::layer::PropValue;
     use stark_model::Srgb;
     use stark_model::document::{
         BlendMode, ChromaticAberration, ColorAdjust, DRAGO_K, Filter, Place,
@@ -404,7 +405,9 @@ mod tests {
     /// rides on its tiles (§14.7).
     #[test]
     fn sibling_opacities_are_folded_into_the_tiles() {
-        let state = flat().set_layer_opacity(C, 0.4).set_layer_opacity(B, 0.25);
+        let state = flat()
+            .set_prop(C, PropValue::Opacity(0.4))
+            .set_prop(B, PropValue::Opacity(0.25));
         assert_eq!(
             terms(&state, C),
             Some((faded(0.4), 0.25, CompositeParams::IDENTITY)),
@@ -419,7 +422,9 @@ mod tests {
     #[test]
     fn siblings_merge_when_their_modes_agree_and_not_otherwise() {
         for mode in MODES {
-            let both = flat().set_layer_blend(C, mode).set_layer_blend(B, mode);
+            let both = flat()
+                .set_prop(C, PropValue::Blend(mode))
+                .set_prop(B, PropValue::Blend(mode));
             assert_eq!(dest(&both, C), Some(B), "{mode:?} on both");
             assert_eq!(
                 terms(&both, C).map(|(_, _, keeps)| keeps.blend),
@@ -427,9 +432,9 @@ mod tests {
                 "the survivor has to go on meeting the backdrop the same way",
             );
 
-            let source_only = flat().set_layer_blend(C, mode);
+            let source_only = flat().set_prop(C, PropValue::Blend(mode));
             assert_eq!(dest(&source_only, C), None, "{mode:?} on the source alone");
-            let dest_only = flat().set_layer_blend(B, mode);
+            let dest_only = flat().set_prop(B, PropValue::Blend(mode));
             assert_eq!(
                 dest(&dest_only, C),
                 None,
@@ -438,8 +443,8 @@ mod tests {
         }
         // …and two *different* modes are no better than one.
         let mixed = flat()
-            .set_layer_blend(C, BlendMode::Reinhard)
-            .set_layer_blend(B, BlendMode::Multiply);
+            .set_prop(C, PropValue::Blend(BlendMode::Reinhard))
+            .set_prop(B, PropValue::Blend(BlendMode::Multiply));
         assert_eq!(dest(&mixed, C), None);
     }
 
@@ -450,14 +455,14 @@ mod tests {
     #[test]
     fn siblings_at_different_bends_do_not_merge() {
         let apart = flat()
-            .set_layer_blend(C, BlendMode::Drago { k: 0.3 })
-            .set_layer_blend(B, BlendMode::Drago { k: 1.5 });
+            .set_prop(C, PropValue::Blend(BlendMode::Drago { k: 0.3 }))
+            .set_prop(B, PropValue::Blend(BlendMode::Drago { k: 1.5 }));
         assert_eq!(dest(&apart, C), None, "same mode, different curve");
         // The same pair at the same bend merges, so what is refused above is the
         // difference and not the parameter's presence.
         let together = flat()
-            .set_layer_blend(C, BlendMode::Drago { k: 0.3 })
-            .set_layer_blend(B, BlendMode::Drago { k: 0.3 });
+            .set_prop(C, PropValue::Blend(BlendMode::Drago { k: 0.3 }))
+            .set_prop(B, PropValue::Blend(BlendMode::Drago { k: 0.3 }));
         assert_eq!(dest(&together, C), Some(B));
     }
 
@@ -466,12 +471,12 @@ mod tests {
     #[test]
     fn modes_need_not_agree_where_neither_is_stated_against_anything() {
         let state = flat()
-            .set_layer_blend(A, BlendMode::Multiply)
-            .set_layer_blend(B, BlendMode::Reinhard);
+            .set_prop(A, PropValue::Blend(BlendMode::Multiply))
+            .set_prop(B, PropValue::Blend(BlendMode::Reinhard));
         assert_eq!(dest(&state, B), Some(A));
         // …but a clip on the bottom layer erases it rather than going inert, so it is
         // still refused.
-        assert_eq!(dest(&state.set_layer_clip(A, true), B), None);
+        assert_eq!(dest(&state.set_prop(A, PropValue::Clip(true)), B), None);
     }
 
     /// A clipped layer clips to **everything beneath it in its own stack** (§14.4), so
@@ -479,14 +484,14 @@ mod tests {
     #[test]
     fn a_clipped_layer_merges_only_where_the_destination_is_its_whole_backdrop() {
         // Second from the foot of the root stack: the accumulator holds A alone.
-        let state = flat().set_layer_clip(B, true);
+        let state = flat().set_prop(B, PropValue::Clip(true));
         assert_eq!(dest(&state, B), Some(A));
         assert!(
             terms(&state, B).is_some_and(|(source, _, keeps)| source.clip && !keeps.clip),
             "the clip is spent on the merge, not carried by the survivor",
         );
         // One row higher, C is clipped to A *and* B, which no merge into B can carry.
-        assert_eq!(dest(&flat().set_layer_clip(C, true), C), None);
+        assert_eq!(dest(&flat().set_prop(C, PropValue::Clip(true)), C), None);
     }
 
     /// A group's members composite over its base (§14.1), so the bottom carried layer
@@ -497,7 +502,7 @@ mod tests {
     fn the_bottom_of_a_group_merges_into_its_base_under_any_mode() {
         let state = flat().move_layer(C, Some(B), Place::Top);
         for mode in MODES {
-            let with_mode = state.set_layer_blend(C, mode);
+            let with_mode = state.set_prop(C, PropValue::Blend(mode));
             assert_eq!(dest(&with_mode, C), Some(B), "{mode:?} into a carrier");
             assert_eq!(
                 terms(&with_mode, C).map(|(source, _, _)| source.blend),
@@ -507,7 +512,7 @@ mod tests {
         }
         // A clipped member clips to exactly the base, which is the gesture "clip to
         // this one layer" is spelled with (§14.4).
-        assert_eq!(dest(&state.set_layer_clip(C, true), C), Some(B));
+        assert_eq!(dest(&state.set_prop(C, PropValue::Clip(true)), C), Some(B));
     }
 
     /// The carrier's own params survive the merge untouched — all three of them. Its
@@ -518,9 +523,9 @@ mod tests {
     fn a_carrier_keeps_all_of_its_own_params() {
         let state = flat()
             .move_layer(C, Some(B), Place::Top)
-            .set_layer_blend(B, BlendMode::Multiply)
-            .set_layer_clip(B, true)
-            .set_layer_opacity(B, 0.5);
+            .set_prop(B, PropValue::Blend(BlendMode::Multiply))
+            .set_prop(B, PropValue::Clip(true))
+            .set_prop(B, PropValue::Opacity(0.5));
         let carrier = state.layer(B).expect("the carrier exists").composite;
         assert_eq!(
             terms(&state, C),
@@ -564,13 +569,19 @@ mod tests {
     /// visible paint; two hidden layers show nothing either way and merge fine.
     #[test]
     fn visibility_has_to_match() {
-        assert_eq!(dest(&flat().set_layer_visible(C, false), C), None);
-        assert_eq!(dest(&flat().set_layer_visible(B, false), C), None);
+        assert_eq!(
+            dest(&flat().set_prop(C, PropValue::Visible(false)), C),
+            None
+        );
+        assert_eq!(
+            dest(&flat().set_prop(B, PropValue::Visible(false)), C),
+            None
+        );
         assert_eq!(
             dest(
                 &flat()
-                    .set_layer_visible(C, false)
-                    .set_layer_visible(B, false),
+                    .set_prop(C, PropValue::Visible(false))
+                    .set_prop(B, PropValue::Visible(false)),
                 C,
             ),
             Some(B),
@@ -671,9 +682,9 @@ mod tests {
     fn a_filter_merge_bakes_its_strength_and_reconciles_nothing() {
         let state = DocState::with_layer(A)
             .insert_filter(B, Some(A), None, GREY)
-            .set_layer_opacity(B, 0.4)
-            .set_layer_opacity(A, 0.25)
-            .set_layer_blend(A, BlendMode::Multiply);
+            .set_prop(B, PropValue::Opacity(0.4))
+            .set_prop(A, PropValue::Opacity(0.25))
+            .set_prop(A, PropValue::Blend(BlendMode::Multiply));
         assert_eq!(
             terms(&state, B),
             None,

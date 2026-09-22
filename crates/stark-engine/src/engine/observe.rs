@@ -513,7 +513,7 @@ struct Cursor<'a> {
 /// `render.rs` applies, asked of the document rather than of a viewport, so the answer
 /// does not change when the artist scrolls.
 fn contributes(l: &Layer) -> bool {
-    l.is_shown() && (l.draws_content() || l.carries.iter().any(contributes))
+    l.is_shown() && (l.draws_content() || l.carries().iter().any(contributes))
 }
 
 #[cfg(test)]
@@ -522,6 +522,7 @@ mod tests {
     //! calls `apply_pure` makes — so the roster's rules run where there is no GPU.
 
     use super::*;
+    use crate::document::layer::PropValue;
     use stark_model::Srgb;
     use stark_model::document::{
         BlendMode, ChromaticAberration, ColorAdjust, Filter, MatteRegion, Parcel, Place,
@@ -613,14 +614,17 @@ mod tests {
             ("flat", flat()),
             (
                 "mismatched modes",
-                flat().set_layer_blend(C, BlendMode::Multiply),
+                flat().set_prop(C, PropValue::Blend(BlendMode::Multiply)),
             ),
-            ("clipped second", flat().set_layer_clip(B, true)),
-            ("clipped third", flat().set_layer_clip(C, true)),
-            ("clipped foot", flat().set_layer_clip(A, true)),
-            ("hidden", flat().set_layer_visible(B, false)),
+            ("clipped second", flat().set_prop(B, PropValue::Clip(true))),
+            ("clipped third", flat().set_prop(C, PropValue::Clip(true))),
+            ("clipped foot", flat().set_prop(A, PropValue::Clip(true))),
+            ("hidden", flat().set_prop(B, PropValue::Visible(false))),
             ("grouped", grouped.clone()),
-            ("grouped and clipped", grouped.set_layer_clip(C, true)),
+            (
+                "grouped and clipped",
+                grouped.set_prop(C, PropValue::Clip(true)),
+            ),
             ("nested", grouped.insert_layer(D, Some(C), None, None)),
             // Second in a carried stack is not the root's second: what lies beneath
             // is the carrier's content as well as the sibling.
@@ -628,7 +632,7 @@ mod tests {
                 "clipped second in a group",
                 grouped
                     .insert_layer(D, Some(B), Some(C), None)
-                    .set_layer_clip(D, true),
+                    .set_prop(D, PropValue::Clip(true)),
             ),
             (
                 "filter second in a group",
@@ -705,11 +709,11 @@ mod tests {
         let matte = with_matte(&flat(), D, None, Place::Top);
         assert!(underlay(&over(&matte), E), "a matte draws");
         assert!(
-            !underlay(&over(&matte.set_layer_visible(D, false)), E),
+            !underlay(&over(&matte.set_prop(D, PropValue::Visible(false))), E),
             "a hidden matte draws nothing"
         );
         assert!(
-            !underlay(&over(&matte.set_layer_opacity(D, 0.0)), E),
+            !underlay(&over(&matte.set_prop(D, PropValue::Opacity(0.0))), E),
             "a transparent matte draws nothing"
         );
     }
@@ -740,7 +744,7 @@ mod tests {
             with_matte(&flat(), D, Some(B), Place::Top).insert_filter(E, None, Some(C), GREY);
         assert!(underlay(&carried, E), "the group draws through its matte");
         assert!(
-            !underlay(&carried.set_layer_visible(D, false), E),
+            !underlay(&carried.set_prop(D, PropValue::Visible(false)), E),
             "…and not once the matte is hidden"
         );
     }

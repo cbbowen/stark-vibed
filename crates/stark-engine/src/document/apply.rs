@@ -15,7 +15,7 @@ use stark_model::document::{
 };
 use stark_model::geom::{IVec2, TileRect};
 
-use super::layer::Layer;
+use super::layer::PropValue;
 use super::liquify::LiquifyRun;
 use super::selection::Selection;
 use super::state::DocState;
@@ -136,7 +136,8 @@ pub(crate) struct PreparedStroke {
     /// every tile the stroke reached.
     pub(crate) tiles: crate::gpu::tile::TileMap,
     /// The run the render left (§6.13): a liquify stroke's, or `None` for every
-    /// other effect, which leaves the run in place ([`Layer::with_painted`]).
+    /// other effect, which leaves the run in place
+    /// ([`Layer::with_painted`](super::layer::Layer::with_painted)).
     pub(crate) liquify: Option<Rc<LiquifyRun>>,
 }
 
@@ -463,9 +464,10 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
         }
     };
     state
-        .map_layer(dest, |l| Layer {
-            composite: keeps.unwrap_or(l.composite),
-            ..l.with_tiles(tiles)
+        .map_layer(dest, |l| {
+            let mut merged = l.with_tiles(tiles);
+            merged.composite = keeps.unwrap_or(l.composite);
+            merged
         })
         .remove_layer(source)
 }
@@ -525,10 +527,8 @@ fn float_apply(
     // standing at the frame the cut was made in. Both the frame and the number are
     // the action's own fields rather than the state's, so a replay mints what the
     // recording run minted (§16.12).
-    let lifted = Layer {
-        translation,
-        ..state.numbered(child, number).with_tiles(lifted)
-    };
+    let mut lifted = state.numbered(child, number).with_tiles(lifted);
+    lifted.translation = translation;
     state
         .map_layer(layer, |l| l.with_tiles(remaining))
         .insert_float(layer, lifted)
@@ -619,7 +619,7 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             |state| {
                 state
                     .insert_layer(*id, *carrier, *above, *number)
-                    .set_layer_name(*id, name.as_deref().map(Into::into))
+                    .set_prop(*id, PropValue::Name(name.as_deref().map(Into::into)))
             },
             *at,
             *image,
@@ -772,12 +772,16 @@ pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> 
                 }
             }
         }
-        ActionKind::SetLayerBlend(id, blend) => state.set_layer_blend(*id, *blend),
-        ActionKind::SetLayerClip(id, clip) => state.set_layer_clip(*id, *clip),
-        ActionKind::SetLayerOpacity(id, opacity) => state.set_layer_opacity(*id, *opacity),
-        ActionKind::SetLayerVisible(id, visible) => state.set_layer_visible(*id, *visible),
+        ActionKind::SetLayerBlend(id, blend) => state.set_prop(*id, PropValue::Blend(*blend)),
+        ActionKind::SetLayerClip(id, clip) => state.set_prop(*id, PropValue::Clip(*clip)),
+        ActionKind::SetLayerOpacity(id, opacity) => {
+            state.set_prop(*id, PropValue::Opacity(*opacity))
+        }
+        ActionKind::SetLayerVisible(id, visible) => {
+            state.set_prop(*id, PropValue::Visible(*visible))
+        }
         ActionKind::SetLayerName(id, name) => {
-            state.set_layer_name(*id, name.as_deref().map(Into::into))
+            state.set_prop(*id, PropValue::Name(name.as_deref().map(Into::into)))
         }
         ActionKind::MoveLayer { id, carrier, at } => state.move_layer(*id, *carrier, *at),
         // Resolved at the timeline layer (effective-sequence filtering); an
@@ -801,7 +805,7 @@ pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> 
         } => state.insert_matte(*id, *carrier, *at, *region, paint.clone()),
         ActionKind::SetMatteRect(id, min, max) => state.set_matte_rect(*id, *min, *max),
         ActionKind::SetMattePaint(id, paint) => state.set_matte_paint(*id, paint.clone()),
-        // The payload is sanitized inside `insert_filter`/`set_filter` — the
+        // The payload is sanitized inside `insert_filter`/`Layer::with_prop` — the
         // funnel sits in state, where replayed files and remote peers land too,
         // not only where a local command is minted (§21.6).
         ActionKind::AddFilter {
@@ -810,7 +814,7 @@ pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> 
             above,
             filter,
         } => state.insert_filter(*id, *carrier, *above, filter.clone()),
-        ActionKind::SetFilter(id, filter) => state.set_filter(*id, filter.clone()),
+        ActionKind::SetFilter(id, filter) => state.set_prop(*id, PropValue::Filter(filter.clone())),
 
         // The drawing guides (§20.5). The one family of actions with no pixel on the
         // other side of it: a guide is geometry to construct through, so applying one
@@ -1086,8 +1090,8 @@ mod tests {
         is_noop_on(&kind, state, ACTOR)
     }
 
-    /// The first drift: `set_layer_blend` refuses a filter (§21.4), so the action
-    /// folds to nothing — and the hand-written arm compared the mode anyway.
+    /// The first drift: `Layer::with_prop` refuses a blend on a filter (§21.4), so the
+    /// action folds to nothing — and the hand-written arm compared the mode anyway.
     #[test]
     fn a_blend_the_filter_refuses_is_not_an_edit() {
         let state = furnished();
@@ -1119,7 +1123,10 @@ mod tests {
             &state
         ));
         // A backing has no rect (§15.5): `with_rect` leaves it alone.
-        let backing = state.set_matte_region(MATTE, MatteRegion::Everything);
+        let backing = state.set_prop(
+            MATTE,
+            PropValue::Matte(MatteRegion::Everything, Parcel::Solid(Srgb::WHITE)),
+        );
         assert!(noop(
             ActionKind::SetMatteRect(MATTE, HOLE.0, HOLE.1),
             &backing

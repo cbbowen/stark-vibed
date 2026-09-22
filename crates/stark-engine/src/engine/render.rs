@@ -751,7 +751,7 @@ impl Engine {
                 let Some(carrier) = doc.layer(cid).filter(|l| l.is_shown()) else {
                     return Vec::new();
                 };
-                (Some(carrier), &carrier.carries)
+                (Some(carrier), carrier.carries())
             }
             // `carrier_of` answers `None` for a root layer and for a layer that
             // does not exist, and only the first has a group to sample.
@@ -836,7 +836,7 @@ impl Engine {
         // of the path. An ancestor is a carrier, and a filter never carries
         // (§21.2), so the filter branch cannot arise here.
         let own = self.layer_items(ancestor, visible);
-        let carried = self.stack_below(&ancestor.carries, &path[1..], visible, !own.is_empty());
+        let carried = self.stack_below(ancestor.carries(), &path[1..], visible, !own.is_empty());
         let Some(group) = group_of(ancestor.composite, own, carried) else {
             return groups;
         };
@@ -884,7 +884,7 @@ impl Engine {
             // properties could disagree is a pass that is not encoded at all.
             if let Some(f) = layer.filter() {
                 debug_assert!(
-                    layer.carries.is_empty(),
+                    layer.carries().is_empty(),
                     "a filter never carries (§21.2) — the state refuses the arrangement",
                 );
                 if (under || !groups.is_empty()) && !f.is_neutral() {
@@ -893,7 +893,7 @@ impl Engine {
                 continue;
             }
             let own = self.layer_items(layer, visible);
-            let carried = self.composite_stack(layer.carries.iter(), visible, !own.is_empty());
+            let carried = self.composite_stack(layer.carries().iter(), visible, !own.is_empty());
             // An empty layer is dropped rather than given a group: for a blend mode or
             // a clip that saves two render passes which provably compute the identity,
             // which is what keeps a stack of empty glow layers free. A layer that

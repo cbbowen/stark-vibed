@@ -496,7 +496,7 @@ fn shown_paint_layers(stack: &rpds::Vector<crate::document::Layer>, out: &mut Ve
         if !layer.is_shown() {
             continue;
         }
-        shown_paint_layers(&layer.carries, out);
+        shown_paint_layers(layer.carries(), out);
         // A tile map is exactly what makes a layer answerable here: a matte and a
         // filter have none (§15.2, §21), and neither is paint a press can pick up
         // and carry — a frame moves by its own handles, and a filter has no

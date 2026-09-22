@@ -218,20 +218,6 @@ pub enum PropValue {
     Translation(IVec2),
 }
 
-/// The canvas extent of everything a layer **carries** (§14.12), derived with
-/// [`Layer::carries`] and kept beside it — the second level of the argument
-/// [`PaintTiles`] makes. A subtree's box is a function of its children's boxes, so
-/// the document's is a union over the root stack rather than a walk of the tree
-/// (`DocState::with_layers`).
-///
-/// Only [`Layer::with_carries`] mints one. The field it lives in is `pub(crate)`
-/// rather than private because struct update refuses a private field, and
-/// `apply.rs` builds two layers as `Layer { .., ..base }` — copying `base`'s box.
-/// What the type rules out is a literal that names *both*: nothing outside this
-/// module can spell a fresh one.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) struct CarriedBounds(CanvasBounds);
-
 /// A single layer: its content, what it carries, and its presentation
 /// properties.
 ///
@@ -296,18 +282,20 @@ pub struct Layer {
     /// is the wrong place to choose it.
     pub number: Option<u32>,
     pub content: LayerContent,
-    /// The layers carried on this one, **bottom-to-top** — the group this layer
-    /// is the base of (§14.2). Empty for a layer that carries nothing.
+    /// The layers carried on this one — see [`carries`](Self::carries). A `Vector`
+    /// because the whole tree is cloned per document version, so every level of it
+    /// has to be persistent (§5.1).
+    carries: Vector<Layer>,
+    /// The canvas extent of everything in `carries` (§14.12) — the second level of the
+    /// argument [`PaintTiles`] makes: a subtree's box is a union of its children's, so
+    /// the document's is a union over the root stack rather than a walk of the tree
+    /// (`DocState::with_layers`).
     ///
-    /// They composite *over* this layer's own content and beneath whatever comes
-    /// after the group, so this order is render order and panel order alike: the
-    /// panel draws them indented **above** the base, which is where they land.
-    ///
-    /// A `Vector` because the whole tree is cloned per document version, so every
-    /// level of it has to be persistent (§5.1).
-    pub carries: Vector<Layer>,
-    /// The canvas extent of `carries`, derived with it — see [`CarriedBounds`].
-    pub(crate) carried: CarriedBounds,
+    /// Written only beside `carries`, by [`with_carries`](Self::with_carries), and both
+    /// fields are private — so no struct update outside this module can compile, and
+    /// none can leave the box stale: a wrong `DocState::bounds`, and so an export
+    /// cropped wrongly with no pixel to say so (§15.6).
+    carried: CanvasBounds,
     /// Where this layer's frame sits on the canvas, in whole pixels (§14.12): its
     /// tiles are keyed in the layer's own frame, and the compositor, the pick and
     /// the bounds add this on the way out. A matte's geometry — its rect and its
@@ -362,7 +350,7 @@ impl Layer {
             number: None,
             content: LayerContent::Paint(PaintTiles::new(HashTrieMap::new(), None)),
             carries: Vector::new(),
-            carried: CarriedBounds(CanvasBounds::default()),
+            carried: CanvasBounds::default(),
             translation: IVec2::ZERO,
         }
     }
@@ -582,16 +570,26 @@ impl Layer {
         !self.carries.is_empty()
     }
 
+    /// The layers carried on this one, **bottom-to-top** — the group this layer is
+    /// the base of (§14.2). Empty for a layer that carries nothing.
+    ///
+    /// They composite *over* this layer's own content and beneath whatever comes
+    /// after the group, so this order is render order and panel order alike: the
+    /// panel draws them indented **above** the base, which is where they land.
+    pub fn carries(&self) -> &Vector<Layer> {
+        &self.carries
+    }
+
     /// The extent of this layer **and everything it carries**, placed on the
     /// canvas (§14.12) — what `DocState::bounds` unions over the root stack.
     ///
     /// O(1): the own box came with the tiles ([`PaintTiles`]), the carried box
-    /// with the children ([`CarriedBounds`]). The own half is placed here rather
-    /// than cached, since `translation` and `content` are written by literals
-    /// and a box that depended on them could be left behind.
+    /// with the children (`carried`). The own half is placed here rather than
+    /// cached, since `translation` and `content` are public fields and a box that
+    /// depended on them could be left behind.
     pub(crate) fn subtree_bounds(&self) -> CanvasBounds {
         let mut out = self.bounds().shifted(self.translation);
-        out.union(self.carried.0);
+        out.union(self.carried);
         out
     }
 
@@ -604,9 +602,65 @@ impl Layer {
         }
         Self {
             carries,
-            carried: CarriedBounds(carried),
+            carried,
             ..self.clone()
         }
+    }
+
+    /// The same layer holding `content` instead, everything else untouched.
+    pub(crate) fn with_content(&self, content: LayerContent) -> Self {
+        Self {
+            content,
+            ..self.clone()
+        }
+    }
+
+    /// The same layer with one property written — [`prop`](Self::prop)'s inverse, and
+    /// the one statement of **which layers refuse which property**. A refusal hands
+    /// the layer back unchanged, in the document rather than in a frontend rule, so a
+    /// replay and a peer decline exactly what a local fold does:
+    ///
+    /// - A **blend mode on a filter** (§21.4). A mode says how a source meets a
+    ///   backdrop, and a filter has no source — nor, never carrying (§21.2), a group
+    ///   whose merge the mode could describe. Its **clip** is live: a clip says where
+    ///   the layer may land, which survives having no source (§21.4.1).
+    /// - A **translation on a filter**, which has nothing that sits anywhere
+    ///   ([`is_translatable`](Self::is_translatable)).
+    /// - A **matte's region and paint** on anything but a matte, and a **filter** on
+    ///   anything but a filter — the properties [`prop`](Self::prop) answers `None` for.
+    ///
+    /// The mode and the filter are **sanitized on the way in** (§21.5), and the
+    /// opacity clamped to [0, 1]: each carries numbers a fullscreen pass reads.
+    pub(crate) fn with_prop(&self, value: PropValue) -> Self {
+        let mut out = self.clone();
+        match value {
+            PropValue::Blend(blend) => match self.content {
+                LayerContent::Filter(_) => {}
+                LayerContent::Paint(_) | LayerContent::Matte { .. } => {
+                    out.composite.blend = blend.sanitized();
+                }
+            },
+            PropValue::Clip(clip) => out.composite.clip = clip,
+            PropValue::Opacity(opacity) => out.composite.opacity = opacity.clamp(0.0, 1.0),
+            PropValue::Visible(visible) => out.visible = visible,
+            // Whatever it is given: a name is normalized once where the action is minted
+            // (`Engine::process`), so replay puts back exactly what was recorded.
+            PropValue::Name(name) => out.name = name,
+            PropValue::Matte(region, paint) => match self.content {
+                LayerContent::Matte { .. } => out.content = LayerContent::Matte { region, paint },
+                LayerContent::Paint(_) | LayerContent::Filter(_) => {}
+            },
+            PropValue::Filter(filter) => match self.content {
+                LayerContent::Filter(_) => out.content = LayerContent::Filter(filter.sanitized()),
+                LayerContent::Paint(_) | LayerContent::Matte { .. } => {}
+            },
+            PropValue::Translation(to) => {
+                if self.is_translatable() {
+                    out.translation = to;
+                }
+            }
+        }
+        out
     }
 
     /// This layer and everything it carries, in **composite order**: the base

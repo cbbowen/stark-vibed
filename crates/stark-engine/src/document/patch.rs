@@ -485,8 +485,8 @@ mod tests {
         let before = flat();
         let action = act(ActionKind::SetLayerOpacity(B, 0.25));
         let after = before
-            .set_layer_opacity(B, 0.25)
-            .set_layer_name(C, Some("sky".into()));
+            .set_prop(B, PropValue::Opacity(0.25))
+            .set_prop(C, PropValue::Name(Some("sky".into())));
 
         let back = undo(&action, &before, &after);
         assert_eq!(
@@ -551,7 +551,7 @@ mod tests {
         });
         let after = before
             .move_layer(C, Some(A), Place::Top)
-            .set_layer_name(C, Some("sky".into()));
+            .set_prop(C, PropValue::Name(Some("sky".into())));
 
         let back = undo(&action, &before, &after);
         assert_eq!(shape(&back), shape(&before), "the move came back out");
@@ -591,7 +591,7 @@ mod tests {
     #[test]
     fn an_undo_action_captures_nothing() {
         let before = flat();
-        let after = before.set_layer_opacity(B, 0.25);
+        let after = before.set_prop(B, PropValue::Opacity(0.25));
         let back = undo(
             &act(ActionKind::Undo(ActionId {
                 lamport: 1,
