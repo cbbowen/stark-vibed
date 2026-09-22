@@ -379,11 +379,7 @@ impl TexHandle {
     /// Panics unless `bytes` is exactly one block.
     pub(crate) fn write_block(&self, queue: &wgpu::Queue, bytes: &[u8]) {
         let dst = self.0.texture();
-        let texel = dst
-            .format()
-            .block_copy_size(None)
-            .expect("uncompressed tile format");
-        let row = texel * TILE_TEX;
+        let row = crate::gpu::desc::texel_bytes(dst.format()) * TILE_TEX;
         assert_eq!(
             bytes.len() as u32,
             row * TILE_TEX,

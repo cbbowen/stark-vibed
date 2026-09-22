@@ -139,6 +139,16 @@ impl TileRect {
         max: (0, 0),
     };
 
+    /// The one-tile rect at `c` — the seed of the fold that spans a set of coords
+    /// ([`FromIterator`]), and named because a struct literal giving `min` and `max`
+    /// the same pair reads as a mistake every time.
+    pub const fn at(c: TileCoord) -> TileRect {
+        TileRect {
+            min: (c.x, c.y),
+            max: (c.x, c.y),
+        }
+    }
+
     /// Whether this rect reaches nothing — inverted (`min > max`) on **either**
     /// axis.
     ///
@@ -223,6 +233,19 @@ impl TileRect {
     pub fn coords(self) -> impl Iterator<Item = TileCoord> {
         (self.min.1..=self.max.1)
             .flat_map(move |y| (self.min.0..=self.max.0).map(move |x| TileCoord::new(x, y)))
+    }
+}
+
+/// The rect spanning every coord — [`EMPTY`](TileRect::EMPTY) for none.
+///
+/// The inverse of [`coords`](TileRect::coords) only up to the quantization: what comes
+/// back is the *box*, so a sparse set collects to a rect holding tiles it never named.
+/// That is the widening direction a cull and a footprint both want (§12.6).
+impl FromIterator<TileCoord> for TileRect {
+    fn from_iter<I: IntoIterator<Item = TileCoord>>(coords: I) -> Self {
+        coords
+            .into_iter()
+            .fold(TileRect::EMPTY, |rect, c| rect.union(TileRect::at(c)))
     }
 }
 
@@ -325,6 +348,35 @@ mod tests {
         assert!(TileRect::ALL.contains(TileCoord::new(0, 0)));
         assert!(!TileRect::EMPTY.contains(TileCoord::new(0, 0)));
         assert!(!TileRect::EMPTY.intersects(&TileRect::ALL));
+    }
+
+    /// A set of coords collects to the **box** around them, which is wider than the
+    /// set — the direction a cull may err in (§12.6) — and empty for none.
+    #[test]
+    fn a_set_of_coords_collects_to_the_box_around_them() {
+        let coords = [
+            TileCoord::new(-3, 7),
+            TileCoord::new(4, -2),
+            TileCoord::new(0, 0),
+        ];
+        let rect: TileRect = coords.into_iter().collect();
+        assert_eq!(
+            rect,
+            TileRect {
+                min: (-3, -2),
+                max: (4, 7),
+            },
+        );
+        for c in coords {
+            assert!(rect.contains(c));
+        }
+        // A tile no coord named, held by the box all the same.
+        assert!(rect.contains(TileCoord::new(4, 7)));
+        assert_eq!(
+            TileRect::at(coords[2]),
+            TileRect::covering(Vec2::ZERO, Vec2::ZERO, 0).unwrap()
+        );
+        assert_eq!(std::iter::empty().collect::<TileRect>(), TileRect::EMPTY);
     }
 
     /// **Empty is empty on either axis**, and every predicate has to agree about it.

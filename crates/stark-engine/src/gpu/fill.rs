@@ -140,39 +140,7 @@ impl FillRenderer {
         let device = &self.ctx.device;
         let mut scope = self.scratch.scope(&self.ctx, "stark fill");
 
-        // Every stop's color converts to this space's channels on the CPU, once per
-        // fill; the shader interpolates in the working space, which is what makes an
-        // Oklab ramp the library strip's and a Mixbox ramp a pigment mixture (§22.4).
-        let mut uniform = FillUniform::default();
-        uniform.p[0] = op.opacity();
-        // How strongly the author's mask gates this fill (§6.8) — the whole mask's
-        // opacity, which `gate`'s own texels do not carry. The fill's *region* takes
-        // no such factor: it is this gesture's shape rasterized as a selection, and
-        // has no opacity of its own.
-        uniform.p[3] = gate.opacity();
-        match op.paint() {
-            Parcel::Solid(color) => {
-                let l = self.color_space.rgb_to_latent(*color);
-                uniform.c = [l.lat[0], l.lat[1], l.lat[2], 0.0];
-                uniform.r = [l.res[0], l.res[1], l.res[2], 0.0];
-            }
-            Parcel::Gradient(g) => {
-                let stops = g.gradient.stops();
-                uniform.p[1] = stops.len() as f32;
-                uniform.axis = match g.axis {
-                    GradientAxis::Linear { from, to } => [from.x, from.y, to.x, to.y],
-                    GradientAxis::Radial { center, radius } => {
-                        uniform.p[2] = 1.0;
-                        [center.x, center.y, radius, 0.0]
-                    }
-                };
-                for (i, stop) in stops.iter().enumerate() {
-                    let l = self.color_space.rgb_to_latent(stop.color);
-                    uniform.stop_c[i] = [l.lat[0], l.lat[1], l.lat[2], stop.t];
-                    uniform.stop_r[i] = [l.res[0], l.res[1], l.res[2], 0.0];
-                }
-            }
-        }
+        let uniform = fill_uniform(self.color_space.as_ref(), op, gate.opacity());
         let fill = scope.run_uniform("stark fill uniform", &uniform);
         let origins: Vec<TileUniform> = coords
             .iter()
@@ -212,7 +180,11 @@ impl FillRenderer {
                         under.resid.expect("a residual build has a base residual"),
                     ),
                     f::TILE => tile_slots.window(),
-                    other => unreachable!("`FILL_SLOTS` lists no binding {other}"),
+                    other => {
+                        unreachable!(
+                            "`fill.wesl` declares @binding({other}), which this fills with nothing"
+                        )
+                    }
                 });
             scope.fullscreen_pass(
                 "stark fill tile",
@@ -226,5 +198,135 @@ impl FillRenderer {
 
         scope.finish();
         Some(tiles)
+    }
+}
+
+/// The whole of `fill.wesl`'s per-fill uniform, from the op and the mask's opacity.
+///
+/// Every stop's color converts to this space's channels here, on the CPU, once per
+/// fill; the shader interpolates in the working space, which is what makes an Oklab
+/// ramp the library strip's and a Mixbox ramp a pigment mixture (§22.4).
+///
+/// A free function over the space, like `place::texel`: it is the whole of what a
+/// caller can get wrong about the parcel, and it holds no device.
+fn fill_uniform(space: &dyn ColorSpace, op: &FillOp, gate_opacity: f32) -> FillUniform {
+    let mut uniform = FillUniform::default();
+    uniform.p[0] = op.opacity();
+    // How strongly the author's mask gates this fill (§6.8) — the whole mask's
+    // opacity, which the gate's own texels do not carry. The fill's *region* takes no
+    // such factor: it is this gesture's shape rasterized as a selection, and has no
+    // opacity of its own.
+    uniform.p[3] = gate_opacity;
+    match op.paint() {
+        Parcel::Solid(color) => {
+            let l = space.rgb_to_latent(*color);
+            uniform.c = [l.lat[0], l.lat[1], l.lat[2], 0.0];
+            uniform.r = [l.res[0], l.res[1], l.res[2], 0.0];
+        }
+        Parcel::Gradient(g) => {
+            let stops = g.gradient.stops();
+            uniform.p[1] = stops.len() as f32;
+            uniform.axis = match g.axis {
+                GradientAxis::Linear { from, to } => [from.x, from.y, to.x, to.y],
+                GradientAxis::Radial { center, radius } => {
+                    uniform.p[2] = 1.0;
+                    [center.x, center.y, radius, 0.0]
+                }
+            };
+            for (i, stop) in stops.iter().enumerate() {
+                let l = space.rgb_to_latent(stop.color);
+                uniform.stop_c[i] = [l.lat[0], l.lat[1], l.lat[2], stop.t];
+                uniform.stop_r[i] = [l.res[0], l.res[1], l.res[2], 0.0];
+            }
+        }
+    }
+    uniform
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::colorspace::OkLabColorSpace;
+    use stark_model::Srgb;
+    use stark_model::document::GradientParcel;
+    use stark_model::geom::Vec2;
+    use stark_model::gradient::{Gradient, GradientStop};
+
+    fn shape() -> SelectionShape {
+        SelectionShape::rect_from_corners(Vec2::ZERO, Vec2::splat(10.0))
+    }
+
+    /// Black to white, the two-stop ramp every case here reads.
+    fn ramp() -> Gradient {
+        let stop = |t, v| GradientStop {
+            t,
+            color: Srgb::new([v; 3]),
+        };
+        Gradient::new(vec![stop(0.0, 0.0), stop(1.0, 1.0)]).expect("two ordered stops")
+    }
+
+    fn gradient_fill(axis: GradientAxis) -> FillOp {
+        FillOp::with_paint(
+            shape(),
+            0.0,
+            Parcel::Gradient(GradientParcel {
+                gradient: ramp(),
+                axis,
+            }),
+            1.0,
+        )
+    }
+
+    fn uniform_of(op: &FillOp, gate_opacity: f32) -> FillUniform {
+        fill_uniform(&OkLabColorSpace, op, gate_opacity)
+    }
+
+    /// **The two opacities ride in different lanes**, and neither is the other: the
+    /// op's is the fill's own, `p[3]` is how hard the author's mask gates it (§6.8).
+    #[test]
+    fn a_solid_fill_carries_its_own_opacity_and_the_masks_separately() {
+        let op = FillOp::new(shape(), 0.0, Srgb::new([1.0, 0.0, 0.0]), 0.25);
+        let u = uniform_of(&op, 0.5);
+        assert_eq!((u.p[0], u.p[3]), (0.25, 0.5));
+        // A solid parcel names no stops and no axis, which is what the shader reads
+        // `p[1]` for.
+        assert_eq!(u.p[1], 0.0);
+        assert_eq!(u.axis, [0.0; 4]);
+        // Red in Oklab is a positive `a` — the latent, not the sRGB triple.
+        assert!(u.c[1] > 0.0, "a red fill converted to {:?}", u.c);
+    }
+
+    /// A gradient fills `stop_c` in the ramp's order with each stop's own `t` in `.w`,
+    /// and says how many are live — the shader walks that prefix (§22.1).
+    #[test]
+    fn a_linear_gradient_lands_its_stops_in_order_with_its_axis() {
+        let op = gradient_fill(GradientAxis::Linear {
+            from: Vec2::new(1.0, 2.0),
+            to: Vec2::new(3.0, 4.0),
+        });
+        let u = uniform_of(&op, 1.0);
+        assert_eq!(u.p[1], 2.0);
+        // Linear, so the radial flag stays down and the axis is the two endpoints.
+        assert_eq!(u.p[2], 0.0);
+        assert_eq!(u.axis, [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!((u.stop_c[0][3], u.stop_c[1][3]), (0.0, 1.0));
+        assert!(
+            u.stop_c[0][0] < u.stop_c[1][0],
+            "black should be darker than white in the latent's first channel",
+        );
+    }
+
+    /// The radial axis is the same four lanes read differently, and `p[2]` is the one
+    /// thing that says which — so a centre and radius written into the linear lanes is
+    /// a ramp drawn along a line between two unrelated points.
+    #[test]
+    fn a_radial_gradient_raises_the_flag_that_reinterprets_the_axis() {
+        let op = gradient_fill(GradientAxis::Radial {
+            center: Vec2::new(5.0, 6.0),
+            radius: 7.0,
+        });
+        let u = uniform_of(&op, 1.0);
+        assert_eq!(u.p[2], 1.0);
+        assert_eq!(u.axis, [5.0, 6.0, 7.0, 0.0]);
     }
 }

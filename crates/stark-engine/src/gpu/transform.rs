@@ -195,12 +195,7 @@ type Parcel = Channels;
 /// (sources are base tiles; a destination's mask only ever cuts base paint), so
 /// the shifted mask is built no wider than the layer's extent (§14.12).
 fn base_rect(base: &TileMap) -> TileRect {
-    base.keys()
-        .map(|c| TileRect {
-            min: (c.x, c.y),
-            max: (c.x, c.y),
-        })
-        .fold(TileRect::EMPTY, TileRect::union)
+    base.keys().copied().collect()
 }
 
 #[derive(Clone)]

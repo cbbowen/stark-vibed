@@ -758,21 +758,34 @@ pub(crate) fn texture_with_data(
     )
 }
 
+/// One texel of `format`, in bytes — **the one answer to that question**.
+///
+/// It was asked four ways, each with a different fallback for a format it is not
+/// defined on (`unwrap_or(8)` in one place, `unwrap_or(0)` in three), so a format that
+/// stopped answering would have costed a texture at eight bytes here and at nothing
+/// there. Every caller is pricing a texture for a budget or an upload, and for every
+/// one of them a format with no answer is a bug in this build rather than a size.
+///
+/// # Panics
+/// For a compressed or depth-stencil format, which nothing here allocates.
+pub(crate) fn texel_bytes(format: wgpu::TextureFormat) -> u32 {
+    assert_eq!(
+        format.block_dimensions(),
+        (1, 1),
+        "{format:?} is compressed, so it has no texel size",
+    );
+    format
+        .block_copy_size(None)
+        .expect("an uncompressed format has one aspect")
+}
+
 /// The bytes of every layer and mip of `desc`, tightly packed — what
 /// [`texture_with_data`] is handed.
 ///
 /// # Panics
 /// For a compressed or depth-stencil format, which no upload here has.
 pub(crate) fn upload_len(desc: &wgpu::TextureDescriptor<'_>) -> usize {
-    assert_eq!(
-        desc.format.block_dimensions(),
-        (1, 1),
-        "an upload's format is uncompressed",
-    );
-    let texel = desc
-        .format
-        .block_copy_size(None)
-        .expect("an upload's format has one aspect") as usize;
+    let texel = texel_bytes(desc.format) as usize;
     let per_layer: usize = (0..desc.mip_level_count)
         .map(|mip| {
             let size = desc.mip_level_size(mip).expect("a mip below the count");
@@ -817,10 +830,7 @@ pub(crate) fn zero_texture(
     format: wgpu::TextureFormat,
     label: &str,
 ) -> wgpu::TextureView {
-    let bytes = format
-        .block_copy_size(None)
-        .expect("uncompressed tile format") as usize;
-    constant_texture(ctx, format, &vec![0u8; bytes], label)
+    constant_texture(ctx, format, &vec![0u8; texel_bytes(format) as usize], label)
 }
 
 #[cfg(test)]

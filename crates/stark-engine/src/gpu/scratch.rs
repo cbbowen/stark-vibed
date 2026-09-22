@@ -141,9 +141,7 @@ impl Key {
 
     /// What a texture this key describes costs the budget.
     fn bytes(&self) -> u64 {
-        u64::from(self.size.0)
-            * u64::from(self.size.1)
-            * u64::from(self.format.block_copy_size(None).unwrap_or(8))
+        u64::from(self.size.0) * u64::from(self.size.1) * u64::from(desc::texel_bytes(self.format))
     }
 }
 
@@ -615,6 +613,16 @@ impl SubmitScope {
 
     /// Check out scratch for the piece being recorded — released at the piece's own
     /// submit ([`flush`](Self::flush) or [`finish`](Self::finish)).
+    ///
+    /// **Taking opens the piece**, where [`take_piece_buffer`](Self::take_piece_buffer)
+    /// leaves that to the write. The asymmetry is about what is being bounded: a
+    /// [`flush`](Self::flush) with the piece closed returns early and hands nothing
+    /// back, so a texture taken here would ride out the whole scope — and these are
+    /// region-sized, which is the peak [`FLUSH_TILES`] exists to cap. A buffer lease is
+    /// bucketed and small, and the thing that must not outrun a submit is its pending
+    /// [`write_lease`](Self::write_lease), which opens the piece exactly when it
+    /// happens. The price here is one empty command buffer for a texture nothing was
+    /// recorded against.
     pub(crate) fn take_piece(&mut self, key: Key) -> LeasedTex {
         self.piece_open = true;
         let (tex, lease) = self.pool.take_tex(&self.ctx.device, key);

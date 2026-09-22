@@ -68,7 +68,7 @@ impl ChannelFormats {
     /// The one place the residual's *size* is counted, so a budget over viewport-sized
     /// attachments (`composite::resolve`) cannot silently assume the colorimetric space.
     pub(crate) fn bytes_per_px(&self) -> u64 {
-        let of = |f: wgpu::TextureFormat| u64::from(f.block_copy_size(None).unwrap_or(0));
+        let of = |f: wgpu::TextureFormat| u64::from(crate::gpu::desc::texel_bytes(f));
         of(self.color) + of(self.aux) + self.resid.map_or(0, of)
     }
 
