@@ -868,11 +868,8 @@ translation to screen — lives behind a trait:
 ```rust
 pub trait ColorSpace {
     fn id(&self) -> ColorSpaceId;            // serialized in CanvasMeta (§8)
-    // Tile layout: each space picks its channel textures and how dabs combine.
-    fn color_format(&self) -> wgpu::TextureFormat;
-    fn aux_format(&self) -> wgpu::TextureFormat;
-    fn color_blend(&self) -> wgpu::BlendState;
-    fn aux_blend(&self) -> wgpu::BlendState;
+    // Whether tiles carry a residual: a third texture in the color's format.
+    fn has_resid(&self) -> bool;
     // Picker / export: straight display RGB ↔ the space's channels.
     fn rgb_to_channels(&self, rgb: [f32; 3]) -> [f32; 4];
     fn channels_to_rgb(&self, ch: [f32; 4]) -> [f32; 3];
@@ -882,10 +879,10 @@ pub trait ColorSpace {
 }
 ```
 
-A document has one color space (`CanvasMeta.color_space`), so tile format, blend
-state and shaders are fixed per document and chosen at engine construction. Pass
-A is generic; only the **stamp** and **media** shaders, the formats and the
-blends are space-specific.
+A document has one color space (`CanvasMeta.color_space`), so its residual and
+shaders are fixed per document and chosen at engine construction. Pass A is
+generic; the tile formats and the blends a deposit lands by are every space's
+(`gpu::channels`), and only the residual and the shader builds are space-specific.
 
 **`OkLabColorSpace`** — `color = Rgba16Float` holding premultiplied
 `(L, a, b, coverage)`, `aux = R16Float (height)`, premultiplied-"over" color
@@ -930,7 +927,7 @@ the polynomial's reachable set (`tests/engine/blend.rs` carried an 8/255 and a 4
 tolerance for that; both are 2/255 now, the same as Oklab's).
 
 **Oklab pays nothing.** Its three channels reproduce every sRGB color, so
-`resid_format()` is `None`, no third texture is allocated, and the eleven passes that
+`has_resid()` is false, no third texture is allocated, and the eleven passes that
 carry a tile's color are built in a second variant under WESL's `@if(resid)`
 conditional compilation (the `resid` axis, `stark-shaders/build.rs`).
 `media.wesl` and `blend.wesl` declare their own residual bindings in a `@group(1)`
@@ -1002,7 +999,7 @@ Three consequences worth stating, because each is a place the obvious move is wr
   tile bytes as different colors, so opening a pigment document through a
   colorimetric one renders every pixel wrong while looking like it worked.
 - **The residual goes with it.** A residual is what a *pigment* space needs and this
-  is the only one, so without the feature no space declares a `resid_format`: the
+  is the only one, so without the feature no space answers `has_resid`: the
   eleven `_resid` variants are not built, and the loop's storage-texture requirement
   drops from six back to WebGPU's guaranteed four. What stays unconditional is the
   handful of mirrored uniform lanes — one host struct layout in both configurations,

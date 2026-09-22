@@ -70,7 +70,7 @@ default = ["mixbox"]
 # `EngineError::UnsupportedColorSpace` rather than a decode failure.
 #
 # The residual channel goes with it, because a residual is something a *pigment*
-# space has and this is the only one: no space declares a `resid_format`, the `_resid`
+# space has and this is the only one: no space answers `has_resid`, the `_resid`
 # shader variants are not built, `Resid::With` is not generated for anything to name
 # one, and the loop's storage-texture requirement drops back to WebGPU's guaranteed
 # four.

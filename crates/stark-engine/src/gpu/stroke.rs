@@ -18,7 +18,7 @@
 //! accumulator and turns it on the base's visible opacity (`erase.rs`).
 //! `dynamics_setup` decides which path a record takes.
 //!
-//! The renderer is parameterized by a [`ColorSpace`] (formats, blends, channel
+//! The renderer is parameterized by a [`ColorSpace`] (the residual, channel
 //! mapping, shader). It holds only immutable GPU objects plus `Arc`-backed
 //! handles, so it is cheap to `Clone` and can live in the `Action::Context` (§5).
 
@@ -462,21 +462,11 @@ impl StrokeRenderer {
         }
     }
 
-    /// Acquire a persistent tile: the color space's `color` + `aux` formats, paired.
-    ///
-    /// The pool hands out textures, not tiles (see [`TexHandle`](crate::gpu::tile::TexHandle)).
-    /// Pairing them here is what keeps the two formats coming from the color space
-    /// actually in use rather than from a constant in the pool: a hardcoded `R16Float`
-    /// aux matches every space currently built, and would panic on the first one that
-    /// chose otherwise (§6.7).
+    /// Acquire a persistent tile: the document's channel trio, with the residual
+    /// exactly where the color space has one (§6.7).
     fn acquire_tile(&self, pool: &TilePool, source: AllocSource) -> TilePairHandle {
-        TilePairHandle::new(
-            pool.acquire_tex(self.color_space.color_format(), source),
-            pool.acquire_tex(self.color_space.aux_format(), source),
-            self.color_space
-                .resid_format()
-                .map(|f| pool.acquire_tex(f, source)),
-        )
+        use crate::gpu::channels::{ChannelFormats, Channels};
+        Channels::acquire(pool, ChannelFormats::of(self.color_space.as_ref()), source).into_tile()
     }
 
     /// Resolve the constants both render paths read for one stroke — see

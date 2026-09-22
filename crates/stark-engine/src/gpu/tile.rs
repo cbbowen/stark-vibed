@@ -10,7 +10,7 @@
 //! The pool keys its free lists by **format** and hands out one texture at a time, so
 //! consumers may mix formats freely: a brush-dynamics *scratch* tile takes a wider
 //! `Rgba16Float` aux (an extra channel the deposit and integrate use internally) while
-//! persistent tiles keep the compact color-space `aux` format (§6.2).
+//! persistent tiles keep the compact `aux` format (§6.2).
 //!
 //! Channels (§6.1, normalized representation):
 //! - `color`: `Rgba16Float`, latent color premultiplied by **opacity**
@@ -263,9 +263,9 @@ impl Drop for GpuTex {
 /// A handle to one pooled texture; cloning is an `Arc` bump, and the texture returns
 /// to its format's free list when the last handle drops.
 ///
-/// This is the unit the pool deals in. Pairing two of them into a tile is the
-/// *caller's* job, because which two formats make a tile is the color space's
-/// business (§6.7) and the pool has no view of that.
+/// This is the unit the pool deals in. Pairing them into a tile is the *caller's*
+/// job, because whether a tile carries a residual is the color space's business
+/// (§6.7) and the pool has no view of that.
 ///
 /// **A handle hands out a view and never the texture**, and that is what keeps a
 /// recycled [`Pooled`] slot's view valid. The view outlives any one checkout, and
@@ -411,7 +411,7 @@ struct TilePair {
     color: TexHandle,
     aux: TexHandle,
     /// The **residual** channel (§6.7) — present exactly when the document's color
-    /// space declares a `resid_format`, so the same for every tile of a document.
+    /// space has one, so the same for every tile of a document.
     ///
     /// `Option` rather than a texture every space allocates: Oklab has no residual,
     /// and giving it one would be eight bytes a texel of zeroes on the default
@@ -431,8 +431,8 @@ pub(crate) type TileMap = rpds::HashTrieMap<stark_model::geom::TileCoord, TilePa
 /// hands back. `TILE_TEX`² texels each, apron included, row-major.
 ///
 /// **Lane counts differ per channel and that is the point**: the color is four lanes
-/// and the height is one, because a tile's aux is `R16Float` in every space this
-/// engine has (`ColorSpace::aux_format`) — the amount of paint is one number, and the
+/// and the height is one, because a tile's aux is `R16Float` in every space
+/// (`channels::TILE_AUX_FORMAT`) — the amount of paint is one number, and the
 /// color's fourth lane is a per-unit opacity rather than an amount (§6.1). Separate
 /// fields rather than a lane index into one buffer, so a caller cannot read the second
 /// as though it were the first.
@@ -863,27 +863,22 @@ pub struct TilePool {
     /// the hottest path in the crate — a stroke asks ~4 times per affected tile per
     /// pointer move — where hashing a `TextureFormat` costs more than comparing it to
     /// three others. Keyed by the format itself rather than by a channel enum so that
-    /// equal formats share one list: `SCRATCH_AUX_FORMAT` equals both colour spaces'
-    /// `color_format` today, and a slot per *purpose* would give the same textures two
-    /// free lists that could not serve one another.
+    /// equal formats share one list: `SCRATCH_AUX_FORMAT` equals the tile color format
+    /// today, and a slot per *purpose* would give the same textures two free lists that
+    /// could not serve one another.
     ///
     /// `Arc<[_]>` so the clone every action context takes is a refcount bump.
     format_pools: Arc<[(wgpu::TextureFormat, Arc<Mutex<PoolInner>>)]>,
 }
 
 impl TilePool {
-    /// A pool serving `formats` — the color space's `color` and `aux` (§6.7), which
-    /// are the only formats a caller knows — **plus the three the pool defines itself**.
+    /// A pool serving `formats` — a tile's channels (§6.7), which are the only formats
+    /// a caller knows — **plus the three the pool defines itself**.
     ///
     /// [`MASK_FORMAT`], [`SCRATCH_AUX_FORMAT`] and [`FIELD_FORMAT`] are unioned in here
     /// rather than asked of the caller, because they are this module's constants and a
     /// call site that had to remember them could forget one — invisibly, while
-    /// `SCRATCH_AUX_FORMAT` happens to equal both color spaces' `color_format`, the
-    /// coincidence [`StrokeRenderer::acquire_tile`] warns about one level down. The
-    /// first space to choose otherwise meets `acquire_tex`'s "unsupported format" panic
-    /// on its first stroke.
-    ///
-    /// [`StrokeRenderer::acquire_tile`]: crate::gpu::stroke::StrokeRenderer
+    /// `SCRATCH_AUX_FORMAT` happens to equal the tile color format.
     pub fn new(ctx: GpuContext, formats: impl IntoIterator<Item = wgpu::TextureFormat>) -> Self {
         let mut format_pools: Vec<(wgpu::TextureFormat, Arc<Mutex<PoolInner>>)> = Vec::new();
         for f in formats

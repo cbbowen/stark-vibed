@@ -1244,7 +1244,7 @@ edge does; at the frame border that reads as a crisp bevel, which is wanted.
 
 #### 15.4.2 The matte's aux blend must be *over*, not additive
 
-The color space's `aux_blend()` is **additive** — correct for paint, where
+A deposit's aux blend is **additive** — correct for paint, where
 thickness accumulates. If a matte blended additively, the height of paint
 *underneath* it would survive, and `height_at` would emboss that paint's impasto
 as ghost ridges through an opaque mat board.

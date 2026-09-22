@@ -4,7 +4,7 @@
 //! predecessor but the arc length.
 
 use crate::colorspace::ColorSpace;
-use crate::gpu::channels::Targets;
+use crate::gpu::channels::{ChannelFormats, Targets};
 use crate::gpu::desc;
 use stark_model::document::StrokeRecord;
 use stark_model::geom::{TILE_APRON, TILE_TEX, TileCoord, Vec2};
@@ -130,8 +130,8 @@ pub(super) const CEILING_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba
 /// point-wise max of the ceilings falls out of two of them and their moments. The erase
 /// sweep attaches the same lane by the same rule (§6.12), as does the stamp loop's
 /// per-segment draw of it (`fs_levels`).
-pub(super) fn ceiling_target(color_space: &dyn ColorSpace) -> Option<wgpu::ColorTargetState> {
-    desc::blended_target(CEILING_FORMAT, Some(color_space.aux_blend()))
+pub(super) fn ceiling_target() -> Option<wgpu::ColorTargetState> {
+    desc::blended_target(CEILING_FORMAT, Some(wgpu::BlendState::ADDITIVE))
 }
 
 /// The five pipelines the sweep's three layouts serve: this kit's three and the erase
@@ -174,23 +174,14 @@ pub(super) fn build_swept_kit(
         "stark sweep layout",
         &[&uniform_bgl, &prefix_bgl, &noise_bgl],
     );
-    let targets = [
-        desc::blended_target(color_space.color_format(), Some(color_space.color_blend())),
-        // The stamp renders into a *scratch* tile, whose aux is the wide
-        // SCRATCH_AUX_FORMAT — not the compact persistent aux. Additive
-        // blend across overlapping segments.
-        desc::blended_target(SCRATCH_AUX_FORMAT, Some(color_space.aux_blend())),
-        // The parcel's residual (§6.7), over-blended by the color's rule
-        // because it is the rest of the same color.
-        color_space
-            .resid_format()
-            .and_then(|f| desc::blended_target(f, Some(color_space.color_blend()))),
-        // The ceiling lane (§6.2), additive (`ceiling_target`). At the shader's
-        // location 3 whether or not the space has a residual at 2, so the plain
-        // list stops short of it and the ceiling list carries the hole
-        // (`accum::MAX_LANES`).
-        ceiling_target(color_space),
-    ];
+    // The stamp renders into a *scratch* tile, whose aux is the wide
+    // SCRATCH_AUX_FORMAT — not the compact persistent aux.
+    let formats = ChannelFormats::of(color_space);
+    let [color, aux, resid] = formats.deposit_targets(SCRATCH_AUX_FORMAT);
+    // The ceiling lane (§6.2) is at the shader's location 3 whether or not the space
+    // has a residual at 2, so the plain list stops short of it and the ceiling list
+    // carries the hole (`accum::MAX_LANES`).
+    let targets = [color, aux, resid, ceiling_target()];
     // The same two records `stamp_module` compiled, for the entry points the
     // pipelines below name (§6.10).
     let plain = color_space.stamp_shader(Lane::Plain);
@@ -217,7 +208,7 @@ pub(super) fn build_swept_kit(
         shader,
         plain.vs_main,
         plain.fs_main,
-        &targets[..2 + usize::from(color_space.has_resid())],
+        &targets[..formats.count()],
     );
     let pipeline_ceiling = sweep_pipeline(
         "stark sweep ceiling pipeline",
@@ -234,7 +225,7 @@ pub(super) fn build_swept_kit(
         shader,
         plain.vs_main,
         plain.fs_levels,
-        &[ceiling_target(color_space)],
+        &[ceiling_target()],
     );
 
     let (integrate_pipeline, integrate_bgl) = build_integrate_pipeline(device, color_space);
@@ -471,12 +462,9 @@ impl StrokeRenderer {
         // rather than the tile pool, since nothing here ever becomes a document tile.
         // A supersampled stroke holds the same set at `ss` texels per px — the one
         // place the 4× memory is paid, and it is transient.
-        let keys = parcel_keys(
-            self.color_space.color_format(),
-            self.color_space.resid_format(),
-            k.ceiling_lane,
-        )
-        .map(|key| key.map(|key| key.scaled(ss)));
+        let formats = ChannelFormats::of(self.color_space.as_ref());
+        let keys = parcel_keys(formats.color, formats.resid, k.ceiling_lane)
+            .map(|key| key.map(|key| key.scaled(ss)));
 
         let Landed { map, carry, dirty } = IncrementalTileAccumulator::resume(
             self,
@@ -579,11 +567,12 @@ impl RingSlot {
     /// and residual beside it — the same trio a parcel lane carries, at the same keys,
     /// which is what lets the two paths draw from one free list.
     fn take(r: &StrokeRenderer, scope: &mut crate::gpu::scratch::SubmitScope) -> Self {
+        let formats = ChannelFormats::of(r.color_space.as_ref());
         let mut view = |format| scope.take_run(parcel_key(format)).view;
         Self {
-            color: view(r.color_space.color_format()),
-            aux: view(crate::gpu::tile::SCRATCH_AUX_FORMAT),
-            resid: r.color_space.resid_format().map(&mut view),
+            color: view(formats.color),
+            aux: view(SCRATCH_AUX_FORMAT),
+            resid: formats.resid.map(&mut view),
         }
     }
 
@@ -914,9 +903,8 @@ pub(super) fn build_integrate_pipeline(
         &layout,
         &shader,
         (integrate.vs_main, integrate.fs_main),
-        // The space's own three, as `ChannelFormats` counts them — the last of the
-        // hand-counted `[..2 + usize::from(resid)]` slices (§6.7).
-        &crate::gpu::channels::ChannelFormats::of(color_space).targets(),
+        // The space's own three (§6.7).
+        &ChannelFormats::of(color_space).targets(),
     );
     (pipeline, bgl)
 }

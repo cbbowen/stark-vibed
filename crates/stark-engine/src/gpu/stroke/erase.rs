@@ -117,11 +117,11 @@ pub(super) fn build_erase_kit(
     let targets = [
         // The transparency mass, additive across overlapping segment quads —
         // and, through the load below, across the pieces of a live stroke.
-        desc::blended_target(ACCUM_FORMAT, Some(color_space.aux_blend())),
+        desc::blended_target(ACCUM_FORMAT, Some(wgpu::BlendState::ADDITIVE)),
         // The ceiling lane and the mass's moment beside it, additive like the
         // deposit's (`swept::ceiling_target`, §6.2).
-        super::swept::ceiling_target(color_space),
-        desc::blended_target(ACCUM_FORMAT, Some(color_space.aux_blend())),
+        super::swept::ceiling_target(),
+        desc::blended_target(ACCUM_FORMAT, Some(wgpu::BlendState::ADDITIVE)),
     ];
     // The same two records `swept::stamp_module` compiled, for the entry points the
     // two pipelines below name (§6.10).

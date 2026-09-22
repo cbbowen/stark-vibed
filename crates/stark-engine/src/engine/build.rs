@@ -393,17 +393,16 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
         environment,
         settings,
     } = b;
-    // The color space's formats — the only ones this call site knows; the pool unions
-    // in its own (`TilePool::new`), so none can be forgotten here. The residual's is
-    // passed rather than assumed `Rgba16Float`: the first space to choose otherwise
-    // would meet `acquire_tex`'s "unsupported format" panic on its first stroke.
+    // The tile channels' formats; the pool unions in its own (`TilePool::new`), so none
+    // can be forgotten here.
+    let formats = crate::gpu::channels::ChannelFormats::of(cs.as_ref());
     let pool = TilePool::new(
         gpu.clone(),
-        [cs.color_format(), cs.aux_format()]
+        [formats.color, formats.aux]
             .into_iter()
-            .chain(cs.resid_format()),
+            .chain(formats.resid),
     );
-    let zeroes = Zeroes::new(&gpu, crate::gpu::channels::ChannelFormats::of(cs.as_ref()));
+    let zeroes = Zeroes::new(&gpu, formats);
     // One layout for everyone, because a cached bind group answers to one: pass A
     // composites the document and the stamp loop composites the very same tiles into
     // its working region (§6.2). Same bargain as `blend` and `filter` below.

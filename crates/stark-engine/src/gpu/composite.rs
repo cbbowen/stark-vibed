@@ -418,9 +418,8 @@ pub(crate) struct CompositorPipeline {
     /// a pipeline but *replaces* it: a per-pipeline counter would start the
     /// replacement back at the very value a consumer of the old pipeline is holding,
     /// so a kept [`Compositor`] would see "no change" and keep attachments belonging
-    /// to a pipeline that is gone. Today both color spaces happen to use the same
-    /// channel formats, but which formats a space wants is deliberately left open
-    /// ([`ColorSpace::color_format`]).
+    /// to a pipeline that is gone — one whose targets may lack, or carry, the
+    /// residual the new space has ([`ColorSpace::has_resid`]).
     generation: u64,
 
     /// A stamp for "the substrate and light a media bind group would name". Moved

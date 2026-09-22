@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use crate::gpu::channels::Targets;
+use crate::gpu::channels::{TILE_AUX_FORMAT, Targets};
 use crate::gpu::composite::view_uniform;
 use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, TileMap};
@@ -1684,7 +1684,7 @@ pub(super) fn slice_region(
         view: narrow_view,
     } = scope.take_piece(Key {
         size: (color_tex.width(), color_tex.height()),
-        format: r.color_space.aux_format(),
+        format: TILE_AUX_FORMAT,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         label: "stark dynamics narrow aux",
     });

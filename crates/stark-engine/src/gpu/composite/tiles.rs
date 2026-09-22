@@ -74,17 +74,9 @@ impl TilePass {
         );
         let layout =
             desc::pipeline_layout_of(device, "stark composite layout", &[&view_bgl, &tile_bgl]);
-        // Pass A is the one pipeline whose targets do *not* share a blend, so this is
-        // spelled out rather than `formats.blended(..)`: premultiplied `over` on the
-        // color, additive on the height aux, and the residual through the *color's*
-        // blend, being the rest of the same color (§6.7).
-        let mut space_targets = vec![
-            desc::blended_target(formats.color, Some(color_space.color_blend())),
-            desc::blended_target(formats.aux, Some(color_space.aux_blend())),
-        ];
-        if let Some(f) = formats.resid {
-            space_targets.push(desc::blended_target(f, Some(color_space.color_blend())));
-        }
+        // Layers stack by the deposit's own blends: over on the color, additive on the
+        // height aux.
+        let space_targets = formats.deposit_targets(formats.aux);
         let pipeline = desc::render_pipeline(
             device,
             RenderPipe {
@@ -97,7 +89,7 @@ impl TilePass {
                 buffers: &[Some(stark_shaders::mirror::composite::instance_layout(
                     wgpu::VertexStepMode::Instance,
                 ))],
-                targets: &space_targets,
+                targets: &space_targets[..formats.count()],
             },
         );
 

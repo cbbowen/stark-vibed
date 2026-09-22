@@ -6,6 +6,7 @@
 //! with its renderer and live in an `Action::Context` (§5).
 
 use crate::colorspace::ColorSpace;
+use crate::gpu::channels::{ChannelFormats, TILE_AUX_FORMAT, TILE_COLOR_FORMAT};
 use crate::gpu::desc;
 use crate::gpu::tile::SCRATCH_AUX_FORMAT;
 use stark_shaders::Stages;
@@ -106,14 +107,13 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
 ) -> DynamicsKit {
     let device = &ctx.device;
     // The loop stores a tile's color through `region_color_w` and copies the region
-    // back into tiles texel-for-texel, which is legal only where the space's tile
-    // format *is* the format that slot declares. Both spaces use `rgba16float` (§6.7),
-    // so either can hold the region. Compared against the shader's own declaration
+    // back into tiles texel-for-texel, which is legal only where the tile color format
+    // *is* the format that slot declares. Compared against the shader's own declaration
     // rather than a literal (§6.10), so either side drifting is caught.
     debug_assert_eq!(
-        color_space.color_format(),
+        TILE_COLOR_FORMAT,
         sd::REGION_COLOR_W.storage_format(),
-        "the loop stores tile color through `region_color_w`; this space's tiles are not that format",
+        "the loop stores tile color through `region_color_w`; tiles are not that format",
     );
     // ---- Region composite: the `composite` shader over region-sized targets
     // (color + the wide aux, so nothing is narrowed until the write-back).
@@ -135,18 +135,10 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         "stark dynamics composite layout",
         &[&composite_view_bgl, &composite_tile_bgl],
     );
-    // Not `ChannelFormats::blended`: the region's aux is the *wide* scratch format and
-    // takes the aux blend where the two color targets take the color's. Built rather
-    // than sliced to a hand-counted length (§6.7).
-    let mut composite_targets = vec![
-        desc::blended_target(color_space.color_format(), Some(color_space.color_blend())),
-        desc::blended_target(SCRATCH_AUX_FORMAT, Some(color_space.aux_blend())),
-    ];
-    if let Some(f) = color_space.resid_format() {
-        // The region's residual, over-blended by the color's own rule because it is the
-        // rest of the same color (§6.7).
-        composite_targets.push(desc::blended_target(f, Some(color_space.color_blend())));
-    }
+    // The deposit's blends, over the *wide* scratch aux: nothing is narrowed until the
+    // write-back.
+    let formats = ChannelFormats::of(color_space);
+    let composite_targets = formats.deposit_targets(SCRATCH_AUX_FORMAT);
     let composite_pipeline = desc::render_pipeline(
         device,
         desc::RenderPipe {
@@ -163,7 +155,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             buffers: &[Some(stark_shaders::mirror::composite::instance_layout(
                 wgpu::VertexStepMode::Instance,
             ))],
-            targets: &composite_targets,
+            targets: &composite_targets[..formats.count()],
         },
     );
     let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -324,7 +316,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         &slice_layout,
         &slice_shader,
         (slice.vs_main, slice.fs_main),
-        &[desc::target(color_space.aux_format())],
+        &[desc::target(TILE_AUX_FORMAT)],
     );
 
     // The 1×1 a painting segment binds where a firing binds the real scratch (§6.8's

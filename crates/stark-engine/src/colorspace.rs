@@ -1,9 +1,9 @@
 //! Pluggable color spaces (§6.7).
 //!
 //! Tile channels are color-space-agnostic: tools deposit values and only assume
-//! they blend linearly. A [`ColorSpace`] gives those channels meaning — the tile
-//! texture layout, how dabs combine (blend), the picker conversions to/from RGB,
-//! and the GPU shaders that deposit (stamp) and present (media) them.
+//! they blend linearly. A [`ColorSpace`] gives those channels meaning — whether a
+//! residual rides beside them, the picker conversions to/from RGB, and which build of
+//! the GPU shaders that deposit (stamp) and present (media) them it reads.
 //!
 //! A document has one color space, selected by [`ColorSpaceId`] in `CanvasMeta`.
 
@@ -67,86 +67,59 @@ pub(crate) struct Latent {
     /// first three Mixbox pigment concentrations.
     pub lat: [f32; 3],
     /// What those channels cannot say, added back on the way out — `[0.0; 3]`
-    /// **exactly** in a space with no [`resid_format`](ColorSpace::resid_format),
+    /// **exactly** in a space without a [residual](ColorSpace::has_resid),
     /// which is the true answer rather than a placeholder: such a space's channels
     /// already carry the whole color.
     pub res: [f32; 3],
 }
 
-/// A color space: tile layout + blend + picker conversions + GPU shaders.
+/// A color space: picker conversions, the residual, and which shader builds it reads.
+///
+/// What every space shares is not asked of one: the tile formats ([`TILE_COLOR_FORMAT`],
+/// [`TILE_AUX_FORMAT`]) and the blends a deposit lands by
+/// ([`ChannelFormats::deposit_targets`]).
+///
+/// [`TILE_COLOR_FORMAT`]: crate::gpu::channels::TILE_COLOR_FORMAT
+/// [`TILE_AUX_FORMAT`]: crate::gpu::channels::TILE_AUX_FORMAT
+/// [`ChannelFormats::deposit_targets`]: crate::gpu::channels::ChannelFormats::deposit_targets
 pub(crate) trait ColorSpace {
     fn id(&self) -> ColorSpaceId;
 
-    /// Tile color channel texture format.
+    /// Whether the space's tiles carry a **residual** (§6.7): the part of a color its
+    /// three channels cannot express, in a third texture of the color's own format.
     ///
-    /// Defaulted, along with [`aux_format`](Self::aux_format),
-    /// [`color_blend`](Self::color_blend) and [`aux_blend`](Self::aux_blend): an
-    /// override here is a format the tile pool was never sized for. What actually
-    /// distinguishes a space is [`resid_format`](Self::resid_format).
-    fn color_format(&self) -> wgpu::TextureFormat {
-        wgpu::TextureFormat::Rgba16Float
-    }
-    /// Tile auxiliary channel texture format (paint height).
-    fn aux_format(&self) -> wgpu::TextureFormat {
-        wgpu::TextureFormat::R16Float
-    }
-    /// The tile's **residual** channel format, or `None` for a space that has no
-    /// residual (§6.7).
-    ///
-    /// A residual is the part of a color the space's three channels cannot express.
     /// A colorimetric space has none — Oklab's `(L, a, b)` reproduces every sRGB
     /// color exactly — so it allocates no third texture, and the passes that carry
     /// tile color are built in a variant without one ([`Resid::Without`]). A *pigment*
-    /// space has one necessarily: four trained pigments do not span sRGB.
-    ///
-    /// `Some` costs eight bytes a texel and a third render target through every pass
-    /// that writes a tile. `None` is a statement, not an optimization: this space's
-    /// channels are the whole color.
-    fn resid_format(&self) -> Option<wgpu::TextureFormat> {
-        None
-    }
-
-    /// Whether this space carries a residual — [`resid_format`](Self::resid_format)
-    /// as the flag the bind groups actually branch on.
+    /// space has one necessarily: four trained pigments do not span sRGB. It costs
+    /// eight bytes a texel and a third render target through every pass that writes a
+    /// tile.
     fn has_resid(&self) -> bool {
-        self.resid_format().is_some()
+        false
     }
 
     /// Which build of the three passes bracketed by a space's own conversion this space
     /// reads (§6.7).
     ///
-    /// **Declared, not derived from [`resid_format`](Self::resid_format)**, though the
-    /// two agree for both spaces there are: a residual is a fact about how much of a
-    /// color three channels can hold, and this is a fact about what those channels
-    /// *are*. Deriving one from the other would make a colorimetric space with a
-    /// residual unstateable rather than merely absent.
+    /// **Declared, not derived from [`has_resid`](Self::has_resid)**, though the two
+    /// agree for both spaces there are: a residual is a fact about how much of a color
+    /// three channels can hold, and this is a fact about what those channels *are*.
     fn pigment(&self) -> Pigment {
         Pigment::Oklab
     }
 
     /// Which build of a pass that carries a tile's color this space reads (§6.7).
     ///
-    /// **Derived** from [`resid_format`](Self::resid_format), like
-    /// [`has_resid`](Self::has_resid), rather than declared beside it — a space with
-    /// two answers to one question is the drift this whole boundary is about. The
-    /// `cfg` is what the derivation costs: [`Resid::With`] is generated only in a build
-    /// that linked the residual variants, which is the same build a space with a
-    /// `resid_format` can exist in.
+    /// **Derived** from [`has_resid`](Self::has_resid) rather than declared beside it.
+    /// The `cfg` is what the derivation costs: [`Resid::With`] is generated only in a
+    /// build that linked the residual variants, which is the same build a space with a
+    /// residual can exist in.
     fn resid(&self) -> Resid {
         #[cfg(feature = "mixbox")]
         if self.has_resid() {
             return Resid::With;
         }
         Resid::Without
-    }
-    /// Blend for the color target when stamping/compositing.
-    fn color_blend(&self) -> wgpu::BlendState {
-        over()
-    }
-    /// Blend for the aux target — additive, because what it carries is an *amount*
-    /// of paint and amounts add (§6.1).
-    fn aux_blend(&self) -> wgpu::BlendState {
-        additive()
     }
 
     /// Straight display RGB → the space's color channels **and** the residual they
@@ -169,14 +142,13 @@ pub(crate) trait ColorSpace {
     /// [`Lane::Ceiling`] asks for the variant that also accumulates the ceiling lane,
     /// the fourth target a stroke whose opacity the pen drives sweeps into.
     ///
-    /// The generated record whole, because both spaces link the same module
-    /// (`stamp.wesl`) and so share its type — which the three below do not.
-    fn stamp_shader(&self, lane: Lane) -> &'static stark_shaders::Stamp;
+    /// Defaulted, like the three below: every space deposits by the same law, so what
+    /// one picks is the axis — [`resid`](Self::resid) here, [`pigment`](Self::pigment)
+    /// there — and not the shader.
+    fn stamp_shader(&self, lane: Lane) -> &'static stark_shaders::Stamp {
+        stark_shaders::stamp(self.resid(), lane)
+    }
     /// The media/lighting + present pass — §6.3.
-    ///
-    /// Defaulted, with the two below: the three are one module linked twice along
-    /// [`pigment`](Self::pigment), so what a space picks is the axis and not the
-    /// shader.
     fn media_shader(&self) -> &'static stark_shaders::Media {
         stark_shaders::media(self.pigment())
     }
@@ -198,21 +170,6 @@ pub(crate) trait ColorSpace {
     fn filter_shader(&self) -> &'static stark_shaders::Filter {
         stark_shaders::filter(self.pigment())
     }
-}
-
-/// Premultiplied "over" — the standard alpha compositing blend.
-fn over() -> wgpu::BlendState {
-    wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING
-}
-
-/// Additive accumulation (`One, One`).
-fn additive() -> wgpu::BlendState {
-    let c = wgpu::BlendComponent {
-        src_factor: wgpu::BlendFactor::One,
-        dst_factor: wgpu::BlendFactor::One,
-        operation: wgpu::BlendOperation::Add,
-    };
-    wgpu::BlendState { color: c, alpha: c }
 }
 
 /// The default perceptual color space: Oklab `(L, a, b)` premultiplied by the
@@ -249,10 +206,6 @@ impl ColorSpace for OkLabColorSpace {
             color::linear_to_srgb(lin[2]),
         ]
     }
-
-    fn stamp_shader(&self, lane: Lane) -> &'static stark_shaders::Stamp {
-        stark_shaders::stamp(self.resid(), lane)
-    }
 }
 
 /// **Mixbox** pigment-mixing space (§6.7). Colors are stored as Mixbox
@@ -286,11 +239,9 @@ impl ColorSpace for MixboxColorSpace {
     }
 
     /// The residual's three components premultiplied by the same per-unit opacity the
-    /// concentrations are, with that opacity duplicated into the fourth: not
-    /// redundancy for its own sake, but because the fixed-function "over" reads *each*
-    /// target's own alpha, so the target carrying the residual has to hold it too.
-    fn resid_format(&self) -> Option<wgpu::TextureFormat> {
-        Some(wgpu::TextureFormat::Rgba16Float)
+    /// concentrations are, with that opacity duplicated into the fourth.
+    fn has_resid(&self) -> bool {
+        true
     }
 
     fn rgb_to_latent(&self, rgb: Srgb) -> Latent {
@@ -326,11 +277,5 @@ impl ColorSpace for MixboxColorSpace {
 
     fn pigment(&self) -> Pigment {
         Pigment::Mixbox
-    }
-
-    fn stamp_shader(&self, lane: Lane) -> &'static stark_shaders::Stamp {
-        // Deposit is premultiplied-over of the channels — the same law as Oklab's,
-        // run over one more target.
-        stark_shaders::stamp(self.resid(), lane)
     }
 }

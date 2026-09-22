@@ -14,6 +14,14 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::tile::{AllocSource, TexHandle, TilePairHandle, TilePool};
 
+/// A tile's color channels, in every space (§6.1, §6.7): the latent premultiplied by
+/// per-unit opacity. The tile pool is sized for this and [`TILE_AUX_FORMAT`], so a
+/// space does not choose them.
+pub(crate) const TILE_COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+/// A tile's height channel — the amount of paint (§6.1).
+pub(crate) const TILE_AUX_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
+
 /// The formats a document's tiles and offscreen targets carry — the color space's
 /// answer, resolved once (§6.7).
 ///
@@ -32,21 +40,14 @@ pub(crate) struct ChannelFormats {
 
 impl ChannelFormats {
     pub(crate) fn of(space: &dyn ColorSpace) -> Self {
-        let formats = Self {
-            color: space.color_format(),
-            aux: space.aux_format(),
-            resid: space.resid_format(),
-        };
-        // A residual target carries the **color's** format, because every pass that
-        // has one loads it with the color's decode — it is the rest of the same color
-        // (§6.7). Asked here, where every trio in the engine is built.
-        debug_assert!(
-            formats.resid.is_none_or(|f| f == formats.color),
-            "a residual target must carry the color's format; this space declares {:?} against {:?}",
-            formats.resid,
-            formats.color,
-        );
-        formats
+        Self {
+            color: TILE_COLOR_FORMAT,
+            aux: TILE_AUX_FORMAT,
+            // The rest of the same color, so the color's format and its decode:
+            // premultiplied by the same opacity, which it holds in its own alpha
+            // because fixed-function "over" reads each target's own (§6.7).
+            resid: space.has_resid().then_some(TILE_COLOR_FORMAT),
+        }
     }
 
     /// Whether this space carries a residual (§6.7).
@@ -77,12 +78,8 @@ impl ChannelFormats {
         self.blended(None)
     }
 
-    /// [`Self::targets`] with an explicit blend state on all three.
-    ///
-    /// The residual composites through the **color's** blend, never the aux's: it is
-    /// premultiplied by the same coverage and covers by the same rule, being the rest of
-    /// the same color (§6.7). A caller that needs the aux blended differently — as pass A
-    /// does, additive on height — spells its three out rather than passing one here.
+    /// [`Self::targets`] with an explicit blend state on all three. A deposit, which
+    /// blends the aux differently, takes [`Self::deposit_targets`].
     pub(crate) fn blended(
         &self,
         blend: Option<wgpu::BlendState>,
@@ -95,6 +92,25 @@ impl ChannelFormats {
             out.push(desc::blended_target(f, blend));
         }
         out
+    }
+
+    /// The trio as a **deposit** lands it (§6.1, §6.7): color premultiplied-over,
+    /// `aux` additive because height is an amount, and the residual over by the
+    /// color's rule, being the rest of the same color.
+    ///
+    /// `aux` is the tile's own format or the wide one a stroke accumulates in.
+    /// Location 2 is `None` without a residual: slice to [`Self::count`], or keep the
+    /// hole where a later location follows it.
+    pub(crate) fn deposit_targets(
+        &self,
+        aux: wgpu::TextureFormat,
+    ) -> [Option<wgpu::ColorTargetState>; 3] {
+        let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+        [
+            desc::blended_target(self.color, over),
+            desc::blended_target(aux, Some(wgpu::BlendState::ADDITIVE)),
+            self.resid.and_then(|f| desc::blended_target(f, over)),
+        ]
     }
 }
 
@@ -262,5 +278,36 @@ impl Zeroes {
                 .resid
                 .map(|f| desc::zero_texture(ctx, f, "stark zero resid")),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::gpu::tile::SCRATCH_AUX_FORMAT;
+
+    /// A deposit lands the residual in the color's format and by the color's blend, at
+    /// location 2 exactly where the space has one; the aux is the caller's, additive.
+    #[test]
+    fn a_deposit_lands_the_residual_as_the_rest_of_the_color() {
+        let over = Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+        let check = |space: &dyn ColorSpace| {
+            let formats = ChannelFormats::of(space);
+            let targets = formats.deposit_targets(SCRATCH_AUX_FORMAT);
+            let state = |i: usize| targets[i].as_ref().map(|t| (t.format, t.blend));
+            assert_eq!(state(0), Some((TILE_COLOR_FORMAT, over)));
+            assert_eq!(
+                state(1),
+                Some((SCRATCH_AUX_FORMAT, Some(wgpu::BlendState::ADDITIVE)))
+            );
+            assert_eq!(
+                state(2),
+                space.has_resid().then_some((TILE_COLOR_FORMAT, over))
+            );
+            assert_eq!(targets.iter().flatten().count(), formats.count());
+        };
+        check(&crate::colorspace::OkLabColorSpace);
+        #[cfg(feature = "mixbox")]
+        check(&crate::colorspace::MixboxColorSpace);
     }
 }
