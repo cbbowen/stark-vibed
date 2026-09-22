@@ -34,11 +34,9 @@
 //! # Against `benches/stroke.rs`
 //!
 //! That file is the regression gate — criterion, confidence intervals, a saved
-//! baseline — and it prints the same phase table under every line it measures. What
-//! this one has over it is **speed and the drain**: seconds rather than minutes, a
-//! p95 per-move figure, and `bench.gpu_wait`, which criterion has no equivalent of
-//! because its timed region is the thing being reported rather than something to
-//! account for.
+//! baseline — and it runs the same scenario (`benches/scenario`) and prints the same
+//! phase table under every line it measures. What this one has over it is **speed**:
+//! seconds rather than minutes, and a p95 per-move figure.
 //!
 //! It is one run per scenario, so read the shares, which are stable, rather than the
 //! totals, which on this class of machine drift 15% between runs of identical code.
@@ -48,60 +46,17 @@
     reason = "a dev harness that only ever runs natively; the app's clock is `quanta` (§7.1)"
 )]
 
+#[path = "../benches/scenario/mod.rs"]
+mod scenario;
+
 use stark_engine::command::Tool;
 use std::time::Instant;
 
-use stark_engine::Extent2;
-use stark_engine::command::{GestureCommand, InputSample, ViewCommand};
-use stark_engine::headless_engine;
+use scenario::{N, install_timing, phase_table, plain, samples, smear, wait_idle};
+use stark_engine::command::{GestureCommand, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::timing;
 use stark_model::document::BrushParams;
-use stark_model::geom::Vec2;
-
-const TARGET: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-
-fn wait_idle(engine: &stark_engine::Engine) {
-    // Instrumented so the table accounts for the whole scenario: this is the GPU
-    // executing everything the encode rows recorded, and without it every share
-    // would be a fraction of a wall clock most of which nothing explained.
-    timing::span!("bench.gpu_wait");
-    engine
-        .gpu()
-        .device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("device poll");
-}
-
-fn smear_brush(radius: f32) -> BrushParams {
-    let mut b = BrushParams {
-        size: radius,
-        effect: stark_model::document::BrushEffect::painted([0.8, 0.2, 0.1]),
-        ..BrushParams::default()
-    };
-    // At the neutral flow with the axes stated outright, so the measured rates
-    // are exactly these numbers — and the figures survive the flow/add split.
-    let w = b.make_wet();
-    w.flow = 1.0;
-    w.dynamics.add = 0.5;
-    w.dynamics.lift = 0.6;
-    w.dynamics.deposit = 0.5;
-    b
-}
-
-/// A long wavy stroke crossing many tiles — the shape a real smear gesture takes.
-fn samples(n: usize) -> Vec<InputSample> {
-    (0..n)
-        .map(|i| {
-            let t = i as f32 / (n - 1) as f32;
-            let x = -700.0 + 1400.0 * t;
-            let y = (t * 12.0).sin() * 220.0;
-            let mut s = InputSample::at(Vec2::new(x, y));
-            s.pressure = 0.7 + 0.3 * (t * 5.0).sin().abs();
-            s
-        })
-        .collect()
-}
 
 fn bench_live(engine: &mut stark_engine::Engine, brush: BrushParams, n: usize) -> (f64, f64, f64) {
     engine.process(ViewCommand::set_brush(brush));
@@ -146,75 +101,40 @@ fn bench_commit(engine: &mut stark_engine::Engine, brush: BrushParams, n: usize)
     t.elapsed().as_secs_f64() * 1000.0
 }
 
-/// Print what the scenario just run passed through, then start a fresh window.
-///
-/// The table itself is `Timings`' own `Display` (§7.1), shared with
-/// `benches/stroke.rs`: a column added to one copy and not the other would be a
-/// column meaning different things in two places.
-///
-/// Here the share is of the scenario's whole wall clock, and because the drain is
-/// instrumented too the encode rows plus `bench.gpu_wait` add up to roughly 100% —
-/// whatever is missing is untimed harness work.
-fn phase_table() {
-    match timing::snapshot() {
-        Some(t) => println!("{t}"),
-        None => eprintln!("  (no timing subscriber installed — phases unavailable)"),
-    }
-    timing::reset();
-}
-
-/// Install the timing layer as this process's subscriber.
-///
-/// A bare registry with nothing else on it: the example prints its own table, so a
-/// `fmt` layer would only interleave engine log lines through the numbers.
-fn install_timing() {
-    use tracing_subscriber::layer::SubscriberExt;
-    use tracing_subscriber::registry::Registry;
-
-    tracing::subscriber::set_global_default(Registry::default().with(timing::layer()))
-        .expect("no subscriber has been installed in this process yet");
-}
-
 fn main() {
     install_timing();
-    let viewport = Extent2 {
-        width: 1024,
-        height: 1024,
+    let Some(mut engine) = scenario::engine() else {
+        return;
     };
-    let mut engine =
-        pollster::block_on(headless_engine(TARGET, viewport)).expect("headless engine");
 
-    let n = 240;
     // Warm-up: builds prefix/coverage caches and pipelines so the first timed
     // stroke doesn't pay for them. Its phases are thrown away with the reset below
     // rather than reported — a first run's shader compilation is not a phase split.
-    bench_commit(&mut engine, smear_brush(30.0), 40);
+    bench_commit(&mut engine, smear(30.0), 40);
     timing::reset();
 
     for radius in [30.0, 60.0, 100.0, 500.0] {
-        let commit = bench_commit(&mut engine, smear_brush(radius), n);
+        let commit = bench_commit(&mut engine, smear(radius), N);
         println!("smear r={radius:>5.1}: commit {commit:8.1} ms");
-        phase_table();
-        let (total, mean, p95) = bench_live(&mut engine, smear_brush(radius), n);
+        phase_table(&format!("commit/smear/{radius}"));
+        let (total, mean, p95) = bench_live(&mut engine, smear(radius), N);
         println!(
             "smear r={radius:>5.1}: live total {total:8.1} ms, \
              per-move mean {mean:6.2} ms, p95 {p95:6.2} ms"
         );
-        phase_table();
+        phase_table(&format!("live/smear/{radius}"));
     }
 
     // Reference: the same sizes on the swept fast path (no lift/deposit), so the
     // dynamics numbers have something to be compared against.
     for radius in [30.0, 100.0] {
-        let mut plain = smear_brush(radius);
-        plain.effect = Default::default();
-        let commit = bench_commit(&mut engine, plain, n);
-        let (total, mean, p95) = bench_live(&mut engine, plain, n);
+        let commit = bench_commit(&mut engine, plain(radius), N);
+        let (total, mean, p95) = bench_live(&mut engine, plain(radius), N);
         println!(
             "plain r={radius:>5.1}: commit {commit:8.1} ms | live total {total:8.1} ms, \
              per-move mean {mean:6.2} ms, p95 {p95:6.2} ms"
         );
-        phase_table();
+        phase_table(&format!("commit+live/plain/{radius}"));
     }
 
     // A last word on how to read all of the above, printed rather than left to the

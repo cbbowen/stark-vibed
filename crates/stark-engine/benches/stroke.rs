@@ -16,9 +16,9 @@
 //!    total move"; the table under each line answers "which phase moved it", for the
 //!    exact configuration criterion just timed — which is the pairing the two were
 //!    always missing. The rows are CPU time to *record* work: no timestamp queries,
-//!    so what the GPU then spent executing it is not in the table (`bench.gpu_wait`
-//!    in `examples/stroke_bench` is the nearest thing, and bracketing is still how
-//!    GPU time gets divided among dispatches).
+//!    so what the GPU then spent executing it is one row, the drain
+//!    (`bench.gpu_wait`), and bracketing is still how GPU time gets divided among
+//!    dispatches.
 //!
 //!    Installing the subscriber invalidates baselines saved before it, and that is
 //!    the right trade — **and the cost is measured, not assumed.** A span costs
@@ -43,99 +43,19 @@
     reason = "a criterion bench is native-only by construction; `quanta` is for the code that reaches a tab"
 )]
 
+mod scenario;
+
 use stark_engine::command::Tool;
 use std::time::{Duration, Instant};
 
 use criterion::{BenchmarkId, Criterion, SamplingMode, criterion_group, criterion_main};
 
+use scenario::{N, engine, install_timing, phase_table, plain, samples, smear, wait_idle};
 use stark_engine::Engine;
-use stark_engine::Extent2;
-use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_engine::headless_engine;
+use stark_engine::command::{DocCommand, GestureCommand, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::timing;
 use stark_model::document::BrushParams;
-use stark_model::geom::Vec2;
-
-const TARGET: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const VIEWPORT: Extent2 = Extent2 {
-    width: 1024,
-    height: 1024,
-};
-
-/// Samples in the benchmarked stroke. Long enough that the per-segment costs
-/// dominate the fixed per-stroke setup, short enough that a live gesture — which
-/// re-renders the in-flight stroke on every one of them — stays inside a sane
-/// measurement window.
-const N: usize = 240;
-
-fn wait_idle(engine: &Engine) {
-    engine
-        .gpu()
-        .device
-        .poll(wgpu::PollType::wait_indefinitely())
-        .expect("device poll");
-}
-
-/// Install the timing layer as this process's subscriber, once.
-///
-/// `Once` rather than a call from `main`, because `criterion_main!` writes `main` and
-/// there is nowhere in it to put this. A bare registry with nothing else on it: the
-/// tables below are printed directly, so a `fmt` layer would only thread engine log
-/// lines through criterion's output.
-fn install_timing() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        use tracing_subscriber::layer::SubscriberExt;
-        use tracing_subscriber::registry::Registry;
-        tracing::subscriber::set_global_default(Registry::default().with(timing::layer()))
-            .expect("no subscriber has been installed in this process yet");
-    });
-}
-
-/// Print what the benchmark just run passed through, then start a fresh window.
-///
-/// Between benchmarks rather than at the end: the histograms are cumulative, so one
-/// table for the whole file would average `dynamics/8` together with `swept/100` and
-/// describe neither. Called after `bench_function` returns, so the window covers
-/// criterion's warm-up as well as its measurement — which is what we want, since
-/// shares are the durable reading and a warm-up runs the same phases.
-fn phase_table(label: &str) {
-    match timing::snapshot() {
-        Some(t) => println!("  phases for {label}:\n{t}"),
-        None => println!("  (no timing subscriber installed — phases unavailable)"),
-    }
-    timing::reset();
-}
-
-/// `None` only when this machine has no usable adapter *and* the skip is permitted —
-/// `stark_engine::testing`'s decision, the same one the test harness makes.
-fn engine() -> Option<Engine> {
-    stark_engine::testing::or_skip(
-        pollster::block_on(headless_engine(TARGET, VIEWPORT)),
-        "GPU benchmarks",
-    )
-}
-
-/// A brush that runs the sequential stamp loop: non-zero `lift`/`deposit` means it
-/// picks paint up off the canvas and lays it back down, so it cannot take the swept
-/// fast path. Deliberately mid-range values rather than extremes — this is meant to
-/// be the everyday smear, not a worst case.
-fn smear(radius: f32) -> BrushParams {
-    let mut b = BrushParams {
-        size: radius,
-        effect: stark_model::document::BrushEffect::painted([0.8, 0.2, 0.1]),
-        ..BrushParams::default()
-    };
-    // At the neutral flow with the axes stated outright, so the measured rates
-    // are exactly these numbers — and the baseline survives the flow/add split.
-    let w = b.make_wet();
-    w.flow = 1.0;
-    w.dynamics.add = 0.5;
-    w.dynamics.lift = 0.6;
-    w.dynamics.deposit = 0.5;
-    b
-}
 
 /// [`smear`] with the **bleed** axis on — the blender, and the one brush that fires the
 /// lateral flux (§6.2).
@@ -143,40 +63,11 @@ fn smear(radius: f32) -> BrushParams {
 /// Its own case because bleed is the loop's only pass whose cost is a *stencil*: a
 /// firing reads nine rungs × four offsets per texel, where every other pass reads a
 /// fixed handful. Without a bleeding brush in this file the whole ladder was
-/// unmeasured, and the one number anybody had for it came from a hand-timed replay.
+/// unmeasured.
 fn blender(radius: f32) -> BrushParams {
     let mut b = smear(radius);
     b.make_wet().dynamics.bleed = 0.9;
     b
-}
-
-/// The same brush with dynamics off, which is what puts it on the swept path: one
-/// instanced draw over the whole stroke instead of a dispatch chain per segment.
-/// The control the dynamics numbers are read against.
-fn plain(radius: f32) -> BrushParams {
-    BrushParams {
-        effect: Default::default(),
-        ..smear(radius)
-    }
-}
-
-/// A long wavy stroke crossing many tiles — the shape a real smear gesture takes,
-/// and wide enough (1400px) that it leaves the 1024px viewport, so tile work is not
-/// bounded by what happens to be on screen.
-///
-/// Synthetic rather than recorded on purpose: the GPU cost keys off segment count
-/// and swept area, and those want to be *fixed* across runs so that a change in the
-/// timing is a change in the renderer. `benches/path.rs` is where recorded input
-/// matters, because that is where report spacing drives the work.
-fn samples() -> Vec<InputSample> {
-    (0..N)
-        .map(|i| {
-            let t = i as f32 / (N - 1) as f32;
-            let mut s = InputSample::at(Vec2::new(-700.0 + 1400.0 * t, (t * 12.0).sin() * 220.0));
-            s.pressure = 0.7 + 0.3 * (t * 5.0).sin().abs();
-            s
-        })
-        .collect()
 }
 
 /// Undo the stroke an iteration just committed, so the next one starts from the same
@@ -196,7 +87,7 @@ fn rewind(engine: &mut Engine) {
 fn commit(c: &mut Criterion) {
     install_timing();
     let Some(mut engine) = engine() else { return };
-    let pts = samples();
+    let pts = samples(N);
     // Warm-up outside any measurement: the first stroke builds pipelines and the
     // prefix-τ cache, which would otherwise land inside one benchmark's samples and
     // not the others'.
@@ -267,7 +158,7 @@ fn commit(c: &mut Criterion) {
 fn live(c: &mut Criterion) {
     install_timing();
     let Some(mut engine) = engine() else { return };
-    let pts = samples();
+    let pts = samples(N);
     engine.process(ViewCommand::set_brush(smear(30.0)));
     engine.replay_stroke(Tool::Brush, &pts);
     wait_idle(&engine);
