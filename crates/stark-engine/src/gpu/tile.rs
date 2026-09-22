@@ -1009,30 +1009,47 @@ impl TilePool {
     /// they would drain at most `MAX_RELEASE_PER_EPOCH` an epoch, and only once
     /// painting resumed.
     ///
+    /// **This reaches every engine sharing the pool**, not only the one being reset:
+    /// the siblings built on it (`Engine::new_sharing` — the brush previews, the
+    /// thumbnail rig) hold their idle textures on the same free lists.
+    ///
     /// **Only between operations**, which the trim's quarantine exists not to need: a
     /// texture on the free list may still be named by an encoder that has not been
-    /// submitted. A reset is such a moment — every operation submits what it recorded
-    /// before it returns — and `destroy()` waits out submitted work that still reads
-    /// the texture.
+    /// submitted. A reset is such a moment for all of those engines — each submits
+    /// what it recorded before an operation returns, and they share one thread — and
+    /// `destroy()` waits out submitted work that still reads the texture. A debug
+    /// build checks it: no `SubmitScope` may be open on this thread.
+    ///
+    /// Taken off the free lists under the lock and destroyed after it, in
+    /// [`acquire_tex`](Self::acquire_tex)'s two phases.
     pub fn release_idle(&self) {
+        #[cfg(debug_assertions)]
+        assert_eq!(
+            crate::gpu::scratch::open_scopes(),
+            0,
+            "idle textures released while a scope on this thread is still recording",
+        );
         for (format, pool) in self.format_pools.iter() {
-            let mut inner = unpoisoned(pool.lock());
-            let released = inner.free.len();
-            if released == 0 {
-                continue;
-            }
-            for slot in inner.free.drain(..) {
+            let idle = {
+                let mut inner = unpoisoned(pool.lock());
+                if inner.free.is_empty() {
+                    continue;
+                }
+                let idle = std::mem::take(&mut inner.free);
+                inner.capacity -= idle.len();
+                // The closed document's demand is no measure of the next one's.
+                inner.peak = inner.in_use();
+                tracing::debug!(
+                    format = ?format,
+                    released = idle.len(),
+                    capacity = inner.capacity,
+                    "released every idle texture",
+                );
+                idle
+            };
+            for slot in idle {
                 slot.tex.destroy();
             }
-            inner.capacity -= released;
-            // The closed document's demand is no measure of the next one's.
-            inner.peak = inner.in_use();
-            tracing::debug!(
-                format = ?format,
-                released,
-                capacity = inner.capacity,
-                "released every idle texture",
-            );
         }
     }
 

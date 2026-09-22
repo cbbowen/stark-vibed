@@ -309,6 +309,8 @@ impl ScratchPool {
             piece_held: Vec::new(),
             piece_open: false,
             since_flush: 0,
+            #[cfg(debug_assertions)]
+            _open: open::Open::new(),
         }
     }
 
@@ -487,6 +489,55 @@ pub(crate) struct SubmitScope {
     /// Tiles recorded since the last submit, against [`FLUSH_TILES`] — the cadence
     /// [`tile_done`](Self::tile_done) counts and nothing else uses.
     since_flush: usize,
+    #[cfg(debug_assertions)]
+    _open: open::Open,
+}
+
+/// The scopes open on this thread, counted in a debug build — what
+/// [`TilePool::release_idle`](crate::gpu::tile::TilePool::release_idle) asserts is
+/// zero, since a free-list texture may be named by an open scope's unsubmitted
+/// encoder.
+///
+/// Per thread, not per pool: a scope is `!Send`, and every engine sharing a pool runs
+/// on the thread that owns it, so a scope that could name this pool's textures is one
+/// on this thread. A count per device would also see unrelated engines, which one
+/// `cargo test` process runs side by side on one shared device.
+#[cfg(debug_assertions)]
+mod open {
+    use std::cell::Cell;
+
+    std::thread_local! {
+        static OPEN: Cell<usize> = const { Cell::new(0) };
+    }
+
+    /// One scope, counted open for as long as it lives — through a flush, and until
+    /// `finish` or an unwind drops it.
+    pub(super) struct Open(());
+
+    impl Open {
+        pub(super) fn new() -> Self {
+            OPEN.with(|n| n.set(n.get() + 1));
+            Self(())
+        }
+    }
+
+    impl Drop for Open {
+        fn drop(&mut self) {
+            // Cannot fail: a `const`-initialized `Cell` registers no destructor, so
+            // it is readable for the thread's whole life.
+            OPEN.with(|n| n.set(n.get() - 1));
+        }
+    }
+
+    pub(super) fn scopes() -> usize {
+        OPEN.with(Cell::get)
+    }
+}
+
+/// [`SubmitScope`]s open on this thread (debug builds only).
+#[cfg(debug_assertions)]
+pub(crate) fn open_scopes() -> usize {
+    open::scopes()
 }
 
 fn fresh_encoder(ctx: &GpuContext, label: &'static str) -> wgpu::CommandEncoder {
@@ -748,6 +799,38 @@ mod tests {
         // And it really did serve them all — a scope that somehow released nothing
         // would also fail the bound above by holding every one.
         assert!(idle > 0, "nothing was ever handed back to the pool");
+    }
+
+    /// **The tile pool's idle textures go back to the driver only between
+    /// operations**: a debug build refuses `release_idle` while a scope on this thread
+    /// is open, since its unsubmitted encoder may name a texture on the free list —
+    /// and the refusal comes before anything is taken off it.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn idle_tiles_are_not_released_while_a_scope_is_open() {
+        let Some(ctx) = context_or_skip() else { return };
+        let pool = TilePool::new(ctx.clone(), [COLOR]);
+        drop(pool.acquire_tex(COLOR, AllocSource::Unknown));
+        assert_eq!(pool.free_count(COLOR), 1);
+
+        let scope = ScratchPool::default().scope(&ctx, "stark release test");
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            pool.release_idle();
+        }));
+        assert!(refused.is_err(), "released idle textures with a scope open");
+        assert_eq!(
+            pool.free_count(COLOR),
+            1,
+            "the refused release took a texture"
+        );
+
+        scope.finish();
+        pool.release_idle();
+        assert_eq!(
+            pool.free_count(COLOR),
+            0,
+            "a closed scope still blocks the release"
+        );
     }
 
     /// A scope that recorded nothing submits nothing — an operation whose every tile
