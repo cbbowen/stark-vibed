@@ -2,7 +2,7 @@
 //! finely a flattened edge inside a taper is cut so a straight radius ramp
 //! ([`Sweep::radius_ramp`](super::Sweep::radius_ramp)) tracks the curve it stands for.
 //!
-//! [`generate_segments_in`](super::generate_segments_in) asks [`Taper`] for a factor
+//! [`SegmentBuilder`](super::SegmentBuilder) asks [`Taper`] for a factor
 //! and a piece count, and that is the whole interface — nothing here reads a rate or a
 //! sweep.
 

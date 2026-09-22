@@ -7,8 +7,13 @@
 //! downstream — [`region`](super::region), [`dynamics`](super::dynamics), the sweep
 //! shader's instances — reads these types and never the record.
 
-use stark_model::document::{BrushParams, OrientationSource, PenState, StrokeRecord};
+use stark_model::document::{
+    BrushEffect, BrushParams, EraseEffect, LiquifyEffect, OrientationSource, PaintEffect, PenState,
+    StrokeRecord, WetEffect,
+};
 use stark_model::geom::Vec2;
+
+use crate::path::IntermediateSample;
 
 use super::StrokeSpans;
 use super::budget::lambda;
@@ -81,7 +86,7 @@ pub(super) struct Sweep {
     /// cut.
     ///
     /// **`|ramp| < 2` structurally**, so the tip in force is positive everywhere
-    /// without a clamp: the ends are floored at `0.5` by [`generate_segments_in`], and
+    /// without a clamp: the ends are floored at `0.5` by [`SegmentBuilder::tip`], and
     /// `|r₁ − r₀| < r₁ + r₀` for any two positive radii.
     ///
     /// Relative rather than absolute (px) because the tip and the frame the sweep is
@@ -293,18 +298,43 @@ pub(super) use stark_shaders::mirror::stamp::SegmentInstance;
 // [`MAX_TIP_TURN`](super::MAX_TIP_TURN)) — so the geometry the flattener priced is the
 // geometry that gets swept.
 
+/// The pen's raw attributes at one point of a flattened edge.
+///
+/// Both axes are already clamped to what a pen can report, because the fitter clamps
+/// the *curve* and not just the control polygon (`PathFitter::path`).
+#[derive(Clone, Copy)]
+struct PenSample {
+    pressure: f32,
+    tilt: Vec2,
+}
+
+impl PenSample {
+    /// The pen a fraction `u` of the way along the flattened edge `a → c`, linearly —
+    /// the interpolation the *flattener* priced (`FlattenTolerance::attribute`).
+    fn along(a: &IntermediateSample, c: &IntermediateSample, u: f32) -> Self {
+        Self {
+            pressure: a.pressure + (c.pressure - a.pressure) * u,
+            tilt: a.tilt + (c.tilt - a.tilt) * u,
+        }
+    }
+
+    /// The pen as the modulations read it. `Modulation::factor` clamps anyway.
+    fn state(self) -> PenState {
+        PenState {
+            pressure: self.pressure,
+            tilt: self.tilt.length(),
+        }
+    }
+}
+
 /// Where the pen was, at the point a segment samples it.
 ///
 /// Attributes are constant across a swept segment, so they are taken at its
 /// **midpoint** rather than its start — with adaptive flattening a segment can be
 /// long, and start-sampling would lag every ramp by half a segment.
-///
-/// Both axes are already clamped to what a pen can report, because the fitter clamps
-/// the *curve* and not just the control polygon (`PathFitter::path`).
 struct At {
     pos: Vec2,
-    pressure: f32,
-    tilt: Vec2,
+    pen: PenSample,
 }
 
 /// The arc one segment travels along — the path half of a [`Sweep`], before the tip is
@@ -332,8 +362,7 @@ struct Track {
 /// alone, so the shared end of two adjacent segments resolves to the same number on
 /// both sides.
 struct Ends {
-    /// The tip in canvas px at the start and at the end, the taper's own factor
-    /// at each already folded in — which only the caller knows.
+    /// The tip in canvas px at the start and at the end ([`SegmentBuilder::tip`]).
     tip: (f32, f32),
     /// The pen as the modulations read it at those same two points.
     pen: (PenState, PenState),
@@ -341,7 +370,7 @@ struct Ends {
 
 /// The effect's rates at one pen reading — what [`Paint`] carries, before the two ends
 /// are averaged and ramped.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Rates {
     add: f32,
     lambda_lift: f32,
@@ -360,146 +389,128 @@ impl Rates {
     };
 }
 
-/// Build swept segments from the fitted control points (§6.2): flatten the curve
-/// adaptively, then make each polyline edge a segment. This is where the brush's fixed
-/// numbers become the per-segment ones the shaders read — the radius follows the size
-/// mapping and the stroke's start/end tapers, each paint rate follows whatever
-/// [`BrushModulations`](stark_model::document::BrushModulations) points at it (§6.2).
+/// The brush's effect, resolved to its variant once per range: what its own pen
+/// mappings make of the ceiling and of the rates at one pen reading (§6.2).
+///
+/// A fact about the *brush*, so every segment of every stroke answers it the same way
+/// (`dynamics_setup`'s purity argument).
+#[derive(Clone, Copy)]
+enum EffectReader<'a> {
+    Paint(&'a PaintEffect),
+    Wet(&'a WetEffect),
+    Erase(&'a EraseEffect),
+    Liquify(&'a LiquifyEffect),
+}
+
+impl<'a> EffectReader<'a> {
+    fn of(effect: &'a BrushEffect) -> Self {
+        match effect {
+            BrushEffect::Paint(p) => Self::Paint(p),
+            BrushEffect::Wet(w) => Self::Wet(w),
+            BrushEffect::Erase(e) => Self::Erase(e),
+            BrushEffect::Liquify(l) => Self::Liquify(l),
+        }
+    }
+
+    /// The ceiling's factor at `pen` (§6.2). Read at a segment's two **ends** rather
+    /// than at its midpoint, where every rate is read: a rate is a per-segment quantity
+    /// by nature — `add` scales what this segment lays — where a ceiling caps what the
+    /// whole stroke shows, so held constant across a segment it steps at every cut and
+    /// the mark comes out in bands ([`Paint::opacity_ramp`]).
+    fn ceiling(self, pen: PenState) -> f32 {
+        match self {
+            Self::Paint(p) => p.modulation.opacity(pen),
+            Self::Wet(w) => w.modulation.opacity(pen),
+            Self::Erase(e) => e.modulation.opacity(pen),
+            // A warp has no ceiling for the pen to drive (`BrushEffect::opacity`).
+            Self::Liquify(_) => 1.0,
+        }
+    }
+
+    /// The rates at `pen`, at the effect's own pen mappings: paint's `add` is its flow,
+    /// an eraser's the rate its bite builds at (§6.12), a warp's only rate its follow
+    /// (§6.13), and only a wet brush carries fluxes.
+    ///
+    /// A wet brush's flow scales everything the tool does (§6.2). What is linear in
+    /// exposure takes the factor outright — the `add` mint, and the `bleed` diffusivity
+    /// that `bleed_stencil` still clamps at its own calibrated top, so a hot flow
+    /// saturates the blur rather than out-reaching the stencil. The vertical fractions
+    /// cannot be scaled before their `ln`, so they become λs first and the factor lands
+    /// on the exponent: one pass at flow f trades exactly what f passes at flow 1 would.
+    fn rates(self, pen: PenState) -> Rates {
+        match self {
+            Self::Paint(p) => Rates {
+                add: p.flow * p.modulation.flow(pen),
+                ..Rates::ZERO
+            },
+            Self::Wet(w) => {
+                let flow = w.flow * w.modulation.flow(pen);
+                Rates {
+                    add: w.dynamics.add * w.modulation.add(pen) * flow,
+                    lambda_lift: flow * lambda(w.dynamics.lift * w.modulation.lift(pen)),
+                    lambda_deposit: flow * lambda(w.dynamics.deposit * w.modulation.deposit(pen)),
+                    bleed: w.dynamics.bleed * w.modulation.bleed(pen) * flow,
+                    drag: 0.0,
+                }
+            }
+            Self::Erase(e) => Rates {
+                add: e.flow * e.modulation.flow(pen),
+                ..Rates::ZERO
+            },
+            Self::Liquify(l) => Rates {
+                drag: l.strength * l.modulation.strength(pen),
+                ..Rates::ZERO
+            },
+        }
+    }
+}
+
+/// What turns a stretch of the flattened path into a [`Segment`]: the brush, its
+/// tapers as this range resolves them, and its effect.
+///
 /// **It is the only place a modulation is resolved**, and both render paths flatten
 /// through here, so a live tail and the commit that replaces it cannot read the pen
 /// differently.
-///
-/// **The `drain` falloff is deliberately not here.** A per-segment factor makes the
-/// paint laid depend on where the segment boundaries happened to fall, which is the one
-/// thing §6.2 works to keep out of the deposit. It is a function of arc length alone
-/// and every shader knows the arc length of the fragment it is shading (`dist` plus the
-/// fragment's own offset along the travel), so evaluated there it drops out of the sum
-/// entirely — the stroke lays `a(arc) · Στ`, and `Στ` is already independent of the cut
-/// — and the flattener need not buy accuracy for it with segments (see
-/// [`flatten_budget`](super::budget::flatten_budget)).
-///
-/// Returns the range's segments plus the arc length at its end — measured on the
-/// emitted polyline rather than recomputed, so the range that resumes from it starts
-/// on the exact accumulator these segments were built with.
-///
-/// The trailing taper is the one thing measured against the stroke's **whole** length,
-/// which only a range reaching its final span knows; a range that stops short takes the
-/// leading taper alone ([`Taper::resolve`]), which is sound rather than approximate
-/// because of [`safe_frozen`](super::safe_frozen).
-///
-/// A stroke deposits exactly its own travel — a swept deposit is a definite integral,
-/// so a press that has not moved lays nothing and nothing pads a minimum: the hover's
-/// mark previews what a press would lay before it is made (§18.1.10), and a release
-/// that cannot deposit commits nothing (`Session::end_stroke`).
-///
-/// Travel begins at the record's **marker** ([`StrokeRecord::start`]): the curve may
-/// extend back through the run-up — motion from before the press, fitted in so the
-/// entry's direction and curvature are measured rather than guessed (§6.2) — and
-/// [`flatten_spans_from`](crate::path::flatten_spans_from) leaves everything before the
-/// marker out. So `dist` reads 0 at the marker, and the tapers, the `drain` falloff and
-/// the dynamics loop all measure the stroke from where the press happened.
-pub(super) fn generate_segments_in(
-    rec: &StrokeRecord,
-    tol: crate::path::FlattenTolerance,
-    spans: StrokeSpans,
-) -> (Vec<Segment>, f32) {
-    let b = &rec.brush;
-    let dist0 = spans.dist;
-    let reaches_end = spans.range.end >= crate::path::span_count(rec.path.len());
-    let pts = crate::path::flatten_spans_from(&rec.path, rec.start, spans.range, dist0, tol);
-    let end_dist = pts.last().map_or(dist0, |p| p.dist);
-    // One segment per flattened edge at least; the taper only ever cuts an edge into
-    // more. Reserved rather than grown from nothing because a commit's stroke runs to
-    // thousands of these on the interactive path.
-    let mut segs = Vec::with_capacity(pts.len().saturating_sub(1));
-    if pts.is_empty() {
-        return (segs, end_dist);
+struct SegmentBuilder<'a> {
+    b: &'a BrushParams,
+    taper: Taper,
+    effect: EffectReader<'a>,
+}
+
+impl<'a> SegmentBuilder<'a> {
+    /// `total` is the stroke's whole length, which only a range reaching its final span
+    /// knows ([`Taper::resolve`]).
+    fn new(b: &'a BrushParams, total: Option<f32>) -> Self {
+        Self {
+            b,
+            taper: Taper::resolve(b, total),
+            effect: EffectReader::of(&b.effect),
+        }
     }
-    let taper = Taper::resolve(b, reaches_end.then_some(end_dist));
 
-    // The tip in force for one pen reading and one taper factor, in canvas px. The
-    // floor keeps a tapered tip a hairline at its very point rather than a degenerate
-    // zero-width sweep — which would divide by zero in the dynamics loop's reservoir
-    // cadence, and would let a segment's ramp reach the `|ramp| = 2` its positivity
-    // rests on.
-    //
-    // `tap` is the taper's radius factor, which only the caller can know: it is
-    // measured against the *whole* stroke and a partial range does not have one.
-    let tip_at = |pen: PenState, tap: f32| (b.size * b.modulation.size(pen) * tap).max(0.5);
+    /// The tip in force for one pen reading `dist` px along the stroke, in canvas px.
+    /// The floor keeps a tapered tip a hairline at its very point rather than a
+    /// degenerate zero-width sweep — which would divide by zero in the dynamics loop's
+    /// reservoir cadence, and would let a segment's ramp reach the `|ramp| = 2` its
+    /// positivity rests on.
+    fn tip(&self, pen: PenState, dist: f32) -> f32 {
+        let b = self.b;
+        (b.size * b.modulation.size(pen) * self.taper.factor(dist)).max(0.5)
+    }
 
-    // The ceiling's factor for one pen reading (§6.2). Read at the segment's two
-    // **ends** rather than at its midpoint, where every rate below is read: a rate is a
-    // per-segment quantity by nature — `add` scales what this segment lays — where a
-    // ceiling caps what the whole stroke shows, so held constant across a segment it
-    // steps at every cut and the mark comes out in bands ([`Paint::opacity_ramp`]).
-    //
-    // The effect is a fact about the *brush*, so it is resolved to its variant once
-    // here and once for `rates` below, not per pen sample. `move`, because a borrow of
-    // the arm's binding would not outlive the match.
-    let ceiling_at: &dyn Fn(PenState) -> f32 = match &b.effect {
-        stark_model::document::BrushEffect::Paint(p) => {
-            &move |pen: PenState| p.modulation.opacity(pen)
-        }
-        stark_model::document::BrushEffect::Wet(w) => {
-            &move |pen: PenState| w.modulation.opacity(pen)
-        }
-        stark_model::document::BrushEffect::Erase(e) => {
-            &move |pen: PenState| e.modulation.opacity(pen)
-        }
-        // A warp has no ceiling for the pen to drive (`BrushEffect::opacity`).
-        stark_model::document::BrushEffect::Liquify(_) => &|_: PenState| 1.0,
-    };
-
-    // The rates are the effect's own, at its own pen mappings: paint's `add` is its
-    // flow, an eraser's the rate its bite builds at (§6.12), and only a wet brush
-    // carries fluxes — a fact about the *brush*, so every segment of every stroke
-    // answers it the same way (`dynamics_setup`'s purity argument).
-    //
-    // A wet brush's flow scales everything the tool does (§6.2). What is linear in
-    // exposure takes the factor outright — the `add` mint, and the `bleed` diffusivity
-    // that `bleed_stencil` still clamps at its own calibrated top, so a hot flow
-    // saturates the blur rather than out-reaching the stencil. The vertical fractions
-    // cannot be scaled before their `ln`, so they become λs first and the factor lands
-    // on the exponent: one pass at flow f trades exactly what f passes at flow 1 would.
-    let rates: &dyn Fn(PenState) -> Rates = match &b.effect {
-        stark_model::document::BrushEffect::Paint(p) => &move |pen: PenState| Rates {
-            add: p.flow * p.modulation.flow(pen),
-            ..Rates::ZERO
-        },
-        stark_model::document::BrushEffect::Wet(w) => &move |pen: PenState| {
-            let flow = w.flow * w.modulation.flow(pen);
-            Rates {
-                add: w.dynamics.add * w.modulation.add(pen) * flow,
-                lambda_lift: flow * lambda(w.dynamics.lift * w.modulation.lift(pen)),
-                lambda_deposit: flow * lambda(w.dynamics.deposit * w.modulation.deposit(pen)),
-                bleed: w.dynamics.bleed * w.modulation.bleed(pen) * flow,
-                drag: 0.0,
-            }
-        },
-        stark_model::document::BrushEffect::Erase(e) => &move |pen: PenState| Rates {
-            add: e.flow * e.modulation.flow(pen),
-            ..Rates::ZERO
-        },
-        stark_model::document::BrushEffect::Liquify(l) => &move |pen: PenState| Rates {
-            drag: l.strength * l.modulation.strength(pen),
-            ..Rates::ZERO
-        },
-    };
-
-    // `ends` is what is in force at the segment's two ends — the tip
-    // ([`Sweep::radius_ramp`]) and the pen the ceiling is read from
-    // ([`Paint::opacity_ramp`]). Everything else is sampled at the midpoint, `at`,
-    // whose error is second order where either end's would be first.
-    let make = |at: At, track: Track, ends: Ends| {
-        // The pen as the modulations read it, at this segment's own attributes
-        // (§6.2). `Modulation::factor` clamps anyway.
-        let pen = PenState {
-            pressure: at.pressure,
-            tilt: at.tilt.length(),
-        };
+    /// One segment: the pen sampled at its midpoint `at`, the arc it travels, and what
+    /// is in force at its two `ends` — the tip ([`Sweep::radius_ramp`]) and the pen the
+    /// ceiling is read from ([`Paint::opacity_ramp`]). The midpoint's error is second
+    /// order where either end's would be first.
+    fn segment(&self, at: At, track: Track, ends: Ends) -> Segment {
+        let b = self.b;
+        let pen = at.pen.state();
         let m = &b.modulation;
         let (r0, r1) = ends.tip;
-        let (o0, o1) = (ceiling_at(ends.pen.0), ceiling_at(ends.pen.1));
+        let (o0, o1) = (
+            self.effect.ceiling(ends.pen.0),
+            self.effect.ceiling(ends.pen.1),
+        );
         // The mean rather than the midpoint *sample*, which is what makes the ramp
         // exact at both ends: `radius·(1 ± ramp/2)` is then `r1` and `r0` themselves,
         // so two adjacent segments agree on the tip at their shared knot to the bit and
@@ -510,7 +521,7 @@ pub(super) fn generate_segments_in(
         // The facing axis this segment's stretch runs along is the one its orientation
         // already names, so the two are solved together and the volume slice the
         // shaders read is the sum (`Stretch`).
-        let orient = orientation_turns(b.orientation, track.mid_dir, at.tilt);
+        let orient = orientation_turns(b.orientation, track.mid_dir, at.pen.tilt);
         let elong = BrushParams::elongation(b.stretch * m.stretch(pen));
         let stretch = Stretch::solve(elong, orient);
         let mut sweep = Sweep {
@@ -548,9 +559,9 @@ pub(super) fn generate_segments_in(
         // vary along (`dynamics.wesl`), and what holds their step down is the
         // flattener's budget against
         // [`BrushParams::max_slope`](stark_model::document::BrushParams::max_slope).
-        let mid = rates(pen);
-        let rate0 = rates(ends.pen.0);
-        let rate1 = rates(ends.pen.1);
+        let mid = self.effect.rates(pen);
+        let rate0 = self.effect.rates(ends.pen.0);
+        let rate1 = self.effect.rates(ends.pen.1);
         let give0 = b.tooth.give * m.tooth_give(ends.pen.0);
         let give1 = b.tooth.give * m.tooth_give(ends.pen.1);
         Segment {
@@ -572,10 +583,65 @@ pub(super) fn generate_segments_in(
                 opacity_ramp: o1 - o0,
             },
         }
-    };
+    }
+}
+
+/// Build swept segments from the fitted control points (§6.2): flatten the curve
+/// adaptively, then make each polyline edge a segment ([`SegmentBuilder`]). This is
+/// where the brush's fixed numbers become the per-segment ones the shaders read — the
+/// radius follows the size mapping and the stroke's start/end tapers, each paint rate
+/// follows whatever [`BrushModulations`](stark_model::document::BrushModulations)
+/// points at it (§6.2).
+///
+/// **The `drain` falloff is deliberately not here.** A per-segment factor makes the
+/// paint laid depend on where the segment boundaries happened to fall, which is the one
+/// thing §6.2 works to keep out of the deposit. It is a function of arc length alone
+/// and every shader knows the arc length of the fragment it is shading (`dist` plus the
+/// fragment's own offset along the travel), so evaluated there it drops out of the sum
+/// entirely — the stroke lays `a(arc) · Στ`, and `Στ` is already independent of the cut
+/// — and the flattener need not buy accuracy for it with segments (see
+/// [`flatten_budget`](super::budget::flatten_budget)).
+///
+/// Returns the range's segments plus the arc length at its end — measured on the
+/// emitted polyline rather than recomputed, so the range that resumes from it starts
+/// on the exact accumulator these segments were built with.
+///
+/// The trailing taper is the one thing measured against the stroke's **whole** length,
+/// which only a range reaching its final span knows; a range that stops short takes the
+/// leading taper alone ([`Taper::resolve`]), which is sound rather than approximate
+/// because of [`safe_frozen`](super::safe_frozen).
+///
+/// A stroke deposits exactly its own travel — a swept deposit is a definite integral,
+/// so a press that has not moved lays nothing and nothing pads a minimum: the hover's
+/// mark previews what a press would lay before it is made (§18.1.10), and a release
+/// that cannot deposit commits nothing (`Session::end_stroke`).
+///
+/// Travel begins at the record's **marker** ([`StrokeRecord::start`]): the curve may
+/// extend back through the run-up — motion from before the press, fitted in so the
+/// entry's direction and curvature are measured rather than guessed (§6.2) — and
+/// [`flatten_spans_from`](crate::path::flatten_spans_from) leaves everything before the
+/// marker out. So `dist` reads 0 at the marker, and the tapers, the `drain` falloff and
+/// the dynamics loop all measure the stroke from where the press happened.
+pub(super) fn generate_segments_in(
+    rec: &StrokeRecord,
+    tol: crate::path::FlattenTolerance,
+    spans: StrokeSpans,
+) -> (Vec<Segment>, f32) {
+    let dist0 = spans.dist;
+    let reaches_end = spans.range.end >= crate::path::span_count(rec.path.len());
+    let pts = crate::path::flatten_spans_from(&rec.path, rec.start, spans.range, dist0, tol);
+    let end_dist = pts.last().map_or(dist0, |p| p.dist);
+    // One segment per flattened edge at least; the taper only ever cuts an edge into
+    // more. Reserved rather than grown from nothing because a commit's stroke runs to
+    // thousands of these on the interactive path.
+    let mut segs = Vec::with_capacity(pts.len().saturating_sub(1));
+    if pts.is_empty() {
+        return (segs, end_dist);
+    }
+    let builder = SegmentBuilder::new(&rec.brush, reaches_end.then_some(end_dist));
 
     for w in pts.windows(2) {
-        let (a, c) = (w[0], w[1]);
+        let (a, c) = (&w[0], &w[1]);
         let v = c.pos - a.pos;
         let chord = v.length();
         if chord < 1e-5 {
@@ -595,49 +661,29 @@ pub(super) fn generate_segments_in(
         // enough that the radius steps smoothly. The pieces are sub-*arcs*: they
         // inherit the edge's curvature and are stepped along it, so cutting an edge up
         // still traces exactly the same centreline.
-        let n = taper.pieces(a.dist, len);
+        let n = builder.taper.pieces(a.dist, len);
         let step = len / n as f32;
-        // The pen, linearly across the flattened edge — the interpolation the
-        // *flattener* priced (`FlattenTolerance::attribute`), read here at whichever
-        // fraction of the edge is wanted.
-        let pen_at = |u: f32| {
-            (
-                a.pressure + (c.pressure - a.pressure) * u,
-                a.tilt + (c.tilt - a.tilt) * u,
-            )
-        };
-        // …as the modulations read it. Both quantities that ramp across a segment
-        // are functions of this alone, so they are pinned to one sample per end
-        // rather than each taking its own.
-        let pen_state = |(pressure, tilt): (f32, Vec2)| PenState {
-            pressure,
-            tilt: Vec2::length(tilt),
-        };
         for k in 0..n {
             let (u0, u1) = (k as f32 / n as f32, (k + 1) as f32 / n as f32);
-            let (pressure, tilt) = pen_at((u0 + u1) * 0.5);
             let along = step * k as f32;
             let dist = a.dist + along;
             let (pos, tan) = crate::path::arc_at(a.pos, dir, kappa, along);
             let (_, mid_tan) = crate::path::arc_at(a.pos, dir, kappa, along + step * 0.5);
-            // The tip at the piece's two ends, from the pen and the taper *there*.
-            // Both are functions of arc length alone, so the shared end of two adjacent
-            // pieces — and of two adjacent flattened edges, where `u1` of one is `u0`
-            // of the next at the same `dist` — is the same expression evaluated twice,
-            // which is what makes the outline continuous ([`Sweep::radius_ramp`]).
-            let (pen0, pen1) = (pen_state(pen_at(u0)), pen_state(pen_at(u1)));
+            // The tip and the pen at the piece's two ends. Both are functions of arc
+            // length alone, so the shared end of two adjacent pieces — and of two
+            // adjacent flattened edges, where `u1` of one is `u0` of the next at the same
+            // `dist` — is the same expression evaluated twice, which is what makes the
+            // outline continuous ([`Sweep::radius_ramp`]).
+            let pen0 = PenSample::along(a, c, u0).state();
+            let pen1 = PenSample::along(a, c, u1).state();
             let ends = Ends {
-                tip: (
-                    tip_at(pen0, taper.factor(dist)),
-                    tip_at(pen1, taper.factor(dist + step)),
-                ),
+                tip: (builder.tip(pen0, dist), builder.tip(pen1, dist + step)),
                 pen: (pen0, pen1),
             };
-            segs.push(make(
+            segs.push(builder.segment(
                 At {
                     pos,
-                    pressure,
-                    tilt,
+                    pen: PenSample::along(a, c, (u0 + u1) * 0.5),
                 },
                 Track {
                     dir: tan,
@@ -1331,6 +1377,96 @@ mod tests {
         );
         let p = whole_segments(&plain)[0].paint;
         assert_eq!((p.add, p.lambda_lift, p.lambda_deposit), (0.6, 0.0, 0.0));
+    }
+
+    /// Each effect answers from its own mappings and no other's (§6.2): paint and erase
+    /// carry `add` alone, only a wet brush carries the exchange rates — its flow on the
+    /// λ after the `ln` — only a warp the drag, and a warp's ceiling is 1 whatever the
+    /// pen does.
+    #[test]
+    fn each_effect_reads_its_own_rates_and_ceiling() {
+        use stark_model::document::{BrushDynamics, ModSource, Modulation};
+        let pressed = Some(Modulation::linear(ModSource::Pressure));
+        let light = PenState {
+            pressure: 0.25,
+            tilt: 0.0,
+        };
+        let full = PenState {
+            pressure: 1.0,
+            tilt: 0.0,
+        };
+
+        let mut paint = PaintEffect {
+            flow: 0.8,
+            ..PaintEffect::default()
+        };
+        paint.modulation.flow = pressed;
+        paint.modulation.opacity = pressed;
+        let reader = EffectReader::Paint(&paint);
+        assert_eq!(
+            reader.rates(light),
+            Rates {
+                add: 0.8 * 0.25,
+                ..Rates::ZERO
+            },
+        );
+        assert_eq!((reader.ceiling(light), reader.ceiling(full)), (0.25, 1.0));
+
+        let mut erase = EraseEffect {
+            flow: 0.5,
+            ..EraseEffect::default()
+        };
+        erase.modulation.opacity = pressed;
+        let reader = EffectReader::Erase(&erase);
+        assert_eq!(
+            reader.rates(light),
+            Rates {
+                add: 0.5,
+                ..Rates::ZERO
+            },
+            "an unmapped flow ignores the pen",
+        );
+        assert_eq!(reader.ceiling(light), 0.25);
+
+        let mut wet = WetEffect {
+            flow: 2.0,
+            dynamics: BrushDynamics {
+                add: 0.5,
+                lift: 0.6,
+                deposit: 0.4,
+                bleed: 0.2,
+                ..BrushDynamics::default()
+            },
+            ..WetEffect::default()
+        };
+        wet.modulation.lift = pressed;
+        let reader = EffectReader::Wet(&wet);
+        assert_eq!(
+            reader.rates(light),
+            Rates {
+                add: 0.5 * 2.0,
+                lambda_lift: 2.0 * lambda(0.6 * 0.25),
+                lambda_deposit: 2.0 * lambda(0.4),
+                bleed: 0.2 * 2.0,
+                drag: 0.0,
+            },
+        );
+        assert_eq!(reader.ceiling(light), 1.0, "an unmapped ceiling is neutral");
+
+        let mut liquify = LiquifyEffect {
+            strength: 0.9,
+            ..LiquifyEffect::default()
+        };
+        liquify.modulation.strength = pressed;
+        let reader = EffectReader::Liquify(&liquify);
+        assert_eq!(
+            reader.rates(light),
+            Rates {
+                drag: 0.9 * 0.25,
+                ..Rates::ZERO
+            },
+        );
+        assert_eq!(reader.ceiling(light), 1.0, "a warp has no ceiling to drive");
     }
 
     /// The exchange budget means the same thing to every brush
