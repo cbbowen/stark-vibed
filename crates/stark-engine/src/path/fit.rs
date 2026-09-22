@@ -1054,8 +1054,8 @@ const MAX_WINDOW_SAMPLES: usize = 64;
 /// window against the frozen prefix, and the trailing one is where the pen is now,
 /// which is the report the curve is pinned to.
 ///
-/// Deterministic, and a pure function of the accepted reports — so a replay, a peer
-/// and a golden all decimate identically (§1).
+/// A pure function of the accepted reports, so the as-finished preview and the commit
+/// decimate identically (§1.3).
 fn window_indices(pts: &[Accepted], lo: usize, out: &mut Vec<usize>) {
     out.clear();
     let n = pts.len();
@@ -1129,7 +1129,7 @@ fn grow_rows<const E: usize>(
 }
 
 /// Fit a whole sample sequence in one call at [`DEFAULT_TOLERANCE`] — the batch form
-/// of [`PathFitter`], used by replay and tests. Identical output to feeding the same
+/// of [`PathFitter`], for tests and benches. Identical output to feeding the same
 /// samples one at a time and finishing.
 pub fn fit(samples: &[InputSample]) -> Vec<ControlPoint> {
     fit_with_tolerance(samples.iter().copied(), DEFAULT_TOLERANCE)
@@ -1246,12 +1246,12 @@ mod tests {
     /// is the one its finite reports describe, exactly as if the bad report had never
     /// arrived.
     ///
-    /// The second half is the sharper claim: merely not panicking would be satisfied by
-    /// a fitter that swallowed the whole stroke, and what has to hold is that one bad
-    /// report costs one report. The panic it rules out is three subsystems downstream —
-    /// `arc` accumulates the step to the bad sample, every curve parameter derives from
-    /// `arc`, so `solve_window`'s normal equations go NaN and are singular at every
-    /// ridge, which its solve reports with `unreachable!`.
+    /// The second half is the sharper claim: a fitter that swallowed the whole stroke
+    /// would also stay finite, and what has to hold is that one bad report costs one
+    /// report. Fitted, it would cost the stroke: `arc` accumulates the step to the bad
+    /// sample, every curve parameter derives from `arc`, so `solve_window`'s normal
+    /// equations go NaN, no ridge factors them, and every later solve leaves the
+    /// polygon where it was.
     ///
     /// **Finite is not admissible**, which is why two of the poisons below are finite:
     /// a position a whole `f32` range from its neighbour makes `arc` accumulate an
@@ -1495,21 +1495,24 @@ mod tests {
         }
     }
 
+    /// A dead-straight stroke gains control points at the spacing floor's rate
+    /// ([`KNOT_SPACING`]), which is what lets freezing advance on a stroke the fit is
+    /// already perfect on, and no faster: placed through the curve's own arc profile
+    /// (`param_at`), exact input leaves no residual for a control point to buy down.
+    /// Measured at exactly the floor, 46 for these 400 reports.
     #[test]
     fn a_straight_stroke_stays_cheap_however_long_it_is() {
-        // The arc-length floor is what lets freezing advance on a stroke the fit is
-        // already perfect on, so a straight line does cost control points — but at
-        // the floor's rate, not the refinement's.
-        let long: Vec<InputSample> = (0..400).map(|i| sample(i as f32 * 7.5, 0.0)).collect();
+        let step = 7.5;
+        let long: Vec<InputSample> = (0..400).map(|i| sample(i as f32 * step, 0.0)).collect();
         let fitted = fit(&long);
-        // **Known weakness**: a dead-straight stroke should cost a handful of control
-        // points and costs ~400, one per sample. The growth rule is answering honestly
-        // — the arc-length guess is not how a clamped B-spline is parameterized, so
-        // even exact input leaves a residual a control point does reduce. The fix is a
-        // correct arc-to-parameter map, not a different price.
+        // The floor fires once the travel since the last growth *exceeds* the spacing —
+        // every `⌊spacing / step⌋ + 1` reports — on top of the two a curve starts with.
+        let every = (KNOT_SPACING * DEFAULT_TOLERANCE / step) as usize + 1;
+        let floor = (long.len() - 1) / every + 2;
         assert!(
-            fitted.len() <= long.len(),
-            "more control points than samples"
+            fitted.len() <= floor,
+            "{} control points, where the spacing floor alone buys {floor}",
+            fitted.len(),
         );
         assert!(
             fit_error(&long) < 0.5,

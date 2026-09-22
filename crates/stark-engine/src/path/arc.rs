@@ -29,6 +29,14 @@ const MIN_SAGITTA: f32 = 0.01;
 /// as.
 const MAX_HALF_TURN_SIN: f32 = 0.2;
 
+/// The widest turn `κ·s` [`arc_at`] is asked to walk, and so the domain its `detmath`
+/// series are measured over (`the_series_stay_within_their_measured_bounds`).
+///
+/// A whole edge [`fit_arc`] bent turns `2·asin(MAX_HALF_TURN_SIN)` ≈ 0.4027 at most,
+/// and a bleed firing walks back up to one quantum past its segment's start, a further
+/// `κ·r·BLEED_TRAVEL_QUANTUM ≤ MAX_TIP_TURN / 4` = 0.025: 0.4277, rounded up.
+const MAX_ARC_TURN: f32 = 0.428;
+
 /// Below this speed a curve's derivative names no tangent, and [`fit_arc`] sends the
 /// edge straight. Unsquared: far narrower than `flatten::turn`'s own stationary test
 /// (`STATIONARY_SPEED_SQ`), which declines below a speed of 1e-6 — so a derivative
@@ -124,11 +132,19 @@ pub(crate) fn arc_sagitta(curvature: f32, length: f32) -> f32 {
 /// `s` of arc length, and the unit tangent it is travelling along there. The straight
 /// case is the exact limit and is taken as one, so a `curvature == 0` edge is stepped
 /// by plain addition.
+///
+/// Defined for turns `|curvature · s| ≤` [`MAX_ARC_TURN`], the range its series are
+/// truncated for and measured over. Past it their error grows with the first term
+/// each drops, and nothing measures it.
 pub(crate) fn arc_at(start: Vec2, dir: Vec2, curvature: f32, s: f32) -> (Vec2, Vec2) {
     if curvature == 0.0 {
         return (start + dir * s, dir);
     }
     let turn = curvature * s;
+    debug_assert!(
+        turn.abs() <= MAX_ARC_TURN,
+        "an arc turning {turn} rad is past the {MAX_ARC_TURN} its series are measured over"
+    );
     let sn = sin_small(turn);
     let vs = versin_small(turn);
     let perp = dir.perp();
@@ -166,22 +182,22 @@ mod tests {
     use super::*;
 
     /// The three series against an **f64** reference, over the whole range their
-    /// callers reach: [`sin_small`] and [`versin_small`] over the widest turn [`arc_at`]
-    /// is asked for, [`asin_over_x`] over the half-turn sine [`fit_arc`] caps.
-    ///
-    /// The widest turn is an edge's whole turn, `2·asin(MAX_HALF_TURN_SIN)`, plus a bleed
-    /// firing's walk back one quantum past its segment's start: a quarter of the tip at
-    /// a curvature capped at a tenth of the tip's reciprocal (`BLEED_TRAVEL_QUANTUM`,
-    /// `MAX_TIP_TURN`), so 0.025.
+    /// callers reach: [`sin_small`] and [`versin_small`] over [`MAX_ARC_TURN`], the
+    /// widest turn [`arc_at`] admits, [`asin_over_x`] over the half-turn sine
+    /// [`fit_arc`] caps.
     ///
     /// The reference is f64 deliberately: held against the *f32* library functions this
     /// would measure their error and not the series'. The versine's is `2·sin²(x/2)`,
     /// which keeps the digits `1 − cos` cancels even in f64. The bounds are the worst
-    /// the series reach over every f32 in range (9.03e-8, 4.11e-7, 1.39e-7), not an
-    /// ulp: past `asin(0.2)` the versine's first dropped term reaches 3e-7 of it.
+    /// the series reach over every normal f32 in range (9.02e-8, 4.15e-7, 1.39e-7), not
+    /// an ulp: past `asin(0.2)` the versine's first dropped term reaches 3e-7 of it.
     #[test]
     fn the_series_stay_within_their_measured_bounds() {
-        let turn = 2.0 * f64::from(MAX_HALF_TURN_SIN).asin() + 0.025;
+        let turn = f64::from(MAX_ARC_TURN);
+        assert!(
+            2.0 * f64::from(MAX_HALF_TURN_SIN).asin() + 0.025 <= turn,
+            "MAX_ARC_TURN no longer covers an edge's whole turn and a bleed walk-back"
+        );
         let rel = |got: f32, want: f64| ((f64::from(got) - want) / want).abs();
         let (mut sin, mut versin, mut asin) = (0.0f64, 0.0f64, 0.0f64);
         const N: i32 = 400_000;

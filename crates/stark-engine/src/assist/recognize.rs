@@ -1,9 +1,10 @@
 //! **Recognition**: which shape, if any, a raw pointer trace is (§6.9).
 //!
-//! It declines freely — a false positive costs more than a miss — and deterministically,
-//! since replay depends on the same trace giving the same answer. A line that lands near
-//! an axis of a perspective guide the artist has up is turned onto it (§20.6), and a loop
-//! drawn on a plane becomes a circle in it (§20.7): this is where a guide is *read*.
+//! It declines freely — a false positive costs more than a miss. It runs before the
+//! record exists, which keeps the realized control points and never the trace, so
+//! nothing replays it (§6.9). A line that lands near an axis of a perspective guide the
+//! artist has up is turned onto it (§20.6), and a loop drawn on a plane becomes a
+//! circle in it (§20.7): this is where a guide is *read*.
 
 use super::{AssistShape, Frame, Winding};
 use crate::path::{cumulative_lengths, locate, polyline_length};
@@ -11,6 +12,8 @@ use stark_model::document::{AxisPencil, AxisPlane, Scaffold};
 use stark_model::geom::{Ellipse, Vec2, principal_axis};
 use std::f32::consts::TAU;
 
+/// Reports below this many are not a shape, whatever they look like: a click, a twitch
+/// or a flick has no trace to recognize, and would snap to noise.
 const MIN_SAMPLES: usize = 8;
 
 /// Smallest shape worth snapping, in input tolerances — roughly "the pointer has
@@ -118,9 +121,6 @@ const PARAM_BINS: usize = 32;
 /// which is the unit every bar here is quoted in. `guides` is what the grids on the
 /// screen offer: axes a line may be aimed along (§20.6) and planes a loop may be a
 /// circle on (§20.7). Pass an empty one and the answer is the hand's own shape.
-///
-/// Deterministic, declining included: replay depends on the same trace answering the
-/// same way.
 ///
 /// A closed trace is offered to the ellipse fit first and **falls through** to the line
 /// fit if it misses the bar, rather than being refused outright, so a rough rectangle

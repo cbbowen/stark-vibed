@@ -250,8 +250,9 @@ mod tests {
     use crate::path::test_support::sample;
 
     /// Feed a polyline through a tow, collecting every emission. At
-    /// [`DEFAULT_TOLERANCE`](crate::path::DEFAULT_TOLERANCE), which is what a
-    /// replay declares and the coarsest tolerance any of these ropes meets.
+    /// [`DEFAULT_TOLERANCE`](crate::path::DEFAULT_TOLERANCE), which is what
+    /// `Engine::replay_stroke` declares and the coarsest tolerance any of these ropes
+    /// meets.
     fn run(rope: f32, pts: &[Vec2]) -> (Tow, Vec<Vec2>) {
         let mut tow = Tow::new(
             rope,

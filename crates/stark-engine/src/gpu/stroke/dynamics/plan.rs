@@ -1524,7 +1524,9 @@ mod tests {
                     for &frac in &[0.0f32, 0.499, 0.5, 0.999] {
                         let start = Vec2::new(frac, -frac);
                         let mut s = seg(start, Vec2::new(1.0, 0.0), length, radius, 0.0);
-                        s.sweep.curvature = kappa;
+                        // No flattened edge turns further than `2·asin(0.2)` ≈ 0.40
+                        // (`path::fit_arc`), and `path::arc_at` is defined only near that.
+                        s.sweep.curvature = kappa.clamp(-0.4 / length, 0.4 / length);
                         let segments = [s];
                         // With the pen-up, whose square is built from the tip alone
                         // rather than from the swept box.
@@ -1646,7 +1648,8 @@ mod tests {
                         .iter()
                         .map(|s| {
                             let mut s = *s;
-                            s.sweep.curvature = kappa;
+                            // Held to a turn a flattened edge can take (`path::fit_arc`).
+                            s.sweep.curvature = kappa.min(0.4 / s.sweep.length);
                             s.sweep.start += Vec2::new(*shift, -*shift);
                             s
                         })

@@ -45,7 +45,8 @@ const MAX_LEGS: usize = 96;
 /// correctly-curved interior, which is also what makes a closed loop join without a notch.
 const SEAM_OVERLAP: usize = 2;
 
-/// Ceiling on a snapped path's control points. Nothing here needs to outgrow what the
+/// Ceiling on a snapped **line**'s control points. An ellipse is bounded by its legs
+/// instead, at `MAX_LEGS + 2·SEAM_OVERLAP + 1` = 101. Neither needs to outgrow what the
 /// fitter itself would spend on the same stroke.
 const MAX_KNOTS: usize = 96;
 

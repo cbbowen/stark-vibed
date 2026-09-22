@@ -190,7 +190,7 @@ Adaptive sampling has one hard prerequisite, easy to violate silently: **the
 deposit must not depend on how the path was cut into segments.** Anything a
 segment applies *per segment* rather than per fragment also caps segment length,
 which the renderer supplies as a bound rather than the fitter assuming one
-(`gpu::stroke::budget::flatten_tolerance`).
+(`gpu::stroke::budget::flatten_budget`).
 
 **Tapered ends.** `start_taper_length` / `end_taper_length` scale the tip down to
 a point over a run at each end, which is what turns an even-width digital line
@@ -424,7 +424,7 @@ The renderer cuts the path for its own purposes too, on the same argument. A
 region is a 1:1 copy of the canvas under the stroke, so a stroke crossing the
 document would want a region the size of the document; instead it is drawn in as
 many region-sized **pieces** as it takes, each compositing what the last wrote
-back (`gpu::stroke::segments::chunk_segments`). Length therefore costs a dynamics stroke
+back (`gpu::stroke::region::chunk_segments`). Length therefore costs a dynamics stroke
 pieces, not correctness — where it used to degrade past `MAX_REGION_DIM` to the
 plain swept deposit, which is not a coarser version of the same brush but a
 different one: the swept path only ever *adds* paint, so a brush whose purpose
@@ -476,8 +476,8 @@ in 1 GB ones. So the big region is paid only by the stroke that asks — around
 for that same brush drawn at 45°, where an axis-aligned box around a long diagonal
 tip is at its worst — transient, and freed per piece. `budget::max_tip_reach` is that ceiling and
 `budget::max_stretch` is it expressed in the units the editor's slider moves in;
-the frontend clamps every brush against them (`state::hold_the_tip_drawable`), so
-no brush the app can build degrades, and `TipTooLarge` is left for a record from a
+both frontends clamp every brush against them
+(`stark_ui::brush_config::BrushConfig::settle`), so no brush the app can build degrades, and `TipTooLarge` is left for a record from a
 peer or another build. Two properties keep that honest and are tested as such: the
 published cap is *exactly* the frontier `fit_len` refuses at — the same arithmetic
 inverted, not a second copy — and what the editor offers always draws.
@@ -932,7 +932,7 @@ composes exactly across overlapping segments. The shaders never learn it exists.
   handed `D` (in radius² per pass, the unit that makes the axis mean one look at
   every brush size) and **solves for the pair**: the reach that delivers this
   window's variance at a fixed well-conditioned blend, and the rate that lands the
-  window's nominal exposure on that blend (`stroke::budget::bleed_stencil`). The
+  window's nominal exposure on that blend (`stroke::dynamics::bleed::bleed_stencil`). The
   knob is then linear in `D` across its whole travel, and `σ = sqrt(2·D·τ)` —
   scrubbing keeps buying distance, as a blender does. Holding the blend near ½
   rather than at saturation is the other half of it: the stencil's worst-case
@@ -967,7 +967,7 @@ composes exactly across overlapping segments. The shaders never learn it exists.
   pen-up settles none of it: the axis has no reservoir, so a break of contact
   strands nothing.
   **It fires on dedicated slots at a travel cadence of its own, not on the painting
-  segments** (`BLEED_TRAVEL_QUANTUM`, `stroke::dynamics::bleed_fires`): one
+  segments** (`BLEED_TRAVEL_QUANTUM`, `stroke::dynamics::bleed::bleed_fires`): one
   quad per crossing of a quarter radius of *absolute arc*, whose sweep is exactly one
   quantum of path, bent along the crossing segment's own arc, and whose vertical
   rates and source are all zero — so its exposure is an ordinary, well-conditioned
@@ -1005,7 +1005,7 @@ composes exactly across overlapping segments. The shaders never learn it exists.
   wiggle lost **3.65%**, and the premultiplied latent walked down with the height,
   so a stroke that by every term of the model did nothing left a mark that was both
   thinner and darker than the paint it crossed. So the loop's stores now go through
-  `lib::store::f16_nearest`, which snaps a value onto the binary16 lattice before
+  `lib::store::f16_nearest4`, which snaps a value onto the binary16 lattice before
   handing it over: whichever way the backend converts, it converts exactly, an
   identity pass is an identity store on every adapter, and a real change rounds to
   nearest instead of down. That is structural rather than a rule each of the nine
@@ -1359,7 +1359,7 @@ returns `x` itself — so the default brush's radius is the exact product
 **A steep response is paid for in segments.** A segment sweeps at one value of
 everything, so the flattener's attribute budget — 2% of a pen unit — has to be 2%
 of the *parameter*, and a curve stretches the one into the other. So
-`flatten_tolerance` divides the budget by `BrushParams::max_slope`, the largest
+`flatten_budget` divides the budget by `BrushParams::max_slope`, the largest
 `|d factor / d input|` across the mapped targets, which is why the bias is
 clamped (`MIN_BIAS = 0.1`, so the slope tops out at 9) rather than left open. The
 unmodulated brush and every plain linear mapping come out at exactly 1 and

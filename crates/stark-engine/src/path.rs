@@ -23,8 +23,12 @@
 //! in position, tangent direction and pen attributes — which is why
 //! [`IntermediateSample`] carries the derivative rather than position alone.
 //!
-//! All math here is deterministic, preserving golden / replay / save-load
-//! equivalence.
+//! **Which side of the record decides what the math may use.** The fit, the arc-length
+//! map, the spline solve and the assist run *before* a record exists: the log keeps
+//! their control points, not their samples, so they only have to agree with themselves
+//! within one process (`preview == committed`, the goldens, the fingerprint). Flattening
+//! and the arc run *after* it, at every replay and on every peer, so they fall under
+//! §12.1's bit-agreement rule — which is why they use `detmath` and not libm.
 //!
 //! [`span_count`] and [`frozen_spans_for`] sit here rather than in one of the three
 //! submodules because they belong to none of them: a span count is a statement about
@@ -80,8 +84,8 @@ pub fn span_count(control_points: usize) -> usize {
 /// **Strictly fewer than [`span_count`]`(total)`, for every `frozen <= total`**, and
 /// something downstream depends on it: the stroke renderer captures cross-piece brush
 /// state only for a range that does *not* reach the end of the stroke
-/// (`gpu::stroke::Resume`), so a head range equal to the span count would stop
-/// carrying the brush forward and the tail would resume from a stale state. The bound
+/// (`gpu::stroke::incremental::Resume`), so a head range equal to the span count would
+/// stop carrying the brush forward and the tail would resume from a stale state. The bound
 /// holds because `frozen - 1 <= total - 1` and `span_count(total) = total + 1` for a
 /// curve. For `total < 2` there is no curve, `span_count` is 0, and no head range
 /// exists.

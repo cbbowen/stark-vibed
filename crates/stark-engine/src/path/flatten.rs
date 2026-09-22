@@ -55,7 +55,7 @@ pub struct FlattenTolerance {
     /// Max **arc** length of one segment (canvas px); `INFINITY` for "no opinion". The
     /// renderer sets this from quantities that vary with distance travelled but are
     /// applied per segment rather than per fragment — the `drain` falloff, the dynamics
-    /// loop's reservoir cadence (see `gpu::stroke::flatten_tolerance`).
+    /// loop's reservoir cadence (see `gpu::stroke::budget::flatten_budget`).
     ///
     /// The arc rather than the chord under it: that is the primitive the caller will
     /// sweep, and a cap on the chord under-prices the travel. Unlike the error bounds
@@ -66,7 +66,8 @@ pub struct FlattenTolerance {
     /// opinion". A renderer-supplied cap rather than an error bound: the shaders sweep
     /// a curved segment by unrolling the annulus about its centre of curvature into
     /// the straight travel frame, which stops being accurate once the tip is an
-    /// appreciable fraction of the curve's own radius (see `gpu::stroke::MAX_TIP_TURN`).
+    /// appreciable fraction of the curve's own radius
+    /// (see `gpu::stroke::budget::MAX_TIP_TURN`).
     ///
     /// [`fit_arc`] enforces it, so an edge too tight to sweep is *priced* as a chord as
     /// well as drawn as one.
@@ -122,8 +123,8 @@ const EDGES_PER_PIECE: f32 = (1u32 << MAX_SUBDIVISION_DEPTH) as f32;
 
 /// Ceiling on the pre-split of one span, so a `max_len` no renderer budget can produce
 /// cannot ask for an unbounded polyline. 64 pieces is 65,536 edges, which at the
-/// renderer's own floor (`gpu::stroke::MIN_SEGMENT_LEN`, 0.5 px) is a 32,768 px span —
-/// past anything a fitted stroke holds.
+/// renderer's own floor (`gpu::stroke::budget::MIN_SEGMENT_LEN`, 0.5 px) is a
+/// 32,768 px span — past anything a fitted stroke holds.
 const MAX_SPAN_PIECES: u32 = 64;
 
 /// How many uniform parametric pieces a span is cut into *before* the error-driven

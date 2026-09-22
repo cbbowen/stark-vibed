@@ -6,7 +6,7 @@
 //!
 //! - **Clamped**: the first and last control points are repeated `DEGREE` times, so
 //!   the curve starts and ends *on* them. The repeats are simulated by an index view
-//!   (`CubicBSpline::knot_row`) rather than stored.
+//!   (`SplineIndex::knot_row`) rather than stored.
 //! - **Cardinal**: the interior knots are equally spaced, so the curve is
 //!   parameterized over `[0, num_spans()]` with span `k` covering `[k, k + 1]`, and a
 //!   single basis matrix serves every span.
@@ -105,7 +105,7 @@ impl<'a, const E: usize> Observations<'a, E> {
     /// are an even sampling of whatever is being fitted; where they are not, the fit is
     /// to the sampling and not to the subject, and the sampling wins on sheer count.
     /// `weights` is how a caller states what each value stands for (see
-    /// `path::arc_weights`), and this sum is what the two knobs scaled by the data —
+    /// `path::fit::arc_weights`), and this sum is what the two knobs scaled by the data —
     /// the smoothing's average pull and the ridge's floor — are scaled by, so they go on
     /// meaning what they meant (§6.2).
     fn weight(&self) -> f32 {
@@ -183,8 +183,8 @@ impl SplineIndex {
         for q in 1..=DEGREE {
             let mut next = SMatrix::<f32, ORDER, ORDER>::zeros();
             // Reciprocal taken in f64 and then narrowed, not divided in f32: `1/3` differs
-            // in the last bit between the two, and this feeds every fitted control point.
-            // Bit-identical output is what keeps goldens and replay stable (§9).
+            // in the last bit between the two, and this feeds every fitted control point,
+            // so every golden fitted from recorded input would move with it (§9).
             let inv_q = (1.0 / q as f64) as f32;
             for a in 0..=q {
                 if a >= 1 {

@@ -24,7 +24,7 @@
 //! length, so before it was bounded each of those axes scaled the work done per
 //! report, and a per-sample throughput figure over fixed recordings could not see
 //! it — which is why the sweeps are here and not merely another recorded stroke.
-//! `MAX_WINDOW_SAMPLES` in `path.rs` carries the bound and the argument for it.
+//! `MAX_WINDOW_SAMPLES` in `path/fit.rs` carries the bound and the argument for it.
 //!
 //! Run with `cargo bench -p stark-engine --bench path`.
 
@@ -101,7 +101,9 @@ fn fit(c: &mut Criterion) {
         // fitter fed in one call, so per-element is per *pointer move*.
         g.throughput(criterion::Throughput::Elements(pts.len() as u64));
 
-        // The batch form, as `replay_stroke` and the peer path use it.
+        // The batch form: every report pushed, then one finish, with no preview read in
+        // between — what `Engine::replay_stroke` pays. A peer pays none of it: it
+        // receives the control points (§17.5).
         g.bench_with_input(BenchmarkId::new("batch", name), &pts, |b, pts| {
             b.iter(|| path::fit(black_box(pts)));
         });
@@ -264,8 +266,9 @@ fn flatten(c: &mut Criterion) {
     g.finish();
 }
 
-/// Fit + flatten end to end, at the renderer's own entry point: what a replayed
-/// stroke pays on the CPU before a single dispatch is recorded.
+/// Fit + flatten end to end, at the renderer's own entry point: what
+/// `Engine::replay_stroke` pays on the CPU before a single dispatch is recorded. A
+/// stroke replayed from the log pays only the flatten: the record holds the fit.
 ///
 /// Worth its own line rather than being read off the sum: the two halves share no
 /// state, so a change that moves work across the boundary (pricing an edge in the
