@@ -132,7 +132,7 @@ pub struct ThumbState {
     /// The kept engine + offscreen attachments; `None` until first use.
     pub rig: Signal<Option<Rig>>,
     /// The device and compiled pipelines to build that rig on, published once the
-    /// main renderer lands (`state::publish_renderer`).
+    /// main renderer lands (`state::publish_renderer`) and taken by the rig.
     ///
     /// **Held rather than fetched**, which is what `stark_engine::EngineShared` is for.
     /// The generator used to reach into `state.renderer` and borrow the whole live
@@ -232,8 +232,9 @@ async fn generate(state: AppState, key: Key) -> Result<Picture, NoRenderer> {
         let mut guard = rig_signal.write();
         if guard.is_none() {
             // The shared half, not the renderer: nothing here needs the canvas, the
-            // document or the gesture in flight.
-            let shared = state.thumbs.shared.peek().clone().ok_or(NoRenderer)?;
+            // document or the gesture in flight. Taken, since the rig is built once.
+            let mut held = state.thumbs.shared;
+            let shared = held.write().take().ok_or(NoRenderer)?;
             let mut engine = Engine::on_shared(shared, Extent2::new(THUMB_W, THUMB_H));
             // Pin the look the module doc promises: flat substrate, neutral light,
             // default media, white substrate (what an eraser's bite reveals).

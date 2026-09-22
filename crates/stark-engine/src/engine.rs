@@ -73,14 +73,14 @@ const ROOT_LAYER: LayerId = LayerId::ROOT;
 /// **The store is shared; the choice is not** — [`Registry`]'s own rule. Registered
 /// bytes, decoded substrates and environments, tile pool, compiled pipelines and
 /// brush assets are one copy behind `Arc`s; the choices riding along — substrate,
-/// environment, media parameters — are per-engine values a clone only **seeds** from
-/// the donor, so a sibling opens mirroring the canvas it came from.
+/// environment, media parameters — are per-engine values a sibling only **seeds** from
+/// the donor, so it opens mirroring the canvas it came from.
 ///
-/// **Pictures are not shared** (§23): they are the donor's document's, so this value,
-/// and every clone of it, holds none (`ApplyCtx::for_sibling`).
+/// **Pictures are not shared** (§23): they are the donor's document's, so the value
+/// [`Engine::shared`] hands out holds none (`ApplyCtx::for_sibling`).
 ///
-/// Cheap to clone and outlives its donor, so a consumer wanting only the device and
-/// the pipelines (a preset thumbnail) need not borrow a live engine.
+/// Outlives its donor, so a consumer wanting only the device and the pipelines (a
+/// preset thumbnail) need not borrow a live engine.
 pub struct EngineShared {
     gpu: GpuContext,
     /// The format every pipeline in `passes` was compiled against. A sibling must

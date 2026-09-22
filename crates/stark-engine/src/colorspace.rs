@@ -94,9 +94,10 @@ pub(crate) trait ColorSpace {
     /// space has one necessarily: four trained pigments do not span sRGB. It costs
     /// eight bytes a texel and a third render target through every pass that writes a
     /// tile.
-    fn has_resid(&self) -> bool {
-        false
-    }
+    ///
+    /// Required rather than defaulted: a pigment space that forgot it would silently
+    /// lose its residual.
+    fn has_resid(&self) -> bool;
 
     /// Which build of the three passes bracketed by a space's own conversion this space
     /// reads (§6.7).
@@ -181,6 +182,10 @@ pub(crate) struct OkLabColorSpace;
 impl ColorSpace for OkLabColorSpace {
     fn id(&self) -> ColorSpaceId {
         ColorSpaceId::Oklab
+    }
+
+    fn has_resid(&self) -> bool {
+        false
     }
 
     fn rgb_to_latent(&self, rgb: Srgb) -> Latent {

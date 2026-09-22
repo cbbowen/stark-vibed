@@ -232,19 +232,16 @@ fn a_held_shared_half_outlives_the_engine_it_came_from() {
     );
 }
 
-/// The shared half can seed **many** siblings, and each keeps its own document.
-///
-/// The isolation claim above, made once the shared half is a value that can be
-/// cloned freely rather than a donor that has to be borrowed one call at a time.
+/// One donor's shared half seeds **many** siblings, and each keeps its own document —
+/// the isolation claim above, for two engines on one pool.
 #[test]
 fn one_shared_half_seeds_independent_engines() {
     let Some(donor) = engine_or_skip() else {
         return;
     };
-    let shared = donor.shared();
 
-    let mut a = Engine::on_shared(shared.clone(), SIZE);
-    let b = Engine::on_shared(shared, SIZE);
+    let mut a = Engine::on_shared(donor.shared(), SIZE);
+    let b = Engine::on_shared(donor.shared(), SIZE);
     diagonal(&mut a);
 
     // `b` never saw a stroke, so it must still be bare canvas — and `a`'s paint

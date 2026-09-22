@@ -31,17 +31,10 @@ use crate::projection::{Memo, Revision};
 use crate::view::{Extent2, ViewTransform};
 use stark_model::{ColorSpaceId, DocError, SubstrateId};
 
-/// A clone is `EngineShared::sibling`: what it holds of a document stays behind.
-impl Clone for EngineShared {
-    fn clone(&self) -> Self {
-        self.sibling()
-    }
-}
-
 impl EngineShared {
     /// The shared half as a sibling is seeded from: every handle shared, and the
     /// pictures and the prepared stroke not, being a document's rather than the
-    /// device's (`ApplyCtx::for_sibling`).
+    /// device's — and not `Clone`, for `ApplyCtx::for_sibling`'s reason.
     fn sibling(&self) -> Self {
         Self {
             gpu: self.gpu.clone(),

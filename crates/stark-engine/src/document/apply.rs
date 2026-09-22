@@ -887,8 +887,9 @@ impl Folded {
 /// `preview == committed` break (§1.3).
 ///
 /// **The context is shared, not exclusive**, so a preview cannot take the prepared
-/// tiles, and a kind the pure half does not fold and no arm here names — a stroke, and
-/// everything that mints or removes a layer — has no preview.
+/// tiles. Every kind the pure half folds previews, layer additions and removals among
+/// them; the renderer's kinds no arm here names — a stroke, a placed image, a selection,
+/// a merge and a float — have none, and no [`Edit`](crate::command::Edit) mints one.
 pub(crate) fn preview_of(
     kind: ActionKind,
     state: &DocState,
