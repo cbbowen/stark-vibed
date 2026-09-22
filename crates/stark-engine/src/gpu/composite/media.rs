@@ -7,6 +7,7 @@
 use super::attachment::Trio;
 use super::display::Output;
 use crate::colorspace::ColorSpace;
+use crate::gpu::channels::{ChannelFormats, Targets};
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Bindings};
 use crate::gpu::environment::Environment;
@@ -87,10 +88,10 @@ pub(super) fn media_layout(device: &wgpu::Device, color_space: &dyn ColorSpace) 
 
 /// The media pass — the pipeline, compiled for one target format.
 ///
-/// The lighting parameters and the **uniform buffer** they are written into are
-/// per-consumer, not per-pipeline: two engines sharing one set of pipelines light
-/// their canvases differently (a preset thumbnail deliberately does not mirror the
-/// canvas), so both live on the [`Compositor`](super::Compositor) that is rendering.
+/// The **uniform buffer** the lighting is written into is per consumer, not per
+/// pipeline: two engines sharing one set of pipelines light their canvases differently
+/// (a preset thumbnail deliberately does not mirror the canvas), so it lives on each
+/// consumer's [`Accumulator`].
 pub(super) struct MediaPass {
     pub(super) pipeline: wgpu::RenderPipeline,
 }
@@ -116,22 +117,19 @@ impl MediaPass {
         Self { pipeline }
     }
 
-    /// Encode pass B: normals off the composited height field, lit by the
-    /// environment, tonemapped, over the substrate and into `target` (§6.3).
-    ///
-    /// `buf` must be the buffer `accum_bg` was built over: this writes the scene into
-    /// it, so the values a render reads are the ones it wrote.
+    /// Encode pass B: `accum`'s channels — normals off the composited height field,
+    /// lit by the environment, tonemapped — over the substrate and into `target`
+    /// (§6.3).
     pub(super) fn encode(
         &self,
         ctx: &GpuContext,
         encoder: &mut wgpu::CommandEncoder,
-        buf: &wgpu::Buffer,
-        accum_bg: &[wgpu::BindGroup; 2],
+        accum: &Accumulator,
         target: &wgpu::TextureView,
         scene: MediaScene<'_>,
     ) {
         ctx.queue
-            .write_buffer(buf, 0, bytemuck::bytes_of(&scene.uniform()));
+            .write_buffer(&accum.uniform, 0, bytemuck::bytes_of(&scene.uniform()));
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("stark media pass"),
             // The pass covers every texel, so the clear only decides the alpha an
@@ -147,7 +145,7 @@ impl MediaPass {
             ..Default::default()
         });
         pass.set_pipeline(&self.pipeline);
-        desc::Bound::new(accum_bg, &[]).set(&mut pass);
+        desc::Bound::new(&accum.bg, &[]).set(&mut pass);
         pass.draw(0..3, 0..1);
     }
 }
@@ -227,123 +225,101 @@ impl MediaScene<'_> {
     }
 }
 
-/// The uniform buffer one consumer writes its lighting into — see [`MediaPass`] for
-/// why it is not the pass's.
-pub(super) fn uniform_buffer(device: &wgpu::Device) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("stark media uniform"),
-        size: std::mem::size_of::<MediaUniform>() as u64,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
-}
-
-/// The inputs to [`offscreen`]: one field from the [`Compositor`](super::Compositor)
-/// being built or rebuilt (`size`) and the rest read off the shared
-/// [`CompositorPipeline`](super::CompositorPipeline). Grouped because the two callers
-/// would otherwise each spell out the same eight fields.
-pub(super) struct OffscreenDesc<'a> {
-    pub(super) device: &'a wgpu::Device,
-    pub(super) size: Extent2,
-    /// The channel formats the accumulator carries (§6.7).
-    pub(super) formats: crate::gpu::channels::ChannelFormats,
-    /// The layouts the media bind groups are built against ([`media_layout`]).
-    pub(super) media_bgl: &'a [Bindings; 2],
-    /// The consumer's own uniform buffer, which this bind group names.
-    pub(super) media_buf: &'a wgpu::Buffer,
-    pub(super) substrate: &'a SubstrateMap,
-    pub(super) environment: &'a Environment,
-}
-
-/// The offscreen targets pass A writes and the media bind group that reads them.
-pub(super) struct Offscreen {
-    /// The accumulator itself ([`Trio`]). Its residual is present exactly when the
-    /// space has one, and is then pass A's third attachment as well as a binding
-    /// here.
-    pub(super) channels: Trio,
+/// Pass A's accumulator and what the media pass reads it through: the channels, this
+/// consumer's own uniform ([`MediaPass`] says why it is not the pass's), and the bind
+/// group naming both.
+///
+/// One value because the three are meaningless apart — the group names the other two,
+/// and [`MediaPass::encode`] must write the very buffer it binds. [`Supersampled`] is
+/// the same arrangement for the resolve.
+///
+/// [`Supersampled`]: super::resolve::Supersampled
+pub(super) struct Accumulator {
+    /// The residual is present exactly when the space has one, and is then pass A's
+    /// third attachment as well as a binding here.
+    channels: Trio,
+    uniform: wgpu::Buffer,
     /// One per layout: `media_common`'s group, then the space's, which is empty where
     /// the space has no residual (§6.7).
-    pub(super) bg: [wgpu::BindGroup; 2],
+    bg: [wgpu::BindGroup; 2],
 }
 
-impl Offscreen {
+impl Accumulator {
+    /// Channels of `formats` at `size`, and the media bind group over them, the
+    /// canvas substrate and the light.
+    pub(super) fn new(
+        device: &wgpu::Device,
+        size: Extent2,
+        formats: ChannelFormats,
+        bgl: &[Bindings; 2],
+        substrate: &SubstrateMap,
+        environment: &Environment,
+    ) -> Self {
+        let channels = Trio::new(
+            device,
+            size,
+            ("stark comp color", "stark comp aux", "stark comp resid"),
+            formats,
+        );
+        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("stark media uniform"),
+            size: std::mem::size_of::<MediaUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bg = bind_group(device, bgl, &channels, &uniform, substrate, environment);
+        Self {
+            channels,
+            uniform,
+            bg,
+        }
+    }
+
     /// Point the media bind group at a different canvas substrate or light, keeping
-    /// the attachments (§6.3, §6.4).
+    /// the channels (§6.3, §6.4).
     ///
-    /// **The whole cost of a swap** — reach for this rather than rebuilding the
-    /// `Offscreen`, which reallocates the accumulator trio and, in the caller, the
-    /// supersampled target and blend scratch beside it.
+    /// **The whole cost of a swap**: the channels are sized by the target and carry the
+    /// color space's formats, neither of which a swap touches, so rebuilding the
+    /// accumulator instead would reallocate them — and, in the caller, the supersampled
+    /// target and blend scratch beside them — for nothing.
     pub(super) fn rebind(
         &mut self,
         device: &wgpu::Device,
-        media_bgl: &[Bindings; 2],
-        media_buf: &wgpu::Buffer,
+        bgl: &[Bindings; 2],
         substrate: &SubstrateMap,
         environment: &Environment,
     ) {
-        self.bg = media_bind_group(
+        self.bg = bind_group(
             device,
-            media_bgl,
-            media_buf,
+            bgl,
+            &self.channels,
+            &self.uniform,
             substrate,
             environment,
-            &self.channels,
         );
     }
 
-    /// The trio as pass A attaches it (§6.7) — the same three views the media bind
-    /// group above reads, which is the invariant this type exists to hold together.
-    pub(super) fn targets(&self) -> crate::gpu::channels::Targets<'_> {
+    /// The channels as pass A attaches them (§6.7) — the views the media bind group
+    /// reads.
+    pub(super) fn targets(&self) -> Targets<'_> {
         self.channels.targets()
     }
 }
 
-/// (Re)create the offscreen composite targets and the media bind group over them.
-pub(super) fn offscreen(d: OffscreenDesc<'_>) -> Offscreen {
-    let OffscreenDesc {
-        device,
-        size,
-        formats,
-        media_bgl,
-        media_buf,
-        substrate,
-        environment,
-    } = d;
-    let channels = Trio::new(
-        device,
-        size,
-        ("stark comp color", "stark comp aux", "stark comp resid"),
-        formats,
-    );
-    let bg = media_bind_group(
-        device,
-        media_bgl,
-        media_buf,
-        substrate,
-        environment,
-        &channels,
-    );
-    Offscreen { channels, bg }
-}
-
-/// The media pass's bind group over one accumulator, its uniform, the canvas
-/// substrate and the light.
-///
-/// The **only** thing here a substrate or light swap invalidates: the attachments
-/// are sized by the target and carry the color space's formats, neither of which a
-/// swap touches. That is what [`Offscreen::rebind`] rebuilds.
-fn media_bind_group(
+/// The media pass's bind groups over one accumulator's `channels`, its `uniform`, the
+/// canvas substrate and the light.
+fn bind_group(
     device: &wgpu::Device,
-    media_bgl: &[Bindings; 2],
-    media_buf: &wgpu::Buffer,
+    bgl: &[Bindings; 2],
+    channels: &Trio,
+    uniform: &wgpu::Buffer,
     substrate: &SubstrateMap,
     environment: &Environment,
-    channels: &Trio,
 ) -> [wgpu::BindGroup; 2] {
     let (color, aux, resid) = (&channels.color, &channels.aux, channels.resid.as_ref());
     [
-        media_bgl[0].group(device, "stark media bg", |i| match i {
-            mc::M => media_buf.as_entire_binding(),
+        bgl[0].group(device, "stark media bg", |i| match i {
+            mc::M => uniform.as_entire_binding(),
             mc::COMP_COLOR => wgpu::BindingResource::TextureView(color.view()),
             mc::COMP_AUX => wgpu::BindingResource::TextureView(aux.view()),
             mc::SUBSTRATE => wgpu::BindingResource::TextureView(&substrate.view),
@@ -353,7 +329,7 @@ fn media_bind_group(
             other => unreachable!("`media_common`'s group has no binding {other}"),
         }),
         // Empty in a space with no residual, where the closure is asked for nothing.
-        media_bgl[1].group(device, "stark media space bg", |i| match i {
+        bgl[1].group(device, "stark media space bg", |i| match i {
             mm::COMP_RESID => wgpu::BindingResource::TextureView(
                 resid
                     .expect("a residual build has a composited residual")

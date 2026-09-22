@@ -238,9 +238,9 @@ pub(crate) struct CompositeScene<'a> {
 ///
 /// **No uniform buffer is here**, and that is the whole content of "nothing here
 /// changes". The view, media and resolve uniforms belong to the [`Compositor`] doing
-/// the render ([`ViewBindings`], [`TargetSized::media_buf`], and inside
-/// [`Supersampled`]): sharing them would rest on no caller ever straddling a queue
-/// write and its submit with another render, which nothing here could enforce.
+/// the render ([`ViewBindings`], [`media::Accumulator`], [`Supersampled`]): sharing
+/// them would rest on no caller ever straddling a queue write and its submit with
+/// another render, which nothing here could enforce.
 ///
 /// [`Engine::new_sharing`]: crate::Engine::new_sharing
 pub(crate) struct CompositorPasses {
@@ -428,7 +428,7 @@ pub(crate) struct CompositorPipeline {
     /// **Separate from [`generation`](Self::generation) because the two invalidate
     /// different things.** A substrate or a light is *bound into* each consumer's
     /// media group and named nowhere else, so a swap costs one `create_bind_group`
-    /// ([`media::Offscreen::rebind`]) where one stamp for both would drop and rebuild
+    /// ([`media::Accumulator::rebind`]) where one stamp for both would drop and rebuild
     /// the accumulator, the supersampled target and the whole blend scratch — up to
     /// `MAX_SUPERSAMPLED_BYTES`. And the swap is ordinary: every undo or redo across a
     /// logged `SetSubstrate` or `SetSubstrateScale`, every commit of the scale slider,
@@ -492,24 +492,18 @@ struct Built {
     /// The [`CompositorPipeline::bindings`] `accum`'s media bind group names. A
     /// mismatch is a swapped substrate or light, rebound in place.
     bindings: u64,
-    /// Pass A's offscreen channels at `key.size`, and the media bind group over them.
-    accum: media::Offscreen,
+    /// Pass A's channels at `key.size`, and what the media pass reads them through.
+    accum: media::Accumulator,
     /// Everything that exists only while this view is zoomed out — see
     /// [`Supersampled`].
     ss_target: Option<Supersampled>,
 }
 
 /// The half of a [`Compositor`] sized by the target: what [`Self::ensure_targets`]
-/// manages, and nothing a render writes per frame but the one uniform the
-/// accumulator's bind group names.
+/// manages.
+#[derive(Default)]
 struct TargetSized {
     built: Option<Built>,
-    /// This consumer's lighting parameters as the media pass reads them, written at
-    /// the top of every render from the pipeline's [`MediaParams`]. On this half
-    /// because [`Built::accum`]'s bind group names it, and per consumer for
-    /// [`MediaPass`]'s reason: two engines sharing one pipeline kit light their
-    /// canvases differently.
-    media_buf: wgpu::Buffer,
     /// The blend scratch, allocated on first use and kept: only a document with a
     /// non-`Normal` layer ever pays for it (§18.0.4).
     scratch: Option<ScratchTargets>,
@@ -524,8 +518,7 @@ struct TargetSized {
 /// [`TargetSized::ensure_targets`] has just brought in line. Borrows of one field, so
 /// a render holding one still writes the [`Streams`] beside it.
 struct Frame<'a> {
-    accum: &'a media::Offscreen,
-    media_buf: &'a wgpu::Buffer,
+    accum: &'a media::Accumulator,
     ss_target: Option<&'a Supersampled>,
     /// `None` when the plan bounces nowhere, whatever the cache holds.
     scratch: Option<&'a ScratchTargets>,
@@ -747,42 +740,32 @@ impl CompositorPipeline {
     }
 
     /// Point an existing accumulator's media group at this pipeline's current
-    /// substrate and light, keeping its attachments — see
-    /// [`CompositorPipeline::bindings`]. `media_buf` is the consumer's own uniform,
-    /// which that group names.
-    fn rebind_media(&self, accum: &mut media::Offscreen, media_buf: &wgpu::Buffer) {
+    /// substrate and light, keeping its channels — see
+    /// [`CompositorPipeline::bindings`].
+    fn rebind_media(&self, accum: &mut media::Accumulator) {
         accum.rebind(
             &self.ctx.device,
             &self.layouts.media,
-            media_buf,
             &self.substrate,
             &self.environment,
         );
     }
 
-    fn offscreen(&self, size: Extent2, media_buf: &wgpu::Buffer) -> media::Offscreen {
-        media::offscreen(media::OffscreenDesc {
-            device: &self.ctx.device,
+    /// A fresh accumulator at `size`, against this pipeline's formats, substrate and
+    /// light.
+    fn accumulator(&self, size: Extent2) -> media::Accumulator {
+        media::Accumulator::new(
+            &self.ctx.device,
             size,
-            formats: self.formats,
-            media_bgl: &self.layouts.media,
-            media_buf,
-            substrate: &self.substrate,
-            environment: &self.environment,
-        })
+            self.formats,
+            &self.layouts.media,
+            &self.substrate,
+            &self.environment,
+        )
     }
 }
 
 impl TargetSized {
-    fn new(device: &wgpu::Device) -> Self {
-        Self {
-            built: None,
-            media_buf: media::uniform_buffer(device),
-            scratch: None,
-            blur: None,
-        }
-    }
-
     /// Bring the attachments in line with what is about to be drawn — a target of
     /// `target_size` rendered at `ss` samples per axis into `format`, against the
     /// pipeline's current substrate and light, with the scratch levels `needs` and
@@ -838,7 +821,7 @@ impl TargetSized {
                 // `SetSubstrate`, every scale commit and every light switch lands here.
                 if built.bindings != p.bindings {
                     built.bindings = p.bindings;
-                    p.rebind_media(&mut built.accum, &self.media_buf);
+                    p.rebind_media(&mut built.accum);
                 }
                 built
             }
@@ -851,7 +834,7 @@ impl TargetSized {
                 self.scratch = None;
                 self.blur = None;
                 drop(stale);
-                let accum = p.offscreen(wanted.size, &self.media_buf);
+                let accum = p.accumulator(wanted.size);
                 // Allocated only where it is written into. A 1:1 view leaves it `None`,
                 // which is what returns the memory the moment the artist zooms back in
                 // to paint.
@@ -887,7 +870,6 @@ impl TargetSized {
         }
         Frame {
             accum: &built.accum,
-            media_buf: &self.media_buf,
             ss_target: built.ss_target.as_ref(),
             scratch: if needs.is_empty() {
                 None
@@ -1200,7 +1182,7 @@ impl Compositor {
     /// knows the zoom.
     pub(crate) fn new(pipeline: &CompositorPipeline) -> Self {
         Self {
-            sized: TargetSized::new(&pipeline.ctx.device),
+            sized: TargetSized::default(),
             streams: Streams::new(pipeline),
         }
     }
@@ -1458,8 +1440,7 @@ impl Compositor {
         tp.media.encode(
             &p.ctx,
             &mut encoder,
-            frame.media_buf,
-            &frame.accum.bg,
+            frame.accum,
             draw_target,
             media::MediaScene {
                 params: p.settings.media,
