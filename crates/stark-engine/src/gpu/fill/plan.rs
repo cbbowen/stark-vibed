@@ -1,13 +1,13 @@
 //! Planning a fill (§18.0.4): which tiles a [`FillOp`] writes, once the author's
 //! mask has had its say.
 //!
-//! The op itself is `stark-model`'s `document::fill`. Only the planning is here,
-//! and only because it needs the [`Selection`] — which holds tiles.
+//! The op itself is `stark-model`'s `document::fill`. Pure CPU, no device: [the pass
+//! that executes the plan](super) is the other half.
 
 use stark_model::document::{FillOp, MAX_FILL_TILES, SelectionShape, fill_bounds};
 use stark_model::geom::{TileCoord, TileRect, tiles_of};
 
-use super::selection::Selection;
+use crate::document::selection::Selection;
 
 /// Which tiles a fill writes, given the author's selection as its gate. Sorted, so
 /// the plan is deterministic (the mask's tile map iterates unordered).

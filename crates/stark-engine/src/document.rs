@@ -10,7 +10,6 @@
 pub(crate) mod apply;
 /// The §12.6 rule, checked on every fold of every debug build — see the module.
 pub(crate) mod audit;
-pub(crate) mod fill;
 /// The drawing-guide roster (§20.5) — see the module.
 pub(crate) mod guides;
 pub(crate) mod layer;

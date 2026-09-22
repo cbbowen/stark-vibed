@@ -5,6 +5,8 @@
 //! so old history versions keep their tiles and the pool reclaims what falls out of
 //! reach.
 //!
+//! Which tiles it writes is settled first, on the CPU and with no device, by [`plan()`].
+//!
 //! The region's coverage is rasterized by [`SelectionRenderer`] — a `Replace` op over an
 //! empty mask *is* the shape's coverage, so the analytic shapes, the feather ramp and the
 //! tile caps are shared with the selection tools rather than reimplemented for paint.
@@ -18,7 +20,6 @@ use crate::gpu::tile::TilePairHandle;
 use std::sync::Arc;
 
 use crate::colorspace::ColorSpace;
-use crate::document::fill::plan;
 use crate::document::selection::Selection;
 use crate::gpu::channels::Zeroes;
 use crate::gpu::channels::{ChannelFormats, Channels};
@@ -36,6 +37,10 @@ use stark_shaders::mirror::fill::Fill as FillUniform;
 use stark_shaders::mirror::fill::Tile as TileUniform;
 use stark_shaders::mirror::fill::binding as f;
 use stark_shaders::mirror::fill::decl as fd;
+
+mod plan;
+
+use self::plan::plan;
 
 // The shader's stop capacity is the ramp's own bound (§22.1) — asserted rather than
 // commented, since the two are declared in different crates and nothing else would
@@ -106,7 +111,7 @@ impl FillRenderer {
     /// Fill `op`'s region on `base` (one layer's tiles), gated by `gate` (the
     /// author's selection). `None` rejects the whole action — an unbounded fill, or
     /// more tiles than the cap allows — deterministically, so peers and replays
-    /// agree (see [`crate::document::fill::plan`]).
+    /// agree (see [`plan()`]).
     pub(crate) fn apply(
         &self,
         pool: &TilePool,
