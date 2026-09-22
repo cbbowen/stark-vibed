@@ -118,7 +118,7 @@ pub fn clamp_tolerance(tolerance: f32) -> f32 {
 }
 
 /// Curvature penalty on the control polygon, as a fraction of the data's own pull
-/// (see [`SplineIndex::fit_channels`](crate::spline::SplineIndex::fit_channels)).
+/// (see [`SplineIndex::fit_into`](crate::spline::SplineIndex::fit_into)).
 ///
 /// Least squares charges the curve for being far from a *point*, never for where it
 /// goes when no point is near, so a stretch the data does not constrain is free to
@@ -1136,14 +1136,19 @@ fn set_row<const E: usize>(rows: &mut OMatrix<f32, Dyn, Const<E>>, j: usize, v: 
 /// of [`PathFitter`], used by replay and tests. Identical output to feeding the same
 /// samples one at a time and finishing.
 pub fn fit(samples: &[InputSample]) -> Vec<ControlPoint> {
-    fit_with_tolerance(samples, DEFAULT_TOLERANCE)
+    fit_with_tolerance(samples.iter().copied(), DEFAULT_TOLERANCE)
 }
 
-/// [`fit`] for input of a stated resolution (see [`PathFitter::with_tolerance`]).
-pub fn fit_with_tolerance(samples: &[InputSample], tolerance: f32) -> Vec<ControlPoint> {
+/// [`fit`] for input of a stated resolution (see [`PathFitter::with_tolerance`]):
+/// the path `End` would adopt for these samples, which is what makes anything built
+/// from it the commit's own pixels.
+pub fn fit_with_tolerance(
+    samples: impl IntoIterator<Item = InputSample>,
+    tolerance: f32,
+) -> Vec<ControlPoint> {
     let mut f = PathFitter::with_tolerance(tolerance);
     for s in samples {
-        f.push(*s);
+        f.push(s);
     }
     f.finish();
     f.path()
@@ -1464,7 +1469,7 @@ mod tests {
             .iter()
             .map(|&[x, y]| sample(x, y))
             .collect();
-        let reference = fit_with_tolerance(&screen, DEFAULT_TOLERANCE);
+        let reference = fit_with_tolerance(screen.iter().copied(), DEFAULT_TOLERANCE);
         // Powers of two, so scaling the input is exact in f32 and any difference
         // that shows up is the growth rule's and not the arithmetic's.
         for zoom in [0.25f32, 4.0, 16.0] {
@@ -1476,7 +1481,7 @@ mod tests {
                     ..*s
                 })
                 .collect();
-            let got = fit_with_tolerance(&pts, DEFAULT_TOLERANCE * k);
+            let got = fit_with_tolerance(pts.iter().copied(), DEFAULT_TOLERANCE * k);
             assert_eq!(
                 got.len(),
                 reference.len(),
@@ -1501,7 +1506,7 @@ mod tests {
     fn a_degenerate_tolerance_is_held_to_the_usable_range() {
         let pts: Vec<InputSample> = (0..48).map(|i| sample(i as f32 * 3.0, 0.0)).collect();
         for t in [0.0, -5.0, f32::NAN, f32::INFINITY, 1e9] {
-            let m = fit_with_tolerance(&pts, t).len();
+            let m = fit_with_tolerance(pts.iter().copied(), t).len();
             assert!(
                 (2..=pts.len() + 1).contains(&m),
                 "tolerance {t}: {m} control points"
@@ -1510,7 +1515,11 @@ mod tests {
         // A number that is not one falls back to the default rather than to an end of
         // the range — there is nothing to read from it in either direction.
         for t in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-            assert_eq!(fit_with_tolerance(&pts, t), fit(&pts), "tolerance {t}");
+            assert_eq!(
+                fit_with_tolerance(pts.iter().copied(), t),
+                fit(&pts),
+                "tolerance {t}"
+            );
         }
     }
 

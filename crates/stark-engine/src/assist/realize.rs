@@ -109,7 +109,7 @@ impl AssistShape {
     /// *fewer* control points than the stroke it replaces, because the pen channels
     /// ride the same polygon as the geometry and a pressure profile needs somewhere to
     /// live. Geometry decides the floor and the pen decides nothing else — the same
-    /// split [`SplineIndex::fit_channels`] draws.
+    /// split [`SplineIndex::fit_into`] draws.
     ///
     /// The geometry of a **line** is placed in closed form: any collinear control polygon
     /// draws exactly that line. An **ellipse** is *fitted*, because a clamped B-spline's
@@ -170,7 +170,7 @@ fn realize(
     fit_geometry: bool,
 ) -> Vec<ControlPoint> {
     let m = seed.len();
-    let geom_seed = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
+    let mut geom = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
         if d == 0 { seed[j].x } else { seed[j].y }
     });
     let Ok(index) = SplineIndex::new(m) else {
@@ -180,9 +180,9 @@ fn realize(
     };
     let spans = index.num_spans() as f32;
     // The curve is read only to measure its arc profile, so the borrow ends here and
-    // `geom_seed` is free to be handed to the fit — or moved out of — below.
+    // `geom` is free to be fitted in place below.
     let profile = arc_profile(
-        &CubicBSpline::new(&geom_seed).expect("the index agreed there are enough"),
+        &CubicBSpline::new(&geom).expect("the index agreed there are enough"),
         &[],
     );
     let fractions = arc_fractions(targets);
@@ -191,22 +191,20 @@ fn realize(
         .map(|&f| param_at(&profile, spans, f))
         .collect();
 
-    let geom = if fit_geometry {
+    if fit_geometry {
         let values: Vec<[f32; 2]> = targets.iter().map(|p| [p.x, p.y]).collect();
-        index.fit_channels(Observations::even(&ts, &values), 0, 0, &geom_seed, 0.0)
-    } else {
-        geom_seed
-    };
+        index.fit_into(Observations::even(&ts, &values), &mut geom, 0, 0, 0.0);
+    }
 
     // Seeded from the profile at each control point's own share of the polygon, not
     // from zero: the solve's proximal ridge pulls towards its prior, and a prior of
     // zero biases every channel low by about a percent (see `spline`'s tests).
-    let attr_seed =
+    let mut attr =
         OMatrix::<f32, Dyn, Const<CHANNELS>>::from_fn_generic(Dyn(m), Const::<CHANNELS>, |j, d| {
             pen.sample(j as f32 / (m - 1).max(1) as f32)[d]
         });
     let values: Vec<[f32; CHANNELS]> = fractions.iter().map(|&f| pen.sample(f)).collect();
-    let attr = index.fit_channels(Observations::even(&ts, &values), 0, 0, &attr_seed, 0.0);
+    index.fit_into(Observations::even(&ts, &values), &mut attr, 0, 0, 0.0);
 
     // Through the fitter's own door, which is `clamped`: this is a least-squares solve
     // too, and overshoots the same way.

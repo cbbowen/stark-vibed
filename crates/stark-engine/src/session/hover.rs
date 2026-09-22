@@ -4,7 +4,7 @@
 
 use super::{Session, path_in_frame};
 use crate::command::InputSample;
-use crate::path::PathFitter;
+use crate::path::fit_with_tolerance;
 use crate::peer::{GestureView, LiveGesture};
 use stark_model::document::{ActorId, StrokeRecord};
 use stark_model::geom::Vec2;
@@ -55,20 +55,6 @@ fn prune_window(window: &mut Vec<InputSample>, arc: f32) {
         from += 1;
     }
     window.drain(..from);
-}
-
-/// Fit `samples` as a finished gesture — the path `End` would adopt, which is
-/// what makes anything built from it the commit's own pixels.
-fn fit_finished(
-    tolerance: f32,
-    samples: impl IntoIterator<Item = InputSample>,
-) -> Vec<ControlPoint> {
-    let mut fitter = PathFitter::with_tolerance(tolerance);
-    for s in samples {
-        fitter.push(s);
-    }
-    fitter.finish();
-    fitter.path()
 }
 
 /// The heading at the cursor end of the fitted trace — the chord of its final
@@ -150,10 +136,9 @@ impl Session {
         // The estimator: the window's smoothed trace, wanted only for where it
         // is going. Finished, so the heading is the one a pen-up would have
         // settled on rather than the mid-solve one.
-        let trace = fit_finished(tolerance, window.iter().copied());
+        let trace = fit_with_tolerance(window.iter().copied(), tolerance);
         let path = match probe_heading(&trace) {
-            Some(dir) => fit_finished(
-                tolerance,
+            Some(dir) => fit_with_tolerance(
                 [
                     sample,
                     InputSample {
@@ -161,11 +146,12 @@ impl Session {
                         ..sample
                     },
                 ],
+                tolerance,
             ),
             // One report, or a trace too tangled to carry a heading: the honest
             // prediction of a press with no motion behind it is a click's — a
             // lone knot, which deposits nothing, exactly as the click would.
-            None => fit_finished(tolerance, [sample]),
+            None => fit_with_tolerance([sample], tolerance),
         };
         self.gesture_ordinal += 1;
         self.hover = Some(HoverStroke {

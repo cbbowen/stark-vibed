@@ -254,24 +254,21 @@ mod tests {
             stair.push(sample(b + 2.0, b));
             stair.push(sample(b + 2.0, b + 2.0));
         }
-        let fine = fit_with_tolerance(&stair, DEFAULT_TOLERANCE).len();
-        let coarse = fit_with_tolerance(&stair, 2.0).len();
+        let fine = fit_with_tolerance(stair.iter().copied(), DEFAULT_TOLERANCE).len();
+        let coarse = fit_with_tolerance(stair.iter().copied(), 2.0).len();
         // What the *shape* is worth with the quantization taken out: the same reports
         // projected onto the diagonal they are a staircase of. Declaring the grid can
         // only buy back what the zigzag costs, never what the stroke is, so that is
         // the baseline both counts are measured from — a bare ratio of totals would
         // instead move whenever the finer fit improved, which is not under test.
         let ideal = fit_with_tolerance(
-            &stair
-                .iter()
-                .map(|s| {
-                    let d = 0.5 * (s.pos.x + s.pos.y);
-                    InputSample {
-                        pos: Vec2::splat(d),
-                        ..*s
-                    }
-                })
-                .collect::<Vec<_>>(),
+            stair.iter().map(|s| {
+                let d = 0.5 * (s.pos.x + s.pos.y);
+                InputSample {
+                    pos: Vec2::splat(d),
+                    ..*s
+                }
+            }),
             DEFAULT_TOLERANCE,
         )
         .len();
@@ -288,7 +285,10 @@ mod tests {
         );
         // And what is left is still the diagonal, not a shortcut across it: every
         // sample is within a step of the curve.
-        let poly = flatten(&fit_with_tolerance(&stair, 2.0), FLATTEN_TOLERANCE);
+        let poly = flatten(
+            &fit_with_tolerance(stair.iter().copied(), 2.0),
+            FLATTEN_TOLERANCE,
+        );
         let worst = stair
             .iter()
             .map(|s| {

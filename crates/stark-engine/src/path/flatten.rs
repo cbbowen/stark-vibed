@@ -473,7 +473,7 @@ impl Span {
 ///
 /// The attribute channels are B-splines over the same polygon and the same
 /// parameterization
-/// ([`SplineIndex::fit_channels`](crate::spline::SplineIndex::fit_channels)), so the
+/// ([`SplineIndex::fit_into`](crate::spline::SplineIndex::fit_into)), so the
 /// identical conversion carries them.
 fn span(view: crate::spline::SplineIndex, knots: &[ControlPoint], k: usize) -> Span {
     // The clamped knot view is the caller's, built once: its existence *is* the

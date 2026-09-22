@@ -1964,7 +1964,7 @@ a straight chord**, since the clamp collapses three of its four Bézier points o
 the first control point. Control points placed analytically on the ellipse
 therefore leave an `O(Δ²)` bulge exactly at the seam however many of them there
 are, and a least-squares solve over a dense sampling of the true ellipse is what
-places the end rows to cancel it. That solve is `CubicBSpline::fit_channels` — the
+places the end rows to cancel it. That solve is `SplineIndex::fit_into` — the
 same one the stroke fitter drives, at the same parameters, through the same arc
 profile.
 

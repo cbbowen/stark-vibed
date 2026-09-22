@@ -54,7 +54,7 @@ pub struct CubicBSpline<'a, const D: usize> {
     control_points: &'a OMatrix<f32, Dyn, Const<D>>,
 }
 
-/// What one [`SplineIndex::fit_channels`] is solved against: where each value sits on
+/// What one [`SplineIndex::fit_into`] is solved against: where each value sits on
 /// the curve, what it is, and how much of the subject it stands for.
 #[derive(Copy, Clone)]
 pub struct Observations<'a, const E: usize> {
@@ -188,7 +188,8 @@ impl SplineIndex {
         powers
     }
 
-    /// Least-squares control values for `E` per-point channels sampled at `ts`.
+    /// Least-squares control values for `E` per-point channels sampled at `ts`,
+    /// **in place**: `values` is read as the prior and overwritten with the result.
     ///
     /// Used both for the geometry itself (`E = 2`) and for the pen channels riding
     /// along with it (`E = 4`: pressure, tilt x/y, time) — deliberately *not* one fit
@@ -196,55 +197,13 @@ impl SplineIndex {
     /// parameterization and distort the curve to buy error in a quantity that has no
     /// length. The geometry decides `ts` alone and the channels solve against it.
     ///
-    /// The first `frozen` rows and the last `tail` rows of `prior` come back
+    /// The first `frozen` rows and the last `tail` rows of `values` come back
     /// unchanged; only the window between them is solved for. `smoothing` charges the
     /// control polygon for curvature (see `Self::solve_window`).
     ///
-    /// `prior` may be **shorter** than the control polygon — the usual case for an
-    /// incremental caller whose geometry has just grown and whose channels have not.
-    /// The missing rows are seeded by repeating the last one, which only sets where
-    /// the proximal ridge is centered: those rows are past `frozen`, so the solve
-    /// determines them.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `prior` has more rows than there are control points, if `obs`'s
-    /// parameters and values differ in length, if a non-empty set of weights is not
-    /// that same length, or if `frozen` exceeds the control-point count.
-    pub fn fit_channels<const E: usize>(
-        self,
-        obs: Observations<'_, E>,
-        frozen: usize,
-        tail: usize,
-        prior: &OMatrix<f32, Dyn, Const<E>>,
-        smoothing: f32,
-    ) -> OMatrix<f32, Dyn, Const<E>> {
-        let m = self.m;
-        assert!(
-            prior.nrows() <= m,
-            "channel prior has {} rows for {m} control points",
-            prior.nrows()
-        );
-        let have = prior.nrows();
-        let mut grown =
-            OMatrix::<f32, Dyn, Const<E>>::from_fn_generic(Dyn(m), Const::<E>, |j, d| {
-                match (j < have, have) {
-                    (true, _) => prior[(j, d)],
-                    (false, 0) => 0.0,
-                    (false, h) => prior[(h - 1, d)],
-                }
-            });
-        self.fit_into(obs, &mut grown, frozen, tail, smoothing);
-        grown
-    }
-
-    /// [`fit_channels`](Self::fit_channels) **in place**: `values` is read as the
-    /// prior and overwritten with the result.
-    ///
-    /// The form the stroke fitter uses, and the reason the index is a type of its own:
-    /// returning an owned result costs a copy of the whole polygon per fit, four times
-    /// a pointer report, while the system being solved stays at `FREE_CONTROL_POINTS`
-    /// unknowns.
+    /// In place because returning an owned result costs a copy of the whole polygon
+    /// per fit, four times a pointer report, while the system being solved stays at
+    /// `FREE_CONTROL_POINTS` unknowns — the reason the index is a type of its own.
     ///
     /// **In-place is sound rather than merely convenient.** The rows the solve writes
     /// are exactly `frozen..m - tail`, and every row it *reads* as a prior is outside
@@ -422,7 +381,7 @@ impl SplineIndex {
         // Unreachable for admissible input — a ridge-regularized normal matrix is
         // positive definite, and `lambda` escalates until it dominates. What reaches
         // here is a non-finite entry, which `InputSample::is_admissible` refuses at the
-        // fitter's door (C2); but `fit_channels` and `fit_into` are `pub` and the shape
+        // fitter's door (C2); but `fit_into` is `pub` and the shape
         // assist reaches them from `AssistShape` geometry (`assist::realize`), which no
         // sample ever passed that door.
         //
@@ -608,9 +567,8 @@ mod tests {
         let ts = spread(s, 60);
         let values: Vec<[f32; 1]> = ts.iter().map(|&t| [channel_at(t)]).collect();
 
-        let empty = OMatrix::<f32, Dyn, Const<1>>::zeros_generic(Dyn(0), Const::<1>);
-        let got = s.fit_channels(Observations::even(&ts, &values), 0, 0, &empty, 0.0);
-        assert_eq!(got.nrows(), m);
+        let mut got = OMatrix::<f32, Dyn, Const<1>>::zeros_generic(Dyn(m), Const::<1>);
+        s.fit_into(Observations::even(&ts, &values), &mut got, 0, 0, 0.0);
         for j in 0..m {
             assert_close(got[(j, 0)], truth[(j, 0)], 1e-2);
         }
@@ -628,12 +586,12 @@ mod tests {
         let control = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
             (j * 2 + d) as f32
         });
-        let got = s.fit_channels(Observations::even(&[], &[]), 0, 0, &control, 0.0);
+        let mut got = control.clone();
+        s.fit_into(Observations::even(&[], &[]), &mut got, 0, 0, 0.0);
         assert_eq!(got, control);
     }
 
-    /// The frozen prefix comes back untouched, and a control shorter than the
-    /// (since-grown) control polygon is accepted rather than required.
+    /// The frozen prefix comes back untouched, and the free rows are solved for.
     #[test]
     fn frozen_channel_rows_come_back_untouched() {
         let c = wiggle_pts();
@@ -644,21 +602,19 @@ mod tests {
             .map(|i| [i as f32 / ts.len() as f32, (i as f32 * 0.3).cos()])
             .collect();
 
-        // A control two rows short of the polygon: the tail is seeded, not required.
-        let short =
-            OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m - 2), Const::<2>, |j, d| {
-                (j + d) as f32 * 0.25
-            });
+        let control = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
+            (j + d) as f32 * 0.25
+        });
         let frozen = 3;
-        let got = s.fit_channels(Observations::even(&ts, &values), frozen, 0, &short, 0.0);
-        assert_eq!(got.nrows(), m);
+        let mut got = control.clone();
+        s.fit_into(Observations::even(&ts, &values), &mut got, frozen, 0, 0.0);
         for j in 0..frozen {
             for d in 0..2 {
-                assert_eq!(got[(j, d)], short[(j, d)], "frozen row {j} moved");
+                assert_eq!(got[(j, d)], control[(j, d)], "frozen row {j} moved");
             }
         }
         // And the free rows actually moved off their seed — the solve did something.
-        let moved = (frozen..m).any(|j| (0..2).any(|d| got[(j, d)] != short[(j.min(m - 3), d)]));
+        let moved = (frozen..m).any(|j| (0..2).any(|d| got[(j, d)] != control[(j, d)]));
         assert!(moved, "no free channel row was solved for");
     }
 
@@ -674,7 +630,8 @@ mod tests {
         let control = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
             (j + d) as f32
         });
-        let got = s.fit_channels(Observations::even(&ts, &values), 1, 1, &control, 0.0);
+        let mut got = control.clone();
+        s.fit_into(Observations::even(&ts, &values), &mut got, 1, 1, 0.0);
         for d in 0..2 {
             assert_eq!(got[(0, d)], control[(0, d)], "frozen head moved");
             assert_eq!(got[(m - 1, d)], control[(m - 1, d)], "held tail moved");

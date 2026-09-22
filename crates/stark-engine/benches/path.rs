@@ -215,7 +215,9 @@ fn fit_tolerance(c: &mut Criterion) {
         g.bench_with_input(
             BenchmarkId::from_parameter(format!("tol-{tol}")),
             &(pts.clone(), tol),
-            |b, (pts, tol)| b.iter(|| path::fit_with_tolerance(black_box(pts), *tol)),
+            |b, (pts, tol)| {
+                b.iter(|| path::fit_with_tolerance(black_box(pts).iter().copied(), *tol))
+            },
         );
     }
     g.finish();
@@ -286,7 +288,8 @@ fn end_to_end(c: &mut Criterion) {
         g.throughput(criterion::Throughput::Elements(pts.len() as u64));
         g.bench_with_input(BenchmarkId::from_parameter(name), &pts, |b, pts| {
             b.iter(|| {
-                let knots = path::fit_with_tolerance(black_box(pts), DEFAULT_TOLERANCE);
+                let knots =
+                    path::fit_with_tolerance(black_box(pts).iter().copied(), DEFAULT_TOLERANCE);
                 path::flatten(&knots, FLATTEN_TOLERANCE)
             });
         });
