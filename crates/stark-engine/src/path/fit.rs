@@ -126,29 +126,31 @@ pub(crate) fn clamp_tolerance(tolerance: f32) -> f32 {
 /// this is what settles it onto its neighbours' continuation.
 const SMOOTHING: f32 = 0.05;
 
-/// Per-point channels carried alongside the geometry: pressure, tilt x/y, time.
-///
-/// **The order is the layout**, and `[0]`/`[1]`/`[2]`/`[3]` are written out at a dozen
-/// sites here and in `assist::realize`, which fits the same four the same way.
-/// Reordering the array mis-maps pressure onto tilt in whichever module was not
-/// edited, with nothing failing to compile and the fit still converging. The one
-/// shared statement of the layout is [`control_point_from`] below; the *reading*
-/// direction is genuinely two sources, since the fitter reads an `InputSample` with
-/// the clock re-based onto the stroke and `assist::realize` reads a flattened sample
-/// with the path's own.
+/// Pen channels solved alongside the geometry, laid out by [`pen_row`] alone.
 pub(crate) const CHANNELS: usize = 4;
+
+/// The pen channels as a row of the solve — **the** statement of their order, read
+/// back only by [`control_point_from`].
+pub(crate) const fn pen_row(pressure: f32, tilt: Vec2, time: f32) -> [f32; CHANNELS] {
+    [pressure, tilt.x, tilt.y, time]
+}
 
 /// Which of [`CHANNELS`] is the clock. The odd one out: the other three are pen state,
 /// which the tip's shape follows, while this one is only a stamp on the report — which
 /// is why [`PathFitter::solve`] treats the stroke's last one differently.
 const TIME_CHANNEL: usize = 3;
+const _: () = assert!(
+    pen_row(0.0, Vec2::ZERO, 1.0)[TIME_CHANNEL] == 1.0,
+    "TIME_CHANNEL is not where pen_row puts the clock",
+);
 
 /// A solved row back into a [`ControlPoint`] — **through `clamped`**, which is where
 /// the range a pen can report is stated for every fitter. The channels are solved the
 /// same way the geometry is, so a point the data barely holds can overshoot them, and
 /// `assist::realize`'s solve overshoots the same way.
-pub(crate) fn control_point_from(pos: Vec2, ch: [f32; CHANNELS]) -> ControlPoint {
-    ControlPoint::clamped(pos, ch[0], Vec2::new(ch[1], ch[2]), ch[3])
+pub(crate) fn control_point_from(pos: Vec2, row: [f32; CHANNELS]) -> ControlPoint {
+    let [pressure, tilt_x, tilt_y, time] = row;
+    ControlPoint::clamped(pos, pressure, Vec2::new(tilt_x, tilt_y), time)
 }
 
 type ChannelCtrl = OMatrix<f32, Dyn, Const<CHANNELS>>;
@@ -407,7 +409,7 @@ impl PathFitter {
             }
             self.pts.push(Accepted {
                 pos: s.pos,
-                channels: [first.pressure, s.tilt.x, s.tilt.y, self.rel_time(s.time)],
+                channels: pen_row(first.pressure, s.tilt, self.rel_time(s.time)),
                 arc: self.arc,
             });
         }
@@ -544,14 +546,7 @@ impl PathFitter {
             return self
                 .pts
                 .first()
-                .map(|s| {
-                    ControlPoint::clamped(
-                        s.pos,
-                        s.channels[0],
-                        Vec2::new(s.channels[1], s.channels[2]),
-                        s.channels[3],
-                    )
-                })
+                .map(|s| control_point_from(s.pos, s.channels))
                 .into_iter()
                 .collect();
         }
@@ -899,7 +894,7 @@ impl PathFitter {
     /// A report's channels, in [`CHANNELS`] order, with the clock re-based onto this
     /// stroke's own start.
     fn channels(&self, s: InputSample) -> [f32; CHANNELS] {
-        [s.pressure, s.tilt.x, s.tilt.y, self.rel_time(s.time)]
+        pen_row(s.pressure, s.tilt, self.rel_time(s.time))
     }
 
     fn rel_time(&self, t: f64) -> f32 {
@@ -1088,9 +1083,9 @@ fn window_indices(pts: &[Accepted], lo: usize, out: &mut Vec<usize>) {
 }
 
 /// The control points a `(geom, attr)` pair stands for — one mapping shared by
-/// [`PathFitter::path`] and [`PathFitter::as_finished`], so the two cannot
-/// disagree about anything but which solve they read.
-fn control_points(geom: &GeomCtrl, attr: &ChannelCtrl) -> Vec<ControlPoint> {
+/// [`PathFitter::path`], [`PathFitter::as_finished`] and `assist::realize`, so none
+/// of them can disagree about anything but which solve they read.
+pub(crate) fn control_points(geom: &GeomCtrl, attr: &ChannelCtrl) -> Vec<ControlPoint> {
     (0..geom.nrows())
         .map(|j| {
             control_point_from(
@@ -1724,6 +1719,22 @@ mod tests {
             assert_eq!(then, now, "frozen prefix of {frozen} spans changed");
         }
         assert!(checked_nonempty, "test never observed a frozen span");
+    }
+
+    /// The layout reads back as it is written: every channel lands in its own field.
+    #[test]
+    fn a_pen_row_reads_back_as_written() {
+        let pos = Vec2::new(3.0, 4.0);
+        let tilt = Vec2::new(0.5, -0.125);
+        assert_eq!(
+            control_point_from(pos, pen_row(0.25, tilt, 7.0)),
+            ControlPoint {
+                pos,
+                pressure: 0.25,
+                tilt,
+                time: 7.0,
+            },
+        );
     }
 
     #[test]

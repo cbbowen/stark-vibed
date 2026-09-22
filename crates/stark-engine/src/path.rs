@@ -46,10 +46,11 @@ pub use flatten::{
 };
 
 pub(crate) use arc::{Arc, arc_at, arc_sagitta, fit_arc};
-// The pen-channel layout and its two conversions, for `assist::realize` — which fits
-// the same four channels onto the same control polygon and had its own copy of both.
 pub(crate) use arclen::{arc_profile, param_at};
-pub(crate) use fit::{CHANNELS, clamp_tolerance, control_point_from};
+pub(crate) use fit::clamp_tolerance;
+// The pen-channel layout, for `assist::realize`, which fits the same channels onto the
+// same control polygon.
+pub(crate) use fit::{CHANNELS, control_points, pen_row};
 pub(crate) use flatten::flatten_spans;
 
 /// How many cubic spans the curve through `control_points` has.

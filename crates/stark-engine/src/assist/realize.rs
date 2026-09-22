@@ -7,7 +7,10 @@
 //! fraction of the way along.
 
 use super::AssistShape;
-use crate::path::{FLATTEN_TOLERANCE, arc_profile, flatten_spans_from, param_at, span_count};
+use crate::path::{
+    CHANNELS, FLATTEN_TOLERANCE, arc_profile, control_points, flatten_spans_from, param_at,
+    pen_row, span_count,
+};
 use crate::spline::{CubicBSpline, Observations, SplineIndex};
 use nalgebra::{Const, Dyn, OMatrix};
 use stark_model::geom::Vec2;
@@ -56,14 +59,9 @@ const TARGETS_PER_KNOT: usize = 4;
 /// smoothed, de-jittered version of the same signal, and it is what the stroke would
 /// have been drawn with had nothing snapped.
 pub(crate) struct PenProfile {
-    /// `(fraction along, [pressure, tilt x, tilt y, time])`, in order.
+    /// `(fraction along, pen row)`, in order.
     at: Vec<(f32, [f32; CHANNELS])>,
 }
-
-/// Pen channels riding the control polygon — literally the same four
-/// [`PathFitter`](crate::path::PathFitter) solves for, taken from `path` rather than
-/// declared again. Two constants meant two layouts, agreeing by habit.
-use crate::path::CHANNELS;
 
 impl PenProfile {
     /// The profile of a fitted path from its marker `start` on
@@ -78,7 +76,7 @@ impl PenProfile {
         Self {
             at: poly
                 .iter()
-                .map(|s| (s.dist * inv, [s.pressure, s.tilt.x, s.tilt.y, s.time]))
+                .map(|s| (s.dist * inv, pen_row(s.pressure, s.tilt, s.time)))
                 .collect(),
         }
     }
@@ -86,7 +84,8 @@ impl PenProfile {
     /// The channels `f` of the way along the drawn stroke, `f ∈ [0, 1]`.
     fn sample(&self, f: f32) -> [f32; CHANNELS] {
         let Some(&(_, first)) = self.at.first() else {
-            return [1.0, 0.0, 0.0, 0.0];
+            // Nothing was drawn: a pen at rest.
+            return pen_row(1.0, Vec2::ZERO, 0.0);
         };
         let f = f.clamp(0.0, 1.0);
         let i = self.at.partition_point(|&(x, _)| x < f);
@@ -208,14 +207,7 @@ fn realize(
 
     // Through the fitter's own door, which is `clamped`: this is a least-squares solve
     // too, and overshoots the same way.
-    (0..m)
-        .map(|j| {
-            crate::path::control_point_from(
-                Vec2::new(geom[(j, 0)], geom[(j, 1)]),
-                std::array::from_fn(|d| attr[(j, d)]),
-            )
-        })
-        .collect()
+    control_points(&geom, &attr)
 }
 
 /// Cumulative chord length along `pts`, normalized to `[0, 1]`.
