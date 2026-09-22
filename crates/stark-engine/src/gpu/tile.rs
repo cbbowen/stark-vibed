@@ -224,6 +224,19 @@ struct GpuTex {
     source: AllocSource,
 }
 
+impl GpuTex {
+    /// The texture behind the handle — for the copies and the block write that encode
+    /// a command *in here* and hand it out to nobody ([`TexHandle`]).
+    ///
+    /// # Panics
+    /// Never, in the borrow this returns into: `tex` is an `Option` only so [`Drop`]
+    /// can move the texture back to the free list, and nothing holds a `&GpuTex` past
+    /// that. The `expect` is what says so in one place rather than at each use.
+    fn texture(&self) -> &wgpu::Texture {
+        self.tex.as_ref().expect("a live handle holds its texture")
+    }
+}
+
 impl Drop for GpuTex {
     /// Return the texture to its format's free list. **Nothing in here may panic.**
     /// A tile handle is as likely to be dropped by an unwind as by an ordinary
@@ -295,11 +308,7 @@ impl TexHandle {
         src: &wgpu::Texture,
         origin: wgpu::Origin3d,
     ) {
-        let dst = self
-            .0
-            .tex
-            .as_ref()
-            .expect("a live handle holds its texture");
+        let dst = self.0.texture();
         encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: src,
@@ -333,11 +342,7 @@ impl TexHandle {
         dst_origin: wgpu::Origin3d,
         extent: wgpu::Extent3d,
     ) {
-        let tex = self
-            .0
-            .tex
-            .as_ref()
-            .expect("a live handle holds its texture");
+        let tex = self.0.texture();
         encoder.copy_texture_to_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: tex,
@@ -373,11 +378,7 @@ impl TexHandle {
     ///
     /// Panics unless `bytes` is exactly one block.
     pub(crate) fn write_block(&self, queue: &wgpu::Queue, bytes: &[u8]) {
-        let dst = self
-            .0
-            .tex
-            .as_ref()
-            .expect("a live handle holds its texture");
+        let dst = self.0.texture();
         let texel = dst
             .format()
             .block_copy_size(None)
@@ -526,7 +527,7 @@ impl TilePairHandle {
     /// call is the decoded texels. `readback` keeps the row-padding arithmetic.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn read_channels(&self, ctx: &crate::gpu::context::GpuContext) -> TileChannels {
-        use crate::gpu::readback::{begin_read, decode_rgba16f, map_blocking, take_rows};
+        use crate::gpu::readback::{decode_rgba16f, read_one_blocking};
         let block = crate::view::Extent2::new(TILE_TEX, TILE_TEX);
         let read = |tex: &wgpu::Texture, lanes: u32| {
             // The formats named, not their byte sizes: the decode is `f16` pairs, and
@@ -540,20 +541,9 @@ impl TilePairHandle {
                 "this readback decodes f16 lanes; {:?} is not {lanes} of them",
                 tex.format(),
             );
-            let (buffer, rows) = begin_read(ctx, &[tex], block);
-            map_blocking(ctx, &buffer);
-            decode_rgba16f(
-                &take_rows(buffer, &rows)
-                    .pop()
-                    .expect("one texture in, one string out"),
-            )
+            decode_rgba16f(&read_one_blocking(ctx, tex, block))
         };
-        let tex = |h: &TexHandle| {
-            h.0.tex
-                .as_ref()
-                .expect("a live handle holds its texture")
-                .clone()
-        };
+        let tex = |h: &TexHandle| h.0.texture().clone();
         TileChannels {
             color: read(&tex(&self.0.color), 4),
             height: read(&tex(&self.0.aux), 1),

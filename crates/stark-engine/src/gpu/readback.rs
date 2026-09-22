@@ -210,14 +210,18 @@ pub(crate) async fn read_rgba8(
         .expect("one texture in, one string out"))
 }
 
-/// Blocking readback, for native callers only — the golden tests, which are native by
-/// construction (adapter-specific goldens).
+/// Copy **one** texture back and block until its bytes are here, tightly packed.
 ///
-/// Compiled out on wasm: WebGPU has no blocking poll, and a `cfg` is the only guard
-/// that makes calling it from the frontend a compile error rather than a runtime
-/// `OperationError`.
+/// The whole of the blocking read: every caller below and in `gpu::tile` was this
+/// sequence written out, and the one that got it wrong would not fail — `take_rows`
+/// reads whatever the buffer holds.
+///
+/// Native only, for the golden tests, which are native by construction
+/// (adapter-specific goldens). Compiled out on wasm: WebGPU has no blocking poll, and a
+/// `cfg` is the only guard that makes calling it from the frontend a compile error
+/// rather than a runtime `OperationError`.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn read_rgba8_blocking(
+pub(super) fn read_one_blocking(
     ctx: &GpuContext,
     texture: &wgpu::Texture,
     size: Extent2,
@@ -229,9 +233,18 @@ pub(crate) fn read_rgba8_blocking(
         .expect("one texture in, one string out")
 }
 
-/// Blocking readback of one `Rgba16Float` texture to `f32` — four per texel, rows
-/// top-down — on [`read_rgba8_blocking`]'s terms: native, for the suite. The format
-/// is asserted here for [`read_many_rgba16f`]'s reason.
+/// [`read_one_blocking`] of an 8-bit, 4-channel texture — what a golden compares.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn read_rgba8_blocking(
+    ctx: &GpuContext,
+    texture: &wgpu::Texture,
+    size: Extent2,
+) -> Vec<u8> {
+    read_one_blocking(ctx, texture, size)
+}
+
+/// [`read_one_blocking`] of one `Rgba16Float` texture, decoded to `f32` — four per
+/// texel, rows top-down. The format is asserted here for [`read_many_rgba16f`]'s reason.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn read_rgba16f_blocking(
     ctx: &GpuContext,
@@ -243,12 +256,7 @@ pub(crate) fn read_rgba16f_blocking(
         wgpu::TextureFormat::Rgba16Float,
         "read_rgba16f_blocking decodes four halves a texel",
     );
-    let (buffer, rows) = begin_read(ctx, &[texture], size);
-    map_blocking(ctx, &buffer);
-    let bytes = take_rows(buffer, &rows)
-        .pop()
-        .expect("one texture in, one string out");
-    decode_rgba16f(&bytes)
+    decode_rgba16f(&read_one_blocking(ctx, texture, size))
 }
 
 /// Map `buffer` and block until it is, panicking on either failure.
@@ -256,14 +264,24 @@ pub(crate) fn read_rgba16f_blocking(
 /// `expect` rather than `Result` for its caller's reason: this path is reached only
 /// from tests and goldens, where a device that cannot be read is the finding and not
 /// something to route around.
+///
+/// **The outcome is carried out of the callback rather than asserted inside it.** wgpu
+/// runs a map callback from within `poll`, so a panic there unwinds through the
+/// driver's own frames — which is at best a backtrace that names none of this and at
+/// worst an abort. The callback only sends; `poll` returning is what guarantees it ran,
+/// and the verdict is read here.
 #[cfg(not(target_arch = "wasm32"))]
 pub(super) fn map_blocking(ctx: &GpuContext, buffer: &wgpu::Buffer) {
-    buffer
-        .slice(..)
-        .map_async(wgpu::MapMode::Read, |r| r.expect("map readback buffer"));
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    buffer.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
     ctx.device
         .poll(wgpu::PollType::wait_indefinitely())
         .expect("poll device");
+    rx.try_recv()
+        .expect("a waiting poll returns only once the map callback has run")
+        .expect("map readback buffer");
 }
 
 pub(super) fn decode_rgba16f(bytes: &[u8]) -> Vec<f32> {
