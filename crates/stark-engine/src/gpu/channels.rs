@@ -209,6 +209,14 @@ impl<'a> Targets<'a> {
     }
 }
 
+/// The trio as a pass writes it, cleared, the residual at location 2 where the space
+/// has one.
+impl<'a> From<Targets<'a>> for desc::Attachments<'a> {
+    fn from(t: Targets<'a>) -> Self {
+        desc::Attachments::cleared([Some(t.color), Some(t.aux), t.resid])
+    }
+}
+
 /// The 1×1 stand-ins a pass binds where a tile does not exist — one per persistent
 /// tile channel.
 ///

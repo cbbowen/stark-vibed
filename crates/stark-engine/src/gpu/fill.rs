@@ -32,7 +32,6 @@ use stark_model::document::{FillOp, GradientAxis, Parcel};
 use stark_model::document::{SelectionMode, SelectionOp, SelectionShape};
 
 // Generated from `fill.wesl`'s own declarations (§6.7).
-use stark_shaders::Stages;
 use stark_shaders::mirror::fill::Fill as FillUniform;
 use stark_shaders::mirror::fill::Tile as TileUniform;
 use stark_shaders::mirror::fill::binding as f;
@@ -57,8 +56,7 @@ pub(crate) struct FillRenderer {
     /// The channel formats this fill's tiles carry — the color space's, resolved
     /// once (§6.7).
     formats: ChannelFormats,
-    pipeline: wgpu::RenderPipeline,
-    bindings: desc::Bindings,
+    pass: desc::OnePass,
     /// The base of a tile the layer does not have yet, so a fill onto virgin canvas
     /// runs the same shader as a fill onto paint.
     zeroes: Zeroes,
@@ -84,30 +82,21 @@ impl FillRenderer {
         // `TILE` is the one thing the shader does not decide: `f` and `tile` are both
         // `var<uniform>`, and the difference is that the first is one uniform for the
         // whole fill while the second is a per-tile slot of one (`uniforms::Slot`).
-        let bindings = desc::Bindings::of(
+        let pass = desc::OnePass::fullscreen(
             device,
-            "stark fill bgl",
-            Stages::Render(fill.vs_main, fill.fs_main),
-            fd::F,
-            &[fd::TILE],
-        );
-        let layout = desc::pipeline_layout_of(device, "stark fill layout", &[&bindings]);
-        let targets = formats.targets();
-        let pipeline = desc::fullscreen_pipeline(
-            device,
-            "stark fill pipeline",
-            &layout,
+            "stark fill",
             &shader,
             (fill.vs_main, fill.fs_main),
-            &targets,
+            fd::F,
+            &[fd::TILE],
+            &formats.targets(),
         );
 
         Self {
             ctx: ctx.clone(),
             color_space,
             formats,
-            pipeline,
-            bindings,
+            pass,
             zeroes,
             scratch,
             selection,
@@ -205,25 +194,26 @@ impl FillRenderer {
             // uniform above already carries (`SelectionRenderer::gate_for`).
             let gate_mask = self.selection.mask_for(gate, *coord);
             let dst = Channels::acquire(pool, self.formats, AllocSource::FillDestination);
-            let bg = self.bindings.group(device, "stark fill bg", |b| match b {
-                f::F => fill.window(),
-                f::BASE_COLOR => wgpu::BindingResource::TextureView(under.color),
-                f::BASE_AUX => wgpu::BindingResource::TextureView(under.aux),
-                f::REGION => wgpu::BindingResource::TextureView(region_mask.view()),
-                f::GATE => wgpu::BindingResource::TextureView(gate_mask.view()),
-                f::BASE_RESID => wgpu::BindingResource::TextureView(
-                    under.resid.expect("a residual build has a base residual"),
-                ),
-                f::TILE => tile_slots.window(),
-                other => unreachable!("`FILL_SLOTS` lists no binding {other}"),
-            });
-            let offsets = [tile_slots.offset(i)];
+            let bg = self
+                .pass
+                .bindings
+                .group(device, "stark fill bg", |b| match b {
+                    f::F => fill.window(),
+                    f::BASE_COLOR => wgpu::BindingResource::TextureView(under.color),
+                    f::BASE_AUX => wgpu::BindingResource::TextureView(under.aux),
+                    f::REGION => wgpu::BindingResource::TextureView(region_mask.view()),
+                    f::GATE => wgpu::BindingResource::TextureView(gate_mask.view()),
+                    f::BASE_RESID => wgpu::BindingResource::TextureView(
+                        under.resid.expect("a residual build has a base residual"),
+                    ),
+                    f::TILE => tile_slots.window(),
+                    other => unreachable!("`FILL_SLOTS` lists no binding {other}"),
+                });
             scope.fullscreen_pass(
                 "stark fill tile",
-                &self.pipeline,
-                desc::Bound::new(std::slice::from_ref(&bg), &offsets),
                 dst.targets(),
-                desc::CLEAR,
+                &self.pass.pipeline,
+                desc::Bound::dynamic(&bg, &[tile_slots.offset(i)]),
             );
             tiles = tiles.insert(*coord, dst.into_tile());
             scope.tile_done();

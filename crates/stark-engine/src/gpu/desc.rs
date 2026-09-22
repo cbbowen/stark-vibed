@@ -7,7 +7,9 @@
 //! its neighbours.
 //!
 //! That is the whole argument for the module: a shared descriptor makes the meant
-//! differences the only ones written down.
+//! differences the only ones written down. The same goes for the one pass shape
+//! written everywhere, the fullscreen triangle: [`OnePass`] builds its layout and
+//! pipeline from one pair of entry points, and [`fullscreen_pass`] encodes it.
 //!
 //! **No layout is written here at all**, every one is read off the shader
 //! ([`stark_shaders::layout_of`], §6.10). What [`Bindings`] adds is that the entries
@@ -180,6 +182,35 @@ impl Bindings {
     ) -> wgpu::BindGroup {
         bind_group_of(device, label, &self.layout, &self.entries, resource)
     }
+
+    /// Set `group` — one built over this layout — at the `@group` this layout
+    /// describes, so no call site counts the index.
+    pub(crate) fn set(
+        &self,
+        pass: &mut impl SetBindGroup,
+        group: &wgpu::BindGroup,
+        offsets: &[u32],
+    ) {
+        pass.set_group(self.group, group, offsets);
+    }
+}
+
+/// A pass a bind group is set on. `wgpu` gives its render and compute passes no
+/// common trait, and [`Bindings::set`] serves both.
+pub(crate) trait SetBindGroup {
+    fn set_group(&mut self, index: u32, group: &wgpu::BindGroup, offsets: &[u32]);
+}
+
+impl SetBindGroup for wgpu::RenderPass<'_> {
+    fn set_group(&mut self, index: u32, group: &wgpu::BindGroup, offsets: &[u32]) {
+        self.set_bind_group(index, group, offsets);
+    }
+}
+
+impl SetBindGroup for wgpu::ComputePass<'_> {
+    fn set_group(&mut self, index: u32, group: &wgpu::BindGroup, offsets: &[u32]) {
+        self.set_bind_group(index, group, offsets);
+    }
 }
 
 /// The bind groups one pass sets, in `@group` order, with the dynamic offsets
@@ -203,7 +234,12 @@ impl<'a> Bound<'a> {
 
     /// One group, no dynamic offset.
     pub(crate) fn one(group: &'a wgpu::BindGroup) -> Self {
-        Self::new(std::slice::from_ref(group), &[])
+        Self::dynamic(group, &[])
+    }
+
+    /// One group at `offsets` — a per-draw slot of a staged uniform.
+    pub(crate) fn dynamic(group: &'a wgpu::BindGroup, offsets: &'a [u32]) -> Self {
+        Self::new(std::slice::from_ref(group), offsets)
     }
 
     pub(crate) fn set(self, pass: &mut wgpu::RenderPass<'_>) {
@@ -288,6 +324,101 @@ pub(crate) fn attach(
         depth_slice: None,
         ops,
     }
+}
+
+/// The most color targets a pass here attaches: the channel trio and the ceiling
+/// lane (§6.2, §6.7).
+const MAX_ATTACHMENTS: usize = 4;
+
+/// The color attachments of one render pass, **every one cleared** — a channel trio
+/// (from [`Targets`](crate::gpu::channels::Targets)), one target (from a
+/// `&TextureView`), or one target cleared to a value that means something
+/// ([`Self::cleared_to`]).
+///
+/// A fixed array rather than a `Vec`: one is built per pass, and a pass per tile is
+/// the common case (§6.2).
+pub(crate) struct Attachments<'a> {
+    slots: [Option<wgpu::RenderPassColorAttachment<'a>>; MAX_ATTACHMENTS],
+    /// Up to and including the last attached location, so a trailing hole is never
+    /// handed to `wgpu`.
+    len: usize,
+}
+
+impl<'a> Attachments<'a> {
+    /// `targets` in `@location` order, each cleared to transparent; a `None` leaves its
+    /// location unattached.
+    ///
+    /// # Panics
+    /// If `targets` names more than [`MAX_ATTACHMENTS`] locations.
+    pub(crate) fn cleared(
+        targets: impl IntoIterator<Item = Option<&'a wgpu::TextureView>>,
+    ) -> Self {
+        let mut out = Self {
+            slots: [const { None }; MAX_ATTACHMENTS],
+            len: 0,
+        };
+        for (location, target) in targets.into_iter().enumerate() {
+            assert!(
+                location < MAX_ATTACHMENTS,
+                "a pass attaches at most {MAX_ATTACHMENTS} targets",
+            );
+            if let Some(view) = target {
+                out.slots[location] = Some(attach(view, CLEAR));
+                out.len = location + 1;
+            }
+        }
+        out
+    }
+
+    /// One target cleared to `color`, for where the clear value carries meaning: the
+    /// coverage outside a selection's own tiles (§6.8).
+    pub(crate) fn cleared_to(view: &'a wgpu::TextureView, color: wgpu::Color) -> Self {
+        let mut slots = [const { None }; MAX_ATTACHMENTS];
+        slots[0] = Some(attach(view, clear_to(color)));
+        Self { slots, len: 1 }
+    }
+
+    fn as_slice(&self) -> &[Option<wgpu::RenderPassColorAttachment<'a>>] {
+        &self.slots[..self.len]
+    }
+}
+
+impl<'a> From<&'a wgpu::TextureView> for Attachments<'a> {
+    fn from(view: &'a wgpu::TextureView) -> Self {
+        Self::cleared([Some(view)])
+    }
+}
+
+/// Begin a render pass writing `into`.
+pub(crate) fn begin_pass<'e, 'a>(
+    encoder: &'e mut wgpu::CommandEncoder,
+    label: &str,
+    into: impl Into<Attachments<'a>>,
+) -> wgpu::RenderPass<'e> {
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(label),
+        color_attachments: into.into().as_slice(),
+        ..Default::default()
+    })
+}
+
+/// Encode one **fullscreen pass**: `pipeline` over `bound`, drawn as the fullscreen
+/// triangle into `into` — the whole of what a pass that computes every texel of its
+/// targets records ([`fullscreen_pipeline`]).
+///
+/// Clears rather than loads: the triangle writes every texel, so what was there is
+/// never read.
+pub(crate) fn fullscreen_pass<'a>(
+    encoder: &mut wgpu::CommandEncoder,
+    label: &str,
+    into: impl Into<Attachments<'a>>,
+    pipeline: &wgpu::RenderPipeline,
+    bound: Bound<'_>,
+) {
+    let mut pass = begin_pass(encoder, label, into);
+    pass.set_pipeline(pipeline);
+    bound.set(&mut pass);
+    pass.draw(FULLSCREEN_VERTICES, 0..1);
 }
 
 // ---- pipelines -----------------------------------------------------------------
@@ -424,9 +555,13 @@ fn targets_agree(label: &str, fs: EntryPoint, targets: &[Option<wgpu::ColorTarge
     );
 }
 
+/// The vertices of the fullscreen triangle every [`fullscreen_pipeline`] draws.
+pub(crate) const FULLSCREEN_VERTICES: std::ops::Range<u32> = 0..3;
+
 /// [`render_pipeline`] for the **fullscreen triangle** shape: no vertex buffers, no
-/// instancing, `draw(0..3, 0..1)`. Ten of the passes here are this — every one that
-/// computes a whole target from what it reads rather than rasterizing geometry.
+/// instancing, [`FULLSCREEN_VERTICES`] once. Ten of the passes here are this — every
+/// one that computes a whole target from what it reads rather than rasterizing
+/// geometry.
 pub(crate) fn fullscreen_pipeline(
     device: &wgpu::Device,
     label: &str,
@@ -448,6 +583,40 @@ pub(crate) fn fullscreen_pipeline(
             targets,
         },
     )
+}
+
+/// A fullscreen pass's pipeline and the one bind group layout it binds, **both built
+/// from one vertex/fragment pair** — so the layout is derived from exactly the entry
+/// points the pipeline runs, which two separately written pairs could not promise.
+#[derive(Clone)]
+pub(crate) struct OnePass {
+    pub(crate) bindings: Bindings,
+    pub(crate) pipeline: wgpu::RenderPipeline,
+}
+
+impl OnePass {
+    /// [`Bindings::of`] `anchor`'s group and a [`fullscreen_pipeline`] over it, from
+    /// one `(vs, fs)` pair of `module`'s.
+    pub(crate) fn fullscreen(
+        device: &wgpu::Device,
+        label: &str,
+        module: &Module,
+        (vs, fs): (EntryPoint, EntryPoint),
+        anchor: stark_shaders::Binding,
+        dynamic: &[stark_shaders::Binding],
+        targets: &[Option<wgpu::ColorTargetState>],
+    ) -> Self {
+        let bindings = Bindings::of(
+            device,
+            &format!("{label} bgl"),
+            Stages::Render(vs, fs),
+            anchor,
+            dynamic,
+        );
+        let layout = pipeline_layout_of(device, &format!("{label} layout"), &[&bindings]);
+        let pipeline = fullscreen_pipeline(device, label, &layout, module, (vs, fs), targets);
+        Self { bindings, pipeline }
+    }
 }
 
 /// A compute pipeline over one kernel, with the fields no dispatch here varies filled
@@ -480,7 +649,7 @@ pub(crate) fn compute_pipeline(
 }
 
 /// An instanced quad drawn as a triangle strip — the shape every pass that
-/// rasterizes per-tile geometry takes (`draw(0..4, i..i+1)`).
+/// rasterizes per-tile geometry takes ([`QUAD_VERTICES`], one instance a draw).
 ///
 /// Spelled out field by field because a `const` cannot call `Default::default()`, so
 /// a field here disagreeing with that default would alter what ten pipelines
@@ -499,6 +668,9 @@ pub(crate) const QUAD_STRIP: wgpu::PrimitiveState = wgpu::PrimitiveState {
     polygon_mode: wgpu::PolygonMode::Fill,
     conservative: false,
 };
+
+/// The vertices of one [`QUAD_STRIP`] quad.
+pub(crate) const QUAD_VERTICES: std::ops::Range<u32> = 0..4;
 
 /// A color target that replaces what it writes — the pass computes the finished
 /// texel, so there is nothing for fixed-function blending to do.

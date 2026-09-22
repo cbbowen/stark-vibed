@@ -46,12 +46,12 @@ use crate::gpu::selection::{MaskSource, SelectionRenderer, outside_clear};
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TileMap, TilePool, mask_tex_origin};
 use stark_model::document::{Homography, TransformMap};
 use stark_model::geom::{Affine2, Mat2, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
-use stark_shaders::Stages;
 use stark_shaders::mirror::transform::binding as t;
 use stark_shaders::mirror::transform::decl as td;
 use stark_shaders::mirror::transform::{
     Combine as CombineUniform, Gated as GatedUniform, Quad as QuadUniform,
 };
+use stark_shaders::{EntryPoint, Stages};
 
 /// One source tile's interior quad, drawn into `dest`'s texture (paint and mask
 /// tiles share the `TILE_TEX` geometry).
@@ -200,20 +200,24 @@ impl<T: bytemuck::Pod> Slots<T> {
     }
 }
 
-/// [`Slots`] with the one group-0 bind group its draws share: the quad and gated
-/// passes' group is the uniform and the sampler, nothing per draw.
-struct Group<T> {
+/// [`Slots`] with the one group-0 bind group its draws share, and the layout it was
+/// built over: the quad and gated passes' group is the uniform and the sampler,
+/// nothing per draw.
+struct Group<'r, T> {
     slots: Slots<T>,
     bg: Option<wgpu::BindGroup>,
+    bindings: &'r desc::Bindings,
 }
 
-impl<T: bytemuck::Pod> Group<T> {
+impl<T: bytemuck::Pod> Group<'_, T> {
     fn take(&mut self) -> u32 {
         self.slots.take()
     }
 
-    fn bg(&self) -> &wgpu::BindGroup {
-        self.bg.as_ref().expect("a draw was staged for it")
+    /// Bind the group at one draw's slot ([`Self::take`]).
+    fn set(&self, pass: &mut wgpu::RenderPass<'_>, offset: u32) {
+        let bg = self.bg.as_ref().expect("a draw was staged for it");
+        self.bindings.set(pass, bg, &[offset]);
     }
 
     fn spent(&self) -> bool {
@@ -349,7 +353,9 @@ pub(crate) struct TransformRenderer {
     formats: ChannelFormats,
     parcel_pipeline: wgpu::RenderPipeline,
     mask_pipeline: wgpu::RenderPipeline,
-    combine_pipeline: wgpu::RenderPipeline,
+    /// The cut and stack of one destination tile, the only pass whose layout no
+    /// other pipeline shares.
+    combine: desc::OnePass,
     /// The rect-scoped maps' passes (§16.8, §16.9): pieces through `vs_gated`,
     /// and the mask's residue + max-blended moved coverage.
     parcel_gated_pipeline: wgpu::RenderPipeline,
@@ -364,7 +370,6 @@ pub(crate) struct TransformRenderer {
     gated_bindings: desc::Bindings,
     src_bindings: desc::Bindings,
     mask_src_bindings: desc::Bindings,
-    combine_bindings: desc::Bindings,
     sampler: wgpu::Sampler,
     /// The base of a virgin destination and the parcel of a cut-only tile, so the
     /// combine is one shader whatever exists.
@@ -388,37 +393,46 @@ impl TransformRenderer {
         let xf = stark_shaders::transform(color_space.resid());
         let shader = desc::Module::new(device, "stark transform", xf);
 
-        // The five layouts, each off the pipelines that share it — safely, every slot
+        // Each pipeline's stages, written once for the layouts that serve it and for
+        // the pipeline itself.
+        let parcel = (xf.vs_quad, xf.fs_parcel);
+        let mask = (xf.vs_quad, xf.fs_mask);
+        let parcel_gated = (xf.vs_gated, xf.fs_parcel_gated);
+        let mask_gated = (xf.vs_gated, xf.fs_mask_gated);
+        let mask_base = (xf.vs_fill, xf.fs_mask_base);
+
+        // Four layouts, each off the pipelines that share it — safely, every slot
         // between them being read-only. Group 0 is shared along one axis (the affine
         // pipelines against the rect-scoped ones, which is why `Quad` and `Gated` need
         // layouts of their own) and group 1 along the other (what carries a parcel
         // against what carries only a mask).
-        let parcel = Stages::Render(xf.vs_quad, xf.fs_parcel);
-        let mask = Stages::Render(xf.vs_quad, xf.fs_mask);
-        let parcel_gated = Stages::Render(xf.vs_gated, xf.fs_parcel_gated);
-        let mask_gated = Stages::Render(xf.vs_gated, xf.fs_mask_gated);
-        let mask_base = Stages::Render(xf.vs_fill, xf.fs_mask_base);
-        let affine = [parcel, mask];
-        let rect_scoped = [parcel_gated, mask_gated, mask_base];
-        let parcels = [parcel, parcel_gated];
-        let masks = [mask, mask_gated, mask_base];
-        let shared = |label: &str, over: &[Stages], anchor, dynamic: &[_]| {
-            desc::Bindings::shared_by(device, label, over, anchor, dynamic)
+        let shared = |label: &str, over: &[(EntryPoint, EntryPoint)], anchor, dynamic: &[_]| {
+            let over: Vec<Stages> = over
+                .iter()
+                .map(|&(vs, fs)| Stages::Render(vs, fs))
+                .collect();
+            desc::Bindings::shared_by(device, label, &over, anchor, dynamic)
         };
-        let quad_bindings = shared("stark transform quad bgl", &affine, td::Q, &[td::Q]);
-        let gated_bindings = shared("stark transform gated bgl", &rect_scoped, td::QG, &[td::QG]);
+        let quad_bindings = shared("stark transform quad bgl", &[parcel, mask], td::Q, &[td::Q]);
+        let gated_bindings = shared(
+            "stark transform gated bgl",
+            &[parcel_gated, mask_gated, mask_base],
+            td::QG,
+            &[td::QG],
+        );
         // The source tile being carried, at group 1 — its channels and the mask over
         // it, all sampled, since the parcel resamples under the map (§16).
-        let src_bindings = shared("stark transform src bgl", &parcels, td::SRC_COLOR, &[]);
-        let mask_src_bindings = shared("stark transform mask src bgl", &masks, td::SRC_MASK, &[]);
-        // The combine's inputs claim group 0 from 2 up, the quad passes never seeing
-        // them (`transform.wesl`'s header).
-        let combine_bindings = desc::Bindings::of(
-            device,
-            "stark transform combine bgl",
-            Stages::Render(xf.vs_fill, xf.fs_combine),
-            td::BASE_COLOR,
-            &[td::QC],
+        let src_bindings = shared(
+            "stark transform src bgl",
+            &[parcel, parcel_gated],
+            td::SRC_COLOR,
+            &[],
+        );
+        let mask_src_bindings = shared(
+            "stark transform mask src bgl",
+            &[mask, mask_gated, mask_base],
+            td::SRC_MASK,
+            &[],
         );
 
         let gated_layout = desc::pipeline_layout_of(
@@ -441,11 +455,6 @@ impl TransformRenderer {
             "stark transform mask layout",
             &[&quad_bindings, &mask_src_bindings],
         );
-        let combine_layout = desc::pipeline_layout_of(
-            device,
-            "stark transform combine layout",
-            &[&combine_bindings],
-        );
 
         // A negative-determinant affine (a flip) reverses winding, so both faces must
         // draw — which `QUAD_STRIP` already leaves unculled.
@@ -457,7 +466,7 @@ impl TransformRenderer {
         // parcel and the combine — write the residual as a third target where the
         // space has one (§6.7).
         let paint = formats.targets();
-        let mask = [target(MASK_FORMAT)];
+        let mask_target = [target(MASK_FORMAT)];
         // Moved mask coverage lands with **max** blending over the residue: the soft
         // union of what stayed and what arrived (§16.8), and — unlike the paint
         // parcels — safe under any draw order.
@@ -475,7 +484,10 @@ impl TransformRenderer {
         )];
         // One quad per source unit, forward-rasterized; and the two fullscreen passes
         // that read a whole destination tile back (`vs_fill`).
-        let quad = |label, layout, fs, targets: &[Option<wgpu::ColorTargetState>], vs| {
+        let quad = |label,
+                    layout,
+                    (vs, fs): (EntryPoint, EntryPoint),
+                    targets: &[Option<wgpu::ColorTargetState>]| {
             desc::render_pipeline(
                 device,
                 desc::RenderPipe {
@@ -490,40 +502,29 @@ impl TransformRenderer {
                 },
             )
         };
-        let parcel_pipeline = quad(
-            "stark transform parcel",
-            &quad_layout,
-            xf.fs_parcel,
-            &paint,
-            xf.vs_quad,
-        );
-        let mask_pipeline = quad(
-            "stark transform mask",
-            &mask_layout,
-            xf.fs_mask,
-            &mask,
-            xf.vs_quad,
-        );
+        let parcel_pipeline = quad("stark transform parcel", &quad_layout, parcel, &paint);
+        let mask_pipeline = quad("stark transform mask", &mask_layout, mask, &mask_target);
         let parcel_gated_pipeline = quad(
             "stark transform parcel gated",
             &gated_layout,
-            xf.fs_parcel_gated,
+            parcel_gated,
             &paint,
-            xf.vs_gated,
         );
         let mask_gated_pipeline = quad(
             "stark transform mask gated",
             &gated_mask_layout,
-            xf.fs_mask_gated,
+            mask_gated,
             &mask_union,
-            xf.vs_gated,
         );
-        let combine_pipeline = desc::fullscreen_pipeline(
+        // The combine's inputs claim group 0 from 2 up, the quad passes never seeing
+        // them (`transform.wesl`'s header).
+        let combine = desc::OnePass::fullscreen(
             device,
             "stark transform combine",
-            &combine_layout,
             &shader,
             (xf.vs_fill, xf.fs_combine),
+            td::BASE_COLOR,
+            &[td::QC],
             &paint,
         );
         // The residue is a *gated* pass — it reads `qg`'s source rect (`fs_mask_base`)
@@ -533,8 +534,8 @@ impl TransformRenderer {
             "stark transform mask base",
             &gated_mask_layout,
             &shader,
-            (xf.vs_fill, xf.fs_mask_base),
-            &mask,
+            mask_base,
+            &mask_target,
         );
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -551,7 +552,7 @@ impl TransformRenderer {
             formats,
             parcel_pipeline,
             mask_pipeline,
-            combine_pipeline,
+            combine,
             parcel_gated_pipeline,
             mask_gated_pipeline,
             mask_base_pipeline,
@@ -559,7 +560,6 @@ impl TransformRenderer {
             gated_bindings,
             src_bindings,
             mask_src_bindings,
-            combine_bindings,
             sampler,
             zeroes,
             scratch,
@@ -1001,14 +1001,14 @@ impl TransformRenderer {
     /// The group-0 slots of one pass family for this `apply`, and the one bind group
     /// its draws share: `uniforms` at `at` (`Q` or `QG`), the sampler beside it
     /// ([`Slots`]).
-    fn group<T: bytemuck::Pod>(
+    fn group<'r, T: bytemuck::Pod>(
         &self,
         scope: &mut SubmitScope,
-        bindings: &desc::Bindings,
+        bindings: &'r desc::Bindings,
         at: u32,
         label: &'static str,
         uniforms: &[T],
-    ) -> Group<T> {
+    ) -> Group<'r, T> {
         let slots = Slots::stage(scope, label, uniforms);
         let bg = slots.staged.as_ref().map(|staged| {
             bindings.group(&self.ctx.device, label, |i| match i {
@@ -1017,7 +1017,11 @@ impl TransformRenderer {
                 other => unreachable!("neither quad group holds binding {other}"),
             })
         });
-        Group { slots, bg }
+        Group {
+            slots,
+            bg,
+            bindings,
+        }
     }
 
     /// Rasterize the pieces reaching `dest` into a fresh scratch pair —
@@ -1028,7 +1032,7 @@ impl TransformRenderer {
         scope: &mut SubmitScope,
         from: &mut Source<'_>,
         g: &Gated<'_>,
-        pieces: &mut Group<GatedUniform>,
+        pieces: &mut Group<'_, GatedUniform>,
         unit_idxs: &[usize],
     ) -> Option<Parcel> {
         if unit_idxs.is_empty() {
@@ -1064,20 +1068,16 @@ impl TransformRenderer {
             draws.push((offset, src_bg));
         }
 
-        let targets = parcel.targets();
-        let parcel_att = targets.attachments(desc::CLEAR);
-        let mut pass = scope
-            .encoder()
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark transform parcel gated"),
-                color_attachments: &parcel_att[..targets.count()],
-                ..Default::default()
-            });
+        let mut pass = desc::begin_pass(
+            scope.encoder(),
+            "stark transform parcel gated",
+            parcel.targets(),
+        );
         pass.set_pipeline(&self.parcel_gated_pipeline);
         for (offset, src_bg) in &draws {
-            pass.set_bind_group(0, pieces.bg(), &[*offset]);
-            pass.set_bind_group(1, src_bg, &[]);
-            pass.draw(0..4, 0..1);
+            pieces.set(&mut pass, *offset);
+            self.src_bindings.set(&mut pass, src_bg, &[]);
+            pass.draw(desc::QUAD_VERTICES, 0..1);
         }
         drop(pass);
         Some(parcel)
@@ -1091,7 +1091,7 @@ impl TransformRenderer {
         scope: &mut SubmitScope,
         selection: &Selection,
         g: &Gated<'_>,
-        pieces: &mut Group<GatedUniform>,
+        pieces: &mut Group<'_, GatedUniform>,
         rewrite: &(TileCoord, Vec<usize>),
         dst: &crate::gpu::tile::MaskHandle,
     ) {
@@ -1108,22 +1108,16 @@ impl TransformRenderer {
             draws.push((pieces.take(), self.mask_src_bg(src.view())));
         }
 
-        let mut pass = scope
-            .encoder()
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark transform mask gated"),
-                color_attachments: &[Some(desc::attach(dst.view(), desc::CLEAR))],
-                ..Default::default()
-            });
+        let mut pass = desc::begin_pass(scope.encoder(), "stark transform mask gated", dst.view());
         pass.set_pipeline(&self.mask_base_pipeline);
-        pass.set_bind_group(0, pieces.bg(), &[base_draw.0]);
-        pass.set_bind_group(1, &base_draw.1, &[]);
-        pass.draw(0..3, 0..1);
+        pieces.set(&mut pass, base_draw.0);
+        self.mask_src_bindings.set(&mut pass, &base_draw.1, &[]);
+        pass.draw(desc::FULLSCREEN_VERTICES, 0..1);
         pass.set_pipeline(&self.mask_gated_pipeline);
         for (offset, src_bg) in &draws {
-            pass.set_bind_group(0, pieces.bg(), &[*offset]);
-            pass.set_bind_group(1, src_bg, &[]);
-            pass.draw(0..4, 0..1);
+            pieces.set(&mut pass, *offset);
+            self.mask_src_bindings.set(&mut pass, src_bg, &[]);
+            pass.draw(desc::QUAD_VERTICES, 0..1);
         }
     }
 
@@ -1159,7 +1153,7 @@ impl TransformRenderer {
         &self,
         scope: &mut SubmitScope,
         from: &mut Source<'_>,
-        quads: &mut Group<QuadUniform>,
+        quads: &mut Group<'_, QuadUniform>,
         sources: &[TileCoord],
     ) -> Option<Parcel> {
         if sources.is_empty() {
@@ -1194,20 +1188,13 @@ impl TransformRenderer {
             draws.push((offset, src_bg));
         }
 
-        let targets = parcel.targets();
-        let parcel_att = targets.attachments(desc::CLEAR);
-        let mut pass = scope
-            .encoder()
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark transform parcel"),
-                color_attachments: &parcel_att[..targets.count()],
-                ..Default::default()
-            });
+        let mut pass =
+            desc::begin_pass(scope.encoder(), "stark transform parcel", parcel.targets());
         pass.set_pipeline(&self.parcel_pipeline);
         for (offset, src_bg) in &draws {
-            pass.set_bind_group(0, quads.bg(), &[*offset]);
-            pass.set_bind_group(1, src_bg, &[]);
-            pass.draw(0..4, 0..1);
+            quads.set(&mut pass, *offset);
+            self.src_bindings.set(&mut pass, src_bg, &[]);
+            pass.draw(desc::QUAD_VERTICES, 0..1);
         }
         drop(pass);
         Some(parcel)
@@ -1239,7 +1226,8 @@ impl TransformRenderer {
         // factor the parcel side took at the source (`combine_uniform` above).
         let base_mask = self.selection.mask_for(from.selection, dest);
         let bg = self
-            .combine_bindings
+            .combine
+            .bindings
             .group(device, "stark transform combine bg", |i| match i {
                 t::BASE_COLOR => wgpu::BindingResource::TextureView(under.color),
                 t::BASE_AUX => wgpu::BindingResource::TextureView(under.aux),
@@ -1257,10 +1245,9 @@ impl TransformRenderer {
             });
         scope.fullscreen_pass(
             "stark transform combine",
-            &self.combine_pipeline,
-            desc::Bound::new(std::slice::from_ref(&bg), &[offset]),
             dst.targets(),
-            desc::CLEAR,
+            &self.combine.pipeline,
+            desc::Bound::dynamic(&bg, &[offset]),
         );
     }
 
@@ -1270,7 +1257,7 @@ impl TransformRenderer {
         &self,
         scope: &mut SubmitScope,
         selection: &Selection,
-        quads: &mut Group<QuadUniform>,
+        quads: &mut Group<'_, QuadUniform>,
         sources: &[TileCoord],
         dst: &crate::gpu::tile::MaskHandle,
     ) {
@@ -1286,18 +1273,16 @@ impl TransformRenderer {
             draws.push((offset, self.mask_src_bg(handle.view())));
         }
 
-        let mut pass = scope
-            .encoder()
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark transform mask"),
-                color_attachments: &[Some(desc::attach(dst.view(), outside_clear(selection)))],
-                ..Default::default()
-            });
+        let mut pass = desc::begin_pass(
+            scope.encoder(),
+            "stark transform mask",
+            desc::Attachments::cleared_to(dst.view(), outside_clear(selection)),
+        );
         pass.set_pipeline(&self.mask_pipeline);
         for (offset, src_bg) in &draws {
-            pass.set_bind_group(0, quads.bg(), &[*offset]);
-            pass.set_bind_group(1, src_bg, &[]);
-            pass.draw(0..4, 0..1);
+            quads.set(&mut pass, *offset);
+            self.mask_src_bindings.set(&mut pass, src_bg, &[]);
+            pass.draw(desc::QUAD_VERTICES, 0..1);
         }
     }
 }

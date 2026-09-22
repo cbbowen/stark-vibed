@@ -89,10 +89,9 @@ pub(crate) struct MergeRenderer {
     /// The channel formats this merge's tiles carry — the color space's, resolved
     /// once (§6.7).
     formats: ChannelFormats,
-    /// The direct tile-space law: an unclipped `Normal` merge, settled in one pass
-    /// (`merge.wesl`).
-    direct: wgpu::RenderPipeline,
-    direct_bindings: desc::Bindings,
+    /// The direct tile-space law: a `Normal` merge, clipped or not, settled in one
+    /// pass (`merge.wesl`).
+    direct: desc::OnePass,
     /// The slab law's two directions (`slab.wesl`), which is what lets a merge through
     /// a blend mode borrow the compositor's own pass rather than restate its algebra.
     expand: wgpu::RenderPipeline,
@@ -130,56 +129,40 @@ impl MergeRenderer {
         let targets = formats.targets();
 
         let merge = stark_shaders::merge(color_space.resid());
-        let merge_shader = desc::Module::new(device, "stark merge", merge);
-        let direct_bindings = desc::Bindings::of(
+        let direct = desc::OnePass::fullscreen(
             device,
-            "stark merge bgl",
-            Stages::Render(merge.vs_main, merge.fs_main),
+            "stark merge",
+            &desc::Module::new(device, "stark merge", merge),
+            (merge.vs_main, merge.fs_main),
             md::M,
             &[],
-        );
-        let direct = desc::fullscreen_pipeline(
-            device,
-            "stark merge pipeline",
-            &desc::pipeline_layout_of(device, "stark merge layout", &[&direct_bindings]),
-            &merge_shader,
-            (merge.vs_main, merge.fs_main),
             &targets,
         );
 
         // One layout for both slab directions: they take the same shapes in and put
-        // the same shapes out, which is what makes them one module (`slab.wesl`).
-        let slab_shader_src = stark_shaders::slab(color_space.resid());
-        let slab_shader = desc::Module::new(device, "stark slab", slab_shader_src);
+        // the same shapes out, which is what makes them one module (`slab.wesl`). Each
+        // pair is written once, for the layout and its pipeline both.
+        let slab = stark_shaders::slab(color_space.resid());
+        let slab_shader = desc::Module::new(device, "stark slab", slab);
+        let [expand, store] = [slab.fs_expand, slab.fs_store].map(|fs| (slab.vs_main, fs));
         let slab_bindings = desc::Bindings::shared_by(
             device,
             "stark slab bgl",
-            &[
-                Stages::Render(slab_shader_src.vs_main, slab_shader_src.fs_expand),
-                Stages::Render(slab_shader_src.vs_main, slab_shader_src.fs_store),
-            ],
+            &[expand, store].map(|(vs, fs)| Stages::Render(vs, fs)),
             sd::S,
             &[],
         );
         let slab_layout = desc::pipeline_layout_of(device, "stark slab layout", &[&slab_bindings]);
-        let slab = |label, fs| {
-            desc::fullscreen_pipeline(
-                device,
-                label,
-                &slab_layout,
-                &slab_shader,
-                (slab_shader_src.vs_main, fs),
-                &targets,
-            )
+        let slab_pipeline = |label, pair| {
+            desc::fullscreen_pipeline(device, label, &slab_layout, &slab_shader, pair, &targets)
         };
 
         Self {
             ctx: ctx.clone(),
             formats,
             direct,
-            direct_bindings,
-            expand: slab("stark slab expand", slab_shader_src.fs_expand),
-            store: slab("stark slab store", slab_shader_src.fs_store),
+            expand: slab_pipeline("stark slab expand", expand),
+            store: slab_pipeline("stark slab store", store),
             slab_bindings,
             blend,
             filter,
@@ -311,12 +294,11 @@ impl MergeRenderer {
             self.blend.pigment.as_ref(),
             None,
         );
-        pass(
-            scope,
+        scope.fullscreen_pass(
             "stark merge filter",
+            out.targets(),
             &self.filter.tile,
             desc::Bound::new(&bg, &[uniform.offset(0)]),
-            out,
         );
     }
 
@@ -393,7 +375,8 @@ impl MergeRenderer {
                 .expect("a residual is asked for only in a space that has one")
         }
         let bg = self
-            .direct_bindings
+            .direct
+            .bindings
             .group(&self.ctx.device, "stark merge bg", |b| match b {
                 m::M => uniform.window(),
                 m::LOWER_COLOR => view(lower.color),
@@ -404,12 +387,11 @@ impl MergeRenderer {
                 m::UPPER_RESID => view(resid(upper)),
                 other => unreachable!("the merge's group holds no binding {other}"),
             });
-        pass(
-            scope,
+        scope.fullscreen_pass(
             "stark merge tile",
-            &self.direct,
+            out.targets(),
+            &self.direct.pipeline,
             desc::Bound::one(&bg),
-            out,
         );
     }
 
@@ -457,12 +439,11 @@ impl MergeRenderer {
                 sl::IN_RESID => view(input.resid.expect("a residual build has one")),
                 other => unreachable!("the slab's group holds no binding {other}"),
             });
-        pass(
-            scope,
+        scope.fullscreen_pass(
             "stark slab tile",
+            out.targets(),
             pipeline,
             desc::Bound::one(&bg),
-            out,
         );
     }
 
@@ -489,12 +470,11 @@ impl MergeRenderer {
             back.targets(),
             src.targets(),
         );
-        pass(
-            scope,
+        scope.fullscreen_pass(
             "stark merge blend",
+            out.targets(),
             &self.blend.pipeline,
             desc::Bound::new(&bg, &[uniform.offset(0)]),
-            out,
         );
     }
 
@@ -552,20 +532,6 @@ impl MergeRenderer {
         out.sort_unstable_by_key(|c| (c.y, c.x));
         out
     }
-}
-
-/// One fullscreen pass over a tile's three channel targets.
-///
-/// Thin, because [`SubmitScope::fullscreen_pass`] carries the attachment count — the
-/// residual's `Option` (§6.7) — for this pass, the transform and the fill alike.
-fn pass(
-    scope: &mut SubmitScope,
-    label: &str,
-    pipeline: &wgpu::RenderPipeline,
-    bound: desc::Bound<'_>,
-    out: &Channels,
-) {
-    scope.fullscreen_pass(label, pipeline, bound, out.targets(), desc::CLEAR);
 }
 
 /// The uniforms one merge binds, for the law its blend mode takes (§14.11.3).

@@ -89,8 +89,7 @@ const MODE_INVERT: f32 = stark_shaders::mirror::selection::MODE_INVERT as f32;
 #[derive(Clone)]
 pub(crate) struct SelectionRenderer {
     ctx: GpuContext,
-    rasterize_pipeline: wgpu::RenderPipeline,
-    rasterize_bindings: desc::Bindings,
+    rasterize: desc::OnePass,
     region_pipeline: wgpu::RenderPipeline,
     region_view_bindings: desc::Bindings,
     region_tile_bindings: desc::Bindings,
@@ -142,21 +141,13 @@ impl SelectionRenderer {
         // One op's rasterize into a mask tile (§6.8): the shape — per tile, so a
         // dynamic-offset slot rather than a buffer each — the mask it combines with,
         // and the lasso's edge list.
-        let rasterize_bindings = desc::Bindings::of(
+        let rasterize = desc::OnePass::fullscreen(
             device,
-            "stark selection bgl",
-            Stages::Render(selection.vs_main, selection.fs_main),
-            sd::P,
-            &[sd::P],
-        );
-        let layout =
-            desc::pipeline_layout_of(device, "stark selection layout", &[&rasterize_bindings]);
-        let rasterize_pipeline = desc::fullscreen_pipeline(
-            device,
-            "stark selection pipeline",
-            &layout,
+            "stark selection",
             &shader,
             (selection.vs_main, selection.fs_main),
+            sd::P,
+            &[sd::P],
             &mask_target,
         );
 
@@ -216,8 +207,7 @@ impl SelectionRenderer {
 
         Self {
             ctx: ctx.clone(),
-            rasterize_pipeline,
-            rasterize_bindings,
+            rasterize,
             region_pipeline,
             region_view_bindings,
             region_tile_bindings,
@@ -416,26 +406,21 @@ impl SelectionRenderer {
             buf
         });
 
-        {
-            // Everything the selection has no tile for takes the constant coverage
-            // that reigns there.
-            let outside = outside_clear(selection);
-            let mut pass = scope
-                .encoder()
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("stark selection region gather"),
-                    color_attachments: &[Some(desc::attach(into, outside))],
-                    ..Default::default()
-                });
-            if let Some(inst) = &instances {
-                pass.set_pipeline(&self.region_pipeline);
-                pass.set_bind_group(0, &view_bg, &[]);
-                pass.set_vertex_buffer(0, inst.slice(..));
-                for (i, bg) in tile_bgs.iter().enumerate() {
-                    let idx = i as u32;
-                    pass.set_bind_group(1, *bg, &[]);
-                    pass.draw(0..4, idx..idx + 1);
-                }
+        // Everything the selection has no tile for takes the constant coverage that
+        // reigns there.
+        let mut pass = desc::begin_pass(
+            scope.encoder(),
+            "stark selection region gather",
+            desc::Attachments::cleared_to(into, outside_clear(selection)),
+        );
+        if let Some(inst) = &instances {
+            pass.set_pipeline(&self.region_pipeline);
+            self.region_view_bindings.set(&mut pass, &view_bg, &[]);
+            pass.set_vertex_buffer(0, inst.slice(..));
+            for (i, bg) in tile_bgs.iter().enumerate() {
+                let idx = i as u32;
+                self.region_tile_bindings.set(&mut pass, bg, &[]);
+                pass.draw(desc::QUAD_VERTICES, idx..idx + 1);
             }
         }
     }
@@ -496,25 +481,20 @@ impl SelectionRenderer {
             let dst = pool.acquire_mask(AllocSource::SelectionMask);
             let prev_view = self.mask_for(prev, *coord);
             let bg = self
-                .rasterize_bindings
+                .rasterize
+                .bindings
                 .group(device, "stark selection bg", |i| match i {
                     sb::P => slots.window(),
                     sb::PREV => wgpu::BindingResource::TextureView(prev_view.view()),
                     sb::EDGES => wgpu::BindingResource::TextureView(edges),
                     other => unreachable!("the rasterize group holds no binding {other}"),
                 });
-            {
-                let mut pass = scope
-                    .encoder()
-                    .begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("stark selection rasterize"),
-                        color_attachments: &[Some(desc::attach(dst.view(), desc::CLEAR))],
-                        ..Default::default()
-                    });
-                pass.set_pipeline(&self.rasterize_pipeline);
-                pass.set_bind_group(0, &bg, &[slots.offset(i)]);
-                pass.draw(0..3, 0..1);
-            }
+            scope.fullscreen_pass(
+                "stark selection rasterize",
+                dst.view(),
+                &self.rasterize.pipeline,
+                desc::Bound::dynamic(&bg, &[slots.offset(i)]),
+            );
             tiles = tiles.insert(*coord, dst);
             scope.tile_done();
         }
@@ -586,13 +566,13 @@ impl MaskSource {
 /// carries masks under its maps and has to leave the untouched plane saying the
 /// same thing this does — an inverted selection whose two paths disagreed about
 /// the outside would gain or lose the whole canvas.
-pub(crate) fn outside_clear(selection: &Selection) -> wgpu::Operations<wgpu::Color> {
-    desc::clear_to(wgpu::Color {
+pub(crate) fn outside_clear(selection: &Selection) -> wgpu::Color {
+    wgpu::Color {
         r: f64::from(selection.outside()),
         g: 0.0,
         b: 0.0,
         a: 0.0,
-    })
+    }
 }
 
 // —— packing an op for `selection.wesl` ————————————————————————————————————————

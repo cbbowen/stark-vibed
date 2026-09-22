@@ -61,8 +61,8 @@ use std::sync::{Arc, Mutex};
 /// honest way to change it is to measure and say so.
 pub(crate) const FLUSH_TILES: usize = 256;
 
-use crate::gpu::channels::Targets;
 use crate::gpu::context::GpuContext;
+use crate::gpu::desc;
 use crate::gpu::uniforms::{Slot, stage_slots};
 use stark_model::geom::TILE_TEX;
 
@@ -504,34 +504,17 @@ impl SubmitScope {
         &mut self.encoder
     }
 
-    /// Record one **fullscreen pass over a tile's channels**: the shape every
-    /// renderer here writes a destination tile with.
-    ///
-    /// [`Targets`] carries the attachment count — the residual's `Option` (§6.7) — so
-    /// the merge's four passes, the fill's one and the transform's combine each state
-    /// only their pipeline, bind group and target.
-    ///
-    /// `ops` because the callers do differ there, if only just: everything here writes
-    /// every texel and clears, but a pass that reads its own target would not.
-    pub(crate) fn fullscreen_pass(
+    /// Record one [fullscreen pass](desc::fullscreen_pass) — the shape every renderer
+    /// here writes a destination tile or mask with. `into` is a channel trio, whose
+    /// residual `Option` carries the attachment count (§6.7), or a single target.
+    pub(crate) fn fullscreen_pass<'a>(
         &mut self,
         label: &str,
+        into: impl Into<desc::Attachments<'a>>,
         pipeline: &wgpu::RenderPipeline,
-        bound: crate::gpu::desc::Bound<'_>,
-        into: Targets<'_>,
-        ops: wgpu::Operations<wgpu::Color>,
+        bound: desc::Bound<'_>,
     ) {
-        let attachments = into.attachments(ops);
-        let mut pass = self
-            .encoder()
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some(label),
-                color_attachments: &attachments[..into.count()],
-                ..Default::default()
-            });
-        pass.set_pipeline(pipeline);
-        bound.set(&mut pass);
-        pass.draw(0..3, 0..1);
+        desc::fullscreen_pass(self.encoder(), label, into, pipeline, bound);
     }
 
     /// Note that one tile has been recorded, submitting and releasing if that
@@ -750,16 +733,7 @@ mod tests {
             let scratch = pool.acquire_tex(COLOR, AllocSource::MergeScratch);
             // Something has to be *recorded* against it, or the flush is a no-op by
             // design and this would be testing nothing.
-            scope
-                .encoder()
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("stark submit test pass"),
-                    color_attachments: &[Some(crate::gpu::desc::attach(
-                        scratch.view(),
-                        crate::gpu::desc::CLEAR,
-                    ))],
-                    ..Default::default()
-                });
+            desc::begin_pass(scope.encoder(), "stark submit test pass", scratch.view());
             scope.hold(scratch);
             scope.tile_done();
         }
