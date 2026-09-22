@@ -130,23 +130,20 @@ impl MediaPass {
     ) {
         ctx.queue
             .write_buffer(&accum.uniform, 0, bytemuck::bytes_of(&scene.uniform()));
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("stark media pass"),
-            // The pass covers every texel, so the clear only decides the alpha an
-            // untouched texel keeps — transparent, for a cut-out export.
-            color_attachments: &[Some(desc::attach(
-                target,
-                desc::clear_to(if scene.transparent {
-                    wgpu::Color::TRANSPARENT
-                } else {
-                    wgpu::Color::BLACK
-                }),
-            ))],
-            ..Default::default()
-        });
-        pass.set_pipeline(&self.pipeline);
-        desc::Bound::new(&accum.bg, &[]).set(&mut pass);
-        pass.draw(0..3, 0..1);
+        // The pass covers every texel, so the clear only decides the alpha an
+        // untouched texel keeps — transparent, for a cut-out export.
+        let clear = if scene.transparent {
+            wgpu::Color::TRANSPARENT
+        } else {
+            wgpu::Color::BLACK
+        };
+        desc::fullscreen_pass(
+            encoder,
+            "stark media pass",
+            desc::Attachments::cleared_to(target, clear),
+            &self.pipeline,
+            desc::Bound::new(&accum.bg, &[]),
+        );
     }
 }
 

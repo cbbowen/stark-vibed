@@ -511,22 +511,14 @@ impl BlurFrame {
         }
         // The decode: the accumulator into set B, zeros in the padding. Set A —
         // which `bound` binds — is not attached, so nothing is both read and
-        // written; the pass covers the whole padded extent, so the clear is a
-        // don't-care stated as one.
-        {
-            let attachments = [
-                Some(desc::attach(self.b_light.view(), desc::CLEAR)),
-                Some(desc::attach(self.b_aux.view(), desc::CLEAR)),
-            ];
-            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark blur decode"),
-                color_attachments: &attachments,
-                ..Default::default()
-            });
-            rp.set_pipeline(&filter.blur_decode);
-            bound.set(&mut rp);
-            rp.draw(0..3, 0..1);
-        }
+        // written.
+        desc::fullscreen_pass(
+            encoder,
+            "stark blur decode",
+            desc::Attachments::cleared([Some(self.b_light.view()), Some(self.b_aux.view())]),
+            &filter.blur_decode,
+            bound,
+        );
         self.dispatch(pass, encoder, "stark blur fft", job.image.clone());
     }
 

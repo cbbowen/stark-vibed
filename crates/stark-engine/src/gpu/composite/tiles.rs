@@ -160,7 +160,7 @@ impl TilePass {
             color_attachments: &attachments[..into.count()],
             ..Default::default()
         });
-        pass.set_bind_group(0, s.view_bg, &[s.view_offset]);
+        self.view_bgl.set(&mut pass, s.view_bg, &[s.view_offset]);
         let mut pipeline_is_matte = None;
         for draw in draws {
             match *draw {
@@ -170,8 +170,8 @@ impl TilePass {
                         pass.set_vertex_buffer(0, s.instances.slice());
                         pipeline_is_matte = Some(false);
                     }
-                    pass.set_bind_group(1, s.tile_bgs[i as usize], &[]);
-                    pass.draw(0..4, i..i + 1);
+                    self.tile_bgl.set(&mut pass, s.tile_bgs[i as usize], &[]);
+                    pass.draw(desc::QUAD_VERTICES, i..i + 1);
                 }
                 Draw::Matte(i) => {
                     if pipeline_is_matte != Some(true) {
@@ -179,11 +179,12 @@ impl TilePass {
                         pass.set_vertex_buffer(0, s.mattes.slice());
                         pipeline_is_matte = Some(true);
                     }
-                    // Group 1 is the ramp, at this matte's own slot (§22.4) — re-set
-                    // per matte because the offset changes.
+                    // The ramp, at this matte's own slot (§22.4) — re-set per matte
+                    // because the offset changes.
                     let ramp = s.ramp_bg.expect("a matte draw without its ramp slots");
-                    pass.set_bind_group(1, ramp, &[UniformSlots::<Ramp>::offset(i)]);
-                    pass.draw(0..4, i..i + 1);
+                    self.ramp_bgl
+                        .set(&mut pass, ramp, &[UniformSlots::<Ramp>::offset(i)]);
+                    pass.draw(desc::QUAD_VERTICES, i..i + 1);
                 }
             }
         }

@@ -189,15 +189,15 @@ impl GuidePass {
                 other => unreachable!("the guide group has no binding {other}"),
             })
         });
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("stark guides pass"),
-            color_attachments: &[Some(desc::attach(target, desc::LOAD))],
-            ..Default::default()
-        });
+        let mut pass = desc::begin_pass(
+            encoder,
+            "stark guides pass",
+            desc::Attachments::loaded([Some(target)]),
+        );
         pass.set_pipeline(&self.pipeline);
         for i in 0..scenes.len() as u32 {
-            pass.set_bind_group(0, bg, &[UniformSlots::<GuideUniform>::offset(i)]);
-            pass.draw(0..3, 0..1);
+            bindings.set(&mut pass, bg, &[UniformSlots::<GuideUniform>::offset(i)]);
+            pass.draw(desc::FULLSCREEN_VERTICES, 0..1);
         }
     }
 }

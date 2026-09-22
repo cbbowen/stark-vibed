@@ -182,9 +182,10 @@ impl BlendPass {
             self.bind_group(&ctx.device, slots.resource(), b.back, src)
         });
         let offsets = [UniformSlots::<BlendUniform>::offset(b.slot)];
-        b.pass(
+        desc::fullscreen_pass(
             encoder,
             "stark blend pass",
+            b.out,
             &self.pipeline,
             desc::Bound::new(bg, &offsets),
         );
@@ -201,41 +202,14 @@ impl BlendPass {
 pub(super) struct Bounce<'a> {
     /// The accumulator this pass reads.
     pub(super) back: Targets<'a>,
-    /// The other half of the ping-pong, which it wholly replaces.
+    /// The other half of the ping-pong, which it wholly replaces: one fullscreen
+    /// triangle writes every texel, reading nothing from it.
     pub(super) out: Targets<'a>,
     /// Which dynamic-offset slot holds this pass's uniform.
     pub(super) slot: u32,
     /// The level it bounces at, which owns the bind groups it reads through.
     pub(super) here: &'a ScratchLevel,
     pub(super) phase: Phase,
-}
-
-impl Bounce<'_> {
-    /// The render pass both bouncing passes encode: one fullscreen triangle that
-    /// replaces every texel of `out`. Shared with [`FilterPass::encode`], which is
-    /// this pass with the source removed (§21.3).
-    ///
-    /// [`FilterPass::encode`]: super::filter::FilterPass::encode
-    pub(super) fn pass(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        label: &str,
-        pipeline: &wgpu::RenderPipeline,
-        bound: desc::Bound<'_>,
-    ) {
-        let attachments = self.out.attachments(desc::CLEAR);
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some(label),
-            // Covers every texel and reads nothing from `out` — the aux included,
-            // which a filter copies across from `back` rather than leaving to a load
-            // op. The load is a don't-care, and clearing says so.
-            color_attachments: &attachments[..self.out.count()],
-            ..Default::default()
-        });
-        pass.set_pipeline(pipeline);
-        bound.set(&mut pass);
-        pass.draw(0..3, 0..1);
-    }
 }
 
 /// The extra viewport-sized targets **one level** of isolation needs (§18.0.4).
@@ -378,10 +352,5 @@ impl ScratchTargets {
 /// group: that pass *reads* the accumulator, so unlike a run of tiles it cannot
 /// fold the clear into its own load op.
 pub(super) fn clear_targets(encoder: &mut wgpu::CommandEncoder, into: Targets<'_>) {
-    let attachments = into.attachments(desc::CLEAR);
-    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-        label: Some("stark composite clear"),
-        color_attachments: &attachments[..into.count()],
-        ..Default::default()
-    });
+    desc::begin_pass(encoder, "stark composite clear", into);
 }

@@ -261,7 +261,9 @@ impl FilterPass {
             blur.expect("a focal blur's frame is prepared before anything encodes")
                 .encode(pass, self, encoder, bound, b.slot);
         }
-        b.pass(encoder, "stark filter pass", &self.pipeline, bound);
+        // A clear, like every bounce: the aux too is written whole, copied across
+        // from `b.back` by the shader rather than left to a load op.
+        desc::fullscreen_pass(encoder, "stark filter pass", b.out, &self.pipeline, bound);
     }
 }
 

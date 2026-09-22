@@ -168,17 +168,17 @@ impl OverlayPass {
             return;
         }
         instances.write(&ctx.device, &ctx.queue, &records);
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("stark selection overlay pass"),
-            color_attachments: &[Some(desc::attach(scene.target, desc::LOAD))],
-            ..Default::default()
-        });
+        let mut pass = desc::begin_pass(
+            encoder,
+            "stark selection overlay pass",
+            desc::Attachments::loaded([Some(scene.target)]),
+        );
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, scene.view_bg, &[scene.view_offset]);
         pass.set_vertex_buffer(0, instances.slice());
-        for i in 0..mask_tiles.len() as u32 {
-            pass.set_bind_group(1, mask_tiles[i as usize], &[]);
-            pass.draw(0..4, i..i + 1);
+        for (i, tile) in (0u32..).zip(mask_tiles) {
+            self.tile_bgl.set(&mut pass, tile, &[]);
+            pass.draw(desc::QUAD_VERTICES, i..i + 1);
         }
     }
 }
