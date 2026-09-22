@@ -6,7 +6,7 @@
 //! that were put into the drawn stroke are carried onto the ideal shape at the same
 //! fraction of the way along.
 
-use super::AssistShape;
+use super::{AssistShape, Frame};
 use crate::path::{
     CHANNELS, FLATTEN_TOLERANCE, arc_profile, control_points, cumulative_lengths,
     flatten_spans_from, locate, param_at, pen_row, span_count,
@@ -124,11 +124,16 @@ impl AssistShape {
                 let targets = spread(m * TARGETS_PER_KNOT, along);
                 (seed, targets, false)
             }
-            Self::Ellipse { radii, .. } => {
+            Self::Ellipse {
+                shape,
+                phase,
+                winding,
+                ..
+            } => {
                 // One leg per `delta` radians, from the ripple a leg leaves against
                 // the true ellipse — then widened, if need be, to carry the pen.
                 let want = knots.saturating_sub(2 * SEAM_OVERLAP + 1);
-                let legs = leg_count(radii.max_element()).max(want).min(MAX_LEGS);
+                let legs = leg_count(shape.radii.max_element()).max(want).min(MAX_LEGS);
                 let m = legs + 2 * SEAM_OVERLAP + 1;
                 let delta = TAU / legs as f32;
                 let span = (m - 1) as f32 * delta;
@@ -139,8 +144,12 @@ impl AssistShape {
                 // affine image of the circle case, and B-splines commute with affine maps.
                 let bulge = 3.0 / (2.0 + delta.cos());
                 let start = -(SEAM_OVERLAP as f32) * delta;
-                let seed = spread(m, |f| self.at(start + f * span, bulge));
-                let targets = spread(m * TARGETS_PER_KNOT, |f| self.at(start + f * span, 1.0));
+                let frame = Frame::of(shape);
+                let at = |f: f32, scale: f32| {
+                    frame.point_scaled(winding.advance(phase, start + f * span), scale)
+                };
+                let seed = spread(m, |f| at(f, bulge));
+                let targets = spread(m * TARGETS_PER_KNOT, |f| at(f, 1.0));
                 (seed, targets, true)
             }
         };
@@ -244,7 +253,9 @@ fn leg_count(radius: f32) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assist::Winding;
     use crate::path::flatten;
+    use stark_model::geom::Ellipse;
 
     /// The realized path has to *be* the shape, not merely resemble it — including at
     /// the clamped ends, which is what the ellipse's least-squares placement buys.
@@ -271,12 +282,10 @@ mod tests {
     fn a_snapped_ellipse_is_round() {
         for radius in [40.0f32, 200.0, 1200.0] {
             let shape = AssistShape::Ellipse {
-                center: Vec2::new(7.0, -13.0),
-                radii: Vec2::splat(radius),
-                angle: 0.0,
-                phase: 0.3,
-                winding: 1.0,
+                shape: Ellipse::new(Vec2::new(7.0, -13.0), Vec2::splat(radius), 0.0),
                 plane: None,
+                phase: 0.3,
+                winding: Winding::Forward,
             };
             let pen = PenProfile::of(
                 &[ControlPoint::at(Vec2::ZERO), ControlPoint::at(Vec2::X)],

@@ -37,7 +37,7 @@ pub(crate) use realize::PenProfile;
 pub(crate) use recognize::recognize;
 
 use stark_model::document::AxisPlane;
-use stark_model::geom::Vec2;
+use stark_model::geom::{Ellipse, Vec2};
 
 /// The ideal shape a held gesture snapped to (§6.9).
 ///
@@ -58,27 +58,39 @@ pub(crate) enum AssistShape {
     },
     /// An ellipse, drawn as one closed loop.
     Ellipse {
-        center: Vec2,
-        /// Semi-axes along the ellipse's own frame, major first.
-        radii: Vec2,
-        /// Rotation of that frame, radians clockwise in canvas space.
-        angle: f32,
-        /// The perspective plane this is a **circle** on, if it is one (§20.7).
-        ///
-        /// The ellipse above stays the truth — it is what is drawn, and every
-        /// consumer below reads it without knowing a guide exists. This says only
-        /// which family the shape came out of and may not leave, which is all
+        /// What is drawn, and all any consumer below reads.
+        shape: Ellipse,
+        /// The perspective plane `shape` is a **circle** on, if it is one (§20.7): the
+        /// family the shape came out of and may not leave, which is all
         /// [`adjust`](Self::adjust) needs to go on steering it a circle.
         plane: Option<AxisPlane>,
         /// Where on the ellipse the loop starts and ends, in the ellipse's **own**
         /// frame — so turning the shape carries the seam with it, and the join stays
         /// where the hand put it rather than sliding round under a rotation.
         phase: f32,
-        /// Which way round the loop travels: `+1` or `-1` on [`phase`](Self::Ellipse::phase).
-        /// Taken from the drawn trace so the pen channels ride the shape the way they
-        /// were laid down.
-        winding: f32,
+        /// Which way round the loop travels, taken from the drawn trace so the pen
+        /// channels ride the shape the way they were laid down.
+        winding: Winding,
     },
+}
+
+/// Which way round a loop travels on its ellipse's own parameter.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Winding {
+    /// The parameter increases along the loop.
+    Forward,
+    /// The parameter decreases along the loop.
+    Backward,
+}
+
+impl Winding {
+    /// The ellipse parameter `t` radians along the loop from `phase`.
+    fn advance(self, phase: f32, t: f32) -> f32 {
+        match self {
+            Self::Forward => phase + t,
+            Self::Backward => phase - t,
+        }
+    }
 }
 
 /// Which family a held gesture snapped to (§6.9) — as much of [`AssistShape`] as
@@ -97,27 +109,17 @@ pub enum Assisted {
 }
 
 impl AssistShape {
-    /// A point of the shape's own parameterization, scaled about the centre by `bulge`
-    /// (1.0 for the shape itself). For a line the parameter is the fraction from `a`
-    /// to `b`; for an ellipse it is radians past the seam, signed by the winding.
-    ///
-    /// `bulge` is realization's alone — it undoes a B-spline's inset — and adjustment
-    /// passes 1.0, which is the shape itself.
-    fn at(&self, t: f32, bulge: f32) -> Vec2 {
+    /// A point of the shape's own parameterization: for a line the fraction from `a` to
+    /// `b`, for an ellipse radians past the seam along the winding.
+    fn at(&self, t: f32) -> Vec2 {
         match *self {
             Self::Line { a, b, .. } => a.lerp(b, t),
             Self::Ellipse {
-                center,
-                radii,
-                angle,
+                shape,
                 phase,
                 winding,
                 ..
-            } => {
-                let u = phase + winding * t;
-                let local = Vec2::new(radii.x * u.cos(), radii.y * u.sin()) * bulge;
-                center + Vec2::from_angle(angle).rotate(local)
-            }
+            } => Frame::of(shape).point(winding.advance(phase, t)),
         }
     }
 
@@ -137,8 +139,71 @@ impl AssistShape {
             Self::Line { .. } => 1.0,
             Self::Ellipse { .. } => std::f32::consts::TAU,
         };
-        (0..=32)
-            .map(|i| self.at(reach * i as f32 / 32.0, 1.0))
-            .collect()
+        (0..=32).map(|i| self.at(reach * i as f32 / 32.0)).collect()
+    }
+}
+
+/// An ellipse's own frame: the one place a point of an ellipse is computed, and what
+/// turns a canvas point back into the parameter it sits at.
+struct Frame {
+    center: Vec2,
+    radii: Vec2,
+    /// The frame's rotation and its inverse, ready to apply.
+    rotate: Vec2,
+    unrotate: Vec2,
+}
+
+impl Frame {
+    fn of(e: Ellipse) -> Self {
+        Self {
+            center: e.center,
+            radii: e.radii,
+            rotate: Vec2::from_angle(e.angle),
+            unrotate: Vec2::from_angle(-e.angle),
+        }
+    }
+
+    /// The point of this ellipse at parameter `t`, scaled about the centre by `bulge` —
+    /// realization's, which undoes a B-spline's inset (`realize`).
+    fn point_scaled(&self, t: f32, bulge: f32) -> Vec2 {
+        let local = Vec2::new(self.radii.x * t.cos(), self.radii.y * t.sin()) * bulge;
+        self.center + self.rotate.rotate(local)
+    }
+
+    /// The point of this ellipse at parameter `t`.
+    fn point(&self, t: f32) -> Vec2 {
+        self.point_scaled(t, 1.0)
+    }
+
+    /// `p` in the ellipse's own axes.
+    fn local(&self, p: Vec2) -> Vec2 {
+        self.unrotate.rotate(p - self.center)
+    }
+
+    /// The ellipse parameter `p` sits at, in `(-π, π]`.
+    fn param(&self, p: Vec2) -> f32 {
+        let q = self.local(p);
+        (q.y / self.radii.y.max(1e-6)).atan2(q.x / self.radii.x.max(1e-6))
+    }
+
+    /// Distance from `p` to the ellipse.
+    ///
+    /// The algebraic residual divided by its own gradient — the first-order correction,
+    /// exact in the limit of a point on the curve. Measuring *radially* over-reads by up
+    /// to the axis ratio at the ends of the major axis, which would mean a 2:1 ellipse
+    /// had to be drawn twice as accurately as a circle to snap at all.
+    fn distance(&self, p: Vec2) -> f32 {
+        let q = self.local(p);
+        let (a2, b2) = (
+            (self.radii.x * self.radii.x).max(1e-6),
+            (self.radii.y * self.radii.y).max(1e-6),
+        );
+        let residual = q.x * q.x / a2 + q.y * q.y / b2 - 1.0;
+        let grad = 2.0 * Vec2::new(q.x / a2, q.y / b2).length();
+        if grad < 1e-9 {
+            self.radii.min_element()
+        } else {
+            residual.abs() / grad
+        }
     }
 }

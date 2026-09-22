@@ -54,19 +54,17 @@ impl AssistShape {
                 }
             }
             Self::Ellipse {
-                center,
-                radii,
-                angle,
+                shape,
+                plane: Some(plane),
                 phase,
                 winding,
-                plane: Some(plane),
             } => {
                 // What is left of the ellipse's two degrees of freedom is the size, taken
                 // in the plane's own coordinates about the centre it has *there*: the
                 // canvas ellipse's centre is not the image of the circle's centre, so
                 // scaling the drawn shape about it would leave the plane at once.
                 let sized = plane
-                    .circle_behind(Ellipse::new(center, radii, angle))
+                    .circle_behind(shape)
                     .zip(plane.to_plane(grip).zip(plane.to_plane(pointer)))
                     .and_then(|((flat, radius), (from, to))| {
                         let l0 = (from - flat).length();
@@ -76,12 +74,10 @@ impl AssistShape {
                     });
                 match sized {
                     Some(seen) => Self::Ellipse {
-                        center: seen.center,
-                        radii: seen.radii,
-                        angle: seen.angle,
+                        shape: seen,
+                        plane: Some(plane),
                         phase,
                         winding,
-                        plane: Some(plane),
                     },
                     // Nothing to draw at the far end of that drag — the circle has been
                     // pulled through its own vanishing line, or down to a point. Holding
@@ -90,25 +86,25 @@ impl AssistShape {
                 }
             }
             Self::Ellipse {
-                center,
-                radii,
-                angle,
+                shape,
+                plane: None,
                 phase,
                 winding,
-                plane: None,
             } => {
-                let (from, to) = (grip - center, pointer - center);
+                let (from, to) = (grip - shape.center, pointer - shape.center);
                 let (l0, l1) = (from.length(), to.length());
                 if l0 < MIN_GRIP || l1 < MIN_GRIP {
                     return self;
                 }
                 Self::Ellipse {
-                    center,
-                    radii: radii * (l1 / l0),
-                    angle: angle + from.angle_to(to),
+                    shape: Ellipse::new(
+                        shape.center,
+                        shape.radii * (l1 / l0),
+                        shape.angle + from.angle_to(to),
+                    ),
+                    plane: None,
                     phase,
                     winding,
-                    plane: None,
                 }
             }
         }
@@ -123,7 +119,7 @@ impl AssistShape {
         match *self {
             Self::Line { b, .. } => b,
             // The seam: where the loop starts, which is where the hand is holding it.
-            Self::Ellipse { .. } => self.at(0.0, 1.0),
+            Self::Ellipse { .. } => self.at(0.0),
         }
     }
 }
@@ -131,6 +127,7 @@ impl AssistShape {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assist::Winding;
 
     /// A line's parts, or a panic naming what came back instead.
     fn as_line(shape: AssistShape) -> (Vec2, Vec2, bool) {
@@ -145,12 +142,10 @@ mod tests {
     #[test]
     fn adjustment_does_not_accumulate() {
         let shape = AssistShape::Ellipse {
-            center: Vec2::ZERO,
-            radii: Vec2::new(100.0, 50.0),
-            angle: 0.0,
-            phase: 0.0,
-            winding: 1.0,
+            shape: Ellipse::new(Vec2::ZERO, Vec2::new(100.0, 50.0), 0.0),
             plane: None,
+            phase: 0.0,
+            winding: Winding::Forward,
         };
         let grip = shape.grip();
         let target = Vec2::new(0.0, 140.0);
@@ -237,14 +232,16 @@ mod tests {
                 -PI..PI,
                 any::<bool>()
             )
-                .prop_map(|(center, major, ratio, angle, phase, ccw)| {
+                .prop_map(|(center, major, ratio, angle, phase, forward)| {
                     AssistShape::Ellipse {
-                        center,
-                        radii: Vec2::new(major, major * ratio),
-                        angle,
-                        phase,
-                        winding: if ccw { 1.0 } else { -1.0 },
+                        shape: Ellipse::new(center, Vec2::new(major, major * ratio), angle),
                         plane: None,
+                        phase,
+                        winding: if forward {
+                            Winding::Forward
+                        } else {
+                            Winding::Backward
+                        },
                     }
                 }),
         ]
@@ -270,9 +267,10 @@ mod tests {
                 )
             }
             AssistShape::Line { b, .. } => (pointer, 1e-4 * (1.0 + b.distance(pointer))),
-            AssistShape::Ellipse { center, .. } => {
-                (pointer, 1e-3 + TURN_RESOLUTION * center.distance(pointer))
-            }
+            AssistShape::Ellipse { shape, .. } => (
+                pointer,
+                1e-3 + TURN_RESOLUTION * shape.center.distance(pointer),
+            ),
         }
     }
 
@@ -284,7 +282,7 @@ mod tests {
         /// where the pointer is now.
         #[test]
         fn the_held_point_follows_the_pointer(shape in shape(), pointer in point()) {
-            if let AssistShape::Ellipse { center, .. } = shape {
+            if let AssistShape::Ellipse { shape: Ellipse { center, .. }, .. } = shape {
                 prop_assume!(center.distance(pointer) >= MIN_GRIP);
             }
             let held = shape.adjust(shape.grip(), pointer).grip();
