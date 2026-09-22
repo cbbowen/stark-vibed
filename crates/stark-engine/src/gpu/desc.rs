@@ -330,10 +330,10 @@ pub(crate) fn attach(
 /// lane (§6.2, §6.7).
 const MAX_ATTACHMENTS: usize = 4;
 
-/// The color attachments of one render pass, **every one cleared** — a channel trio
-/// (from [`Targets`](crate::gpu::channels::Targets)), one target (from a
-/// `&TextureView`), or one target cleared to a value that means something
-/// ([`Self::cleared_to`]).
+/// The color attachments of one render pass, **every one cleared** unless the pass
+/// draws over what they hold ([`Self::loaded`]) — a channel trio (from
+/// [`Targets`](crate::gpu::channels::Targets)), one target (from a `&TextureView`), or
+/// one target cleared to a value that means something ([`Self::cleared_to`]).
 ///
 /// A fixed array rather than a `Vec`: one is built per pass, and a pass per tile is
 /// the common case (§6.2).
@@ -353,6 +353,19 @@ impl<'a> Attachments<'a> {
     pub(crate) fn cleared(
         targets: impl IntoIterator<Item = Option<&'a wgpu::TextureView>>,
     ) -> Self {
+        Self::with(CLEAR, targets)
+    }
+
+    /// [`Self::cleared`], keeping what each target holds — a pass that adds to a total
+    /// an earlier pass began (a resumed stroke parcel, §6.2).
+    pub(crate) fn loaded(targets: impl IntoIterator<Item = Option<&'a wgpu::TextureView>>) -> Self {
+        Self::with(LOAD, targets)
+    }
+
+    fn with(
+        ops: wgpu::Operations<wgpu::Color>,
+        targets: impl IntoIterator<Item = Option<&'a wgpu::TextureView>>,
+    ) -> Self {
         let mut out = Self {
             slots: [const { None }; MAX_ATTACHMENTS],
             len: 0,
@@ -363,7 +376,7 @@ impl<'a> Attachments<'a> {
                 "a pass attaches at most {MAX_ATTACHMENTS} targets",
             );
             if let Some(view) = target {
-                out.slots[location] = Some(attach(view, CLEAR));
+                out.slots[location] = Some(attach(view, ops));
                 out.len = location + 1;
             }
         }
@@ -842,6 +855,34 @@ mod tests {
                 ..Default::default()
             },
             "QUAD_STRIP culls a face the transform needs drawn",
+        );
+    }
+
+    /// A pass attaches up to its last target: a hole before it stays a hole, one after
+    /// it is not attached at all — the ceiling lane sits at 3 with or without a
+    /// residual at 2 (§6.2).
+    #[test]
+    fn a_pass_attaches_through_its_last_target_and_keeps_the_holes_before_it() {
+        let built = pollster::block_on(GpuContext::headless());
+        let Some(ctx) = crate::testing::or_skip(built, "GPU tests") else {
+            return;
+        };
+        let view = zero_texture(&ctx, wgpu::TextureFormat::R16Float, "stark attach test");
+        let v = Some(&view);
+        let shape = |a: Attachments<'_>| -> Vec<Option<bool>> {
+            a.as_slice()
+                .iter()
+                .map(|s| s.as_ref().map(|s| matches!(s.ops.load, wgpu::LoadOp::Load)))
+                .collect()
+        };
+        assert_eq!(shape(Attachments::cleared([None, None])), []);
+        assert_eq!(
+            shape(Attachments::cleared([v, v, None, None])),
+            [Some(false); 2]
+        );
+        assert_eq!(
+            shape(Attachments::loaded([v, v, None, v])),
+            [Some(true), Some(true), None, Some(true)]
         );
     }
 

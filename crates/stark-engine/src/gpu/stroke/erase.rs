@@ -30,9 +30,9 @@ use super::accum::{
     BareCanvas, IncrementalTileAccumulator, Land, Landed, Landing, LaneKeys, Sweep, lane_key,
 };
 use super::incremental::Carried;
-use super::swept::{SweptKit, sweep_binds, sweep_draws};
+use super::swept::{SweepDraws, SweptKit, reaches_nothing};
 use super::{Progress, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
-use crate::gpu::scratch::{BufKey, Key};
+use crate::gpu::scratch::Key;
 
 /// The accumulator's format: one channel — the transparency mass — additive. f16
 /// is enough because the interesting range is a few times `OPAQUE_MASS`, and by the
@@ -205,10 +205,7 @@ impl StrokeRenderer {
         // (§6.8).
         let StrokeScene { substrate, .. } = scene;
         let ResolvedRange {
-            rec,
-            tip,
             consts: k,
-            segments,
             end_dist,
             resume,
             ..
@@ -217,31 +214,26 @@ impl StrokeRenderer {
         let mut scope = self.scratch.scope(&self.ctx, "stark erase stroke");
         let device = &self.ctx.device;
 
-        // The brush's textures, bound exactly as the swept path binds them — one
-        // derivation (`sweep_binds`), and `fs_erase` reads the same prefix-τ,
-        // substrate and stroke uniform (the noise field rides along unread).
-        let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, tip, rec, substrate, k);
-        // At 1× always: the supersampled resolve averages the *paint* parcel's
-        // finished visible alpha (§6.2), and the erase's transparency mass runs a
-        // different law through `erase.wesl` — its resolve would live there, and
-        // nothing gates an eraser today (`budget::supersample_scale`).
-        let draws = sweep_draws(self, &mut scope, rec, k, segments, 1);
+        // The swept path's own draws, and `fs_erase` reads the same prefix-τ, substrate
+        // and stroke uniform (the noise field rides along unread). At 1× always: the
+        // supersampled resolve averages the *paint* parcel's finished visible alpha
+        // (§6.2), and the erase's transparency mass runs a different law through
+        // `erase.wesl` — its resolve would live there, and nothing gates an eraser
+        // today (`budget::supersample_scale`).
+        let Some(draws) = SweepDraws::new(self, &mut scope, &range, substrate, 1) else {
+            return reaches_nothing(scope, scene.base, end_dist);
+        };
 
         // The stroke's ceiling, once per *call*: `StrokeConstants` resolved it with
         // the color and the mask's opacity folded in, so this path cannot disagree
         // with the others about what the dial said (`BrushEffect::opacity`, §6.8).
-        //
-        // Run tier, not piece: every tile of `accum::run` binds this one buffer, so
-        // the lease has to outlive the call rather than the tile being recorded.
-        let opacity = stark_shaders::mirror::erase::Erase {
-            params: [k.opacity, f32::from(u8::from(k.ceiling_lane)), 0.0, 0.0],
-        };
-        let opacity_buf = scope.take_run_buffer(BufKey {
-            size: std::mem::size_of_val(&opacity) as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            label: "stark erase opacity",
-        });
-        scope.write_lease(&opacity_buf, bytemuck::bytes_of(&opacity));
+        // Run tier: every tile of `accum::run` binds it.
+        let opacity = scope.run_uniform(
+            "stark erase opacity",
+            &stark_shaders::mirror::erase::Erase {
+                params: [k.opacity, f32::from(u8::from(k.ceiling_lane)), 0.0, 0.0],
+            },
+        );
 
         let keys = parcel_keys(k.ceiling_lane);
 
@@ -267,8 +259,6 @@ impl StrokeRenderer {
                     &self.erase.sweep
                 },
                 draws: &draws,
-                prefix: &prefix_bg,
-                noise: &noise_bg,
             },
             &Land {
                 label: "stark erase integrate",
@@ -282,7 +272,7 @@ impl StrokeRenderer {
                         eb::BASE_AUX => wgpu::BindingResource::TextureView(l.base.aux),
                         eb::ACCUM => wgpu::BindingResource::TextureView(l.parcel.lane(MASS)),
                         eb::SELECTION => wgpu::BindingResource::TextureView(l.mask),
-                        eb::E => opacity_buf.as_entire_binding(),
+                        eb::E => opacity.window(),
                         eb::BASE_RESID => wgpu::BindingResource::TextureView(
                             l.base.resid.expect("a residual build has one"),
                         ),

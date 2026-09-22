@@ -37,7 +37,6 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use stark_model::geom::TileCoord;
-use stark_shaders::mirror::stamp_common::SWEEP_VERTS;
 
 use crate::gpu::channels::Targets;
 use crate::gpu::desc;
@@ -54,22 +53,14 @@ use crate::gpu::scratch::{Kept, Key, SubmitScope};
 /// A lane list may have a **hole**: the sweep's targets are the shader's `@location`s,
 /// and the ceiling sits at 3 whether or not the space has a residual at 2 — so a
 /// colorimetric space under a pen-driven ceiling attaches `[color, aux, none, ceiling]`,
-/// the hole riding the list as a `None` rather than shifting the lane after it.
+/// the hole riding the list as a `None` rather than shifting the lane after it
+/// ([`desc::Attachments`] attaches through the last lane there is).
 const MAX_LANES: usize = 4;
 
 /// An effect's parcel lanes by index — the sweep shader's `@location`s — with `None` at
 /// a lane this stroke does not carry. Fixed-size so a hole is a `None` at a *named*
-/// index rather than a push order the lane constants have to agree with; how many the
-/// pass attaches is [`lane_count`].
+/// index rather than a push order the lane constants have to agree with.
 pub(super) type LaneKeys = [Option<Key>; MAX_LANES];
-
-/// One past the last lane that exists: how many of a parcel's attachments the
-/// sweep pass takes. A `None` inside that count is a hole the pipeline's own
-/// target list also has; one past it is no target at all — and the pass and the
-/// pipeline have to agree about which, so the count is read here and nowhere else.
-fn lane_count<T>(lanes: &[Option<T>; MAX_LANES]) -> usize {
-    lanes.iter().rposition(Option::is_some).map_or(0, |i| i + 1)
-}
 
 /// One parcel lane's pool key: a full tile texture (interior + apron), renderable (the
 /// sweep accumulates into it), bindable (the landing pass reads it), and copyable both
@@ -118,32 +109,16 @@ impl Parcel {
             .and_then(Option::as_ref)
             .unwrap_or_else(|| {
                 panic!(
-                    "lane {i} of a {}-lane parcel: an effect's lane names and its keys \
-                     disagree about what its parcel holds",
-                    self.len(),
+                    "lane {i} of the parcel is a hole: an effect's lane names and its \
+                     keys disagree about what its parcel holds",
                 )
             })
             .view()
     }
 
-    /// The lanes as the sweep attaches them, in key order — a fixed array plus
-    /// [`Self::len`] rather than a `Vec`, [`Targets::attachments`]' reason: one is built
-    /// per tile per piece, and that rate is what a per-pass allocation costs (§6.2). A
-    /// hole attaches nothing.
-    fn attachments(
-        &self,
-        ops: wgpu::Operations<wgpu::Color>,
-    ) -> [Option<wgpu::RenderPassColorAttachment<'_>>; MAX_LANES] {
-        let mut att = [None, None, None, None];
-        for (slot, lease) in att.iter_mut().zip(&self.lanes) {
-            *slot = lease.as_ref().map(|l| desc::attach(l.view(), ops));
-        }
-        att
-    }
-
-    /// How many of [`Self::attachments`] the sweep pass takes ([`lane_count`]).
-    fn len(&self) -> usize {
-        lane_count(&self.lanes)
+    /// The lanes in key order, as the sweep attaches them: a hole attaches nothing.
+    fn views(&self) -> impl Iterator<Item = Option<&wgpu::TextureView>> {
+        self.lanes.iter().map(|lane| lane.as_ref().map(Kept::view))
     }
 }
 
@@ -188,19 +163,14 @@ pub(super) enum BareCanvas {
 }
 
 /// The swept-extent rasterization half of one tile, which the two effects differ in by
-/// **pipeline alone**: the same segments in the same order, the same instance runs and
-/// transform slots ([`sweep_draws`](super::swept::sweep_draws)) and the same
-/// brush-resolved bind groups ([`sweep_binds`](super::swept::sweep_binds)) —
-/// `stamp.wesl`'s `fs_main` laying paint, or its `fs_erase` accumulating transparency.
+/// **pipeline alone**: the same [`SweepDraws`] — `stamp.wesl`'s `fs_main` laying
+/// paint, or its `fs_erase` accumulating transparency.
 pub(super) struct Sweep<'a> {
     /// This pass's label, so a debug capture still names the effect that recorded it
     /// rather than the procedure the two share.
     pub(super) label: &'static str,
     pub(super) pipeline: &'a wgpu::RenderPipeline,
     pub(super) draws: &'a SweepDraws,
-    /// The prefix-τ volume at group 1, and the noise + substrate fields at group 2.
-    pub(super) prefix: &'a wgpu::BindGroup,
-    pub(super) noise: &'a wgpu::BindGroup,
 }
 
 /// The landing half: the fullscreen pass that applies the non-composable law once,
@@ -306,7 +276,7 @@ impl<'a> IncrementalTileAccumulator<'a> {
         land: &Land<'_>,
         mut bind: impl FnMut(&Landing<'_>) -> wgpu::BindGroup,
     ) -> Landed {
-        for (i, coord) in sweep.draws.coords.iter().enumerate() {
+        for (i, coord) in sweep.draws.coords().iter().enumerate() {
             // The paint the stroke found under this tile: what an earlier piece
             // recorded, or — for a tile this stroke reaches for the first time — the
             // base itself, which no earlier piece can have rewritten. A carried entry
@@ -349,30 +319,15 @@ impl<'a> IncrementalTileAccumulator<'a> {
                 }
             }
 
-            // This tile's segments into the working parcel. Just this tile's: every
-            // other segment differences its prefix-τ taps to zero here anyway, so
-            // what the instance range skips is the shading, not a contribution.
+            // This tile's segments into the working parcel, over the carried total.
             {
-                let ops = if resumed.is_some() {
-                    desc::LOAD
+                let into = if resumed.is_some() {
+                    desc::Attachments::loaded(work.views())
                 } else {
-                    desc::CLEAR
+                    desc::Attachments::cleared(work.views())
                 };
-                let att = work.attachments(ops);
-                let mut pass =
-                    self.scope
-                        .encoder()
-                        .begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some(sweep.label),
-                            color_attachments: &att[..work.len()],
-                            ..Default::default()
-                        });
-                pass.set_pipeline(sweep.pipeline);
-                pass.set_bind_group(0, &sweep.draws.xforms, &[sweep.draws.xform_offset(i)]);
-                pass.set_bind_group(1, sweep.prefix, &[]);
-                pass.set_bind_group(2, sweep.noise, &[]);
-                pass.set_vertex_buffer(0, sweep.draws.instances.slice(..));
-                pass.draw(0..SWEEP_VERTS, sweep.draws.runs[i].clone());
+                let mut pass = desc::begin_pass(self.scope.encoder(), sweep.label, into);
+                sweep.draws.draw(&mut pass, sweep.pipeline, i);
             }
 
             // The whole stroke's parcel so far, landed on the pristine paint — never
@@ -393,21 +348,12 @@ impl<'a> IncrementalTileAccumulator<'a> {
                 };
                 bind(&landing)
             };
-            {
-                let targets = dst.targets();
-                let att = targets.attachments(desc::CLEAR);
-                let mut pass =
-                    self.scope
-                        .encoder()
-                        .begin_render_pass(&wgpu::RenderPassDescriptor {
-                            label: Some(land.label),
-                            color_attachments: &att[..targets.count()],
-                            ..Default::default()
-                        });
-                pass.set_pipeline(land.pipeline);
-                pass.set_bind_group(0, &bg, &[]);
-                pass.draw(0..3, 0..1);
-            }
+            self.scope.fullscreen_pass(
+                land.label,
+                dst.targets(),
+                land.pipeline,
+                desc::Bound::one(&bg),
+            );
 
             self.map = self.map.insert(*coord, dst);
             self.dirty.push(*coord);
@@ -457,20 +403,5 @@ pub(super) fn base_targets<'a>(
                 .and_then(TilePairHandle::resid_view)
                 .unwrap_or(zero)
         }),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The count is one past the last lane, so a hole inside it is attached as a
-    /// hole and everything past it is not attached at all.
-    #[test]
-    fn the_lane_count_stops_after_the_last_lane_and_keeps_the_holes_before_it() {
-        assert_eq!(lane_count::<()>(&[None, None, None, None]), 0);
-        assert_eq!(lane_count(&[Some(()), None, None, None]), 1);
-        assert_eq!(lane_count(&[Some(()), Some(()), None, None]), 2);
-        assert_eq!(lane_count(&[Some(()), Some(()), None, Some(())]), 4);
     }
 }

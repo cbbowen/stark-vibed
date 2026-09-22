@@ -484,8 +484,14 @@ impl<'a> DynamicsRun<'a> {
                 t.levels.iter().map(|(c, k)| (*c, Arc::clone(k))).collect()
             });
         let lane = leveled.then(|| {
-            let (prefix, noise) =
-                super::super::swept::sweep_binds(r, &mut scope, tip, rec, scene.substrate, consts);
+            let (prefix, noise) = super::super::swept::sweep_brush_groups(
+                r,
+                &mut scope,
+                tip,
+                rec,
+                scene.substrate,
+                consts,
+            );
             LaneBinds { prefix, noise }
         });
         let fresh: BTreeMap<TileCoord, Arc<Kept>> = if let Some(t) = prior.map(ToolState::looped) {

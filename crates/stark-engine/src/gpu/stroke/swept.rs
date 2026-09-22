@@ -3,6 +3,8 @@
 //! exactly. Carries no brush state between segments — a range needs nothing from its
 //! predecessor but the arc length.
 
+use std::ops::Range;
+
 use crate::colorspace::ColorSpace;
 use crate::gpu::channels::{ChannelFormats, Targets};
 use crate::gpu::desc;
@@ -23,8 +25,8 @@ use super::incremental::Carried;
 use super::region::tiles_with_segments;
 use super::segments::{Segment, SegmentInstance};
 use super::{Progress, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
-use crate::gpu::scratch::{BufKey, Key};
-use crate::gpu::uniforms::UniformSlots;
+use crate::gpu::scratch::{BufKey, Key, LeasedSlots, SubmitScope};
+use crate::gpu::substrate::SubstrateMap;
 
 // A segment's centreline is an arc rather than a chord (§6.2), so its swept geometry is
 // a triangle strip of two rims across `SWEEP_SLICES` steps of travel. Both numbers are
@@ -41,20 +43,8 @@ const _: () = assert!(
 // (§6.7): the tile *texture's* top-left in canvas px + canvas→NDC scale, plus the
 // brush's stroke-constant color channels.
 use super::tips::ResolvedTip;
+use stark_shaders::mirror::integrate::Integrate;
 use stark_shaders::mirror::stamp_common::TileXform;
-
-/// One tile's window into the stroke's transform buffer — the `min_binding_size` the
-/// sweep's layout declares, taken from the struct rather than written down.
-const XFORM_SLOT: u64 = std::mem::size_of::<TileXform>() as u64;
-
-/// Stride between the per-tile [`TileXform`] slots (§6.10, and `gpu::uniforms`' own
-/// law): the padded size a dynamic offset must be a multiple of, taken from the type
-/// rather than written here — a uniform that outgrew a hand-written quantum would
-/// silently write over the next slot.
-///
-/// **Taken from [`UniformSlots`] without taking its buffer**: this path leases its
-/// buffer from the scratch pool (`scratch::BufKey`) instead, recycled across strokes.
-const XFORM_STRIDE: u64 = UniformSlots::<TileXform>::STRIDE;
 
 /// How many scratch pairs the sweep rotates through (§6.2) — see
 /// [`render_swept`](StrokeRenderer::render_swept), where the ring is acquired.
@@ -265,9 +255,7 @@ impl StrokeRenderer {
         } = scene;
         let ResolvedRange {
             rec,
-            tip,
             consts: k,
-            segments,
             end_dist,
             ..
         } = range;
@@ -294,32 +282,23 @@ impl StrokeRenderer {
 
         // The submit scope: the per-stroke buffers and the shared scratch pair ride
         // in it, and only the `finish` that submits the commands naming them can
-        // release them (`scratch::SubmitScope`). The ordering is the scope's shape,
-        // not a pair of `drop`s placed after the submit and defended by a comment.
+        // release them (`scratch::SubmitScope`).
         let mut scope = self.scratch.scope(&self.ctx, "stark stroke commit");
-
-        let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, tip, rec, substrate, k);
-        // The per-tile draw list, instance buffer and transform slots — shared with
-        // the erase pass ([`sweep_draws`]). Always at 1×: a supersampled stroke
-        // never reaches this loop (the branch above).
-        let draws = sweep_draws(self, &mut scope, rec, k, segments, 1);
+        // Always at 1×: a supersampled stroke never reaches this loop (the branch above).
+        let Some(draws) = SweepDraws::new(self, &mut scope, &range, substrate, 1) else {
+            return reaches_nothing(scope, base, end_dist);
+        };
         // The integrate's opacity uniform, at this path's identity: the layout
         // names it on every stroke, and the shader's exact branch at 1 is what
         // keeps this path bit-for-bit what it was. No ceiling lane either — a
         // stroke that has one never comes this way.
-        let opacity_buf = opacity_uniform(&mut scope, 1.0, 1, false);
-        let SweepDraws {
-            coords,
-            runs,
-            instances: instance_buf,
-            xforms: bind_group,
-        } = &draws;
+        let opacity = opacity_uniform(&mut scope, 1.0, 1, false);
 
         let carry = StrokeCarry {
             dist: end_dist,
             progress: Progress::Finished {
                 tool: None,
-                dirty: coords.clone(),
+                dirty: draws.coords().to_vec(),
             },
         };
 
@@ -338,36 +317,18 @@ impl StrokeRenderer {
         // Leased on the **run** tier: the ring is the loop's running state, not the
         // current tile's, and the piece tier is released at every `flush`. They are the
         // very keys the scaled path's parcel lanes take, so the two share one warm set.
-        let ring: Vec<RingSlot> = (0..SCRATCH_RING.min(coords.len()))
+        let ring: Vec<RingSlot> = (0..SCRATCH_RING.min(draws.coords().len()))
             .map(|_| RingSlot::take(self, &mut scope))
             .collect();
 
         let mut new_map = base.clone();
-        for (i, coord) in coords.iter().enumerate() {
-            let xform_off = draws.xform_offset(i);
+        for (i, coord) in draws.coords().iter().enumerate() {
             // Round-robin, so the reuse distance is the ring's length.
             let scratch = &ring[i % ring.len()];
-
-            // This tile's segments into the shared scratch, cleared as it goes.
             {
-                let sweep_targets = scratch.targets();
-                let sweep_att = sweep_targets.attachments(desc::CLEAR);
-                let mut pass = scope
-                    .encoder()
-                    .begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("stark sweep pass"),
-                        color_attachments: &sweep_att[..sweep_targets.count()],
-                        ..Default::default()
-                    });
-                pass.set_pipeline(&self.swept.pipeline);
-                pass.set_bind_group(0, bind_group, &[xform_off]);
-                pass.set_bind_group(1, &prefix_bg, &[]);
-                pass.set_bind_group(2, &noise_bg, &[]);
-                pass.set_vertex_buffer(0, instance_buf.slice(..));
-                // Just this tile's segments. Every other one differences its prefix-τ
-                // taps to zero here anyway, so what is skipped is the shading, not a
-                // contribution.
-                pass.draw(0..SWEEP_VERTS, runs[i].clone());
+                let mut pass =
+                    desc::begin_pass(scope.encoder(), "stark sweep pass", scratch.targets());
+                draws.draw(&mut pass, &self.swept.pipeline, i);
             }
 
             // Integrate the scratch slab over the base into a fresh CoW tile, gated
@@ -386,23 +347,15 @@ impl StrokeRenderer {
                 base_t,
                 scratch.targets(),
                 mask_view.view(),
-                &opacity_buf,
+                &opacity,
                 &self.zeroes.aux,
             );
-            {
-                let int_targets = dst.targets();
-                let int_att = int_targets.attachments(desc::CLEAR);
-                let mut pass = scope
-                    .encoder()
-                    .begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("stark integrate"),
-                        color_attachments: &int_att[..int_targets.count()],
-                        ..Default::default()
-                    });
-                pass.set_pipeline(&self.swept.integrate_pipeline);
-                pass.set_bind_group(0, &integrate_bg, &[]);
-                pass.draw(0..3, 0..1);
-            }
+            scope.fullscreen_pass(
+                "stark integrate",
+                dst.targets(),
+                &self.swept.integrate_pipeline,
+                desc::Bound::one(&integrate_bg),
+            );
             new_map = new_map.insert(*coord, dst);
         }
 
@@ -442,20 +395,20 @@ impl StrokeRenderer {
     ) -> (TileMap, StrokeCarry) {
         // The pool and the selection are the accumulator's, as in `erase.rs`; the
         // base it reads pristine paint out of is too.
-        let StrokeScene { substrate, .. } = scene;
+        let StrokeScene {
+            base, substrate, ..
+        } = scene;
         let ResolvedRange {
-            rec,
-            tip,
             consts: k,
-            segments,
             end_dist,
             resume,
             ..
         } = range;
         let mut scope = self.scratch.scope(&self.ctx, "stark stroke scaled commit");
-        let (prefix_bg, noise_bg) = sweep_binds(self, &mut scope, tip, rec, substrate, k);
-        let draws = sweep_draws(self, &mut scope, rec, k, segments, ss);
-        let opacity_buf = opacity_uniform(&mut scope, k.opacity, ss, k.ceiling_lane);
+        let Some(draws) = SweepDraws::new(self, &mut scope, &range, substrate, ss) else {
+            return reaches_nothing(scope, base, end_dist);
+        };
+        let opacity = opacity_uniform(&mut scope, k.opacity, ss, k.ceiling_lane);
 
         // The carried parcel's lanes at `stamp.wesl`'s own targets ([`parcel_keys`]):
         // the channels the unscaled path's ring pairs carry, from the scratch pool
@@ -483,8 +436,6 @@ impl StrokeRenderer {
                     &self.swept.pipeline
                 },
                 draws: &draws,
-                prefix: &prefix_bg,
-                noise: &noise_bg,
             },
             &Land {
                 label: "stark integrate",
@@ -503,7 +454,7 @@ impl StrokeRenderer {
                 } else {
                     &self.zeroes.aux
                 };
-                integrate_bind_group(self, l.base, parcel, l.mask, &opacity_buf, ceiling)
+                integrate_bind_group(self, l.base, parcel, l.mask, &opacity, ceiling)
             },
         );
 
@@ -518,6 +469,17 @@ impl StrokeRenderer {
             },
         )
     }
+}
+
+/// What a swept path returns for a range whose segments reach no tile: nothing drawn,
+/// exactly as for a range with no segments (`render_range`).
+pub(super) fn reaches_nothing(
+    scope: SubmitScope,
+    base: &TileMap,
+    dist: f32,
+) -> (TileMap, StrokeCarry) {
+    scope.finish();
+    (base.clone(), StrokeCarry::unchanged(dist))
 }
 
 /// The carried parcel's lanes (`render_swept_scaled`): the index is the shader's own
@@ -566,7 +528,7 @@ impl RingSlot {
     /// Check one out. The **wide** scratch aux (§6.2), and the color space's own color
     /// and residual beside it — the same trio a parcel lane carries, at the same keys,
     /// which is what lets the two paths draw from one free list.
-    fn take(r: &StrokeRenderer, scope: &mut crate::gpu::scratch::SubmitScope) -> Self {
+    fn take(r: &StrokeRenderer, scope: &mut SubmitScope) -> Self {
         let formats = ChannelFormats::of(r.color_space.as_ref());
         let mut view = |format| scope.take_run(parcel_key(format)).view;
         Self {
@@ -588,29 +550,25 @@ impl RingSlot {
     }
 }
 
-/// The sweep's brush-resolved bind groups — the prefix-τ volume at group 1, the noise
-/// and substrate fields at group 2. One derivation for all three passes that rasterize
-/// the swept extent (the plain deposit, its scaled sibling and the erase sweep), for
-/// [`sweep_draws`]' reason: they draw the *same* extent.
-pub(super) fn sweep_binds(
+/// The brush as the sweep binds it: the prefix-τ volume at group 1, and the noise and
+/// canvas substrate fields at group 2. [`SweepDraws`] holds its own; this is for a draw
+/// that binds its own group 0 (the stamp loop's ceiling lane, §6.2).
+pub(super) fn sweep_brush_groups(
     r: &StrokeRenderer,
-    scope: &mut crate::gpu::scratch::SubmitScope,
+    scope: &mut SubmitScope,
     tip: &ResolvedTip,
     rec: &StrokeRecord,
-    substrate: &crate::gpu::substrate::SubstrateMap,
+    substrate: &SubstrateMap,
     k: &super::StrokeConstants,
 ) -> (wgpu::BindGroup, wgpu::BindGroup) {
     let device = &r.ctx.device;
-    // The brush's prefix-τ texture — image brushes from the asset store, the round tip
-    // generated and cached from its hardness — resolved by `render_range`'s own gate
-    // and handed down rather than re-resolved here behind an `expect` naming that
-    // gate, which is a claim about a caller where passing the value is a fact.
-    let prefix_view = tip.prefix.clone();
-    let prefix_bg = r
+    // The tip `render_range`'s own gate resolved: an image brush's from the asset
+    // store, the round tip's generated from its hardness.
+    let prefix = r
         .swept
         .prefix_bgl
         .group(device, "stark sweep prefix bg", |_| {
-            wgpu::BindingResource::TextureView(&prefix_view)
+            wgpu::BindingResource::TextureView(&tip.prefix)
         });
     // Color dynamics (§6.2): the noise tile baked for this stroke, of the brush's
     // kind. An inactive brush binds the zero tile with zero amplitudes, so the deposit
@@ -618,7 +576,7 @@ pub(super) fn sweep_binds(
     // deposition tooth's height and the rise ahead of it.
     let noise = r.tips.noise(&rec.brush.color_dynamics(), k.noise_seed);
     scope.hold(noise.clone());
-    let noise_bg = r
+    let noise = r
         .swept
         .noise_bgl
         .group(device, "stark sweep noise bg", |b| match b {
@@ -627,7 +585,7 @@ pub(super) fn sweep_binds(
             sc::SUBSTRATE_TEX => wgpu::BindingResource::TextureView(&substrate.view),
             other => unreachable!("the sweep's noise group holds no binding {other}"),
         });
-    (prefix_bg, noise_bg)
+    (prefix, noise)
 }
 
 /// The integrate's opacity uniform (`integrate.wesl::Integrate`) for one piece:
@@ -639,150 +597,149 @@ pub(super) fn sweep_binds(
 /// tells the shader whether to box-resolve the parcel — 1 is the plain 1:1 load.
 /// `lane` says whether the ceiling lane bound beside the parcel is real or the 1×1
 /// zero the shader must not read.
+///
+/// Run tier: every tile of the piece binds it.
 pub(super) fn opacity_uniform(
-    scope: &mut crate::gpu::scratch::SubmitScope,
+    scope: &mut SubmitScope,
     opacity: f32,
     ss: u32,
     lane: bool,
-) -> wgpu::Buffer {
-    let u = stark_shaders::mirror::integrate::Integrate {
+) -> LeasedSlots<Integrate> {
+    let u = Integrate {
         params: [opacity, ss as f32, f32::from(u8::from(lane)), 0.0],
     };
-    let buf = scope.take_run_buffer(BufKey {
-        size: std::mem::size_of_val(&u) as u64,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        label: "stark integrate opacity",
-    });
-    scope.write_lease(&buf, bytemuck::bytes_of(&u));
-    buf
+    scope.run_uniform("stark integrate opacity", &u)
 }
 
-/// Everything one piece's sweep draws with, per tile: which tiles, each tile's
-/// contiguous instance range, the instance buffer, and the per-tile transform
-/// slots behind one dynamic-offset bind group.
+/// Everything one piece's sweep draws with: which tiles, each tile's contiguous
+/// instance range, the instance buffer, and the sweep's three bind groups.
 ///
-/// One derivation for both consumers — the plain deposit
-/// ([`StrokeRenderer::render_swept`]) and the erase pass (`erase.rs`) — for
-/// [`StrokeConstants`](super::StrokeConstants)'s reason: the two rasterize the *same*
-/// extent, gated by the same drain, tooth and jitter.
+/// One derivation for every pass that rasterizes the swept extent — the plain deposit,
+/// its scaled sibling and the erase sweep — for
+/// [`StrokeConstants`](super::StrokeConstants)'s reason: they draw the *same* extent,
+/// gated by the same drain, tooth and jitter, and differ by pipeline alone.
 pub(super) struct SweepDraws {
     /// The tiles the piece's segments reach, texture (interior + apron) included —
-    /// [`tiles_with_segments`]' answer, in its order, which the instance runs below
-    /// are laid out to match.
-    pub(super) coords: Vec<TileCoord>,
+    /// [`tiles_with_segments`]' answer, in its order, which `runs` is laid out to match.
+    coords: Vec<TileCoord>,
     /// Each tile's slice of the instance buffer.
-    pub(super) runs: Vec<std::ops::Range<u32>>,
-    pub(super) instances: wgpu::Buffer,
-    /// The per-tile [`TileXform`] slots, selected by
-    /// [`xform_offset`](Self::xform_offset).
-    pub(super) xforms: wgpu::BindGroup,
+    runs: Vec<Range<u32>>,
+    instances: wgpu::Buffer,
+    /// A [`TileXform`] per tile, selected in group 0 by its dynamic offset.
+    xforms: LeasedSlots<TileXform>,
+    /// In `@group` order: the transform slots, the prefix-τ volume, and the noise and
+    /// substrate fields ([`sweep_brush_groups`]).
+    groups: [wgpu::BindGroup; 3],
 }
 
 impl SweepDraws {
-    /// The dynamic offset that selects tile `i` of [`coords`](Self::coords) in
-    /// [`xforms`](Self::xforms) — asked of the draws rather than computed at each pass,
-    /// so the stride the slots were *written* at and the stride they are *bound* at are
-    /// one expression.
-    pub(super) fn xform_offset(&self, i: usize) -> u32 {
-        UniformSlots::<TileXform>::offset(i as u32)
-    }
-}
-
-/// Build a piece's [`SweepDraws`]: which segments reach which tile, and the instance
-/// buffer laid out to match — each tile's segments contiguous, so its draw is one
-/// instance *range* rather than the whole stroke. A segment writes exactly zero outside
-/// the tiles it is listed under, and zero is an exact identity through both blends, so
-/// this is the same picture as drawing everything everywhere, for
-/// `Σ tiles-per-segment` instances instead of `segments × tiles`
-/// ([`tiles_with_segments`]).
-///
-/// `ss` is the supersampling factor the piece rasterizes at (§6.2): it reaches the
-/// shader as the pixel footprint's half-width, `0.5 / ss` canvas px
-/// (`TileXform::params.w`), so each subsample box-filters over its own footprint rather
-/// than the whole pixel's. 1 — half a px — on every path that does not supersample, the
-/// erase sweep included.
-pub(super) fn sweep_draws(
-    r: &StrokeRenderer,
-    scope: &mut crate::gpu::scratch::SubmitScope,
-    rec: &StrokeRecord,
-    k: &super::StrokeConstants,
-    segments: &[Segment],
-    ss: u32,
-) -> SweepDraws {
-    let device = &r.ctx.device;
-    let pairs = tiles_with_segments(segments);
-    // A tile's pairs are one contiguous run of the sorted list, so its instances
-    // are one contiguous run of the buffer. All three reserved: the pair count is
-    // the instance count, and the run count is one pass over it.
-    let tiles = pairs.chunk_by(|a, b| a.0 == b.0).count();
-    let mut coords: Vec<TileCoord> = Vec::with_capacity(tiles);
-    let mut instances: Vec<SegmentInstance> = Vec::with_capacity(pairs.len());
-    let mut runs: Vec<std::ops::Range<u32>> = Vec::with_capacity(tiles);
-    for run in pairs.chunk_by(|a, b| a.0 == b.0) {
-        let from = instances.len() as u32;
-        instances.extend(
-            run.iter()
-                .map(|&(_, i)| segment_instance(&segments[i as usize])),
-        );
-        coords.push(run[0].0);
-        runs.push(from..instances.len() as u32);
-    }
-    // Leased and written through the scope (`SubmitScope::write_lease`), never
-    // `create_buffer_init`: that maps at creation, and Chrome/Dawn caps map-at-creation
-    // buffers well below the normal `maxBufferSize`, so a long stroke would panic in
-    // `createBuffer`. It is also the largest buffer the stroke path builds, rebuilt on
-    // every pointer move, so the pool hands back the previous move's (`scratch::BufKey`).
-    let instance_bytes: &[u8] = bytemuck::cast_slice(&instances);
-    let instance_buf = scope.take_run_buffer(BufKey {
-        size: instance_bytes.len() as u64,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        label: "stark sweep instances",
-    });
-    scope.write_lease(&instance_buf, instance_bytes);
-
-    // Per-tile sweep transforms, one [`XFORM_STRIDE`] slot each in a single buffer the
-    // draws select with a dynamic offset. The texture top-left is the interior origin
-    // shifted out by the apron, so the full TILE_TEX target maps to NDC [-1, 1];
-    // everything else is a stroke constant, repeated per slot because the slot is what
-    // the shader reads.
-    //
-    // One buffer and one bind group for the whole stroke: this path redraws on every
-    // pointer move, and the allocation *rate* is what OOMs the tab (`gpu::uniforms`).
-    let apron = TILE_APRON as f32;
-    let mut xform_data = vec![0u8; coords.len() * XFORM_STRIDE as usize];
-    for (i, coord) in coords.iter().enumerate() {
-        let origin = coord.origin();
-        let xform = tile_xform(
+    /// Lay out a piece's draws: which segments reach which tile, and the instance
+    /// buffer to match — each tile's segments contiguous, so its draw is one instance
+    /// *range* rather than the whole stroke. A segment writes exactly zero outside the
+    /// tiles it is listed under, and zero is an exact identity through both blends, so
+    /// this is the same picture as drawing everything everywhere, for
+    /// `Σ tiles-per-segment` instances instead of `segments × tiles`
+    /// ([`tiles_with_segments`]).
+    ///
+    /// `ss` is the supersampling factor the piece rasterizes at (§6.2): it reaches the
+    /// shader as the pixel footprint's half-width, `0.5 / ss` canvas px
+    /// (`TileXform::params.w`), so each subsample box-filters over its own footprint
+    /// rather than the whole pixel's. 1 on every path that does not supersample, the
+    /// erase sweep included.
+    ///
+    /// `None` where the segments reach no tile, before anything is leased.
+    pub(super) fn new(
+        r: &StrokeRenderer,
+        scope: &mut SubmitScope,
+        range: &ResolvedRange<'_>,
+        substrate: &SubstrateMap,
+        ss: u32,
+    ) -> Option<Self> {
+        let ResolvedRange {
             rec,
-            k,
-            origin - Vec2::splat(apron),
-            (TILE_TEX as f32, TILE_TEX as f32),
-            ss,
-        );
-        let at = i * XFORM_STRIDE as usize;
-        xform_data[at..at + XFORM_SLOT as usize].copy_from_slice(bytemuck::bytes_of(&xform));
-    }
-    let xform_buf = scope.take_run_buffer(BufKey {
-        size: xform_data.len() as u64,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        label: "stark sweep xforms",
-    });
-    scope.write_lease(&xform_buf, &xform_data);
-    // The window is the uniform's size and the offset is the draw's, so the entry names
-    // a slot rather than the whole buffer.
-    let xforms = r.swept.uniform_bgl.group(device, "stark sweep bg", |_| {
-        wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-            buffer: &xform_buf,
-            offset: 0,
-            size: wgpu::BufferSize::new(XFORM_SLOT),
-        })
-    });
+            tip,
+            consts: k,
+            segments,
+            ..
+        } = *range;
+        let pairs = tiles_with_segments(segments);
+        // A tile's pairs are one contiguous run of the sorted list, so its instances
+        // are one contiguous run of the buffer. All three reserved: the pair count is
+        // the instance count, and the run count is one pass over it.
+        let tiles = pairs.chunk_by(|a, b| a.0 == b.0).count();
+        let mut coords: Vec<TileCoord> = Vec::with_capacity(tiles);
+        let mut instances: Vec<SegmentInstance> = Vec::with_capacity(pairs.len());
+        let mut runs: Vec<Range<u32>> = Vec::with_capacity(tiles);
+        for run in pairs.chunk_by(|a, b| a.0 == b.0) {
+            let from = instances.len() as u32;
+            instances.extend(
+                run.iter()
+                    .map(|&(_, i)| segment_instance(&segments[i as usize])),
+            );
+            coords.push(run[0].0);
+            runs.push(from..instances.len() as u32);
+        }
 
-    SweepDraws {
-        coords,
-        runs,
-        instances: instance_buf,
-        xforms,
+        // Per-tile sweep transforms. The texture top-left is the interior origin
+        // shifted out by the apron, so the full TILE_TEX target maps to NDC [-1, 1];
+        // everything else is a stroke constant, repeated per slot because the slot is
+        // what the shader reads.
+        let apron = Vec2::splat(TILE_APRON as f32);
+        let xforms: Vec<TileXform> = coords
+            .iter()
+            .map(|coord| {
+                let size = (TILE_TEX as f32, TILE_TEX as f32);
+                tile_xform(rec, k, coord.origin() - apron, size, ss)
+            })
+            .collect();
+        let xforms = scope.run_slots("stark sweep xforms", &xforms)?;
+
+        // Leased and written through the scope, never `create_buffer_init`: that maps
+        // at creation, and Chrome/Dawn caps map-at-creation buffers well below the
+        // normal `maxBufferSize`, so a long stroke would panic in `createBuffer`. It is
+        // also the largest buffer the stroke path builds, rebuilt on every pointer move,
+        // so the pool hands back the previous move's (`scratch::BufKey`).
+        let bytes: &[u8] = bytemuck::cast_slice(&instances);
+        let instances = scope.take_run_buffer(BufKey {
+            size: bytes.len() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            label: "stark sweep instances",
+        });
+        scope.write_lease(&instances, bytes);
+
+        let xform = r
+            .swept
+            .uniform_bgl
+            .group(&r.ctx.device, "stark sweep bg", |_| xforms.window());
+        let (prefix, noise) = sweep_brush_groups(r, scope, tip, rec, substrate, k);
+        Some(Self {
+            coords,
+            runs,
+            instances,
+            xforms,
+            groups: [xform, prefix, noise],
+        })
+    }
+
+    /// The tiles the piece reaches, in draw order: [`draw`](Self::draw)'s `i` indexes
+    /// this.
+    pub(super) fn coords(&self) -> &[TileCoord] {
+        &self.coords
+    }
+
+    /// Draw tile `i`'s segments with `pipeline`, one of the sweep's. Just this tile's:
+    /// every other segment differences its prefix-τ taps to zero here anyway, so what
+    /// is skipped is the shading, not a contribution.
+    pub(super) fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        pipeline: &wgpu::RenderPipeline,
+        i: usize,
+    ) {
+        pass.set_pipeline(pipeline);
+        desc::Bound::new(&self.groups, &[self.xforms.offset(i)]).set(pass);
+        pass.set_vertex_buffer(0, self.instances.slice(..));
+        pass.draw(0..SWEEP_VERTS, self.runs[i].clone());
     }
 }
 
@@ -851,28 +808,17 @@ pub(super) fn tile_xform(
 }
 
 /// One [`TileXform`] bound as the sweep's group 0 — for a draw over a single
-/// target, the stamp loop's lane draw (§6.2), where [`sweep_draws`] builds a slot
-/// per tile.
+/// target, the stamp loop's lane draw (§6.2), where [`SweepDraws`] stages a slot
+/// per tile. Drawn at offset 0.
 pub(super) fn xform_group(
     r: &StrokeRenderer,
-    scope: &mut crate::gpu::scratch::SubmitScope,
+    scope: &mut SubmitScope,
     xform: &TileXform,
 ) -> wgpu::BindGroup {
-    let buf = scope.take_piece_buffer(BufKey {
-        size: XFORM_SLOT,
-        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        label: "stark sweep region xform",
-    });
-    scope.write_lease(&buf, bytemuck::bytes_of(xform));
+    let slot = scope.piece_uniform("stark sweep region xform", xform);
     r.swept
         .uniform_bgl
-        .group(&r.ctx.device, "stark sweep region bg", |_| {
-            wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: &buf,
-                offset: 0,
-                size: wgpu::BufferSize::new(XFORM_SLOT),
-            })
-        })
+        .group(&r.ctx.device, "stark sweep region bg", |_| slot.window())
 }
 
 /// Build the stroke integrate pipeline (`integrate` shader) — §6.2/§6.1. A
@@ -928,7 +874,7 @@ fn integrate_bind_group(
     base: Targets<'_>,
     parcel: Targets<'_>,
     mask: &wgpu::TextureView,
-    opacity: &wgpu::Buffer,
+    opacity: &LeasedSlots<Integrate>,
     ceiling: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     r.swept
@@ -939,7 +885,7 @@ fn integrate_bind_group(
             ib::SCRATCH_COLOR => wgpu::BindingResource::TextureView(parcel.color),
             ib::SCRATCH_AUX => wgpu::BindingResource::TextureView(parcel.aux),
             ib::SELECTION => wgpu::BindingResource::TextureView(mask),
-            ib::IG => opacity.as_entire_binding(),
+            ib::IG => opacity.window(),
             ib::SCRATCH_CEILING => wgpu::BindingResource::TextureView(ceiling),
             ib::BASE_RESID => {
                 wgpu::BindingResource::TextureView(base.resid.expect("a residual build has one"))
