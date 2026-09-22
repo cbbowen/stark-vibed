@@ -26,10 +26,12 @@ use crate::common::palette::{COOL, PALE, WARM};
 use crate::common::*;
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_engine::{Engine, LayerInfo, RgbaImage};
+use stark_model::Srgb;
 use stark_model::document::{
-    BlendMode, ChromaticAberration, ColorAdjust, DRAGO_K, Filter, LayerId, Place,
+    BlendMode, ChromaticAberration, ColorAdjust, DRAGO_K, FillOp, Filter, LayerId, Place,
+    SelectionShape,
 };
-use stark_model::geom::Vec2;
+use stark_model::geom::{IVec2, TILE_SIZE, Vec2};
 
 const ROOT: LayerId = LayerId::ROOT;
 
@@ -431,6 +433,60 @@ fn an_unoffered_merge_changes_nothing() {
             engine.observe().layers.len() == layers
         },
         "a refused merge should not have been logged",
+    );
+}
+
+/// **The panel offers only the merges the command makes**, the frame's refusal
+/// included (§14.12.3): a source that cannot be restated in the destination's frame
+/// within the transform's tile cap is declined by the command, so its row must not
+/// offer the control.
+///
+/// The cap counts destination tiles, and a tile-aligned shift writes each source
+/// tile's whole 3×3 neighbourhood — the moved interior lands on its neighbours'
+/// aprons. So 12 × 12 dabs three tiles apart reach 1296 destinations, past the cap of
+/// 1024, while holding only 144 tiles.
+#[test]
+fn a_merge_the_frame_refuses_is_not_offered() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    let top = add_layer(&mut engine);
+    let tile = TILE_SIZE as f32;
+    for i in 0..12 {
+        for j in 0..12 {
+            let centre = Vec2::new(3.0 * i as f32 + 0.5, 3.0 * j as f32 + 0.5) * tile;
+            engine.process(DocCommand::Fill {
+                layer: top,
+                op: FillOp::new(
+                    SelectionShape::rect_from_corners(centre - 4.0, centre + 4.0),
+                    0.0,
+                    Srgb::new(WARM),
+                    1.0,
+                ),
+            });
+        }
+    }
+    assert_eq!(
+        offered(&engine, top),
+        Some(ROOT),
+        "in one frame the pair merges"
+    );
+
+    engine.process(DocCommand::TranslateLayer {
+        layer: top,
+        to: IVec2::splat(TILE_SIZE as i32),
+    });
+    let layers = engine.observe().layers.len();
+    engine.process(DocCommand::MergeLayerDown(top));
+    assert_eq!(
+        engine.observe().layers.len(),
+        layers,
+        "the command declines the merge"
+    );
+    assert_eq!(
+        offered(&engine, top),
+        None,
+        "the panel offers a merge the command declines"
     );
 }
 

@@ -485,33 +485,11 @@ impl Engine {
                 self.commit(ActionKind::RemoveLayer { id, carried })
             }
             DocCommand::MergeLayerDown(id) => {
-                // Asked here rather than only inside `apply`, so a merge that cannot
-                // preserve the document's appearance never reaches the log — the same
-                // argument `Transform` makes about a degenerate map. `apply` asks again
-                // anyway, because a peer's action does not pass through here (§14.11).
-                if let Some(plan) = crate::document::merge::plan(self.document(), id) {
-                    // The frame bake's own refusal, asked here for the reason the plan
-                    // is (§14.12.3): a source too large to restate in the destination's
-                    // frame is declined by `apply`, and an offer that outran that would
-                    // log a dead action and still repoint the brush below.
-                    let shift = self.frame_of(plan.source) - self.frame_of(plan.dest);
-                    if shift != stark_model::geom::IVec2::ZERO {
-                        let bakeable = self
-                            .document()
-                            .layer(plan.source)
-                            .and_then(|l| l.tiles())
-                            .is_none_or(|tiles| {
-                                crate::document::transform::plan_paint(
-                                    tiles,
-                                    &crate::document::selection::Selection::everything(),
-                                    stark_model::geom::Affine2::from_translation(shift.as_vec2()),
-                                )
-                                .is_some()
-                            });
-                        if !bakeable {
-                            return;
-                        }
-                    }
+                // Asked here rather than only inside `apply`, so a merge the fold would
+                // decline never reaches the log or repoints the brush — the same
+                // argument `Transform` makes about a degenerate map. `apply` asks again,
+                // because a peer's action does not pass through here (§14.11).
+                if let Some(plan) = crate::document::merge::offer(self.document(), id) {
                     // Read **before** the commit, which is what makes it answerable:
                     // the commit repoints the brush off the layer it is about to fold
                     // away (§17.9), so afterwards there is nothing left to compare.

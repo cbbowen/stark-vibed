@@ -404,7 +404,7 @@ impl Engine {
 ///
 /// One walk answers every row's questions from what it has already passed: the lower
 /// sibling and the carrier (`merge_down`), and whether anything drawable lies beneath
-/// in the same stack (`has_underlay`). Asking `merge::plan` per row instead costs a
+/// in the same stack (`has_underlay`). Asking `merge::offer` per row instead costs a
 /// `site_of` — a walk of the whole tree — making this quadratic in the layer count
 /// (79 µs at 60 layers against 1.3 µs at 4).
 fn layer_rows(shown: &DocState) -> Vec<LayerInfo> {
@@ -435,7 +435,7 @@ fn layer_rows(shown: &DocState) -> Vec<LayerInfo> {
             .map(|d| (d, false))
             .or_else(|| carriers.last().map(|&(c, _)| (c, true)))
             .and_then(|(dest, dest_is_carrier)| {
-                merge::plan_at(&merge::MergeSite {
+                merge::offer_at(&merge::MergeSite {
                     source: l,
                     dest,
                     // The destination is the whole backdrop where it carries the
@@ -602,12 +602,12 @@ mod tests {
         );
     }
 
-    /// **The walk's merge offer is the searched plan's**, row for row. The walk reads
-    /// the lower sibling and the carrier off what it has passed rather than asking
-    /// `merge::plan` per row, and the two must not come apart: the panel would offer a
+    /// **The walk's merge offer is the command's**, row for row. The walk reads the
+    /// lower sibling and the carrier off what it has passed rather than asking
+    /// `merge::offer` per row, and the two must not come apart: the panel would offer a
     /// merge the command refuses, or hide one it would make (§14.11).
     #[test]
-    fn the_merge_offer_is_the_plans_on_every_row() {
+    fn the_merge_offer_is_the_commands_on_every_row() {
         let grouped = flat().move_layer(C, Some(B), Place::Top);
         let fixtures = [
             ("flat", flat()),
@@ -657,11 +657,15 @@ mod tests {
                     .insert_filter(B, None, Some(A), GREY),
             ),
             ("matte", with_matte(&flat(), D, None, Place::Above(B))),
+            (
+                "translated",
+                flat().translate_layers(&[(C, IVec2::new(7, -3))]),
+            ),
         ];
         let mut offered = 0;
         for (name, state) in &fixtures {
             for r in layer_rows(state) {
-                let planned = merge::plan(state, r.id).map(|p| p.dest);
+                let planned = merge::offer(state, r.id).map(|p| p.dest);
                 assert_eq!(r.merge_down, planned, "{name}: row {:?}", r.id);
                 offered += usize::from(planned.is_some());
             }

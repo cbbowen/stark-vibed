@@ -42,8 +42,11 @@
 //! ramp.
 
 use super::layer::{CompositeParams, Layer};
+use super::selection::Selection;
 use super::state::DocState;
+use super::transform::plan_paint;
 use stark_model::document::LayerId;
+use stark_model::geom::{Affine2, IVec2};
 
 /// The merge a [`plan`] found: which layer is consumed, which survives, how the paint
 /// lands, and what each side's tiles are worth on their own.
@@ -273,6 +276,44 @@ pub(crate) fn plan_at(site: &MergeSite<'_>) -> Option<MergePlan> {
             keeps,
         },
     })
+}
+
+/// The merge the document offers for `source` — [`plan`], less a plan the fold would
+/// still decline because the source cannot be restated in the destination's frame
+/// ([`frame_bakes`]). What the command asks, what the fold asks, and what the panel's
+/// row asks ([`offer_at`]), so the three cannot disagree (§14.11).
+pub(crate) fn offer(state: &DocState, source: LayerId) -> Option<MergePlan> {
+    let plan = plan(state, source)?;
+    frame_bakes(state.layer(plan.source)?, state.layer(plan.dest)?, &plan).then_some(plan)
+}
+
+/// [`offer`] at a located site — [`plan_at`] with the same frame check, for the walk
+/// that already knows where each row sits.
+pub(crate) fn offer_at(site: &MergeSite<'_>) -> Option<MergePlan> {
+    plan_at(site).filter(|plan| frame_bakes(site.source, site.dest, plan))
+}
+
+/// Whether a stacking merge's source can be restated in the destination's frame
+/// (§14.12.3): the two must share one tile space before they are stacked, and the
+/// survivor keeps its own. A whole-pixel shift under a universal selection — the
+/// transform's exact case (§16.4) — declined past its tile caps, a pure function of
+/// the source's tile keys. A filter stacks nothing, so it has nothing to restate.
+fn frame_bakes(source: &Layer, dest: &Layer, plan: &MergePlan) -> bool {
+    let shift = source.translation - dest.translation;
+    match plan.kind {
+        MergeKind::Filter { .. } => true,
+        MergeKind::Stack { .. } => {
+            shift == IVec2::ZERO
+                || source.tiles().is_none_or(|tiles| {
+                    plan_paint(
+                        tiles,
+                        &Selection::everything(),
+                        Affine2::from_translation(shift.as_vec2()),
+                    )
+                    .is_some()
+                })
+        }
+    }
 }
 
 /// Paint that carries nothing: the only shape either side of a merge may take today.
@@ -506,6 +547,17 @@ mod tests {
         // refusal above is about B being a subtree rather than about the tree having
         // become unreadable here.
         assert_eq!(dest(&source_group, C), Some(B));
+    }
+
+    /// **A pair in different frames is offered what fits the tile caps** (§14.12.3):
+    /// the source is restated in the destination's frame first, which an empty layer
+    /// always fits. The refusal past the caps needs tiles, so the engine suite pins it
+    /// (`merge::a_merge_the_frame_refuses_is_not_offered`).
+    #[test]
+    fn a_pair_in_different_frames_is_offered_what_fits() {
+        let shifted = flat().translate_layers(&[(C, IVec2::new(300, -40))]);
+        assert_eq!(plan(&shifted, C).map(|p| p.dest), Some(B));
+        assert_eq!(offer(&shifted, C), plan(&shifted, C));
     }
 
     /// Merging across a difference in visibility would reveal hidden paint or hide

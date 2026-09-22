@@ -365,13 +365,14 @@ fn place_apply(
 /// move.
 ///
 /// The plan is **re-derived from the state being folded over** rather than trusted
-/// from the log, so a replay and a peer decide from the same document — and a plan
+/// from the log ([`merge::offer`](super::merge::offer), which the command and the
+/// panel ask too), so a replay and a peer decide from the same document — and a plan
 /// that no longer names `dest` (a concurrent reorder, a mode set on either layer
 /// since) declines the whole action, leaving the document untouched. Deterministic,
 /// so everyone declines together.
 fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) -> DocState {
-    let Some(plan) = super::merge::plan(&state, source) else {
-        return state;
+    let Some(plan) = super::merge::offer(&state, source) else {
+        return declined(state, "merge down no longer offered here");
     };
     if plan.dest != dest {
         tracing::warn!("merge down no longer names this destination; ignored");
@@ -424,37 +425,27 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
             let Some(upper) = paint_base(&state, source) else {
                 return state;
             };
-            // The source restated in the destination's frame (§14.12): the two sides
-            // must share one tile space before they can be stacked, and the survivor
-            // keeps its own frame. A whole-pixel shift under a universal selection, so
-            // the transform's exactness invariant (§16.4) holds and the merge that must
-            // not change the picture does not. Declined past the tile caps,
-            // deterministically, like every refusal here.
-            let frame_of = |id: LayerId| {
-                state
-                    .layer(id)
-                    .map_or(stark_model::geom::IVec2::ZERO, |l| l.translation)
-            };
+            // The source restated in the destination's frame (§14.12), by the
+            // whole-pixel shift whose tile caps `offer` has already checked
+            // (`merge::frame_bakes`), so the transform's exactness (§16.4) holds and the
+            // merge that must not change the picture does not.
+            let frame_of = |id: LayerId| state.layer(id).map_or(IVec2::ZERO, |l| l.translation);
             let shift = frame_of(source) - frame_of(dest);
-            let upper = if shift == stark_model::geom::IVec2::ZERO {
+            let upper = if shift == IVec2::ZERO {
                 upper.clone()
             } else {
-                let map = stark_model::document::TransformMap::Affine(
-                    stark_model::geom::Affine2::from_translation(shift.as_vec2()),
-                );
-                let everything = super::selection::Selection::everything();
+                let map = TransformMap::Affine(stark_model::geom::Affine2::from_translation(
+                    shift.as_vec2(),
+                ));
                 match ctx.transform.apply(
                     &ctx.pool,
                     upper,
-                    &everything,
+                    &Selection::everything(),
                     &map,
-                    stark_model::geom::IVec2::ZERO,
+                    IVec2::ZERO,
                 ) {
                     Some((tiles, _)) => tiles,
-                    None => {
-                        tracing::warn!("merge across frames exceeds the tile caps; ignored");
-                        return state;
-                    }
+                    None => return declined(state, "merge across frames exceeds the tile caps"),
                 }
             };
             let tiles = ctx.merge.apply(
