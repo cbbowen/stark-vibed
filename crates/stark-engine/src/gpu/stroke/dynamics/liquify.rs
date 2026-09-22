@@ -181,10 +181,9 @@ struct ReachWalk {
 
 impl ReachWalk {
     fn over(run: &LiquifyRun, segments: &[Segment], rec: &StrokeRecord) -> Self {
-        let strength = rec
-            .brush
-            .liquify()
-            .map_or(0.0, |l| l.strength.clamp(0.0, 1.0));
+        // In [0, 1] already: the model holds it at every door a record comes through
+        // (`LiquifyEffect::strength`), and the drag itself reads it unclamped.
+        let strength = rec.brush.liquify().map_or(0.0, |l| l.strength);
         let mut cuts = Vec::new();
         let mut after = Vec::with_capacity(segments.len());
         let mut tiles = Vec::with_capacity(segments.len());

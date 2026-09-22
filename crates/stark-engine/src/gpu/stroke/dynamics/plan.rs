@@ -657,8 +657,9 @@ pub(super) fn dynamics_plan(
     // this mean, which is what makes a toothed smear conserve
     // (`SubstrateMap::bearing`). The mean has to be taken through the very gate the
     // canvas side evaluates, or the two halves of the transfer stop agreeing — hence
-    // the transition width closed over from the brush.
-    let bearing = |give: f32, dir: Vec2| substrate.bearing(give, b.tooth.softness, dir.to_array());
+    // the transition width the slot lanes carry too.
+    let bearing =
+        |give: f32, dir: Vec2| substrate.bearing(give, consts.tooth_softness, dir.to_array());
     // λ per axis is `budget::lambda` — one definition, the same clamp the flattening
     // budget prices — taken **per segment** off the rates the segment generator
     // resolved from the pen (§6.2), because a segment is where the exchange happens.
@@ -747,7 +748,7 @@ pub(super) fn dynamics_plan(
                         rect_origin: rect.origin,
                         orient: sw.orient,
                         stretch: sw.stretch,
-                        drain: b.drain_px(),
+                        drain: consts.drain_px,
                         // The `add` rate as the segment resolved it — mappings and
                         // the wet flow already folded (`generate_segments_in`), the
                         // pen's drive included (§6.2) — with **no further gain
@@ -865,7 +866,7 @@ pub(super) fn dynamics_plan(
                         rect_origin: rect.origin,
                         orient: sw.orient,
                         stretch: sw.stretch,
-                        drain: b.drain_px(),
+                        drain: consts.drain_px,
                         // The last segment's tooth: the settle delivers what the
                         // pass still owed, through the same substrate the pass was
                         // laying through. What the valleys do not take stays on the
@@ -912,12 +913,10 @@ pub(super) fn liquify_plan(
     region: (u32, u32),
 ) -> DynamicsPlan {
     let &PlanCtx {
-        rec,
         region_origin,
         consts,
         ..
     } = ctx;
-    let b = &rec.brush;
     let common = SlotCommon {
         k: consts,
         origin: [region_origin.x as i32, region_origin.y as i32],
@@ -955,7 +954,7 @@ pub(super) fn liquify_plan(
                 curvature: sw.curvature,
                 // The drag runs dry as a deposit would (§6.2): the drain at the
                 // texel's own arc, which needs the arc at the slot's start.
-                drain: b.drain_px(),
+                drain: consts.drain_px,
                 dist: sw.dist,
                 // Every rate a deposit would run on stays `Slot::default`'s zero —
                 // a warp slot lays nothing, lifts nothing, bleeds nothing — and the

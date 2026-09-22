@@ -362,19 +362,9 @@ struct DynamicsRun<'a> {
 }
 
 impl<'a> DynamicsRun<'a> {
-    /// Whether the mint runs under a ceiling anywhere in this stroke, and so whether
-    /// its budget lanes have to be carried across pieces (§6.2): the dial below 1, the
-    /// pen driving it — the ceiling lane in the aux's `.w` then rides the same carry —
-    /// *or* a mask in force, a texel under whose soft rim caps its mint exactly as a
-    /// dial below 1 does (§6.8). The mask's overall opacity is already inside
-    /// `consts.opacity` (`stroke_constants`); this is about its coverage.
-    fn capped(&self) -> bool {
-        self.consts.opacity < 1.0 || self.consts.ceiling_lane || self.scene.selection.is_active()
-    }
-
     /// Whether the pen drives this stroke's ceiling (§6.2) — the run then draws
     /// the ceiling lane over its region per segment and carries it per tile
-    /// beside the mint budget. Implies [`capped`](Self::capped).
+    /// beside the mint budget. Implies `consts.capped`.
     fn leveled(&self) -> bool {
         self.lane.is_some()
     }
@@ -668,7 +658,7 @@ impl<'a> DynamicsRun<'a> {
         // being the value the write-back sliced into the tile the composite just
         // re-laid. Nothing to seed at the identity ceiling, where the shader never
         // reads the lanes.
-        if self.capped() {
+        if self.consts.capped {
             self.fresh
                 .seed(&mut self.scope, coords, lo, &region.aux_tex);
         }
@@ -745,13 +735,7 @@ impl<'a> DynamicsRun<'a> {
                     label: "stark dynamics levels instances",
                 });
                 self.scope.write_lease(&buf, bytes);
-                let xform = tile_xform(
-                    self.rec,
-                    self.consts,
-                    region_origin,
-                    (w as f32, h as f32),
-                    1,
-                );
+                let xform = tile_xform(self.consts, region_origin, (w as f32, h as f32), 1);
                 LevelsPass {
                     view: view.clone(),
                     xform: xform_group(self.r, &mut self.scope, &xform),
@@ -775,7 +759,7 @@ impl<'a> DynamicsRun<'a> {
         // per touched tile, cut exactly as the write-back cuts paint — the
         // carried tiles themselves are never written, which is what lets the
         // live tail resume the same frozen totals every pointer move.
-        if self.capped() {
+        if self.consts.capped {
             self.fresh
                 .extract(self.r, &mut self.scope, coords, lo, &region.aux_tex);
         }

@@ -320,10 +320,7 @@ impl StrokeRenderer {
         // acquisition, the scope — rather than the loop.
         crate::timing::span!("stroke.swept");
         let StrokeScene {
-            base,
-            selection,
-            substrate,
-            ..
+            base, substrate, ..
         } = scene;
         let ResolvedRange {
             rec,
@@ -333,24 +330,21 @@ impl StrokeRenderer {
             ..
         } = range;
 
-        // At full opacity the parcel lands by one of §6.2's piece-composable forms, so
-        // a range needs nothing from its predecessor but the arc length. Below it the
-        // parcel's finished coverage is scaled, which is neither — so the path takes
-        // the erase pass's shape instead: the parcel accumulates across pieces, every
-        // piece re-derived from pristine paint under the whole of it
-        // (`accum::ParcelCarry`).
+        // Uncapped, the parcel lands by one of §6.2's piece-composable forms, so a range
+        // needs nothing from its predecessor but the arc length. Under a ceiling
+        // (`StrokeConstants::capped`) its finished coverage is scaled, which is neither
+        // — so the path takes the erase pass's shape instead: the parcel accumulates
+        // across pieces, every piece re-derived from pristine paint under the whole of
+        // it (`accum::ParcelCarry`), or a stroke crossing itself would outrun the dial
+        // or the mask.
         //
-        // A pen-driven ceiling is a claim the pieces build up together, and a soft
-        // selection rim is the ceiling's other factor *per texel* (§6.8), scaling a
-        // parcel exactly as a dial below 1 does — stateless pieces would cap each piece
-        // on its own and let a stroke crossing itself outrun the mask. A supersampled
-        // stroke (`budget::supersample_scale`) needs the same shape one level up: the
-        // resolve averages the parcel's *finished* visible alpha, and an average of
-        // per-piece parcels differs from the whole parcel averaged by the covariance of
-        // the subsample alphas — worth a quarter of the alpha at a rim texel where
-        // pieces meet.
+        // A supersampled stroke (`budget::supersample_scale`) needs the same shape one
+        // level up: the resolve averages the parcel's *finished* visible alpha, and an
+        // average of per-piece parcels differs from the whole parcel averaged by the
+        // covariance of the subsample alphas — worth a quarter of the alpha at a rim
+        // texel where pieces meet.
         let ss = super::budget::supersample_scale(&rec.brush);
-        let carries = k.opacity < 1.0 || k.ceiling_lane || selection.is_active() || ss > 1;
+        let carries = k.capped || ss > 1;
 
         // The per-stroke buffers and the working parcels ride in the scope, and only
         // the `finish` that submits the commands naming them can release them
@@ -596,7 +590,7 @@ impl SweepDraws {
             .iter()
             .map(|coord| {
                 let size = (TILE_TEX as f32, TILE_TEX as f32);
-                tile_xform(rec, k, coord.origin() - apron, size, ss)
+                tile_xform(k, coord.origin() - apron, size, ss)
             })
             .collect();
         let xforms = scope.run_slots("stark sweep xforms", &xforms)?;
@@ -685,7 +679,6 @@ pub(super) fn segment_instance(segment: &Segment) -> SegmentInstance {
 /// the stroke constants every fragment reads. `ss` is the supersampling factor the
 /// target is rasterized at.
 pub(super) fn tile_xform(
-    rec: &StrokeRecord,
     k: &super::StrokeConstants,
     origin: Vec2,
     size: (f32, f32),
@@ -704,7 +697,7 @@ pub(super) fn tile_xform(
         ],
         color: [k.channels[0], k.channels[1], k.channels[2], 1.0],
         resid: k.resid,
-        paint: [rec.brush.drain_px(), 0.0, k.tooth_softness, 0.0],
+        paint: [k.drain_px, 0.0, k.tooth_softness, 0.0],
         noise_freq: k.nfreq,
         noise_amp: k.namp,
         jitter_eps: k.jitter_eps,

@@ -474,14 +474,18 @@ impl StrokeRenderer {
         let rgb = Srgb::new(rec.brush.pigment().unwrap_or([0.0; 3]));
         let l = self.color_space.rgb_to_latent(rgb);
         let (nfreq, namp) = noise_uniform(rec);
+        // The mask's opacity is the ceiling's other factor (§6.8), folded in here so
+        // it reaches every place the dial does — the integrate, the erase, the loop's
+        // mint and the charge — through the one number.
+        let opacity = rec.brush.effect.opacity() * selection.opacity();
+        let ceiling_lane = rec.brush.effect.opacity_modulated();
         StrokeConstants {
             channels: l.lat,
             resid: [l.res[0], l.res[1], l.res[2], 0.0],
-            // The mask's opacity is the ceiling's other factor (§6.8), folded in
-            // here so it reaches every place the dial does — the integrate, the
-            // erase, the loop's mint and the charge — through the one number.
-            opacity: rec.brush.effect.opacity() * selection.opacity(),
-            ceiling_lane: rec.brush.effect.opacity_modulated(),
+            opacity,
+            ceiling_lane,
+            capped: opacity < 1.0 || ceiling_lane || selection.is_active(),
+            drain_px: rec.brush.drain_px(),
             substrate: substrate.texels_per_px(),
             tooth_softness: rec.brush.tooth.softness,
             nfreq,
@@ -519,14 +523,9 @@ pub(crate) fn loggable(rec: StrokeRecord) -> Option<StrokeRecord> {
 /// stamp loop in a `Stamp` slot, but they are the same numbers — and they have to be,
 /// because which path a brush takes is decided by `dynamics_setup` from axes that have
 /// nothing to do with any of this: nudge `deposit` off zero and the same color, the
-/// same flow and the same substrate must still lay the same paint.
-///
-/// That is not hypothetical. `tests/engine/dynamics.rs`'s
-/// `a_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs` exists because the two
-/// paths once disagreed by 157 levels, and both halves of the disagreement were
-/// quantities of exactly this kind, derived twice and drifted apart. Resolving them in
-/// one place is what makes the agreement structural rather than a matter of two files
-/// happening to contain the same line.
+/// same flow and the same substrate must still lay the same paint
+/// (`a_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs`). Resolving them in one
+/// place is what makes that agreement structural.
 struct StrokeConstants {
     /// The brush's own color in the working space. No per-unit opacity beside it:
     /// the paint a brush lays is opaque per unit, faded only by the `drain` —
@@ -556,6 +555,14 @@ struct StrokeConstants {
     /// stroke has claimed off the lane instead of scaling by the dial above. The
     /// segments carry the pen's factor; this says whether anything reads it.
     ceiling_lane: bool,
+    /// Whether the stroke lands under a ceiling anywhere (§6.2, §6.8): the dial below
+    /// 1, the pen driving it, *or* a mask in force, whose soft rim caps a texel exactly
+    /// as a dial below 1 does. Such a stroke's pieces are not independent — the swept
+    /// parcel and the loop's mint budget both carry across them.
+    capped: bool,
+    /// The `drain` falloff per canvas px (`BrushParams::drain_px`), which every
+    /// path evaluates per fragment from the fragment's own arc length.
+    drain_px: f32,
     /// How the tooth reads the substrate map (§6.4). [`TexelsPerPx::NONE`] on a substrate
     /// with no relief — a `Flat` canvas, or one whose bytes have not arrived — which sends
     /// the tooth to exactly 1 and leaves the deposit bit-for-bit what it was before the
