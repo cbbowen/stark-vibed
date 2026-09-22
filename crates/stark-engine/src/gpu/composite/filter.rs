@@ -25,7 +25,9 @@ use stark_shaders::mirror::filter_common::binding as fc;
 use stark_shaders::mirror::filter_common::decl as fcd;
 
 use super::blend::Bounce;
-use super::group::FilterDraw;
+use super::blur::{self, Aperture};
+use super::group::{FilterDraw, FilterOp};
+use stark_model::geom::Vec2;
 
 // Generated from `filter_common.wesl`'s own declaration (§6.10).
 pub(crate) use stark_shaders::mirror::filter_common::Filter as FilterUniform;
@@ -263,53 +265,88 @@ impl FilterPass {
     }
 }
 
-/// The filter pass's uniform for `f`, under this frame's `view` (§21).
+/// The filter pass's uniform for `f`, under this frame's `view` (§21) — **the one
+/// place a [`FilterOp`] becomes numbers**: its `FILTER_*` code, mirrored from
+/// `filter_common.wesl` (§6.10) rather than written as a literal, and the lanes that
+/// code reads there. Every lane an arm leaves out is zero, which is the true value
+/// rather than a stand-in.
 ///
-/// Here rather than on [`FilterDraw`] for the reason [`Plan::filters`](super::plan::Plan::filters) gives: one of
-/// its lanes is a fact about the view, which the draw deliberately has none of.
+/// Here rather than on [`FilterDraw`] for the reason
+/// [`Plan::filters`](super::plan::Plan::filters) gives: `disp` is a fact about the
+/// view, which the draw deliberately has none of.
 pub(crate) fn filter_uniform(f: &FilterDraw, view: ViewTransform) -> FilterUniform {
-    FilterUniform {
-        kind: f.kind,
+    use stark_shaders::mirror::filter_common as fc;
+    let base = FilterUniform {
         strength: f.strength,
         clip: u32::from(f.clip),
-        disp: view_lanes(f, view),
-        params: f.params,
-        params2: f.params2,
-        // The gradient map's ramp, zeroed for every other kind — `disp`'s convention:
-        // the true value, since no other kind has stops (§21.11).
-        stops: f.stops.as_deref().copied().unwrap_or([[0.0; 4]; 16]),
         // The padding WGSL's alignment leaves around `clip`, which the generator
         // names and nothing reads (§6.10).
         ..Default::default()
+    };
+    match &f.op {
+        FilterOp::Color(c) => FilterUniform {
+            kind: fc::FILTER_COLOR,
+            params: [c.exposure, c.contrast, c.saturation, c.hue],
+            params2: [c.tint[0], c.tint[1], 0.0, 0.0],
+            ..base
+        },
+        // `disp` is the red-end → blue-end displacement, carried from the canvas terms
+        // the document states into the **accumulator texels** the pass samples in,
+        // through the view's full linear map — zoom, rotation and mirror alike, so the
+        // fringes stay attached to the artwork as the canvas substrate does (§21.10,
+        // §6.4).
+        FilterOp::Chromatic(c) => {
+            let d = view.linear() * Vec2::new(c.angle.cos(), c.angle.sin()) * c.spread;
+            FilterUniform {
+                kind: fc::FILTER_CHROMATIC,
+                disp: [d.x, d.y],
+                params: [c.spread, c.angle, 0.0, 0.0],
+                ..base
+            }
+        }
+        // `disp.x` is the decimation scale the convolution runs at (§21.12), by the
+        // rule `BlurPass::prepare` plans the transform with, so the decode, the
+        // transform and the resolve cannot disagree about it. The aperture's lanes
+        // are read by no fullscreen arm — the convolution has run by then — and are
+        // carried so the uniform states the document's numbers (`filter_common.wesl`).
+        FilterOp::FocalBlur(b) => {
+            let [shape, param, angle] = Aperture::of(b.aperture).lanes();
+            FilterUniform {
+                kind: fc::FILTER_FOCAL_BLUR,
+                disp: [blur::scale(blur::texel_radius(b, view)) as f32, 0.0],
+                params: [b.radius, shape, param, angle],
+                ..base
+            }
+        }
+        FilterOp::GradientMap { stops, count } => FilterUniform {
+            kind: fc::FILTER_GRADIENT_MAP,
+            params: [*count as f32, 0.0, 0.0, 0.0],
+            stops: **stops,
+            ..base
+        },
     }
 }
 
-/// The uniform's view-derived lanes for this frame — `disp`, whose meaning is
-/// the kind's to say (`filter_common.wesl`).
-///
-/// For the **chromatic** filter: the red-end → blue-end displacement, carried from
-/// the canvas terms the document states (`params` = spread in canvas px, angle in
-/// canvas radians) into the **accumulator texels** the pass samples in, through the
-/// view's full linear map — zoom, rotation and mirror alike, so the fringes stay
-/// attached to the artwork as the canvas substrate does (§21.10, §6.4).
-///
-/// For the **focal blur**: `.x` is the decimation scale the convolution runs at
-/// (§21.12), by the same rule [`BlurPass::prepare`] plans the transform with, so
-/// the decode, the transform and the resolve cannot disagree about it.
-///
-/// Zero for every other kind, which is the true value rather than a stand-in.
-///
-/// [`BlurPass::prepare`]: super::blur::BlurPass::prepare
-/// [`Plan::filters`]: super::plan::Plan::filters
-fn view_lanes(f: &FilterDraw, view: ViewTransform) -> [f32; 2] {
-    if f.kind == stark_shaders::mirror::filter_common::FILTER_CHROMATIC {
-        let (spread, angle) = (f.params[0], f.params[1]);
-        let d = view.linear() * stark_model::geom::Vec2::new(angle.cos(), angle.sin()) * spread;
-        return [d.x, d.y];
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::document::CompositeParams;
+    use crate::view::Extent2;
+    use stark_model::document::Filter;
+
+    /// Every filter the document can hold reaches the shader as **its own** code — a
+    /// code copied from the arm above renders one filter as another, which no
+    /// assertion about a single arm can see.
+    #[test]
+    fn every_filter_is_its_own_code() {
+        let view = ViewTransform::identity(Extent2::new(64, 64));
+        let mut codes: Vec<u32> = Filter::ALL
+            .into_iter()
+            .map(|f| filter_uniform(&FilterDraw::new(f, CompositeParams::IDENTITY), view).kind)
+            .collect();
+        let offered = codes.len();
+        codes.sort_unstable();
+        codes.dedup();
+        assert_eq!(codes.len(), offered, "two filters share one code");
     }
-    if f.kind == stark_shaders::mirror::filter_common::FILTER_FOCAL_BLUR {
-        let s = super::blur::scale(super::blur::texel_radius(f, view));
-        return [s as f32, 0.0];
-    }
-    [0.0; 2]
 }

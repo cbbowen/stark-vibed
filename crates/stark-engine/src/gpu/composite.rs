@@ -1358,7 +1358,7 @@ impl Compositor {
                 p.formats,
                 format,
                 &plan.scratch,
-                blur::has_blur(&plan.filters),
+                plan.filters.iter().any(|f| f.is_focal_blur()),
             ),
         );
         // From here down, `view` is the supersampled one and `target_size` (with

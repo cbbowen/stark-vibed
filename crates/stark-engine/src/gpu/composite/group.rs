@@ -7,7 +7,7 @@
 
 use crate::document::CompositeParams;
 use crate::gpu::tile::TilePairHandle;
-use stark_model::document::{Aperture, Filter};
+use stark_model::document::{ChromaticAberration, ColorAdjust, Filter, FocalBlur};
 use stark_model::geom::Vec2;
 
 /// A matte layer's draw parameters (§15.4).
@@ -72,42 +72,42 @@ impl CompositeItem {
     }
 }
 
-/// A filter layer's pass parameters (§21).
-///
-/// Deliberately **not** a `Filter`: the shader reads a code and two uniform lanes of
-/// floats, and which code a filter is numbered is a fact about `filter_common.wesl`
-/// rather than about the document (the split
-/// [`blend_uniform`](super::blend::blend_uniform) makes for a blend mode).
+/// A filter layer's pass (§21): what it does, how much of it lands, and where.
 ///
 /// **Both [`CompositeParams`] a filter reads live here** rather than on the enclosing
 /// [`CompositeGroup`], because a filter merges nothing outward for them to describe
 /// (see [`GroupContent::Filter`]): they are settings of a pass.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct FilterDraw {
-    /// The filter's shader code — see `filter_common.wesl`.
-    pub kind: u32,
-    /// Whether this filter **gathers**: reads texels other than the one it writes
-    /// (§21.10, §21.12). Carried from [`Filter::resamples`] rather than re-derived from
-    /// `kind`, which is a `u32` with no exhaustive match to keep it honest. Read by the
-    /// one pass that must refuse a gather —
-    /// [`MergeRenderer::apply_filter`](crate::gpu::merge::MergeRenderer::apply_filter).
-    pub resamples: bool,
+    pub op: FilterOp,
     /// How much of the adjustment lands: the layer's opacity (§21.4).
     pub strength: f32,
     /// Whether the filter is confined to the coverage it read: the layer's clip
     /// (§21.4, §14.4). A **point** filter is already confined, so this changes
     /// nothing for one; the gather is what it bounds.
     pub clip: bool,
-    /// The filter's own numbers, read according to `kind` — two lanes of four, so a
-    /// kind with more than four has somewhere to put them without the bind group
-    /// layout learning anything (`filter_common.wesl`).
-    pub params: [f32; 4],
-    pub params2: [f32; 4],
-    /// The gradient map's ramp (§21.11), in the shader's own terms: Oklab `(L, a, b)`
-    /// and the stop's position per lane, `params[0]` of them live. `None` for every
-    /// other kind — the uniform's lanes are zeroed at write. Boxed for
-    /// [`MatteDraw::ramp`]'s reason.
-    pub stops: Option<Box<[[f32; 4]; MAX_MAP_STOPS]>>,
+}
+
+/// What a filter layer does, in the terms its pass runs it in (§21).
+///
+/// The document's own settings, in canvas terms: which *texels* a spread, an angle or
+/// a radius becomes depends on the view, and a draw deliberately has none (§21.10,
+/// §21.12). The one conversion made here is the gradient map's, whose ramp does not
+/// depend on the view. Which `u32` each variant is numbered, and which lanes carry it,
+/// is `filter_common.wesl`'s — stated once, in
+/// [`filter_uniform`](super::filter::filter_uniform).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum FilterOp {
+    Color(ColorAdjust),
+    Chromatic(ChromaticAberration),
+    FocalBlur(FocalBlur),
+    GradientMap {
+        /// The ramp in the shader's own terms: Oklab `(L, a, b)` and the stop's
+        /// position per lane, `count` of them live. Boxed for [`MatteDraw::ramp`]'s
+        /// reason.
+        stops: Box<[[f32; 4]; MAX_MAP_STOPS]>,
+        count: usize,
+    },
 }
 
 /// The stop lanes the filter uniform carries — the shader's literal `16`
@@ -116,76 +116,22 @@ pub(crate) struct FilterDraw {
 const MAX_MAP_STOPS: usize = stark_model::gradient::MAX_STOPS;
 
 impl FilterDraw {
-    /// Whether this is the focal blur (§21.12) — the one kind whose pass is preceded
-    /// by a convolution.
-    pub(crate) fn is_focal_blur(&self) -> bool {
-        self.kind == stark_shaders::mirror::filter_common::FILTER_FOCAL_BLUR
-    }
-
-    /// The draw parameters for `filter` under the layer's own `params`: the opacity
-    /// becomes the strength, the clip travels as itself, and the blend is the one a
-    /// filter never has (§21.4).
-    ///
-    /// The one place a `Filter` becomes numbers, so the ABI is stated once — and each
-    /// arm's code is the **mirrored** `FILTER_*` constant from `filter_common.wesl`
-    /// (§6.10), never a literal. A kind the shader does not declare has no constant to
-    /// name here, so this match fails to compile rather than rendering as whichever
-    /// kind happens to share its index.
+    /// The draw for `filter` under the layer's own `params`: the opacity becomes the
+    /// strength, the clip travels as itself, and the blend is the one a filter never
+    /// has (§21.4).
     pub(crate) fn new(filter: Filter, composite: CompositeParams) -> Self {
-        // Named apart from the `params` lanes below, which are the *filter's* own
-        // numbers and have nothing to do with the layer's.
-        let (strength, clip) = (composite.opacity, composite.clip);
-        // Read off the model's own exhaustive match, once, before the kind becomes a
-        // number the arms below cannot be matched over — see the field.
-        let resamples = filter.resamples();
-        match filter {
-            Filter::Color(c) => Self {
-                kind: stark_shaders::mirror::filter_common::FILTER_COLOR,
-                resamples,
-                strength,
-                clip,
-                params: [c.exposure, c.contrast, c.saturation, c.hue],
-                params2: [c.tint[0], c.tint[1], 0.0, 0.0],
-                stops: None,
-            },
-            // The spread and angle stay in canvas terms here: which *texels* they
-            // become depends on the view, and this description deliberately has
-            // none — the encoder derives the uniform's dispersion vector per frame
-            // (§21.10).
-            Filter::Chromatic(c) => Self {
-                kind: stark_shaders::mirror::filter_common::FILTER_CHROMATIC,
-                resamples,
-                strength,
-                clip,
-                params: [c.spread, c.angle, 0.0, 0.0],
-                params2: [0.0; 4],
-                stops: None,
-            },
-            // The radius stays in canvas terms, on the chromatic pair's argument; the
-            // trip into accumulator texels is the blur plan's, per frame (§21.12,
-            // `blur::blur_kernels`). The aperture rides the three lanes beside it, and
-            // no *fullscreen* pass reads them — `blur::aperture` picks them back up to
-            // build the kernel.
-            Filter::FocalBlur(b) => {
-                let (shape, param, angle) = aperture_lanes(b.aperture);
-                Self {
-                    kind: stark_shaders::mirror::filter_common::FILTER_FOCAL_BLUR,
-                    resamples,
-                    strength,
-                    clip,
-                    params: [b.radius, shape, param, angle],
-                    params2: [0.0; 4],
-                    stops: None,
-                }
-            }
+        let op = match filter {
+            Filter::Color(c) => FilterOp::Color(c),
+            Filter::Chromatic(c) => FilterOp::Chromatic(c),
+            Filter::FocalBlur(b) => FilterOp::FocalBlur(b),
             // Stops are straight sRGB in the document and Oklab in the pass, because
             // Oklab is where `Gradient::sample`'s interpolation — the thing the map
             // *is* — is defined (§21.11). A rampless map is neutral and the draw list
-            // dropped it (§21.3); the `None` arm only keeps the match total.
+            // dropped it (§21.3); `None` only keeps the match total.
             Filter::GradientMap(g) => {
-                let stops = g.as_ref().map(|g| {
-                    let mut lanes = Box::new([[0.0f32; 4]; MAX_MAP_STOPS]);
-                    for (lane, stop) in lanes.iter_mut().zip(g.stops()) {
+                let mut stops = Box::new([[0.0f32; 4]; MAX_MAP_STOPS]);
+                let count = g.as_ref().map_or(0, |g| {
+                    for (lane, stop) in stops.iter_mut().zip(g.stops()) {
                         let lab = stark_model::color::srgb_to_oklab([
                             stop.color[0],
                             stop.color[1],
@@ -194,42 +140,32 @@ impl FilterDraw {
                         ]);
                         *lane = [lab[0], lab[1], lab[2], stop.t];
                     }
-                    lanes
+                    g.stops().len()
                 });
-                Self {
-                    kind: stark_shaders::mirror::filter_common::FILTER_GRADIENT_MAP,
-                    resamples,
-                    strength,
-                    clip,
-                    params: [
-                        g.as_ref().map_or(0.0, |g| g.stops().len() as f32),
-                        0.0,
-                        0.0,
-                        0.0,
-                    ],
-                    params2: [0.0; 4],
-                    stops,
-                }
+                FilterOp::GradientMap { stops, count }
             }
+        };
+        Self {
+            op,
+            strength: composite.opacity,
+            clip: composite.clip,
         }
     }
-}
 
-/// The focal blur's aperture as the three lanes beside its radius: the shape's
-/// mirrored `APERTURE_*` code, its own number, and its turn (§21.12).
-///
-/// One lane for the parameter rather than one per shape — the lanes are read according
-/// to the code, and one shape is rasterized at a time. The codes are `blur.wesl`'s
-/// (§6.10), never literals, for [`FilterDraw::new`]'s reason: a variant added to
-/// [`Aperture`] without a declaration in the shader has no constant to name here.
-///
-/// The inverse is `blur::aperture`, pinned against this there.
-fn aperture_lanes(aperture: Aperture) -> (f32, f32, f32) {
-    use stark_shaders::mirror::blur as a;
-    match aperture {
-        Aperture::Disc { obstruction } => (a::APERTURE_DISC as f32, obstruction, 0.0),
-        Aperture::Blades { count, angle } => (a::APERTURE_BLADES as f32, count as f32, angle),
-        Aperture::Oval { squeeze, angle } => (a::APERTURE_OVAL as f32, squeeze, angle),
+    /// Whether this is the focal blur (§21.12) — the one kind whose pass is preceded
+    /// by a convolution.
+    pub(crate) fn is_focal_blur(&self) -> bool {
+        matches!(self.op, FilterOp::FocalBlur(_))
+    }
+
+    /// Whether this filter **gathers**: reads texels other than the one it writes
+    /// (§21.10, §21.12) — [`Filter::resamples`]'s answer, which the merge must refuse
+    /// ([`MergeRenderer::apply_filter`](crate::gpu::merge::MergeRenderer::apply_filter)).
+    pub(crate) fn resamples(&self) -> bool {
+        match self.op {
+            FilterOp::Color(_) | FilterOp::GradientMap { .. } => false,
+            FilterOp::Chromatic(_) | FilterOp::FocalBlur(_) => true,
+        }
     }
 }
 
@@ -539,21 +475,21 @@ mod tests {
         );
     }
 
-    /// Every filter this build offers carries the **model's** answer about gathering,
-    /// not a second reading of it.
+    /// Every filter this build offers says what the **model** says about gathering.
     ///
-    /// [`Filter::resamples`] is an exhaustive match and `kind` is a `u32`, so this is
-    /// the one hop where the two could part — and the merge that refuses a gather
-    /// (§14.11.7) reads the flag, not the code.
+    /// [`Filter::resamples`] and [`FilterDraw::resamples`] are two matches over two
+    /// enums, so this is the one hop where they could part — and the merge that
+    /// refuses a gather (§14.11.7) asks the draw.
     #[test]
     fn every_filter_draw_says_what_the_model_says_about_gathering() {
         for filter in Filter::ALL {
             let expected = filter.resamples();
+            let label = filter.label();
             let draw = FilterDraw::new(filter, CompositeParams::IDENTITY);
             assert_eq!(
-                draw.resamples, expected,
-                "the draw for filter code {} disagrees with `Filter::resamples`",
-                draw.kind,
+                draw.resamples(),
+                expected,
+                "the draw for the {label} filter disagrees with `Filter::resamples`",
             );
         }
     }

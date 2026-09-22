@@ -58,13 +58,15 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Bindings};
 use crate::gpu::uniforms::UniformSlots;
 use crate::view::{Extent2, ViewTransform};
+use stark_model::document::{Aperture as DocAperture, FocalBlur};
+use stark_model::geom::Vec2;
 use stark_shaders::Stages;
 use stark_shaders::mirror::blur::Fft as FftUniform;
 use stark_shaders::mirror::blur::binding as bb;
 use stark_shaders::mirror::blur::decl as bd;
 
 use super::filter::FilterPass;
-use super::group::FilterDraw;
+use super::group::{FilterDraw, FilterOp};
 
 /// The blur's compute pipelines — one module, four entry points — built once per
 /// pipeline kit and shared by every consumer's [`BlurFrame`].
@@ -170,61 +172,95 @@ impl BlurPass {
 /// map applied — the chromatic dispersion's own trip (§21.10), for the same
 /// reason. The bokeh belongs to the artwork, so it scales with the zoom and
 /// holds its size in an export.
-pub(super) fn texel_radius(f: &FilterDraw, view: ViewTransform) -> f32 {
-    (view.linear() * stark_model::geom::Vec2::new(f.params[0], 0.0)).length()
+pub(super) fn texel_radius(b: &FocalBlur, view: ViewTransform) -> f32 {
+    (view.linear() * Vec2::new(b.radius, 0.0)).length()
 }
 
 /// The aperture's shape as `make_kernel` reads it (§21.12) — the shader's own
 /// `APERTURE_*` code, the shape's one number, and its turn.
 ///
-/// Three lanes rather than the document's [`Aperture`] enum for [`FilterDraw`]'s
-/// reason: which number means which shape is a fact about `blur.wesl` rather than
-/// about the document.
+/// Three numbers rather than the document's [`Aperture`](DocAperture) enum because
+/// which number means which shape is a fact about `blur.wesl` rather than about the
+/// document.
 ///
 /// `shape` and `param` are **scale-free** — a code, a blade count, a fraction of the
 /// radius, a ratio — which is what lets a decimated layer (§21.12) rescale its radius
-/// and carry them through untouched. `angle` is not: it has already been carried from
-/// the canvas frame the document states it in into this one ([`aperture`]).
-///
-/// [`Aperture`]: stark_model::document::Aperture
+/// and carry them through untouched. `angle` is not: [`Self::turned`] carries it from
+/// the canvas frame the document states it in into the accumulator's.
 #[derive(Copy, Clone, PartialEq, Debug)]
 pub(super) struct Aperture {
     shape: u32,
     param: f32,
-    /// The aperture's turn **in the accumulator's frame**, not the canvas's — see
-    /// [`aperture`]. Zero for a shape that has no direction, and held there, since
-    /// this keys the kernel cache.
+    /// The aperture's turn: in the canvas frame out of [`Self::of`], in the
+    /// accumulator's out of [`Self::turned`]. Zero for a shape that has no direction,
+    /// and held there, since this keys the kernel cache.
     angle: f32,
 }
 
-/// The aperture a focal-blur draw carries, off the lanes `group::aperture_lanes`
-/// wrote — with its turn carried into the frame the convolution runs in.
-///
-/// **The turn makes the same trip the radius does** (§21.10, §6.4), and for the same
-/// reason the chromatic filter's angle does (`plan::view_lanes`): the bokeh belongs to
-/// the artwork, so a six-bladed iris turns when the canvas turns and flips when it is
-/// mirrored, and an export at a rotated view shows the picture the screen showed.
-///
-/// [`ViewTransform::orientation`] rather than the full `linear()` because the zoom is
-/// the *radius*' half of the map and cancels out of a direction; the mirror is not
-/// optional, or a flipped view would leave a turned iris unflipped.
-fn aperture(f: &FilterDraw, view: ViewTransform) -> Aperture {
-    let shape = f.params[1] as u32;
-    let canvas = f.params[3];
-    let turned = view.orientation() * stark_model::geom::Vec2::new(canvas.cos(), canvas.sin());
-    let angle = turned.y.atan2(turned.x);
-    Aperture {
-        shape,
-        param: f.params[2],
-        // A disc's lane has to stay zero: turning it would key a new kernel on every
-        // frame of a canvas rotation, for a shape that cannot tell one turn from
-        // another. Non-finite lands on zero for `layers`' reason — the view multiplies
-        // this lane, and the arithmetic has to hold whatever a hostile one does.
-        angle: if shape == stark_shaders::mirror::blur::APERTURE_DISC || !angle.is_finite() {
-            0.0
-        } else {
-            angle
-        },
+impl Aperture {
+    /// The document's `aperture` in `blur.wesl`'s terms, its turn still in the canvas
+    /// frame.
+    ///
+    /// One number for the parameter rather than one per shape — it is read according
+    /// to the code, and one shape is rasterized at a time. The codes are the shader's
+    /// mirrored constants (§6.10), never literals: a variant added to the document's
+    /// enum without a declaration in the shader has no constant to name here, so this
+    /// match fails to compile rather than rasterizing it as another shape.
+    pub(super) fn of(aperture: DocAperture) -> Self {
+        use stark_shaders::mirror::blur as code;
+        match aperture {
+            DocAperture::Disc { obstruction } => Self {
+                shape: code::APERTURE_DISC,
+                param: obstruction,
+                angle: 0.0,
+            },
+            DocAperture::Blades { count, angle } => Self {
+                shape: code::APERTURE_BLADES,
+                param: count as f32,
+                angle,
+            },
+            DocAperture::Oval { squeeze, angle } => Self {
+                shape: code::APERTURE_OVAL,
+                param: squeeze,
+                angle,
+            },
+        }
+    }
+
+    /// This aperture with its turn carried from the canvas frame into the one `view`
+    /// shows it in.
+    ///
+    /// **The turn makes the same trip the radius does** (§21.10, §6.4), and for the
+    /// same reason the chromatic filter's angle does: the bokeh belongs to the
+    /// artwork, so a six-bladed iris turns when the canvas turns and flips when it is
+    /// mirrored, and an export at a rotated view shows the picture the screen showed.
+    ///
+    /// [`ViewTransform::orientation`] rather than the full `linear()` because the zoom
+    /// is the *radius*' half of the map and cancels out of a direction; the mirror is
+    /// not optional, or a flipped view would leave a turned iris unflipped.
+    fn turned(self, view: ViewTransform) -> Self {
+        let turned = view.orientation() * Vec2::new(self.angle.cos(), self.angle.sin());
+        let angle = turned.y.atan2(turned.x);
+        Self {
+            // A disc's lane has to stay zero: turning it would key a new kernel on
+            // every frame of a canvas rotation, for a shape that cannot tell one turn
+            // from another. Non-finite lands on zero for `layers`' reason — the view
+            // multiplies this lane, and the arithmetic has to hold whatever a hostile
+            // one does.
+            angle: if self.shape == stark_shaders::mirror::blur::APERTURE_DISC || !angle.is_finite()
+            {
+                0.0
+            } else {
+                angle
+            },
+            ..self
+        }
+    }
+
+    /// The code, the parameter and the turn as the three `f32` lanes the filter
+    /// uniform carries beside the radius (`filter_common.wesl`).
+    pub(super) fn lanes(self) -> [f32; 3] {
+        [self.shape as f32, self.param, self.angle]
     }
 }
 
@@ -237,8 +273,13 @@ pub(super) fn blur_kernels(
     filters
         .iter()
         .enumerate()
-        .filter(|(_, f)| f.is_focal_blur())
-        .map(|(slot, f)| (slot as u32, texel_radius(f, view), aperture(f, view)))
+        .filter_map(|(slot, f)| {
+            let FilterOp::FocalBlur(b) = &f.op else {
+                return None;
+            };
+            let aperture = Aperture::of(b.aperture).turned(view);
+            Some((slot as u32, texel_radius(b, view), aperture))
+        })
         .collect()
 }
 
@@ -276,15 +317,6 @@ pub(super) fn scale(r_texels: f32) -> u32 {
         s *= 2;
     }
     s
-}
-
-/// Whether any of this plan's filters is a focal blur — what decides both the
-/// scratch charge ([`resolve::attachment_bytes`](super::resolve::attachment_bytes))
-/// and whether a frame is prepared at all.
-pub(super) fn has_blur(filters: &[&FilterDraw]) -> bool {
-    filters
-        .iter()
-        .any(|f| f.kind == stark_shaders::mirror::filter_common::FILTER_FOCAL_BLUR)
 }
 
 /// One texture of one plane pair — [`Attachment`](super::attachment::Attachment)
@@ -836,24 +868,26 @@ mod tests {
         angle: 0.0,
     };
 
-    /// The engine's reading of a focal-blur draw's lanes, through the encoder that
-    /// wrote them, under a view that is not turning the canvas.
-    fn lanes_of(a: stark_model::document::Aperture) -> Aperture {
+    /// The aperture a focal-blur layer asks the convolution for, through the draw
+    /// the compositor is handed, under a view that is not turning the canvas.
+    fn lanes_of(a: DocAperture) -> Aperture {
         lanes_under(a, ViewTransform::identity(Extent2::new(256, 256)))
     }
 
-    /// The same, under a chosen view — the half of the trip `aperture` adds.
-    fn lanes_under(a: stark_model::document::Aperture, view: ViewTransform) -> Aperture {
-        aperture(
-            &FilterDraw::new(
-                stark_model::document::Filter::FocalBlur(stark_model::document::FocalBlur {
-                    radius: 4.0,
-                    aperture: a,
-                }),
-                crate::document::CompositeParams::IDENTITY,
-            ),
-            view,
-        )
+    /// The same, under a chosen view — the half of the trip [`Aperture::turned`]
+    /// adds.
+    fn lanes_under(a: DocAperture, view: ViewTransform) -> Aperture {
+        let draw = FilterDraw::new(
+            stark_model::document::Filter::FocalBlur(FocalBlur {
+                radius: 4.0,
+                aperture: a,
+            }),
+            crate::document::CompositeParams::IDENTITY,
+        );
+        let [(_, _, aperture)] = blur_kernels(&[&draw], view)[..] else {
+            panic!("one focal-blur layer asks for one kernel");
+        };
+        aperture
     }
 
     /// **The inverse transform lands in set A**, whatever the extent — the parity fact
@@ -956,16 +990,16 @@ mod tests {
         assert!(!jobs[0].kernel.is_empty());
     }
 
-    /// **Every aperture the document can hold arrives here as its own lanes**, with the
-    /// shader's own shape codes — the round trip through `group::aperture_lanes`, the
-    /// only place a `Filter` becomes numbers.
+    /// **Every aperture the document can hold reaches the kernel as its own lanes**,
+    /// with the shader's own shape codes — the trip from the layer's filter through
+    /// the draw to `make_kernel`'s uniform ([`Aperture::of`]).
     ///
     /// Pinned as a set rather than arm by arm because what breaks is two shapes
     /// agreeing: a code copied from the arm above renders one aperture as another, and
     /// no assertion about a single arm can see that.
     #[test]
     fn every_aperture_survives_the_trip_through_the_draw() {
-        use stark_model::document::Aperture as Doc;
+        use DocAperture as Doc;
         use stark_shaders::mirror::blur as code;
 
         assert_eq!(lanes_of(Doc::Disc { obstruction: 0.0 }), DISC);

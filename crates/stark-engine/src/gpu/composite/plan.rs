@@ -350,15 +350,11 @@ mod tests {
     }
 
     fn filter() -> CompositeGroup {
-        CompositeGroup::filter(FilterDraw {
-            kind: stark_shaders::mirror::filter_common::FILTER_COLOR,
-            resamples: false,
-            strength: 1.0,
-            clip: false,
-            params: [0.0; 4],
-            params2: [0.0; 4],
-            stops: None,
-        })
+        use stark_model::document::{ColorAdjust, Filter};
+        CompositeGroup::filter(FilterDraw::new(
+            Filter::Color(ColorAdjust::NEUTRAL),
+            CompositeParams::IDENTITY,
+        ))
     }
 
     /// Every slot a step names must be one the scratch was told to allocate, and an

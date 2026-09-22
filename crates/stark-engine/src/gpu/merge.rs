@@ -241,10 +241,10 @@ impl MergeRenderer {
         draw: &FilterDraw,
     ) -> TileMap {
         // The law, not one kind that breaks it: any other gather named here would
-        // pass a `kind` check and render through `fs_tile` with the blur pass's 1×1
-        // stand-ins bound — an unfiltered tile, silently.
+        // pass a check for that one kind and render through `fs_tile` with the blur
+        // pass's 1×1 stand-ins bound — an unfiltered tile, silently.
         debug_assert!(
-            !draw.resamples,
+            !draw.resamples(),
             "a resampling filter cannot be merged (§14.11.7) — `merge::plan` declines \
              it, because no apron makes a gather a function of canvas position (§6.4)",
         );
