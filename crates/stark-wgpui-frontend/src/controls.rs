@@ -6,9 +6,10 @@
 //! back on `SliderEvent::Change`. The subscriptions live here because a dropped one
 //! is a dial nobody hears.
 //!
-//! What a drag *means* is still the view's. The handlers call the same `turn`,
-//! `turn_dial` and `set_opacity` the measured troughs called, and the mask's strength
-//! keeps its bargain — previewed while the hand is on it, spent on release (§6.8).
+//! What a drag *means* is still the view's. The handlers call the view's `turn_*`
+//! methods per sample and its `settle_*` ones on release, and every track on document
+//! state keeps the bargain: previewed while the hand is on it, spent on release (§6.8,
+//! §14.6).
 //! The blend picker is the drop-down §25.9's ladder asked for once the modes stopped
 //! fitting on a chip, in place of the cycle that stood in for it.
 
@@ -110,11 +111,12 @@ impl Controls {
             state
         });
         let opacity = cx.new(|_| SliderState::new().min(0.0).max(1.0).step(0.01));
-        subs.push(cx.subscribe(&opacity, |this, _, event: &SliderEvent, cx| {
-            if let SliderEvent::Change(v) = event {
-                this.set_opacity(v.start(), cx);
-            }
-        }));
+        subs.push(
+            cx.subscribe(&opacity, |this, _, event: &SliderEvent, cx| match event {
+                SliderEvent::Change(v) => this.turn_opacity(v.start(), cx),
+                SliderEvent::Release(v) => this.settle_opacity(v.start(), cx),
+            }),
+        );
         let labels: Vec<SharedString> = BlendMode::ALL
             .iter()
             .map(|mode| SharedString::from(mode.label()))
@@ -142,8 +144,8 @@ impl Controls {
                 &state,
                 move |this, _, event: &SliderEvent, cx| match event {
                     SliderEvent::Change(v) => this.turn_light(dial, v.start(), cx),
-                    // One dial is a stored preference rather than engine state, so it
-                    // is shown per sample and written down once (`Canvas::settle_light`).
+                    // The scale is laid down and the headroom written down once
+                    // (`Canvas::settle_light`).
                     SliderEvent::Release(v) => this.settle_light(dial, v.start(), cx),
                 },
             ));
@@ -153,13 +155,13 @@ impl Controls {
             let dial = <gd::Dial as strum::VariantArray>::VARIANTS[i];
             let (lo, hi) = dial.range();
             let state = cx.new(|_| SliderState::new().min(lo).max(hi).step(dial.step()));
-            subs.push(
-                cx.subscribe(&state, move |this, _, event: &SliderEvent, cx| {
-                    if let SliderEvent::Change(v) = event {
-                        this.turn_guide(dial, v.start(), cx);
-                    }
-                }),
-            );
+            subs.push(cx.subscribe(
+                &state,
+                move |this, _, event: &SliderEvent, cx| match event {
+                    SliderEvent::Change(v) => this.turn_guide(dial, v.start(), cx),
+                    SliderEvent::Release(v) => this.settle_guide(dial, v.start(), cx),
+                },
+            ));
             state
         });
         let lights_labels: Vec<SharedString> = light::ENVIRONMENTS

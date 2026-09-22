@@ -285,6 +285,10 @@ pub struct Canvas {
     /// This client's HDR choice (§6.5), from the record the web app keeps it in;
     /// the engine is told this met with the window (`Desk::apply_output`).
     hdr: Hdr,
+    /// The substrate scale the Lighting shelf's track is previewing, for its release
+    /// to lay down (§6.4). Held because the projection reports the committed scale,
+    /// which the track would otherwise be settled back onto under the hand.
+    laying: Option<stark_model::SubstrateScale>,
     /// The file this window holds, once one has been saved or opened. `None` for a
     /// document that has never been written — which is what the title says.
     path: Option<std::path::PathBuf>,
@@ -476,6 +480,7 @@ impl Canvas {
             mode: None,
             obs,
             hdr,
+            laying: None,
             path: None,
             written: 0,
             title: String::new(),
@@ -1313,13 +1318,21 @@ impl Canvas {
         }
     }
 
-    /// Set the selected layer's opacity, previewing per sample.
-    ///
-    /// One command per pointer move and one undo step for the whole drag is what
-    /// `preview` buys the web app (§14.6); this sends the document command each time,
-    /// which is honest but coarse — the engine coalesces nothing, so a drag is a run
-    /// of history entries. Previewing is a stage of its own.
-    pub(crate) fn set_opacity(&mut self, opacity: f32, cx: &mut Context<'_, Self>) {
+    /// Show the selected layer at `opacity` while the hand is on the track, logging
+    /// nothing; [`settle_opacity`](Self::settle_opacity) lays it down — one undo step
+    /// and one replicated action for the drag (§14.6).
+    pub(crate) fn turn_opacity(&mut self, opacity: f32, cx: &mut Context<'_, Self>) {
+        let Some(id) = self.obs.as_ref().map(|o| o.active_layer) else {
+            return;
+        };
+        self.send(
+            ViewCommand::Preview(Some(Edit::LayerOpacity(id, opacity))),
+            cx,
+        );
+    }
+
+    /// The end of a drag on the opacity track: commit what it previewed.
+    pub(crate) fn settle_opacity(&mut self, opacity: f32, cx: &mut Context<'_, Self>) {
         let Some(id) = self.obs.as_ref().map(|o| o.active_layer) else {
             return;
         };
@@ -1360,13 +1373,13 @@ impl Canvas {
                 }
                 self.send(ViewCommand::SetMediaParams(media), cx);
             }
-            // Document state, and sent per sample: the engine coalesces nothing, so a
-            // drag is a run of history entries. Honest but coarse, exactly as the
-            // layer opacity above is, and previewing is the same stage of its
-            // own for both.
+            // Document state, so previewed per sample and laid down on release
+            // ([`settle_light`]): committing each sample would spend an undo step and
+            // bake a substrate per pointer move.
             light::Dial::Scale => {
                 let scale = stark_model::SubstrateScale::new(v.round().max(0.0) as u16);
-                self.send(DocCommand::Set(Edit::SubstrateScale(scale)), cx);
+                self.laying = Some(scale);
+                self.send(ViewCommand::Preview(Some(Edit::SubstrateScale(scale))), cx);
             }
             // Shown but not kept: a headroom is written down when the hand comes off
             // it ([`settle_light`]), so one drag is one write rather than one a frame.
@@ -1377,12 +1390,21 @@ impl Canvas {
         }
     }
 
-    /// The end of a track's drag, for the one dial that has anything to do there.
-    pub(crate) fn settle_light(&mut self, dial: light::Dial, _v: f32, _cx: &mut Context<'_, Self>) {
-        if dial == light::Dial::Headroom {
-            let mut prefs = stark_ui::storage::load::<Prefs>().unwrap_or_default();
-            prefs.hdr = self.hdr;
-            stark_ui::storage::save(&prefs);
+    /// The end of a track's drag, for the two dials that have anything to do there:
+    /// the scale lays down what it previewed, and the headroom is written down.
+    pub(crate) fn settle_light(&mut self, dial: light::Dial, _v: f32, cx: &mut Context<'_, Self>) {
+        match dial {
+            light::Dial::Scale => {
+                if let Some(scale) = self.laying.take() {
+                    self.send(DocCommand::Set(Edit::SubstrateScale(scale)), cx);
+                }
+            }
+            light::Dial::Headroom => {
+                let mut prefs = stark_ui::storage::load::<Prefs>().unwrap_or_default();
+                prefs.hdr = self.hdr;
+                stark_ui::storage::save(&prefs);
+            }
+            light::Dial::Impasto | light::Dial::Texture | light::Dial::Gloss => {}
         }
     }
 
@@ -1450,8 +1472,25 @@ impl Canvas {
     // --- the Guides shelf (§20.5) ---------------------------------------------
 
     /// Move one of the Guides shelf's tracks: a whole edit of the camera in hand,
-    /// because that is the shape `Edit::Guide` takes.
+    /// because that is the shape `Edit::Guide` takes. Previewed while the hand is on
+    /// it and laid down by [`settle_guide`](Self::settle_guide).
     pub(crate) fn turn_guide(
+        &mut self,
+        dial: stark_ui::guides::Dial,
+        v: f32,
+        cx: &mut Context<'_, Self>,
+    ) {
+        let Some((id, camera)) = self.held_guide() else {
+            return;
+        };
+        self.send(
+            ViewCommand::Preview(Some(Edit::Guide(id, dial.write(camera, v)))),
+            cx,
+        );
+    }
+
+    /// The end of a drag on a Guides track: commit the camera it previewed.
+    pub(crate) fn settle_guide(
         &mut self,
         dial: stark_ui::guides::Dial,
         v: f32,
@@ -2702,8 +2741,9 @@ impl Canvas {
         fraction: f32,
         cx: &mut Context<'_, Self>,
     ) {
+        // The commit supersedes the preview engine-side; dropping it first would cost
+        // an epoch and a frame at the committed value.
         if dial == stark_ui::selection::Dial::MaskOpacity {
-            self.send(ViewCommand::Preview(None), cx);
             self.send(
                 DocCommand::Set(Edit::SelectionOpacity(dial.value_at(fraction))),
                 cx,
@@ -3957,10 +3997,20 @@ impl Render for Canvas {
             .as_ref()
             .and_then(Editor::open_mapping)
             .and_then(|row| row.of(&self.brush.config));
+        // The Lighting shelf reads the scale being laid rather than the committed one
+        // the projection reports (`laying`).
+        let lit = self
+            .laying
+            .zip(self.obs.as_ref())
+            .map(|(scale, o)| ObservableState {
+                substrate_scale: scale,
+                ..o.clone()
+            });
+        let lit = lit.as_ref().or(self.obs.as_ref());
         self.controls.sync(
             crate::controls::Sync {
                 brush: &self.brush,
-                obs: self.obs.as_ref(),
+                obs: lit,
                 opacity: chosen.map_or(1.0, |r| r.info.opacity),
                 blend: chosen.map_or(stark_model::document::BlendMode::Normal, |r| r.info.blend),
                 hdr: self.hdr,
@@ -4009,7 +4059,7 @@ impl Render for Canvas {
                     self.panel_drawn(PanelId::Lighting).then(|| {
                         lighting::lighting_body(
                             lighting::Shown {
-                                obs: self.obs.as_ref(),
+                                obs: lit,
                                 hdr: self.hdr,
                                 hdr_capable,
                                 display_headroom,
