@@ -15,6 +15,7 @@ mod bleed;
 mod kit;
 mod liquify;
 mod plan;
+mod region;
 mod run;
 mod trio;
 

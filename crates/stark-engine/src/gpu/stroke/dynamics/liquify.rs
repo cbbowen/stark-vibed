@@ -26,7 +26,7 @@
 //! - **the pieces** ([`chunk_segments_within`]): the loop's chunker at the liquify
 //!   budget, cut wherever the walk re-bases.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use stark_model::document::{StrokeRecord, liquify_reads};
@@ -35,18 +35,18 @@ use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, TileRect, Ve
 use super::super::budget::{
     LIQUIFY_BASE_SLACK, LIQUIFY_REACH_CAP, LIQUIFY_REGION_BUDGET_DIM, MAX_REGION_DIM,
 };
-use super::super::region::{RegionRect, chunk_segments_within, cover, sweep_tiles};
+use super::super::region::{chunk_segments_within, sweep_tiles};
 use super::super::segments::Segment;
 use super::super::{Painted, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene};
-use super::plan::{PlanCtx, SlotKind, dispatch_over, liquify_plan};
-use super::run::{
-    LOOP_USAGE, REGION_WRITES, RegionBox, RegionChannels, composite_tiles, region_selection,
-    slice_region, upload_stamps,
+use super::plan::{SlotKind, dispatch_over, liquify_plan};
+use super::region::{
+    LOOP_USAGE, REGION_WRITES, RegionBox, RegionChannels, RegionRun, composite_tiles,
+    region_selection, slice_region,
 };
 use super::trio::{Life, Trio};
 use crate::document::liquify::LiquifyRun;
 use crate::gpu::desc;
-use crate::gpu::scratch::{Key, LeasedTex, SubmitScope};
+use crate::gpu::scratch::{Key, LeasedTex};
 use crate::gpu::tile::{AllocSource, FIELD_FORMAT, TileMap};
 use crate::gpu::uniforms::UniformSlots;
 use stark_shaders::mirror::dynamics_common::binding as sb;
@@ -92,8 +92,6 @@ impl StrokeRenderer {
             tip,
             segments,
             end_dist,
-            tol,
-            consts,
             ..
         } = range;
         // The run the stroke composes through: the layer's, where the tiles inside
@@ -121,7 +119,7 @@ impl StrokeRenderer {
             .warp
             .as_ref()
             .expect("a liquify brush resolves its coverage prefix (tips::resolve)");
-        let mut draw = LiquifyDraw::new(self, scene, rec, tol, consts, run, warp_prefix);
+        let mut draw = LiquifyDraw::new(self, scene, &range, run, warp_prefix);
         let mut map = scene.base.clone();
         let pieces = chunk_segments_within(segments, &[], LIQUIFY_REGION_BUDGET_DIM, &walk.cuts);
         for piece in pieces {
@@ -132,7 +130,7 @@ impl StrokeRenderer {
             // until that submit rather than handing them back to the pool now.
             if walk.cuts.contains(&piece.start) {
                 let old = std::mem::take(&mut draw.run);
-                draw.scope.hold(old);
+                draw.region.scope.hold(old);
                 if kept {
                     record_base(&mut draw.run, &map, within);
                 }
@@ -148,8 +146,7 @@ impl StrokeRenderer {
                 &walk.reach_by(piece.end),
             );
         }
-        let dirty = std::mem::take(&mut draw.dirty).into_iter().collect();
-        let run = draw.finish();
+        let (run, carry) = draw.finish(end_dist);
         // A run past the tile cap is not kept: the tiles ride out under the identity,
         // and the next stroke resamples the picture as this one did.
         let run = if kept { run } else { LiquifyRun::default() };
@@ -158,7 +155,7 @@ impl StrokeRenderer {
                 tiles: map,
                 liquify: Some(Rc::new(run)),
             },
-            StrokeCarry::finished(end_dist, None, dirty),
+            carry,
         )
     }
 }
@@ -262,48 +259,25 @@ impl ReachWalk {
 /// One [`render_liquify`](StrokeRenderer::render_liquify) call in progress: the run
 /// as the pieces evolve it, and the GPU objects that outlive any one piece.
 struct LiquifyDraw<'a> {
-    r: &'a StrokeRenderer,
-    scene: StrokeScene<'a>,
-    rec: &'a StrokeRecord,
-    tol: crate::path::FlattenTolerance,
-    consts: &'a super::super::StrokeConstants,
-    scope: SubmitScope,
+    /// The region machinery this path shares with the wet loop (§6.2): the scene, the
+    /// scope, the dirty set, the piece prologue and the epilogue. Its `prefix_bg` holds
+    /// the **coverage** prefix, which the liquify path binds where every deposit binds
+    /// its prefix-τ (§6.13).
+    region: RegionRun<'a>,
     run: LiquifyRun,
-    dirty: BTreeSet<TileCoord>,
-    /// The plan's staging bytes, kept across pieces (`DynamicsRun::stamps`).
-    stamps: Vec<u8>,
-    /// The coverage prefix at the prefix-τ's group (§6.13): what `warp` reads its
-    /// exposure from, bound once for every piece.
-    prefix_bg: wgpu::BindGroup,
 }
 
 impl<'a> LiquifyDraw<'a> {
     fn new(
         r: &'a StrokeRenderer,
         scene: StrokeScene<'a>,
-        rec: &'a StrokeRecord,
-        tol: crate::path::FlattenTolerance,
-        consts: &'a super::super::StrokeConstants,
+        range: &ResolvedRange<'a>,
         run: LiquifyRun,
         warp_prefix: &wgpu::TextureView,
     ) -> Self {
-        let prefix_bg =
-            r.dynamics
-                .prefix_bgl
-                .group(&r.ctx.device, "stark liquify coverage prefix bg", |_| {
-                    wgpu::BindingResource::TextureView(warp_prefix)
-                });
         Self {
-            r,
-            scene,
-            rec,
-            tol,
-            consts,
-            scope: r.scratch.scope(&r.ctx, "stark liquify stroke"),
+            region: RegionRun::new(r, scene, range, warp_prefix, "stark liquify stroke"),
             run,
-            dirty: BTreeSet::new(),
-            stamps: Vec::new(),
-            prefix_bg,
         }
     }
 
@@ -320,22 +294,15 @@ impl<'a> LiquifyDraw<'a> {
         reach: &BTreeMap<TileCoord, f32>,
     ) -> TileMap {
         crate::timing::span!("stroke.piece");
-        self.scope.flush();
-        let covered = cover(segments, &[]);
-        let Some(RegionRect {
-            halo,
-            lo,
+        let Some(piece) = self.region.open(base, segments, &[]) else {
+            return base.clone();
+        };
+        let RegionBox {
             origin: region_origin,
             w,
             h,
-        }) = covered.rect()
-        else {
-            return base.clone();
-        };
-        let coords = &covered.tiles;
-        self.dirty.extend(coords.iter().copied());
-        self.scope.hold(base.clone());
-        let r = self.r;
+        } = piece.bbox();
+        let r = self.region.r;
         let kit = &r.dynamics;
         let device = &r.ctx.device;
         let resid = r.color_space.has_resid();
@@ -368,7 +335,7 @@ impl<'a> LiquifyDraw<'a> {
         // ([`REGION_WRITES`]) — it is only ever sampled, and a sampled declaration
         // names no format for it to take instead.
         let base_region = Trio::take(
-            &mut self.scope,
+            &mut self.region.scope,
             Life::Piece,
             (bw, bh),
             base_usage,
@@ -384,7 +351,7 @@ impl<'a> LiquifyDraw<'a> {
             crate::timing::span!("stroke.region");
             composite_tiles(
                 r,
-                &mut self.scope,
+                &mut self.region.scope,
                 &base_map,
                 &base_tiles,
                 RegionBox {
@@ -401,7 +368,7 @@ impl<'a> LiquifyDraw<'a> {
         // in, clipped to the region.
         let region_usage = LOOP_USAGE | wgpu::TextureUsages::COPY_SRC;
         let region = Trio::take(
-            &mut self.scope,
+            &mut self.region.scope,
             Life::Piece,
             (w, h),
             region_usage,
@@ -416,7 +383,7 @@ impl<'a> LiquifyDraw<'a> {
         let LeasedTex {
             tex: field_tex,
             view: field,
-        } = self.scope.take_piece(Key {
+        } = self.region.scope.take_piece(Key {
             size: (w, h),
             // The tiles the field is cut into are `FIELD_FORMAT`, and a copy between
             // two formats is not a copy; `field_w` is what the composition writes it
@@ -428,14 +395,15 @@ impl<'a> LiquifyDraw<'a> {
                 | wgpu::TextureUsages::COPY_DST,
             label: "stark liquify region field",
         });
-        self.scope
+        self.region
+            .scope
             .encoder()
             .begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark liquify field clear"),
                 color_attachments: &[Some(desc::attach(&field, desc::CLEAR))],
                 ..Default::default()
             });
-        for c in &halo {
+        for c in piece.halo() {
             let Some(tile) = self.run.field_at(*c) else {
                 continue;
             };
@@ -452,7 +420,7 @@ impl<'a> LiquifyDraw<'a> {
             let dst = lo - region_origin;
             let extent = hi - lo;
             tile.copy_block_out(
-                self.scope.encoder(),
+                self.region.scope.encoder(),
                 wgpu::Origin3d {
                     x: src.x as u32,
                     y: src.y as u32,
@@ -471,31 +439,23 @@ impl<'a> LiquifyDraw<'a> {
                 },
             );
         }
+        let selection = self.region.scene.selection;
         let sel_mask = region_selection(
             r,
-            &mut self.scope,
-            self.scene.selection,
-            &halo,
-            RegionBox {
-                origin: region_origin,
-                w,
-                h,
-            },
+            &mut self.region.scope,
+            selection,
+            piece.halo(),
+            piece.bbox(),
         );
 
         // ---- The plan, the scratch it sizes, and the groups that name it.
         let (plan, bind) =
             {
                 crate::timing::span!("stroke.plan");
-                let ctx = PlanCtx {
-                    rec: self.rec,
-                    tol: self.tol,
-                    region_origin,
-                    consts: self.consts,
-                    substrate: self.scene.substrate,
-                };
+                let ctx = self.region.plan_ctx(region_origin);
                 let plan = liquify_plan(&ctx, segments, [margin as i32, margin as i32], (w, h));
                 let under_field = self
+                    .region
                     .scope
                     .take_piece(Key {
                         size: (plan.dsize, plan.dsize),
@@ -504,7 +464,7 @@ impl<'a> LiquifyDraw<'a> {
                         label: "stark liquify under field",
                     })
                     .view;
-                let stamp_buf = upload_stamps(&mut self.scope, &mut self.stamps, &plan.slots);
+                let stamp_buf = self.region.upload(&plan.slots);
                 let params = wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                     buffer: &stamp_buf,
                     offset: 0,
@@ -561,13 +521,14 @@ impl<'a> LiquifyDraw<'a> {
             // whole square, since the gather pulls from upstream of any one texel.
             let li = stark_shaders::liquify(r.color_space.resid());
             let square = li.snapshot_field.groups((plan.dsize, plan.dsize));
-            let mut cpass = self
-                .scope
-                .encoder()
-                .begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("stark liquify field"),
-                    timestamp_writes: None,
-                });
+            let mut cpass =
+                self.region
+                    .scope
+                    .encoder()
+                    .begin_compute_pass(&wgpu::ComputePassDescriptor {
+                        label: Some("stark liquify field"),
+                        timestamp_writes: None,
+                    });
             for (i, dsp) in plan.slots.iter().enumerate() {
                 let off =
                     UniformSlots::<stark_shaders::mirror::dynamics_common::Stamp>::offset(i as u32);
@@ -578,7 +539,7 @@ impl<'a> LiquifyDraw<'a> {
                         dispatch_over(&mut cpass, square);
                         cpass.set_pipeline(&kit.warp_pipeline);
                         cpass.set_bind_group(0, &bind.warp, &[off]);
-                        cpass.set_bind_group(1, &self.prefix_bg, &[]);
+                        cpass.set_bind_group(1, &self.region.prefix_bg, &[]);
                         dispatch_over(&mut cpass, li.warp.groups(dsp.extent));
                     }
                     SlotKind::WarpApply => {
@@ -596,34 +557,26 @@ impl<'a> LiquifyDraw<'a> {
         }
         // ---- Slice the picture and the field back into tiles, and record both.
         crate::timing::span!("stroke.writeback");
+        let pool = self.region.scene.pool;
         let new_map = slice_region(
             r,
-            &mut self.scope,
-            self.scene.pool,
+            &mut self.region.scope,
+            pool,
             base,
-            coords,
-            lo,
+            &piece,
             RegionChannels {
                 color_tex: &region.color.tex,
                 aux: &region.aux.view,
                 resid_tex: region.resid_tex(),
             },
         );
-        let mut displaced = Vec::with_capacity(coords.len());
-        for coord in coords {
-            let field_tile = self
-                .scene
-                .pool
-                .acquire_tex(FIELD_FORMAT, AllocSource::LiquifyField);
-            let off = coord.origin() - lo;
+        let mut displaced = Vec::with_capacity(piece.tiles.len());
+        for coord in &piece.tiles {
+            let field_tile = pool.acquire_tex(FIELD_FORMAT, AllocSource::LiquifyField);
             field_tile.copy_into(
-                self.scope.encoder(),
+                self.region.scope.encoder(),
                 &field_tex,
-                wgpu::Origin3d {
-                    x: off.x as u32,
-                    y: off.y as u32,
-                    z: 0,
-                },
+                piece.block_origin(*coord),
             );
             let picture = new_map
                 .get(coord)
@@ -633,19 +586,16 @@ impl<'a> LiquifyDraw<'a> {
             displaced.push(self.run.record_written(*coord, picture, field_tile, bound));
         }
         // The halo copy above read the field tiles these replace.
-        self.scope.hold(displaced);
+        self.region.scope.hold(displaced);
         new_map
     }
 
-    /// Close the draw: submit what is recorded, release what the submit frees, and
-    /// hand back the run the pieces built.
-    fn finish(self) -> LiquifyRun {
-        let Self { scope, run, .. } = self;
-        {
-            crate::timing::span!("stroke.submit");
-            scope.finish();
-        }
-        run
+    /// Close the draw: hand the region machinery what is owed a submit, and hand back
+    /// the run the pieces built beside what the range carries on. Nothing is carried
+    /// across ranges here — the field *is* the state, and it rides the run (§6.13).
+    fn finish(self, end_dist: f32) -> (LiquifyRun, StrokeCarry) {
+        let Self { region, run } = self;
+        (run, region.finish(end_dist, None, ()))
     }
 }
 
