@@ -20,7 +20,7 @@
 //! The two effects differ only in which fragment rasterizes the extent (`stamp.wesl`'s
 //! `fs_erase` against its `fs_main`), how many lanes the parcel has (one transparency
 //! mass against the channel trio), what the landing pass computes (`erase.wesl` against
-//! `integrate.wesl`), and what bare canvas means ([`BareCanvas`]). So this holds the
+//! `integrate.wesl`), and what bare canvas means ([`ParcelEffect`]). So this holds the
 //! orchestration and **not** the rendering: [`IncrementalTileAccumulator::run`] is
 //! handed the effect's own pipelines and asks the effect to bind its own landing group,
 //! so a reader still finds `erase.wesl`'s layout in `erase.rs` and `integrate.wesl`'s
@@ -125,9 +125,10 @@ impl Parcel {
 /// An effect's carried parcels (§6.2, §6.12): per touched tile, the paint the
 /// stroke found there and everything it has accumulated over it so far.
 ///
-/// One type for both effects, with a variant each in
-/// [`Carried`](super::incremental::Carried): the payloads are the same shape, but the
-/// lane count is the effect's, so which one a stroke resumes is still asserted.
+/// One type for both effects, carried tagged with the one that captured it
+/// ([`Carried::Parcel`](super::incremental::Carried::Parcel)): the payloads are the
+/// same shape, but the lane count is the effect's, so which one a stroke resumes is
+/// still asserted.
 pub(super) struct ParcelCarry {
     pub(super) tiles: BTreeMap<TileCoord, ParcelTile>,
 }
@@ -139,8 +140,9 @@ pub(super) struct ParcelTile {
     /// (the base it is handed holds exactly that), or the effect would compound per
     /// piece instead of per stroke. An `Arc`'d pool handle, so keeping it is a refcount.
     ///
-    /// `None` is bare canvas, reachable only under [`BareCanvas::Mint`]: a deposit onto
-    /// nothing mints a tile over the 1×1 zeroes, where an erase never records the tile.
+    /// `None` is bare canvas, reachable only for [`ParcelEffect::Deposit`]: a deposit
+    /// onto nothing mints a tile over the 1×1 zeroes, where an erase never records the
+    /// tile.
     pub(super) pristine: Option<TilePairHandle>,
     /// The stroke's parcel over this tile, summed so far. Shared between successive
     /// carries rather than copied: a piece never writes the parcel it resumed — it
@@ -148,18 +150,20 @@ pub(super) struct ParcelTile {
     pub(super) accum: Arc<Parcel>,
 }
 
-/// What a tile the layer does not have means to the effect — the one place the two
-/// diverge that is not a shader.
-#[derive(Copy, Clone)]
-pub(super) enum BareCanvas {
-    /// Nothing to work on: no output tile, no parcel, no entry in the carry. The
-    /// erase pass (§6.12) — there is no transparency to add to absent paint, so an
-    /// eraser over bare canvas mints nothing.
-    Skip,
-    /// Paint anyway, over the 1×1 zeroes (§6.8's pattern). The deposit — a stroke
-    /// onto nothing mints a tile, and the landing pass's clamped loads mean bare
-    /// canvas costs no tile of its own to read.
-    Mint,
+/// The two effects this procedure serves — what a carry was captured by, and what a
+/// tile the layer does not have means to it: the one place the two diverge that is not
+/// a shader.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(super) enum ParcelEffect {
+    /// The swept deposit whose coverage is scaled (§6.2). Bare canvas is painted
+    /// anyway, over the 1×1 zeroes (§6.8's pattern): a stroke onto nothing mints a
+    /// tile, and the landing pass's clamped loads mean bare canvas costs no tile of
+    /// its own to read.
+    Deposit,
+    /// The erase pass (§6.12). Bare canvas is nothing to work on: no output tile, no
+    /// parcel, no entry in the carry — there is no transparency to add to absent
+    /// paint, so an eraser over bare canvas mints nothing.
+    Erase,
 }
 
 /// The swept-extent rasterization half of one tile, which the two effects differ in by
@@ -185,7 +189,7 @@ pub(super) struct Land<'a> {
 pub(super) struct Landing<'a> {
     /// The paint the stroke found under this tile, as the landing pass reads it: the
     /// pristine tile's channels, or the renderer's 1×1 zeroes where the layer has
-    /// none — which under [`BareCanvas::Skip`] never happens.
+    /// none — which for [`ParcelEffect::Erase`] never happens.
     pub(super) base: Targets<'a>,
     /// The stroke's parcel over this tile so far, in the effect's lane order.
     pub(super) parcel: &'a Parcel,
@@ -214,7 +218,7 @@ pub(super) struct IncrementalTileAccumulator<'a> {
     scene: StrokeScene<'a>,
     scope: SubmitScope,
     keys: LaneKeys,
-    bare: BareCanvas,
+    effect: ParcelEffect,
     /// The copy-on-write map being built. Read the pristine fallback out of
     /// `scene.base` rather than out of this: they start equal, but this one is
     /// already accumulating the piece's own output, and a tile re-derived from
@@ -236,7 +240,7 @@ impl<'a> IncrementalTileAccumulator<'a> {
         scene: StrokeScene<'a>,
         scope: SubmitScope,
         keys: LaneKeys,
-        bare: BareCanvas,
+        effect: ParcelEffect,
         prior: Option<&ParcelCarry>,
     ) -> Self {
         let tiles = prior.map_or_else(BTreeMap::new, |p| {
@@ -258,7 +262,7 @@ impl<'a> IncrementalTileAccumulator<'a> {
             scene,
             scope,
             keys,
-            bare,
+            effect,
             map: scene.base.clone(),
             tiles,
             dirty: Vec::new(),
@@ -280,14 +284,14 @@ impl<'a> IncrementalTileAccumulator<'a> {
             // The paint the stroke found under this tile: what an earlier piece
             // recorded, or — for a tile this stroke reaches for the first time — the
             // base itself, which no earlier piece can have rewritten. A carried entry
-            // answers for itself, `None` included: under [`BareCanvas::Mint`] a tile
-            // first touched on bare canvas has this stroke's own minted tile in the
-            // base by now, and falling back to it would re-derive from that.
+            // answers for itself, `None` included: for the deposit a tile first
+            // touched on bare canvas has this stroke's own minted tile in the base by
+            // now, and falling back to it would re-derive from that.
             let pristine = match self.tiles.get(coord) {
                 Some(t) => t.pristine.clone(),
                 None => self.scene.base.get(coord).cloned(),
             };
-            if pristine.is_none() && matches!(self.bare, BareCanvas::Skip) {
+            if pristine.is_none() && self.effect == ParcelEffect::Erase {
                 continue;
             }
 
@@ -376,7 +380,7 @@ impl<'a> IncrementalTileAccumulator<'a> {
         //
         // `finish` submits only when the scope has something recorded, so that rests on
         // a lease worth protecting implying a recording: every `Kept` this call can put
-        // into the carry came from a `Parcel::take` past the `BareCanvas::Skip` arm, and
+        // into the carry came from a `Parcel::take` past the erase's bare-canvas skip, and
         // each is then named by a copy, a sweep pass and a landing pass. A carry with
         // nothing recorded behind it holds only `Arc` clones of the *previous* carry's
         // parcels, whose commands an earlier run already submitted.

@@ -37,7 +37,7 @@ use super::super::budget::{
 };
 use super::super::region::{RegionRect, chunk_segments_within, cover, sweep_tiles};
 use super::super::segments::Segment;
-use super::super::{Painted, Progress, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene};
+use super::super::{Painted, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene};
 use super::plan::{PlanCtx, SlotKind, dispatch_over, liquify_plan};
 use super::run::{
     LOOP_USAGE, RegionBox, RegionChannels, composite_tiles, region_selection, slice_region,
@@ -148,10 +148,7 @@ impl StrokeRenderer {
                 tiles: map,
                 liquify: Some(Rc::new(run)),
             },
-            StrokeCarry {
-                dist: end_dist,
-                progress: Progress::Finished { tool: None, dirty },
-            },
+            StrokeCarry::finished(end_dist, None, dirty),
         )
     }
 }

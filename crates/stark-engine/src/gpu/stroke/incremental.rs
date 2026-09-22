@@ -18,7 +18,7 @@ use std::sync::Arc;
 use stark_model::document::StrokeRecord;
 use stark_model::geom::TileCoord;
 
-use super::accum::ParcelCarry;
+use super::accum::{ParcelCarry, ParcelEffect};
 use crate::gpu::scratch::Kept;
 
 /// A stroke's carried state at a cut point (§6.2) — what its path threads between
@@ -69,19 +69,15 @@ pub(super) enum Carried {
     /// erase map's header, and a `ToolState` moves through `Option::or` on
     /// every fold.
     Loop(Box<LoopCarry>),
-    /// The erase pass's accumulated extent (§6.12).
-    Erase(ParcelCarry),
-    /// The swept deposit's accumulated parcel (§6.2), carried only below
-    /// full opacity or under a pen-driven ceiling — the settings under which
-    /// that path stops being stateless, because a scaled parcel is not
-    /// composable per piece.
-    Sweep(ParcelCarry),
+    /// The parcel an effect accumulates across pieces (`accum`): the erase pass's
+    /// (§6.12), or the swept deposit's where its coverage is scaled (§6.2) — the
+    /// settings under which that path stops being stateless.
+    ///
+    /// Tagged with the effect because a `ParcelCarry`'s lane count is the effect's —
+    /// one transparency mass against the channel trio — so a carry crossing between
+    /// them would bind the wrong number of textures.
+    Parcel(ParcelEffect, ParcelCarry),
 }
-
-// `Erase` and `Sweep` hold the same payload and stay separate variants because a
-// `ParcelCarry`'s lane count is the effect's — one transparency mass against the
-// channel trio — so a carry crossing between them would bind the wrong number of
-// textures.
 
 impl ToolState {
     /// The loop's carried state, on a carry the loop captured.
@@ -92,7 +88,7 @@ impl ToolState {
     pub(super) fn looped(&self) -> &LoopCarry {
         match &self.0 {
             Carried::Loop(l) => l,
-            Carried::Erase(_) | Carried::Sweep(_) => {
+            Carried::Parcel(..) => {
                 unreachable!(
                     "another path's carry resumed the stamp loop; the path is a pure function of the brush (§6.2)"
                 )
@@ -100,29 +96,15 @@ impl ToolState {
         }
     }
 
-    /// The erase pass's accumulation, on a carry it captured — [`looped`](Self::looped)'s
-    /// argument, from the other side.
-    pub(super) fn erased(&self) -> &ParcelCarry {
+    /// `effect`'s accumulated parcels, on a carry it captured — [`looped`](Self::looped)'s
+    /// argument, from the other side. Whether the deposit carries at all is decided by
+    /// its opacity, which is as much a part of the brush as its path.
+    pub(super) fn parcels(&self, effect: ParcelEffect) -> &ParcelCarry {
         match &self.0 {
-            Carried::Erase(e) => e,
-            Carried::Loop(_) | Carried::Sweep(_) => {
+            Carried::Parcel(captured, parcels) if *captured == effect => parcels,
+            Carried::Loop(_) | Carried::Parcel(..) => {
                 unreachable!(
-                    "another path's carry resumed the erase pass; the path is a pure function of the brush (§6.2)"
-                )
-            }
-        }
-    }
-
-    /// The scaled swept deposit's accumulated parcel, on a carry it captured —
-    /// [`looped`](Self::looped)'s argument, from the third side. The
-    /// opacity is part of the brush, so whether the swept path carries at all is
-    /// as much a pure function of it as which path runs.
-    pub(super) fn swept(&self) -> &ParcelCarry {
-        match &self.0 {
-            Carried::Sweep(s) => s,
-            Carried::Loop(_) | Carried::Erase(_) => {
-                unreachable!(
-                    "another path's carry resumed the scaled swept deposit; the path is a pure function of the brush (§6.2)"
+                    "another path's carry resumed the {effect:?} parcel; the path is a pure function of the brush (§6.2)"
                 )
             }
         }
@@ -228,16 +210,19 @@ pub(crate) enum Progress {
 }
 
 impl StrokeCarry {
+    /// A finished range ([`Progress::Finished`]): the arc clock at `dist`, the state to
+    /// resume with, and the tiles it rewrote.
+    pub(crate) fn finished(dist: f32, tool: Option<ToolState>, dirty: Vec<TileCoord>) -> Self {
+        Self {
+            dist,
+            progress: Progress::Finished { tool, dirty },
+        }
+    }
+
     /// Nothing drawn because there was nothing to draw: the range is finished, the
     /// arc clock stands at `dist`, and the brush is as it was found.
     pub(crate) fn unchanged(dist: f32) -> Self {
-        Self {
-            dist,
-            progress: Progress::Finished {
-                tool: None,
-                dirty: Vec::new(),
-            },
-        }
+        Self::finished(dist, None, Vec::new())
     }
 
     /// Nothing drawn *yet* — [`Progress::Deferred`]. `dist` is where the range
@@ -286,7 +271,7 @@ pub(crate) fn safe_frozen(rec: &StrokeRecord, frozen: usize) -> usize {
     let (start_px, end_px) = rec.brush.taper_px();
     let last = crate::path::span_count(rec.path.len());
     if last == 0 {
-        return frozen;
+        return 0;
     }
     let head = crate::path::point_at(&rec.path, rec.start);
     let tip = crate::path::span_end(&rec.path, last - 1);
@@ -362,5 +347,12 @@ mod tests {
         let deferred = StrokeCarry::deferred(3.0);
         assert_eq!(deferred.dist, 3.0, "the arc clock did not move");
         assert!(matches!(deferred.progress, Progress::Deferred));
+    }
+
+    /// A path with no spans has none to freeze, whatever the fitter says it settled.
+    #[test]
+    fn a_stroke_with_no_spans_freezes_none() {
+        let rec = super::super::segments::testing::record(Default::default(), &[]);
+        assert_eq!(safe_frozen(&rec, 3), 0);
     }
 }

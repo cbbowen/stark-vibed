@@ -16,7 +16,7 @@
 //! pristine paint under the total. That bookkeeping is any such effect's, so it
 //! lives in [`accum`](super::accum); what stays here is `erase.wesl`'s own layout and
 //! pipelines, and the one decision that is this pass's — a tile the layer does not
-//! have is nothing to erase ([`BareCanvas::Skip`]).
+//! have is nothing to erase ([`ParcelEffect::Erase`]).
 
 use stark_shaders::Lane;
 use stark_shaders::mirror::erase::binding as eb;
@@ -27,11 +27,11 @@ use crate::gpu::desc;
 use crate::gpu::tile::TileMap;
 
 use super::accum::{
-    BareCanvas, IncrementalTileAccumulator, Land, Landed, Landing, LaneKeys, Sweep, lane_key,
+    IncrementalTileAccumulator, Land, Landed, Landing, LaneKeys, ParcelEffect, Sweep, lane_key,
 };
 use super::incremental::Carried;
 use super::swept::{SweepDraws, SweepPass, landing_pipeline, reaches_nothing};
-use super::{Progress, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
+use super::{ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
 use crate::gpu::scratch::Key;
 
 /// The accumulator's format: one channel — the transparency mass — additive. f16
@@ -159,13 +159,14 @@ impl StrokeRenderer {
         // the pristine paint. A tile the layer does not have is nothing to erase —
         // no output, no accumulator, no entry in the carry — so a stroke over bare
         // canvas mints no tiles at all.
+        let effect = ParcelEffect::Erase;
         let Landed { map, carry, dirty } = IncrementalTileAccumulator::resume(
             self,
             scene,
             scope,
             keys,
-            BareCanvas::Skip,
-            resume.prior.map(ToolState::erased),
+            effect,
+            resume.prior.map(|t| t.parcels(effect)),
         )
         .run(
             &Sweep {
@@ -204,16 +205,10 @@ impl StrokeRenderer {
             },
         );
 
-        (
-            map,
-            StrokeCarry {
-                dist: end_dist,
-                progress: Progress::Finished {
-                    tool: resume.capture.then(|| ToolState(Carried::Erase(carry))),
-                    dirty,
-                },
-            },
-        )
+        let tool = resume
+            .capture
+            .then(|| ToolState(Carried::Parcel(effect, carry)));
+        (map, StrokeCarry::finished(end_dist, tool, dirty))
     }
 }
 

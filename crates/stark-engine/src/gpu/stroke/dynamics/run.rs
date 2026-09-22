@@ -24,9 +24,7 @@ use super::super::incremental::{Carried, LoopCarry, Reservoir};
 use super::super::region::{RegionRect, chunk_segments, cover};
 use super::super::segments::{BleedFire, Segment};
 use super::super::swept::{SweepPass, segment_instance, tile_xform, xform_group};
-use super::super::{
-    Complaint, Progress, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState,
-};
+use super::super::{Complaint, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
 use super::bleed::bleed_fires;
 use super::plan::{
     LoopDispatch, PlanCtx, SLOT, STAMP_STRIDE, SlotKind, cell_scratch_size, dispatch_over,
@@ -285,16 +283,7 @@ impl StrokeRenderer {
             crate::timing::span!("stroke.submit");
             run.submit();
         }
-        (
-            map,
-            StrokeCarry {
-                dist: end_dist,
-                progress: Progress::Finished {
-                    tool: tool_out,
-                    dirty,
-                },
-            },
-        )
+        (map, StrokeCarry::finished(end_dist, tool_out, dirty))
     }
 }
 

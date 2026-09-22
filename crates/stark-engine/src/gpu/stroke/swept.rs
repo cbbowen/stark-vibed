@@ -19,12 +19,12 @@ use stark_shaders::{EntryPoint, Lane, Stages};
 use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap, TilePairHandle};
 
 use super::accum::{
-    BareCanvas, IncrementalTileAccumulator, Land, Landed, Landing, LaneKeys, Sweep, lane_key,
+    IncrementalTileAccumulator, Land, Landed, Landing, LaneKeys, ParcelEffect, Sweep, lane_key,
 };
 use super::incremental::Carried;
 use super::region::tiles_with_segments;
 use super::segments::{Segment, SegmentInstance};
-use super::{Progress, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
+use super::{ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
 use crate::gpu::scratch::{BufKey, Key, LeasedSlots, SubmitScope};
 use crate::gpu::substrate::SubstrateMap;
 
@@ -379,14 +379,6 @@ impl StrokeRenderer {
         // stroke that has one never comes this way.
         let opacity = opacity_uniform(&mut scope, 1.0, 1, false);
 
-        let carry = StrokeCarry {
-            dist: end_dist,
-            progress: Progress::Finished {
-                tool: None,
-                dirty: draws.coords().to_vec(),
-            },
-        };
-
         // Extent → cleared scratch tile: within-stroke accumulation of the parcel this
         // stroke lays (the color target over-blends the parcel's visible alpha with the
         // latent premultiplied by it, the aux accumulates its height and optical mass
@@ -448,7 +440,8 @@ impl StrokeRenderer {
         // leases back to the scratch pool, the destination tiles to theirs by drop, the
         // per-stroke buffers by lease as well (`scratch::SubmitScope`).
         scope.finish();
-        (new_map, carry)
+        let dirty = draws.coords().to_vec();
+        (new_map, StrokeCarry::finished(end_dist, None, dirty))
     }
 
     /// [`Self::render_swept`] below full opacity (§6.2): the same sweep, but into a
@@ -460,8 +453,8 @@ impl StrokeRenderer {
     ///
     /// The bookkeeping is [`accum`](super::accum)'s; what stays here is
     /// `integrate.wesl`'s slots, this path's pipelines, and the one decision that is
-    /// the deposit's own — a stroke onto nothing mints a tile ([`BareCanvas::Mint`]),
-    /// where an erase has nothing to erase.
+    /// the deposit's own — a stroke onto nothing mints a tile
+    /// ([`ParcelEffect::Deposit`]), where an erase has nothing to erase.
     ///
     /// It costs a persistent scratch pair per touched tile for the stroke's lifetime, a
     /// copy per resumed tile per piece, and no ring overlap, so every stroke at full
@@ -504,13 +497,14 @@ impl StrokeRenderer {
         let keys = parcel_keys(formats.color, formats.resid, k.ceiling_lane)
             .map(|key| key.map(|key| key.scaled(ss)));
 
+        let effect = ParcelEffect::Deposit;
         let Landed { map, carry, dirty } = IncrementalTileAccumulator::resume(
             self,
             scene,
             scope,
             keys,
-            BareCanvas::Mint,
-            resume.prior.map(ToolState::swept),
+            effect,
+            resume.prior.map(|t| t.parcels(effect)),
         )
         .run(
             &Sweep {
@@ -539,16 +533,10 @@ impl StrokeRenderer {
             },
         );
 
-        (
-            map,
-            StrokeCarry {
-                dist: end_dist,
-                progress: Progress::Finished {
-                    tool: resume.capture.then(|| ToolState(Carried::Sweep(carry))),
-                    dirty,
-                },
-            },
-        )
+        let tool = resume
+            .capture
+            .then(|| ToolState(Carried::Parcel(effect, carry)));
+        (map, StrokeCarry::finished(end_dist, tool, dirty))
     }
 }
 
