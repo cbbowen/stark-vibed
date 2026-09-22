@@ -484,7 +484,7 @@ The mask transform is one simpler pass: destination mask tiles are cleared to
 carry a ring of constant coverage by construction (`Selection::plan` pads), so
 the boundary between rasterized and constant regions is continuous.
 
-CPU planning (`document/transform.rs`) is pure and unit-testable, like
+CPU planning (`gpu/transform/plan.rs`) is pure and unit-testable, like
 `Selection::plan`: classify each populated tile against the mask (untouched /
 partial / fully-selected), build the quad list, intersect transformed quads with
 tile rects (exact convex test, not AABB — a loose test would mint empty tiles),

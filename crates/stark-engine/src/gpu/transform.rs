@@ -6,9 +6,8 @@
 //! selection — copy-on-write like every stroke, so old history versions keep
 //! their tiles.
 //!
-//! The plan (which tiles, which quads) is CPU-side and pure
-//! ([`crate::document::transform`]); this module owns only the passes of
-//! `transform.wesl`:
+//! The plan (which tiles, which quads) is CPU-side and pure ([`plan`]); this module
+//! owns only the passes of `transform.wesl`:
 //!
 //! - **parcel** — source interiors forward-rasterized as transformed quads into a
 //!   scratch pair. Source interiors tile the plane, so their images are disjoint
@@ -34,9 +33,6 @@ use rpds::HashTrieMap;
 
 use crate::colorspace::ColorSpace;
 use crate::document::selection::Selection;
-use crate::document::transform::{
-    gated_geometry, plan_gated_mask, plan_gated_paint, plan_mask, plan_paint,
-};
 use crate::gpu::channels::Zeroes;
 use crate::gpu::channels::{ChannelFormats, Channels};
 use crate::gpu::context::GpuContext;
@@ -54,6 +50,12 @@ use stark_shaders::mirror::transform::{
 use stark_shaders::{EntryPoint, Stages};
 
 mod pack;
+pub(crate) mod plan;
+
+use plan::{
+    gated_geometry, plan_float, plan_gated_mask, plan_gated_paint, plan_mask, plan_paint,
+    shifted_mask_cover, shifted_mask_sources,
+};
 
 use pack::{
     Gated, combine_uniform, slot_count, stage_combines, stage_gated_masks, stage_gated_parcels,
@@ -475,11 +477,7 @@ impl TransformRenderer {
         let rewrites: Vec<(TileCoord, Vec<TileCoord>)> = within
             .iter()
             .filter_map(|coord| {
-                let sources = crate::document::transform::shifted_mask_sources(
-                    selection,
-                    *coord,
-                    translation,
-                );
+                let sources = shifted_mask_sources(selection, *coord, translation);
                 (!sources.is_empty()).then_some((*coord, sources))
             })
             .collect();
@@ -525,7 +523,7 @@ impl TransformRenderer {
         if translation == stark_model::geom::IVec2::ZERO || selection.is_universal() {
             return selection.clone();
         }
-        let within = crate::document::transform::shifted_mask_cover(selection, translation, rect);
+        let within = shifted_mask_cover(selection, translation, rect);
         self.shifted_selection(pool, selection, translation, &within)
     }
 
@@ -542,7 +540,7 @@ impl TransformRenderer {
         selection: &Selection,
         translation: stark_model::geom::IVec2,
     ) -> Option<(TileMap, TileMap)> {
-        let plan = crate::document::transform::plan_float(base, selection, translation)?;
+        let plan = plan_float(base, selection, translation)?;
         // The mask, brought into the layer's frame once — every gate below reads it.
         let shifted = self.shifted_selection(pool, selection, translation, &plan.partial);
 

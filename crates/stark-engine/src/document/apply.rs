@@ -23,6 +23,7 @@ use super::state::DocState;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::stroke::StrokeRenderer;
 use crate::gpu::tile::TilePool;
+use crate::gpu::transform::plan::plan_float;
 
 /// Side-channel passed through [`Materialize::fold`]: the GPU resources needed to
 /// render a stroke (§5).
@@ -487,7 +488,7 @@ pub(crate) fn float_cut_offered(
     let selection = state.selection_of(actor);
     !selection.is_universal()
         && paint_base(state, layer)
-            .is_some_and(|base| super::transform::plan_float(base, &selection, frame).is_some())
+            .is_some_and(|base| plan_float(base, &selection, frame).is_some())
 }
 
 /// The body of [`ActionKind::FloatSelection`] (§16.12): cut what the author's

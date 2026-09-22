@@ -8,7 +8,7 @@ use stark_shaders::mirror::transform::{
     Combine as CombineUniform, Gated as GatedUniform, Quad as QuadUniform,
 };
 
-use crate::document::transform::{FragMap, GatedKind, GatedMap, SourceUnit};
+use super::plan::{FragMap, GatedKind, GatedMap, SourceUnit};
 use crate::gpu::tile::mask_tex_origin;
 
 /// The rect-scoped map a gated pass draws **through** (§16.8, §16.9): the pieces, the
@@ -207,7 +207,7 @@ fn set_rows(u: &mut GatedUniform, rows: &[[f32; 3]; 3]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::transform::TransformPlan;
+    use crate::gpu::transform::plan::TransformPlan;
 
     /// A transform's draw count is a pure function of its plan — the sum over the
     /// destinations of the sources reaching each — so the slot buffer is sized exactly

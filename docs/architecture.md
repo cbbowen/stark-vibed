@@ -190,9 +190,12 @@ a fact about the document and belongs left of the line; if it holds a tile it is
 cache and belongs right of it. That is not a judgement call — it is the invariant §8
 already enforces, which is why the boundary can be checked rather than remembered.
 
-Four modules are cut down the middle by that line and keep the same file name on
-both sides — `document/layer.rs`, `document/selection.rs`, `document/fill.rs`,
-`document/transform.rs`. Reading an import tells you which half you are in.
+Four modules are cut down the middle by that line — `document/layer.rs` and
+`document/selection.rs`, which keep the same file name on both sides, and
+`document/fill.rs` and `document/transform.rs`, whose derived halves are the plans
+`gpu/fill/plan.rs` and `gpu/transform/plan.rs`: a plan holds no state, so it belongs
+beside the pass that runs it rather than beside the fold. Reading an import tells you
+which half you are in.
 
 `document/guide/` (§20.5) is the module the rule places *whole*, and it is worth
 knowing why. Everything §20 derives from a perspective — its vanishing points, its

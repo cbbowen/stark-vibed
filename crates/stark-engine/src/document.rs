@@ -1,8 +1,12 @@
 //! The document: versioned state and the actions that produce it (§4, §5).
 //!
 //! The **derived** half of the document (§2): the state actions fold into, and the
-//! planning that needs it. The actions themselves, and the vocabulary they are
-//! written in, are `stark-model`'s `document`.
+//! fold that fills it. The actions themselves, and the vocabulary they are written
+//! in, are `stark-model`'s `document`.
+//!
+//! A GPU pass's plan is not here — it lives beside the pass, in `gpu/`. What stays is
+//! the mask's own op algebra, `Selection::plan`, which produces the field rather than
+//! a draw list.
 //!
 //! The submodules are **crate-private**. A frontend needs the two names re-exported
 //! `pub` below; the suite reaches the state itself through [`testing`](crate::testing).
@@ -19,7 +23,6 @@ pub(crate) mod patch;
 pub(crate) mod selection;
 pub(crate) mod state;
 pub(crate) mod timeline;
-pub(crate) mod transform;
 
 pub use state::{CanvasBounds, DEFAULT_SUBSTRATE_COLOR};
 

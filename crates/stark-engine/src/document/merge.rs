@@ -44,7 +44,7 @@
 use super::layer::{CompositeParams, Layer};
 use super::selection::Selection;
 use super::state::DocState;
-use super::transform::plan_paint;
+use crate::gpu::transform::plan::plan_paint;
 use stark_model::document::LayerId;
 use stark_model::geom::{Affine2, IVec2};
 

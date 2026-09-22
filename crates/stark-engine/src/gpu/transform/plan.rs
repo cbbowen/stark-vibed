@@ -3,7 +3,8 @@
 //!
 //! The maps themselves — the affine, the perspective corners, the warp grid and the
 //! [`Homography`] solved from them — are the model's `document::transform`, since they
-//! are what the log carries. Everything here reads or writes a [`TileMap`].
+//! are what the log carries. Everything here reads or writes a [`TileMap`], and is
+//! pure CPU: [the passes that execute a plan](super) are the other half.
 
 use std::collections::BTreeMap;
 
@@ -14,7 +15,7 @@ use stark_model::geom::{
     Affine2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, TileRect, Vec2, tile_box, tiles_of,
 };
 
-use super::selection::Selection;
+use crate::document::selection::Selection;
 use crate::gpu::tile::TileMap;
 
 /// How the author's selection stands over one populated tile.
