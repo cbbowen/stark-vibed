@@ -76,3 +76,48 @@ pub(crate) fn param_at(profile: &[f32], spans: f32, f: f32) -> f32 {
     let u = if b > a { (want - a) / (b - a) } else { 0.0 };
     (((i - 1) as f32 + u) / ARC_SAMPLES_PER_SPAN as f32).min(spans)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    /// An arc profile of 1 to 23 spans: non-decreasing from 0, with flats — the stretches
+    /// a stationary curve leaves — included.
+    fn profile() -> impl Strategy<Value = (Vec<f32>, f32)> {
+        (1usize..24).prop_flat_map(|spans| {
+            let step = prop_oneof![1 => Just(0.0f32), 4 => 0.0f32..50.0];
+            prop::collection::vec(step, spans * ARC_SAMPLES_PER_SPAN).prop_map(move |steps| {
+                let cum = std::iter::once(0.0)
+                    .chain(steps.into_iter().scan(0.0f32, |acc, d| {
+                        *acc += d;
+                        Some(*acc)
+                    }))
+                    .collect();
+                (cum, spans as f32)
+            })
+        })
+    }
+
+    proptest! {
+        #![proptest_config(crate::path::test_support::cases())]
+
+        /// The map is monotone and lands inside `[0, spans]` for any fraction, in range
+        /// or not — what lets samples keep their order along the curve.
+        #[test]
+        fn param_at_is_monotone_and_inside_the_domain(
+            (profile, spans) in profile(),
+            mut fs in prop::collection::vec(-0.5f32..1.5, 2..64),
+        ) {
+            fs.sort_by(f32::total_cmp);
+            let ts: Vec<f32> = fs.iter().map(|&f| param_at(&profile, spans, f)).collect();
+            prop_assert!(
+                ts.iter().all(|t| (0.0..=spans).contains(t)),
+                "outside [0, {}]: {:?}",
+                spans,
+                ts
+            );
+            prop_assert!(ts.windows(2).all(|w| w[0] <= w[1]), "not monotone: {:?}", ts);
+        }
+    }
+}

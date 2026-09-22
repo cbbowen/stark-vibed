@@ -191,6 +191,12 @@ pub(crate) mod test_support {
         (hover, stroke)
     }
 
+    /// The configuration every geometry property runs under: a fixed, modest case
+    /// count, so the suite costs the same every run.
+    pub(crate) fn cases() -> proptest::test_runner::Config {
+        proptest::test_runner::Config::with_cases(64)
+    }
+
     /// Every field of every control point as bits: what "the same path" means to a
     /// test that claims the same pixels.
     pub(crate) fn bits(path: &[ControlPoint]) -> Vec<[u32; 6]> {

@@ -1186,4 +1186,74 @@ mod tests {
         });
         assert_eq!(shape.adjust(shape.grip(), target), stepped);
     }
+
+    // --- a rigid motion of the canvas ------------------------------------------
+
+    use proptest::prelude::*;
+    use std::f32::consts::PI;
+
+    /// A line or a loop drawn with the wobble of a steady hand — far inside every bar, so
+    /// what varies is where the shape was drawn, never whether it snaps.
+    fn clean_trace() -> impl Strategy<Value = Vec<Vec2>> {
+        let at = || (-300.0f32..300.0, -300.0f32..300.0).prop_map(|(x, y)| Vec2::new(x, y));
+        prop_oneof![
+            (at(), 100.0f32..800.0, -PI..PI, 0.0f32..2.0).prop_map(|(a, len, dir, wobble)| {
+                line_trace(a, a + Vec2::from_angle(dir) * len, wobble)
+            }),
+            (at(), 80.0f32..500.0, 1.0f32..3.0, -PI..PI, 0.0f32..2.0).prop_map(
+                |(center, major, ratio, angle, wobble)| {
+                    ellipse_trace(center, Vec2::new(major, major / ratio), angle, wobble)
+                }
+            ),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(crate::path::test_support::cases())]
+
+        /// Recognition moves with the canvas: the same trace turned and shifted anywhere
+        /// snaps to the same shape turned and shifted, since the canvas itself can be
+        /// rotated (§18.1.2) and a bar that depended on where a stroke sat would mean a
+        /// different thing across the page.
+        ///
+        /// Not to the bit — a moved trace rounds differently — but to what the recognizer
+        /// resolves. A line's direction is a closed form over its samples, so its far end
+        /// holds to 0.01% of its length (measured: under 3e-6). A loop holds only to 10%
+        /// of its size: `weigh` shares each parameter wedge's weight among the samples in
+        /// it, so a sample rounding across a wedge boundary moves the fit *discontinuously*
+        /// — measured up to 5.5% of a clean ellipse's size along its outline, 2.2% at its
+        /// centre — which is the accuracy the tests above already allow a loop.
+        #[test]
+        fn recognition_moves_with_the_canvas(
+            trace in clean_trace(),
+            turn in prop_oneof![Just(0.0f32), -PI..PI],
+            shift in (-2000.0f32..2000.0, -2000.0f32..2000.0).prop_map(|(x, y)| Vec2::new(x, y)),
+        ) {
+            let motion = |p: Vec2| Vec2::from_angle(turn).rotate(p) + shift;
+            let moved: Vec<Vec2> = trace.iter().map(|p| motion(*p)).collect();
+            let (here, there) = (free(&trace), free(&moved));
+            prop_assert_eq!(here.map(|s| s.family()), there.map(|s| s.family()));
+            let (Some(here), Some(there)) = (here, there) else {
+                return Err(TestCaseError::fail("the premise: a clean shape is recognized"));
+            };
+            let bar = match here {
+                AssistShape::Line { a, b, .. } => 1e-4 * a.distance(b),
+                AssistShape::Ellipse { radii, .. } => 0.1 * 0.5 * (radii.x + radii.y),
+            };
+            let gap = here
+                .outline()
+                .into_iter()
+                .zip(there.outline())
+                .map(|(p, q)| motion(p).distance(q))
+                .fold(0.0f32, f32::max);
+            prop_assert!(
+                gap <= bar,
+                "{:?} moved to {:?}: {}px off, against {}",
+                here,
+                there,
+                gap,
+                bar
+            );
+        }
+    }
 }

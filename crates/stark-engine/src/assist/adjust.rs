@@ -210,4 +210,127 @@ mod tests {
         });
         assert_eq!(shape.adjust(shape.grip(), target), stepped);
     }
+
+    use proptest::prelude::*;
+    use std::f32::consts::PI;
+
+    fn point() -> impl Strategy<Value = Vec2> {
+        (-400.0f32..400.0, -400.0f32..400.0).prop_map(|(x, y)| Vec2::new(x, y))
+    }
+
+    /// A line, a line held to an axis, or a free ellipse — every arm but the perspective
+    /// circle, which takes a guide to be one.
+    fn shape() -> impl Strategy<Value = AssistShape> {
+        prop_oneof![
+            (point(), 1.0f32..600.0, -PI..PI, any::<bool>()).prop_map(|(a, len, dir, on_axis)| {
+                AssistShape::Line {
+                    a,
+                    b: a + Vec2::from_angle(dir) * len,
+                    on_axis,
+                }
+            }),
+            (
+                point(),
+                10.0f32..400.0,
+                0.2f32..=1.0,
+                -PI..PI,
+                -PI..PI,
+                any::<bool>()
+            )
+                .prop_map(|(center, major, ratio, angle, phase, ccw)| {
+                    AssistShape::Ellipse {
+                        center,
+                        radii: Vec2::new(major, major * ratio),
+                        angle,
+                        phase,
+                        winding: if ccw { 1.0 } else { -1.0 },
+                        plane: None,
+                    }
+                }),
+        ]
+    }
+
+    /// The finest turn the free ellipse can resolve: its turn is read through an
+    /// arccosine, which near a zero turn distinguishes nothing finer than `√(2ε)` rad.
+    const TURN_RESOLUTION: f32 = 3.5e-4;
+
+    /// Where the pointer should leave the held point, and how far off it may land.
+    fn where_held(shape: AssistShape, pointer: Vec2) -> (Vec2, f32) {
+        match shape {
+            AssistShape::Line {
+                a,
+                b,
+                on_axis: true,
+                ..
+            } => {
+                let u = (b - a).normalize();
+                (
+                    a + u * (pointer - a).dot(u),
+                    1e-4 * (1.0 + a.distance(pointer)),
+                )
+            }
+            AssistShape::Line { b, .. } => (pointer, 1e-4 * (1.0 + b.distance(pointer))),
+            AssistShape::Ellipse { center, .. } => {
+                (pointer, 1e-3 + TURN_RESOLUTION * center.distance(pointer))
+            }
+        }
+    }
+
+    proptest! {
+        #![proptest_config(crate::path::test_support::cases())]
+
+        /// **The point being held follows the pointer** — onto it, or, for a line held to
+        /// an axis, onto the axis's nearest point to it. The drag decides nothing but
+        /// where the pointer is now.
+        #[test]
+        fn the_held_point_follows_the_pointer(shape in shape(), pointer in point()) {
+            if let AssistShape::Ellipse { center, .. } = shape {
+                prop_assume!(center.distance(pointer) >= MIN_GRIP);
+            }
+            let held = shape.adjust(shape.grip(), pointer).grip();
+            let (want, off) = where_held(shape, pointer);
+            prop_assert!(held.distance(want) <= off, "held at {}, not {}", held, want);
+        }
+
+        /// A drag that comes back to the grip gives back the shape as recognized — to
+        /// the bit, but for the axis line's end, which is re-projected onto its own axis.
+        #[test]
+        fn a_drag_back_to_the_grip_gives_back_the_shape(shape in shape()) {
+            let back = shape.adjust(shape.grip(), shape.grip());
+            match (shape, back) {
+                (
+                    AssistShape::Line { a, b, on_axis: true },
+                    AssistShape::Line { a: a2, b: b2, on_axis: on2 },
+                ) => {
+                    prop_assert!(a2 == a && on2, "{:?} came back {:?}", shape, back);
+                    prop_assert!(
+                        b2.distance(b) <= 1e-4 * (1.0 + a.distance(b)),
+                        "{:?} came back {:?}",
+                        shape,
+                        back
+                    );
+                }
+                _ => prop_assert_eq!(back, shape),
+            }
+        }
+
+        /// **Independent of the drag path** (§16.6): every frame asked the way the
+        /// session asks it — of the shape as recognized, from its grip — so wherever the
+        /// drag wandered, the last frame is the drag made at once, to the bit.
+        ///
+        /// Re-gripping from each frame's own shape instead is *not* path-independent,
+        /// and is what the absolute form rules out: an axis line whose end passes near its
+        /// anchor re-derives its axis from a segment a few px long, and the next sideways
+        /// travel turns that direction's rounding into travel along it.
+        #[test]
+        fn adjustment_is_independent_of_the_drag_path(
+            shape in shape(),
+            drag in prop::collection::vec(point(), 1..16),
+        ) {
+            let grip = shape.grip();
+            let target = *drag.last().expect("a drag");
+            let last_frame = drag.iter().fold(shape, |_, p| shape.adjust(grip, *p));
+            prop_assert_eq!(last_frame, shape.adjust(grip, target));
+        }
+    }
 }

@@ -1165,6 +1165,7 @@ mod tests {
         RECORDED, bits, fit_incrementally, max_deviation, sample, split_runup, with_pen,
     };
     use crate::path::{FLATTEN_TOLERANCE, flatten, flatten_spans, point_at};
+    use proptest::prelude::*;
 
     /// Largest distance (canvas px) from any input sample to the fitted curve.
     fn fit_error(samples: &[InputSample]) -> f32 {
@@ -1930,5 +1931,104 @@ mod tests {
         click.push(stroke[0]);
         click.finish();
         assert!(!click.painted(), "a click painted");
+    }
+
+    /// A random walk of pointer reports at one of many densities — `scale` px per step
+    /// at most, dwells included — with the pen channels wandering too.
+    fn walk() -> impl Strategy<Value = Vec<InputSample>> {
+        let step = (-1.0f32..1.0, -1.0f32..1.0, 0.0f32..1.0, -0.6f32..0.6);
+        (0.25f32..30.0, prop::collection::vec(step, 2..120)).prop_map(|(scale, steps)| {
+            let mut pos = Vec2::ZERO;
+            steps
+                .into_iter()
+                .enumerate()
+                .map(|(i, (dx, dy, pressure, lean))| {
+                    pos += Vec2::new(dx, dy) * scale;
+                    InputSample {
+                        pos,
+                        pressure,
+                        tilt: Vec2::new(lean, -0.5 * lean),
+                        time: i as f64 / 120.0,
+                    }
+                })
+                .collect()
+        })
+    }
+
+    /// Accepted reports whose steps are drawn from `steps`, zero-length dwells included —
+    /// all [`window_indices`] reads of them.
+    fn run_of(steps: &[f32]) -> Vec<Accepted> {
+        steps
+            .iter()
+            .scan(0.0f32, |arc, d| {
+                *arc += d;
+                Some(*arc)
+            })
+            .map(|arc| Accepted {
+                pos: Vec2::new(arc, 0.0),
+                channels: [0.0; CHANNELS],
+                arc,
+            })
+            .collect()
+    }
+
+    proptest! {
+        #![proptest_config(crate::path::test_support::cases())]
+
+        /// `committed_knots_are_never_revised` over any walk: after every report, the
+        /// control points the fitter calls frozen are the finished stroke's to the bit,
+        /// and so is the flattening of the spans it calls frozen.
+        #[test]
+        fn a_frozen_prefix_never_moves(walk in walk()) {
+            let mut f = PathFitter::new();
+            let mut snaps = Vec::with_capacity(walk.len());
+            for s in &walk {
+                f.push(*s);
+                snaps.push((f.path(), f.frozen_points(), f.frozen_spans()));
+            }
+            f.finish();
+            let full = f.path();
+            for (i, (path, points, spans)) in snaps.iter().enumerate() {
+                prop_assert_eq!(
+                    bits(&path[..*points]),
+                    bits(&full[..*points]),
+                    "report {}: a frozen control point moved",
+                    i
+                );
+                // No frozen span, no claim: an empty range of a lone knot is the click.
+                if *spans == 0 {
+                    continue;
+                }
+                prop_assert_eq!(
+                    flatten_spans(path, 0..*spans, 0.0, FLATTEN_TOLERANCE),
+                    flatten_spans(&full, 0..*spans, 0.0, FLATTEN_TOLERANCE),
+                    "report {}: a frozen span flattened differently",
+                    i
+                );
+            }
+        }
+
+        /// The window over any run of reports is increasing, keeps both ends, holds at
+        /// most the budget and one, and is the identity under budget.
+        #[test]
+        fn a_window_is_ordered_bounded_and_keeps_its_ends(
+            steps in prop::collection::vec(
+                prop_oneof![1 => Just(0.0f32), 4 => 0.0f32..5.0],
+                1..4 * MAX_WINDOW_SAMPLES,
+            ),
+            lo in any::<prop::sample::Index>(),
+        ) {
+            let pts = run_of(&steps);
+            let lo = lo.index(pts.len());
+            let mut idx = Vec::new();
+            window_indices(&pts, lo, &mut idx);
+            prop_assert_eq!(idx.first(), Some(&lo));
+            prop_assert_eq!(idx.last(), Some(&(pts.len() - 1)));
+            prop_assert!(idx.windows(2).all(|w| w[0] < w[1]), "out of order: {:?}", idx);
+            prop_assert!(idx.len() <= MAX_WINDOW_SAMPLES + 1, "{} survivors", idx.len());
+            if pts.len() - lo <= MAX_WINDOW_SAMPLES {
+                prop_assert_eq!(idx, (lo..pts.len()).collect::<Vec<_>>());
+            }
+        }
     }
 }

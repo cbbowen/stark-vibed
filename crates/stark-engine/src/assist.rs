@@ -128,4 +128,17 @@ impl AssistShape {
             AssistShape::Ellipse { .. } => Assisted::Ellipse,
         }
     }
+
+    /// The shape sampled along its own parameterization, from the seam — how two shapes
+    /// are compared, since a circle's angle and seam trade off against each other.
+    #[cfg(test)]
+    fn outline(&self) -> Vec<Vec2> {
+        let reach = match self {
+            Self::Line { .. } => 1.0,
+            Self::Ellipse { .. } => std::f32::consts::TAU,
+        };
+        (0..=32)
+            .map(|i| self.at(reach * i as f32 / 32.0, 1.0))
+            .collect()
+    }
 }

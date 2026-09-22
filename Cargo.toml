@@ -137,6 +137,9 @@ tracing-subscriber = { version = "0.3", default-features = false, features = [
 # as a row missing from a menu rather than as a build failure (§25.2). Nothing reaches
 # the wasm build but a proc macro that ran on the host and three trait declarations.
 strum = { version = "0.28", features = ["derive"] }
+# Property tests; dev-only. `default-features = false` drops the forking runner and
+# per-case timeouts, which no test here uses.
+proptest = { version = "1.11", default-features = false, features = ["std"] }
 
 # stark-shaders is consumed by stark-engine.
 stark-assetid = { path = "crates/stark-assetid" }

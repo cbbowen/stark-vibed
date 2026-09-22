@@ -513,6 +513,7 @@ mod tests {
     use super::*;
     use crate::path::test_support::{knot, max_deviation};
     use crate::spline::CubicBSpline;
+    use proptest::prelude::*;
 
     /// The load-bearing link between the two halves of this module: the span form
     /// used to *render* a stored path must be the same curve [`CubicBSpline`](crate::spline::CubicBSpline) **fitted**.
@@ -896,6 +897,85 @@ mod tests {
             let joined: Vec<IntermediateSample> =
                 head.iter().chain(tail[1..].iter()).copied().collect();
             assert_eq!(joined, whole, "cut at span {cut}");
+        }
+    }
+
+    /// A control polygon of 2 to 11 points anywhere in a 600 px box, the pen channels
+    /// free across their range.
+    fn polygon() -> impl Strategy<Value = Vec<ControlPoint>> {
+        let point = (
+            -300.0f32..300.0,
+            -300.0f32..300.0,
+            0.0f32..1.0,
+            -0.6f32..0.6,
+            -0.6f32..0.6,
+        );
+        prop::collection::vec(point, 2..12).prop_map(|ks| {
+            ks.into_iter()
+                .enumerate()
+                .map(|(i, (x, y, pressure, tx, ty))| ControlPoint {
+                    pos: Vec2::new(x, y),
+                    pressure,
+                    tilt: Vec2::new(tx, ty),
+                    time: i as f32 * 0.1,
+                })
+                .collect()
+        })
+    }
+
+    /// The shipped budget, or one with both renderer caps set.
+    fn budget() -> impl Strategy<Value = FlattenTolerance> {
+        prop_oneof![
+            Just(FLATTEN_TOLERANCE),
+            (2.0f32..40.0, 0.001f32..0.2).prop_map(|(max_len, max_arc_curvature)| {
+                FlattenTolerance {
+                    max_len,
+                    max_arc_curvature,
+                    ..FLATTEN_TOLERANCE
+                }
+            }),
+        ]
+    }
+
+    proptest! {
+        #![proptest_config(crate::path::test_support::cases())]
+
+        /// `flatten_spans_tile_the_whole_path` over any polygon, budget and marker: a
+        /// range cut in two at any span flattens to the whole range, sample for sample
+        /// — what the incremental renderer's cached head and live tail rest on (§6.2).
+        ///
+        /// Exact in every field but `dist`, which may part by an ulp at the cut and
+        /// carry it on: the first edge after a cut is measured (`emit`) from the new
+        /// span's own derivative, where the whole range measures it from the previous
+        /// span's — one tangent in exact arithmetic, two in rounding. Four knots at the
+        /// shipped budget, cut at span 2 of 5, reach it: 252.21733 against 252.21732.
+        #[test]
+        fn a_range_cut_anywhere_tiles_the_whole(
+            knots in polygon(),
+            tol in budget(),
+            marker in prop_oneof![Just(0.0f32), 0.0f32..1.0],
+        ) {
+            let all = span_count(knots.len());
+            let from = marker * all as f32;
+            let whole = flatten_spans_from(&knots, from, 0..all, 0.0, tol);
+            for cut in 1..all {
+                let head = flatten_spans_from(&knots, from, 0..cut, 0.0, tol);
+                // A head wholly behind the marker is empty, and the tail is then the whole.
+                let (dist0, skip) = head.last().map_or((0.0, 0), |s| (s.dist, 1));
+                let tail = flatten_spans_from(&knots, from, cut..all, dist0, tol);
+                let joined: Vec<IntermediateSample> =
+                    head.iter().chain(&tail[skip..]).copied().collect();
+                prop_assert_eq!(joined.len(), whole.len(), "cut at span {} of {}", cut, all);
+                for (i, (j, w)) in joined.iter().zip(&whole).enumerate() {
+                    let same = IntermediateSample { dist: w.dist, ..*j };
+                    prop_assert_eq!(same, *w, "cut at span {} of {}, sample {}", cut, all, i);
+                    prop_assert!(
+                        (j.dist - w.dist).abs() <= 1e-6 * w.dist.max(1.0),
+                        "cut at span {} of {}, sample {}: dist {} against {}",
+                        cut, all, i, j.dist, w.dist
+                    );
+                }
+            }
         }
     }
 }
