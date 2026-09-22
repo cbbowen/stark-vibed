@@ -479,14 +479,15 @@ impl Materialize for DocState {
     ///
     /// **Audited like the fold**, and it is the direction §12.6 is really about: what
     /// this writes becomes the replay base for every later version, and a peer that
-    /// patched differently diverges with no pixel able to say so. Same checker, same
-    /// `cfg` (see [`super::audit`]).
+    /// patched differently diverges with no pixel able to say so. Same checker, gated
+    /// the way the fold's is: on [`AUDITED`](Materialize::AUDITED), which only a debug
+    /// build sets (see [`super::audit`]).
     fn unfold(&mut self, action: &Action, footprint: &Footprint, previous: &DocState) {
-        #[cfg(debug_assertions)]
-        let before = self.clone();
+        let before = Self::AUDITED.then(|| self.clone());
         *self = super::patch::unapply(footprint, previous, self);
-        #[cfg(debug_assertions)]
-        super::audit::audit(&before, self, action, footprint);
+        if let Some(before) = before {
+            Self::audit(&before, self, action, footprint);
+        }
     }
 }
 

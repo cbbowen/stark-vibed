@@ -436,6 +436,7 @@ pub type TileMap = rpds::HashTrieMap<stark_model::geom::TileCoord, TilePairHandl
 /// color's fourth lane is a per-unit opacity rather than an amount (§6.1). Separate
 /// fields rather than a lane index into one buffer, so a caller cannot read the second
 /// as though it were the first.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct TileChannels {
     /// Four lanes per texel: three of paint, and in `.3` the per-unit **opacity** —
     /// a material property, never the amount of paint (§6.1).
