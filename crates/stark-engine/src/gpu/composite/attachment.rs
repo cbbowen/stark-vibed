@@ -10,13 +10,13 @@ use crate::view::Extent2;
 use super::super::channels::{ChannelFormats, Targets};
 
 /// A viewport-sized offscreen render target — pass A's channels, the blend
-/// scratch, the supersampled target — that **returns its memory when it is
-/// replaced** rather than merely releasing its handle
+/// scratch, the supersampled target, the focal blur's planes — that **returns its
+/// memory when it is replaced** rather than merely releasing its handle
 /// ([`gpu::scratch`](crate::gpu::scratch)).
 ///
 /// These are the largest allocations the application makes: a whole set is rebuilt
 /// whenever the target changes size or the zoom crosses a supersampling threshold
-/// (`Compositor::ensure_targets`), budgeted by `resolve`'s `MAX_SUPERSAMPLED_BYTES`
+/// (`TargetSized::ensure_targets`), budgeted by `resolve`'s `MAX_SUPERSAMPLED_BYTES`
 /// at up to 224 MiB a set. On the web, dropping the view frees none of it — the
 /// texture is left to a collector that cannot see the GPU memory behind it — so a
 /// window-resize drag, which reports a new size every animation frame, strands whole
@@ -29,10 +29,29 @@ pub(super) struct Attachment {
 }
 
 impl Attachment {
+    /// A target a pass renders into and a later pass samples.
     pub(super) fn new(
         device: &wgpu::Device,
         size: Extent2,
         format: wgpu::TextureFormat,
+        label: &str,
+    ) -> Self {
+        Self::with_usage(
+            device,
+            size,
+            format,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            label,
+        )
+    }
+
+    /// [`Self::new`] for a target used some other way — the focal blur's planes,
+    /// which a compute pass also stores into (§21.12).
+    pub(super) fn with_usage(
+        device: &wgpu::Device,
+        size: Extent2,
+        format: wgpu::TextureFormat,
+        usage: wgpu::TextureUsages,
         label: &str,
     ) -> Self {
         let tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -46,7 +65,7 @@ impl Attachment {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage,
             view_formats: &[],
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());

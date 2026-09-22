@@ -65,6 +65,7 @@ use stark_shaders::mirror::blur::Fft as FftUniform;
 use stark_shaders::mirror::blur::binding as bb;
 use stark_shaders::mirror::blur::decl as bd;
 
+use super::attachment::Attachment;
 use super::filter::FilterPass;
 use super::group::{FilterDraw, FilterOp};
 
@@ -319,47 +320,6 @@ pub(super) fn scale(r_texels: f32) -> u32 {
     s
 }
 
-/// One texture of one plane pair — [`Attachment`](super::attachment::Attachment)
-/// with the storage usage the FFT writes through, and the same destroy-on-drop
-/// (these are bigger than anything that type owns).
-struct Plane {
-    tex: wgpu::Texture,
-    view: wgpu::TextureView,
-}
-
-impl Plane {
-    fn new(
-        device: &wgpu::Device,
-        size: Extent2,
-        format: wgpu::TextureFormat,
-        usage: wgpu::TextureUsages,
-        label: &str,
-    ) -> Self {
-        let tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
-            size: wgpu::Extent3d {
-                width: size.width,
-                height: size.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
-            usage,
-            view_formats: &[],
-        });
-        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-        Self { tex, view }
-    }
-}
-
-impl Drop for Plane {
-    fn drop(&mut self) {
-        self.tex.destroy();
-    }
-}
-
 /// Which compute pipeline one dispatch runs.
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 enum Pipe {
@@ -434,13 +394,13 @@ pub(crate) struct BlurFrame {
     accum: Extent2,
     /// Set **A**: where the inverse transform lands, and what the filter bind
     /// group reads (`filter_common.wesl`'s `blur_light` / `blur_aux`).
-    a_light: Plane,
-    a_aux: Plane,
+    a_light: Attachment,
+    a_aux: Attachment,
     /// Set **B**: the other half of the ping-pong, and the decode's target.
-    b_light: Plane,
-    b_aux: Plane,
+    b_light: Attachment,
+    b_aux: Attachment,
     /// The kernel's transform, kept across frames while the bokeh holds still.
-    kern: Plane,
+    kern: Attachment,
     /// What `kern` holds (after this frame's encoded work runs) — the aperture
     /// and radius, **and the extent it was transformed at**, since one shape at two
     /// convolution sizes is two different spectra — or `None` while it holds
@@ -468,14 +428,15 @@ impl BlurFrame {
         let usage = wgpu::TextureUsages::TEXTURE_BINDING
             | wgpu::TextureUsages::STORAGE_BINDING
             | wgpu::TextureUsages::RENDER_ATTACHMENT;
+        let plane = |format, label| Attachment::with_usage(device, planes, format, usage, label);
         Self {
             planes,
             accum,
-            a_light: Plane::new(device, planes, light_format, usage, "stark blur a light"),
-            a_aux: Plane::new(device, planes, aux_format, usage, "stark blur a aux"),
-            b_light: Plane::new(device, planes, light_format, usage, "stark blur b light"),
-            b_aux: Plane::new(device, planes, aux_format, usage, "stark blur b aux"),
-            kern: Plane::new(device, planes, aux_format, usage, "stark blur kernel"),
+            a_light: plane(light_format, "stark blur a light"),
+            a_aux: plane(aux_format, "stark blur a aux"),
+            b_light: plane(light_format, "stark blur b light"),
+            b_aux: plane(aux_format, "stark blur b aux"),
+            kern: plane(aux_format, "stark blur kernel"),
             kernel_key: None,
             uniforms: UniformSlots::new(&ctx.device, "stark blur fft uniform", 1),
             binds: None,
@@ -488,7 +449,7 @@ impl BlurFrame {
     /// [`FilterPass::bind_group`](super::filter::FilterPass::bind_group) binds in
     /// place of its 1×1 stand-ins while a frame exists.
     pub(super) fn planes(&self) -> (&wgpu::TextureView, &wgpu::TextureView) {
-        (&self.a_light.view, &self.a_aux.view)
+        (self.a_light.view(), self.a_aux.view())
     }
 
     /// The four bind groups of [`Binds`], over the current planes and uniforms.
@@ -507,18 +468,19 @@ impl BlurFrame {
                 other => unreachable!("the FFT group has no binding {other}"),
             })
         };
-        let a = (&self.a_light.view, &self.a_aux.view);
-        let b = (&self.b_light.view, &self.b_aux.view);
+        let a = (self.a_light.view(), self.a_aux.view());
+        let b = (self.b_light.view(), self.b_aux.view());
+        let kern = self.kern.view();
         // The kernel-destination groups fill the slots their dispatches never touch
         // with planes that are only *read* in them: the kernel slot takes the source's
         // own light plane (bound twice as a texture, which is two reads of one thing),
         // and the light destination the other set's, which no `fft_one` dispatch
         // stores to.
         self.binds = Some([
-            make("stark blur a→b", a, &self.kern.view, b),
-            make("stark blur b→a", b, &self.kern.view, a),
-            make("stark blur a→kern", a, a.0, (b.0, &self.kern.view)),
-            make("stark blur b→kern", b, b.0, (a.0, &self.kern.view)),
+            make("stark blur a→b", a, kern, b),
+            make("stark blur b→a", b, kern, a),
+            make("stark blur a→kern", a, a.0, (b.0, kern)),
+            make("stark blur b→kern", b, b.0, (a.0, kern)),
         ]);
     }
 
@@ -553,8 +515,8 @@ impl BlurFrame {
         // don't-care stated as one.
         {
             let attachments = [
-                Some(desc::attach(&self.b_light.view, desc::CLEAR)),
-                Some(desc::attach(&self.b_aux.view, desc::CLEAR)),
+                Some(desc::attach(self.b_light.view(), desc::CLEAR)),
+                Some(desc::attach(self.b_aux.view(), desc::CLEAR)),
             ];
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("stark blur decode"),
