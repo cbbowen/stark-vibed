@@ -68,7 +68,7 @@ use stark_shaders::mirror::mask_region::decl as mrd;
 use stark_shaders::mirror::selection::binding as sb;
 use stark_shaders::mirror::selection::decl as sd;
 
-use crate::gpu::scratch::{BufKey, Key, ScratchPool, SubmitScope};
+use crate::gpu::scratch::{BufKey, Key, LeasedTex, ScratchPool, SubmitScope};
 use crate::gpu::tile::{AllocSource, MASK_FORMAT, TilePool};
 use crate::gpu::uniforms::UniformSlots;
 
@@ -539,7 +539,7 @@ impl SelectionRenderer {
     /// `edges.len()` are never loaded.
     fn edge_texture(&self, scope: &mut SubmitScope, edges: &[[f32; 4]]) -> wgpu::TextureView {
         let n = edges.len() as u32;
-        let (tex, view) = scope.take_run(Key {
+        let LeasedTex { tex, view } = scope.take_run(Key {
             size: (n.next_power_of_two(), 1),
             format: wgpu::TextureFormat::Rgba32Float,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,

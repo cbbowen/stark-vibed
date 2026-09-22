@@ -579,7 +579,7 @@ impl RingSlot {
     /// and residual beside it — the same trio a parcel lane carries, at the same keys,
     /// which is what lets the two paths draw from one free list.
     fn take(r: &StrokeRenderer, scope: &mut crate::gpu::scratch::SubmitScope) -> Self {
-        let mut view = |format| scope.take_run(parcel_key(format)).1;
+        let mut view = |format| scope.take_run(parcel_key(format)).view;
         Self {
             color: view(r.color_space.color_format()),
             aux: view(crate::gpu::tile::SCRATCH_AUX_FORMAT),

@@ -32,7 +32,7 @@ use super::plan::{
     LoopDispatch, PlanCtx, SLOT, STAMP_STRIDE, SlotKind, cell_scratch_size, dispatch_over,
     dynamics_plan,
 };
-use crate::gpu::scratch::{BufKey, Kept, Key, SubmitScope};
+use crate::gpu::scratch::{BufKey, Kept, Key, LeasedTex, SubmitScope};
 use stark_shaders::mirror::stamp::SegmentInstance;
 use stark_shaders::mirror::stamp_common::SWEEP_VERTS;
 /// Resolution (texels per side) of the stamp loop's tool reservoir
@@ -445,8 +445,8 @@ impl<'a> DynamicsRun<'a> {
                     label,
                 })
             });
-            let [(tex_a, view_a), (tex_b, view_b)] = pair;
-            ([tex_a, tex_b], [view_a, view_b])
+            let [a, b] = pair;
+            ([a.tex, b.tex], [a.view, b.view])
         };
         let (brush_color_tex, brush_color) = brush_pair(
             &mut scope,
@@ -571,7 +571,7 @@ impl<'a> DynamicsRun<'a> {
                     usage: LOOP_USAGE,
                     label,
                 })
-                .1
+                .view
         };
         let bake_load = bake("stark dynamics bake load");
         let bake_latm = bake("stark dynamics bake latm");
@@ -830,8 +830,14 @@ impl<'a> DynamicsRun<'a> {
                 label,
             })
         };
-        let (color_tex, color) = region_tex("stark dynamics region color");
-        let (aux_tex, aux) = region_tex("stark dynamics region aux");
+        let LeasedTex {
+            tex: color_tex,
+            view: color,
+        } = region_tex("stark dynamics region color");
+        let LeasedTex {
+            tex: aux_tex,
+            view: aux,
+        } = region_tex("stark dynamics region aux");
         // The region's residual (§6.7), in the same format for the same reason: it is
         // the rest of the color beside it, and the loop reads and writes the two at
         // exactly the same points.
@@ -839,6 +845,7 @@ impl<'a> DynamicsRun<'a> {
             .color_space
             .has_resid()
             .then(|| region_tex("stark dynamics region resid"))
+            .map(|LeasedTex { tex, view }| (tex, view))
             .unzip();
         // The ceiling lane over the region (§6.2), on a stroke whose ceiling the
         // pen drives: **drawn** into per segment, so a render attachment rather
@@ -847,7 +854,7 @@ impl<'a> DynamicsRun<'a> {
         let (levels_tex, levels) = self
             .leveled()
             .then(|| {
-                let (tex, view) = self.scope.take_piece(Key {
+                let LeasedTex { tex, view } = self.scope.take_piece(Key {
                     size: (w, h),
                     format: super::super::swept::CEILING_FORMAT,
                     usage: wgpu::TextureUsages::RENDER_ATTACHMENT
@@ -916,7 +923,7 @@ impl<'a> DynamicsRun<'a> {
                     usage: LOOP_USAGE,
                     label,
                 })
-                .1
+                .view
         };
         Snapshot {
             color: under_tex("stark dynamics under color"),
@@ -943,7 +950,7 @@ impl<'a> DynamicsRun<'a> {
                 usage: LOOP_USAGE,
                 label: "stark dynamics bleed w",
             })
-            .1
+            .view
     }
 
     /// The extent-cell scratch (§6.2): where `cell_hoist` leaves the per-cell means
@@ -961,7 +968,7 @@ impl<'a> DynamicsRun<'a> {
                     usage: LOOP_USAGE,
                     label,
                 })
-                .1
+                .view
         };
         Cells {
             tool: tex("stark dynamics cell tool"),
@@ -1618,12 +1625,14 @@ pub(super) fn region_selection(
     // stroke re-gathers it per piece per pointer move, so creating one was megabytes
     // of allocation and teardown a move for a texture of the very same shape each
     // time (`scratch`).
-    let (_, view) = scope.take_piece(Key {
-        size: (w, h),
-        format: crate::gpu::tile::MASK_FORMAT,
-        usage: crate::gpu::selection::SelectionRenderer::REGION_MASK_USAGE,
-        label: "stark selection region mask",
-    });
+    let view = scope
+        .take_piece(Key {
+            size: (w, h),
+            format: crate::gpu::tile::MASK_FORMAT,
+            usage: crate::gpu::selection::SelectionRenderer::REGION_MASK_USAGE,
+            label: "stark selection region mask",
+        })
+        .view;
     r.selection.region_mask(
         scope,
         &view,
@@ -1670,7 +1679,10 @@ pub(super) fn slice_region(
     // The one channel that changes representation, narrowed once over the whole
     // region (§6.7's aux stays a single height channel on the persistent tile).
     // Pooled; the pass's clearing load op rewrites every texel.
-    let (narrow, narrow_view) = scope.take_piece(Key {
+    let LeasedTex {
+        tex: narrow,
+        view: narrow_view,
+    } = scope.take_piece(Key {
         size: (color_tex.width(), color_tex.height()),
         format: r.color_space.aux_format(),
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,

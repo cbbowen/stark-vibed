@@ -46,7 +46,7 @@ use super::run::{
 use crate::document::liquify::LiquifyRun;
 use crate::gpu::channels::Targets;
 use crate::gpu::desc;
-use crate::gpu::scratch::{Key, SubmitScope};
+use crate::gpu::scratch::{Key, LeasedTex, SubmitScope};
 use crate::gpu::tile::{AllocSource, FIELD_FORMAT, TileMap};
 use crate::gpu::uniforms::UniformSlots;
 use stark_shaders::mirror::dynamics_common::binding as sb;
@@ -366,7 +366,7 @@ impl<'a> LiquifyDraw<'a> {
                     usage: base_usage,
                     label,
                 })
-                .1
+                .view
         };
         let base_color = base_tex("stark liquify base color");
         let base_aux = base_tex("stark liquify base aux");
@@ -403,12 +403,19 @@ impl<'a> LiquifyDraw<'a> {
                 label,
             })
         };
-        let (color_tex, color) = region_tex("stark liquify region color");
-        let (_aux_tex, aux) = region_tex("stark liquify region aux");
+        let LeasedTex {
+            tex: color_tex,
+            view: color,
+        } = region_tex("stark liquify region color");
+        let aux = region_tex("stark liquify region aux").view;
         let (resid_tex, resid_view) = resid
             .then(|| region_tex("stark liquify region resid"))
+            .map(|LeasedTex { tex, view }| (tex, view))
             .unzip();
-        let (field_tex, field) = self.scope.take_piece(Key {
+        let LeasedTex {
+            tex: field_tex,
+            view: field,
+        } = self.scope.take_piece(Key {
             size: (w, h),
             format: FIELD_FORMAT,
             usage: LOOP_USAGE
@@ -492,7 +499,7 @@ impl<'a> LiquifyDraw<'a> {
                         usage: LOOP_USAGE,
                         label: "stark liquify under field",
                     })
-                    .1;
+                    .view;
                 let stamp_buf = upload_stamps(&mut self.scope, &mut self.stamps, &plan.slots);
                 let params = wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                     buffer: &stamp_buf,
