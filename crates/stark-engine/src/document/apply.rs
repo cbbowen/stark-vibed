@@ -505,6 +505,9 @@ impl Materialize for DocState {
 /// so every peer declines it identically (`Materialize::fold`).
 fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
     match &action.kind {
+        // Refused before the mask is shifted or a layer read: the render would hand
+        // the base back untouched, and this is that same state without the GPU work.
+        ActionKind::CommitStroke(rec) if ctx.stroke.refuses(rec) => state,
         // The **author's** mask gates the stroke, read from the state being folded
         // over so replay reproduces it exactly and keyed by the author so a
         // collaborator's lasso never clips it (§6.8, §17.3) — both of which

@@ -310,6 +310,20 @@ impl StrokeRenderer {
             .0
     }
 
+    /// Whether `rec` reaches too far to be drawn at all ([`too_large`]), saying so once
+    /// per stroke. Every render asks, and so does the fold before it does any work for
+    /// a stroke, so both refuse the same records with one complaint between them.
+    pub(crate) fn refuses(&self, rec: &StrokeRecord) -> bool {
+        let refused = too_large(rec);
+        if refused && self.complained.say(rec.seed, Complaint::TooLarge) {
+            tracing::error!(
+                max_tiles = MAX_STROKE_TILES,
+                "stroke reaches further than any stroke may: refused",
+            );
+        }
+        refused
+    }
+
     /// Render just `spans` of `rec` over `base`, resuming the brush from `tool` — the
     /// state the preceding range left it in — and returning what a range picking up
     /// where this one stops must resume from ([`StrokeCarry`]).
@@ -339,13 +353,7 @@ impl StrokeRenderer {
         crate::timing::span!("stroke.range");
         // Refused before anything is flattened or walked, from the record alone, so a
         // live tail, its commit, a replay and every peer refuse it alike (§12.1).
-        if too_large(rec) {
-            if self.complained.say(rec.seed, Complaint::TooLarge) {
-                tracing::error!(
-                    max_tiles = MAX_STROKE_TILES,
-                    "stroke reaches further than any stroke may: refused",
-                );
-            }
+        if self.refuses(rec) {
             return (
                 Painted::plain(scene.base.clone()),
                 StrokeCarry::unchanged(spans.dist()),

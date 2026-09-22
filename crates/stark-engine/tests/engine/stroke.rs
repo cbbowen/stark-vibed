@@ -561,11 +561,12 @@ fn a_stroke_committed_without_fast_commit_is_the_replay() {
 /// show paint no peer replaying the record draws.
 #[cfg(not(feature = "debug-unfrozen"))]
 #[test]
-fn a_live_stroke_grown_past_the_cap_commits_what_its_replay_does() {
+fn a_live_stroke_grown_past_the_cap_is_neither_drawn_nor_logged() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
     let blank = engine.render_to_image();
+    let before = engine.scrub_range();
     draw_long_stroke(&mut engine);
     assert!(
         !images_match(&blank, &engine.render_to_image(), 0),
@@ -585,9 +586,25 @@ fn a_live_stroke_grown_past_the_cap_commits_what_its_replay_does() {
         images_match(&blank, &engine.render_to_image(), 0),
         "the commit landed paint the record's replay refuses"
     );
+    // Refused, not logged: logging it would spend an undo step that changes nothing
+    // and hand every peer the record to refuse again (§12.1).
+    assert_eq!(
+        engine.scrub_range(),
+        before,
+        "the refused stroke took an undo step"
+    );
     assert!(
-        images_match(&blank, &whole_render(&mut engine), 0),
-        "the replay drew a refused stroke"
+        engine.document_file().actions.is_empty(),
+        "the refused stroke was logged"
+    );
+    let reach = [
+        InputSample::at(Vec2::ZERO),
+        InputSample::at(Vec2::splat(1.0e6)),
+    ];
+    assert_eq!(engine.replay_stroke(Tool::Brush, &reach), None);
+    assert!(
+        engine.document_file().actions.is_empty(),
+        "the replayed stroke was logged"
     );
 }
 

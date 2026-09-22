@@ -660,6 +660,10 @@ impl Session {
     /// marker, so a click at the end of a watched approach is still a click: its curve
     /// holds the whole run-up, and its marker sits at the end of it
     /// ([`PathFitter::painted`]).
+    ///
+    /// A record reaching too far to be drawn at all is one that cannot deposit: every
+    /// render refuses it whole (`gpu::stroke::too_large`), so logging it would also
+    /// hand every peer a record to refuse again.
     pub fn end_stroke(&mut self) -> Option<StrokeRecord> {
         self.in_flight
             .take()
@@ -677,7 +681,7 @@ impl Session {
                 }
                 Some(b.to_record())
             })
-            .filter(|rec| rec.path.len() >= 2)
+            .filter(|rec| rec.path.len() >= 2 && !crate::gpu::stroke::too_large(rec))
     }
 
     /// The in-flight tow, for the frontend's string overlay (§6.11): `None`
