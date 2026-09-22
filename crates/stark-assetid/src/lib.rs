@@ -59,8 +59,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// 1024 matches the largest practical stamp footprint (brush radius caps at ~500
 /// canvas px), stays well inside the device's 2048 texture limit, and — via the
-/// engine's orientation-layer memory budget — keeps rotated stamps smooth (16
-/// slices at 1024², vs 4 if a 2048² source were kept).
+/// engine's orientation-layer memory budget — keeps rotated stamps smooth (8
+/// slices at 1024², vs 2 if a 2048² source were kept).
 pub const MAX_SHAPE_DIM: u32 = 1024;
 
 /// Largest edge (px) a placed picture keeps (§23).
