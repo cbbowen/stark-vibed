@@ -474,41 +474,55 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
         .remove_layer(source)
 }
 
+/// Whether a float of `layer` by `actor`, at the frame `frame`, would cut anything
+/// (§16.12) — every refusal [`float_apply`] makes of the source and the selection: a
+/// layer holding no paint ([`paint_base`]), a universal selection (nothing is
+/// *selected*; moving everything is `TranslateLayers`), and an empty or oversized cut
+/// (`plan_float`). What the command asks before it spends an action.
+pub(crate) fn float_cut_offered(
+    state: &DocState,
+    actor: ActorId,
+    layer: LayerId,
+    frame: IVec2,
+) -> bool {
+    let selection = state.selection_of(actor);
+    !selection.is_universal()
+        && paint_base(state, layer)
+            .is_some_and(|base| super::transform::plan_float(base, &selection, frame).is_some())
+}
+
 /// The body of [`ActionKind::FloatSelection`] (§16.12): cut what the author's
 /// selection holds on `layer` into the minted `child`, carried at the foot of the
 /// source's stack, and consume the selection — the float *is* the selection now.
 ///
-/// Every refusal is deterministic, so peers and replays agree: a matte, filter or
-/// absent source ([`paint_base`]); a child id the document already holds (two layers
-/// under one id is §17.9's failure); a universal selection (nothing is *selected*;
-/// moving everything is `TranslateLayers`); an empty or oversized cut (`plan_float`).
+/// Every refusal is deterministic, so peers and replays agree: those of
+/// [`float_cut_offered`], and a child id the document already holds (two layers under
+/// one id is §17.9's failure).
 fn float_apply(
     state: DocState,
     ctx: &ApplyCtx,
     actor: ActorId,
     layer: LayerId,
     child: LayerId,
-    translation: stark_model::geom::IVec2,
+    translation: IVec2,
     number: Option<u32>,
 ) -> DocState {
-    let Some(base) = paint_base(&state, layer) else {
-        return state;
-    };
+    if !float_cut_offered(&state, actor, layer, translation) {
+        return declined(
+            state,
+            "float declined (no paint layer, nothing selected, or an empty or oversized cut)",
+        );
+    }
     if state.contains_layer(child) {
-        tracing::warn!("float names a child the document already holds; ignored");
-        return state;
+        return declined(state, "float names a child the document already holds");
     }
     let selection = state.selection_of(actor);
-    if selection.is_universal() {
-        tracing::warn!("float with nothing selected; ignored");
-        return state;
-    }
-    let Some((remaining, lifted)) = ctx
-        .transform
-        .float(&ctx.pool, base, &selection, translation)
-    else {
-        tracing::warn!("float rejected (empty cut or too many tiles); ignored");
-        return state;
+    let cut = paint_base(&state, layer).and_then(|base| {
+        ctx.transform
+            .float(&ctx.pool, base, &selection, translation)
+    });
+    let Some((remaining, lifted)) = cut else {
+        return declined(state, "float cut nothing");
     };
     // Unnamed but numbered — a float is new content rather than a copy, so it is
     // described the way a fresh layer is (§14.6) — at identity params, shown, and
@@ -522,7 +536,7 @@ fn float_apply(
     state
         .map_layer(layer, |l| l.with_tiles(remaining))
         .insert_float(layer, lifted)
-        .with_selection(actor, super::selection::Selection::everything())
+        .with_selection(actor, Selection::everything())
 }
 
 /// The tiles `layer` paints into, or `None` if it has none — the gate every action

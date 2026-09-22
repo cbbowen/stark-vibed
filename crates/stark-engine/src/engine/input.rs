@@ -337,17 +337,12 @@ impl Engine {
                 self.commit_setter(Setter::Translate(layer, to))
             }
             DocCommand::FloatSelection { layer } => {
-                // Asked before an action is spent, exactly as `MergeLayerDown`
-                // asks its plan (§16.12): the same refusals `apply` makes, off the
-                // same committed state, so a command that would no-op logs nothing.
+                // Asked before an action is spent, as `MergeLayerDown` asks its offer:
+                // the fold's own refusals, off the same committed state, so a float
+                // that would cut nothing logs nothing (§16.12).
                 let frame = self.frame_of(layer);
                 let doc = self.timeline.current();
-                let offered = doc.layer(layer).and_then(|l| l.tiles()).is_some_and(|t| {
-                    let selection = doc.selection_of(self.actor());
-                    !selection.is_universal()
-                        && crate::document::transform::plan_float(t, &selection, frame).is_some()
-                });
-                if offered {
+                if crate::document::apply::float_cut_offered(doc, self.actor(), layer, frame) {
                     let number = Some(doc.next_layer_number());
                     let action = self.commit_minting(|a| ActionKind::FloatSelection {
                         layer,
