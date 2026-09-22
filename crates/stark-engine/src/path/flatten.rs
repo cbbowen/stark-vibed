@@ -510,14 +510,9 @@ fn blend(q: &[ControlPoint; 4], w: [f32; 4]) -> ControlPoint {
 
 #[cfg(test)]
 mod tests {
-    use super::super::arc::point_segment_distance;
     use super::*;
+    use crate::path::test_support::{knot, max_deviation};
     use crate::spline::CubicBSpline;
-
-    /// One control point at a position. See [`sample`]'s note on the copies.
-    fn knot(x: f32, y: f32) -> ControlPoint {
-        ControlPoint::at(Vec2::new(x, y))
-    }
 
     /// The load-bearing link between the two halves of this module: the span form
     /// used to *render* a stored path must be the same curve [`CubicBSpline`](crate::spline::CubicBSpline) **fitted**.
@@ -610,17 +605,11 @@ mod tests {
         for i in 0..knots.len() - 1 {
             let ix = crate::spline::SplineIndex::new(knots.len()).expect("a curve");
             let sp = span(ix, &knots, i);
-            for s in 0..=64 {
-                let p = sp.eval(s as f32 / 64.0).pos;
-                let d = poly
-                    .windows(2)
-                    .map(|w| point_segment_distance(p, w[0].pos, w[1].pos))
-                    .fold(f32::INFINITY, f32::min);
-                assert!(
-                    d < FLATTEN_TOLERANCE.position * 2.0,
-                    "curve point {p:?} is {d}px off the polyline",
-                );
-            }
+            let worst = max_deviation((0..=64).map(|s| sp.eval(s as f32 / 64.0).pos), &poly);
+            assert!(
+                worst < FLATTEN_TOLERANCE.position * 2.0,
+                "span {i} strays {worst}px off the polyline",
+            );
         }
     }
 
@@ -863,5 +852,50 @@ mod tests {
         let fine = flatten(&knots, FLATTEN_TOLERANCE).len();
         let coarse = flatten(&knots, FLATTEN_TOLERANCE.relaxed(8.0)).len();
         assert!(coarse < fine, "relaxed {coarse} vs fine {fine}");
+    }
+
+    #[test]
+    fn the_curve_is_pinned_to_its_end_control_points() {
+        // What the clamped end condition buys: the stroke starts and finishes at the
+        // first and last control point exactly, even though the interior ones are
+        // only approached.
+        let knots = [
+            knot(0.0, 0.0),
+            knot(30.0, 40.0),
+            knot(90.0, 10.0),
+            knot(120.0, 60.0),
+        ];
+        let poly = flatten(&knots, FLATTEN_TOLERANCE);
+        assert!((poly.first().unwrap().pos - knots[0].pos).length() < 1e-4);
+        assert!((poly.last().unwrap().pos - knots[3].pos).length() < 1e-4);
+    }
+
+    #[test]
+    fn flatten_spans_tile_the_whole_path() {
+        let knots = [
+            knot(0.0, 0.0),
+            knot(20.0, 30.0),
+            knot(60.0, 30.0),
+            knot(90.0, 0.0),
+            knot(120.0, -40.0),
+        ];
+        let all = span_count(knots.len());
+        let whole = flatten(&knots, FLATTEN_TOLERANCE);
+        // Split anywhere: what an incremental renderer does is exactly this, with the
+        // cut at `PathFitter::frozen_spans`.
+        for cut in 1..all {
+            let head = flatten_spans(&knots, 0..cut, 0.0, FLATTEN_TOLERANCE);
+            let tail = flatten_spans(
+                &knots,
+                cut..all,
+                head.last().unwrap().dist,
+                FLATTEN_TOLERANCE,
+            );
+            // The ranges share exactly one point, so the pieces concatenate into the
+            // whole with no gap and no duplicated segment.
+            let joined: Vec<IntermediateSample> =
+                head.iter().chain(tail[1..].iter()).copied().collect();
+            assert_eq!(joined, whole, "cut at span {cut}");
+        }
     }
 }

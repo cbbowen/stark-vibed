@@ -194,6 +194,7 @@ type GeomCtrl = OMatrix<f32, Dyn, Const<2>>;
 /// level, and only the caller knows it. Flattening is untouched by this — its budget
 /// is an error against the *curve*, in the canvas px it will be drawn in
 /// ([`FlattenTolerance`](super::FlattenTolerance)).
+#[cfg_attr(test, derive(Clone))]
 pub struct PathFitter {
     /// Every accepted report, with the distance along the stroke that parameterizes
     /// it. Kept whole — a few hundred is nothing — while the solve only ever looks
@@ -257,6 +258,7 @@ struct Accepted {
 /// `push` or `finish`, `finish` takes `as_finished` off this path altogether, and a
 /// `push` that changes anything either appends to `pts` or — for a press the spacing
 /// gate dropped — sets `start_arc`.
+#[cfg_attr(test, derive(Clone))]
 struct Memo {
     key: (usize, Option<f32>),
     path: Vec<ControlPoint>,
@@ -270,6 +272,7 @@ struct Memo {
 /// Refilled in place: at up to a thousand reports a second, allocating a few hundred
 /// numbers afresh per report was most of a `push`'s heap traffic.
 #[derive(Default)]
+#[cfg_attr(test, derive(Clone))]
 struct Window {
     /// First accepted report that can still reach a row being solved for.
     lo: usize,
@@ -289,6 +292,7 @@ struct Window {
 
 /// The buffers a report's solves share. See [`PathFitter::scratch`].
 #[derive(Default)]
+#[cfg_attr(test, derive(Clone))]
 struct Scratch {
     /// One per candidate polygon a report solves: as it stands, and one larger.
     windows: [Window; 2],
@@ -1156,29 +1160,16 @@ pub fn fit_with_tolerance(
 
 #[cfg(test)]
 mod tests {
-    use super::super::arc::point_segment_distance;
     use super::*;
-    use crate::path::{FLATTEN_TOLERANCE, flatten};
+    use crate::path::test_support::{
+        RECORDED, bits, fit_incrementally, max_deviation, sample, split_runup, with_pen,
+    };
+    use crate::path::{FLATTEN_TOLERANCE, flatten, flatten_spans, point_at};
 
     /// Largest distance (canvas px) from any input sample to the fitted curve.
     fn fit_error(samples: &[InputSample]) -> f32 {
         let poly = flatten(&fit(samples), FLATTEN_TOLERANCE);
-        samples
-            .iter()
-            .map(|s| {
-                if poly.len() < 2 {
-                    return (s.pos - poly[0].pos).length();
-                }
-                poly.windows(2)
-                    .map(|w| point_segment_distance(s.pos, w[0].pos, w[1].pos))
-                    .fold(f32::INFINITY, f32::min)
-            })
-            .fold(0.0, f32::max)
-    }
-
-    /// One pointer report at a position, with everything else at rest.
-    fn sample(x: f32, y: f32) -> InputSample {
-        InputSample::at(Vec2::new(x, y))
+        max_deviation(samples.iter().map(|s| s.pos), &poly)
     }
 
     /// `n` accepted reports `step` apart along the x axis — the shape
@@ -1191,18 +1182,6 @@ mod tests {
                 arc: i as f32 * step,
             })
             .collect()
-    }
-
-    /// Feed samples one at a time, snapshotting the fit after every push.
-    fn fit_incrementally(samples: &[InputSample]) -> (PathFitter, Vec<(Vec<ControlPoint>, usize)>) {
-        let mut f = PathFitter::new();
-        let mut snaps = Vec::new();
-        for s in samples {
-            f.push(*s);
-            snaps.push((f.path(), f.frozen_spans()));
-        }
-        f.finish();
-        (f, snaps)
     }
 
     /// **Under budget the selection is the identity**: ordinary painting keeps every
@@ -1553,8 +1532,403 @@ mod tests {
                 sample(t * 10.0, (t * 1.3).sin() * 25.0)
             })
             .collect();
-        let (mut streamed, _) = fit_incrementally(&pts);
-        streamed.finish();
+        let (streamed, _) = fit_incrementally(&pts);
         assert_eq!(streamed.path(), fit(&pts));
+    }
+
+    /// **Thinning the window does not cost the fit its accuracy** — the one risk the
+    /// bound carries.
+    ///
+    /// Measured against every report, *including the ones no solve ever saw*: if a
+    /// survivor list let the curve wander off the stretches it skipped, this is where
+    /// it would show. At 3200 reports the window is thinned throughout; at 200 it is
+    /// under budget and untouched.
+    ///
+    /// Both bars are calibrated from measurement, thinned against unthinned. The
+    /// absolute one catches a selection that lost the curve outright; the ratio
+    /// catches accuracy that degrades as the reports get denser, which is what
+    /// thinning too hard looks like. Measured, thinning moves the fit by under 0.1% at
+    /// every rate, and the ~12% spread across the rates is the density policy's own
+    /// smoothing, which `KNOT_COST` owns.
+    ///
+    /// The deviations are large in absolute terms because this curve is far coarser
+    /// than [`DEFAULT_TOLERANCE`] is asked to trace (90 px of amplitude over 400 px,
+    /// against a knot every 64 px): the fit is *meant* to smooth it.
+    #[test]
+    fn thinning_the_window_does_not_cost_the_fit_its_accuracy() {
+        let curve = |t: f32| Vec2::new(t * 400.0, (t * 2.2).sin() * 90.0);
+        let deviation = |n: usize| -> f32 {
+            let pts: Vec<InputSample> = (0..n)
+                .map(|i| {
+                    let p = curve(i as f32 / (n - 1) as f32);
+                    sample(p.x, p.y)
+                })
+                .collect();
+            let poly = flatten(&fit(&pts), FLATTEN_TOLERANCE);
+            pts.iter()
+                .map(|r| {
+                    poly.iter()
+                        .map(|s| (s.pos - r.pos).length())
+                        .fold(f32::MAX, f32::min)
+                })
+                .fold(0.0f32, f32::max)
+        };
+        let sparse = deviation(200);
+        for n in [200usize, 800, 3200] {
+            let worst = deviation(n);
+            assert!(
+                worst < 35.0,
+                "{n} reports fitted {worst:.2}px off the curve they came from",
+            );
+            assert!(
+                worst < sparse * 1.25,
+                "{n} reports fitted {worst:.2}px off, against {sparse:.2}px unthinned \
+                 — thinning is costing accuracy as the rate rises",
+            );
+        }
+    }
+
+    #[test]
+    fn fit_starts_and_ends_under_the_pointer() {
+        // A least-squares fit does not pin its ends: an unassigned stretch of
+        // parameter costs nothing, so unless the ends are held the curve runs out
+        // past both ends of the stroke.
+        let pts: Vec<InputSample> = (0..20).map(|i| sample(i as f32, i as f32 * 0.9)).collect();
+        let fitted = fit(&pts);
+        assert_eq!(fitted.first().unwrap().pos, pts.first().unwrap().pos);
+        assert_eq!(fitted.last().unwrap().pos, pts.last().unwrap().pos);
+        // And the clamped end condition puts the *curve* there too, not just the
+        // control polygon.
+        let poly = flatten(&fitted, FLATTEN_TOLERANCE);
+        assert!((poly.first().unwrap().pos - pts.first().unwrap().pos).length() < 1e-3);
+        assert!((poly.last().unwrap().pos - pts.last().unwrap().pos).length() < 1e-3);
+    }
+
+    #[test]
+    fn fit_flattens_coarse_staircase() {
+        // A 2-px right / 2-px up staircase: a slow diagonal snapped to a 2px device
+        // grid, each corner ~1.4px off the diagonal. Fitting is the only smoothing
+        // stage, so this is what happens when a control point's price sits *below*
+        // the input's own quantization — the zigzag reads as curvature and gets
+        // traced. `a_coarser_tolerance_smooths_what_a_finer_one_traces` is the same
+        // staircase with the grid declared.
+        let mut stair = vec![sample(0.0, 0.0)];
+        for i in 0..12 {
+            let b = (i * 2) as f32;
+            stair.push(sample(b + 2.0, b)); // 2px right
+            stair.push(sample(b + 2.0, b + 2.0)); // 2px up
+        }
+        // The claim is the *shape*, not the control-point count: traced, the curve
+        // would sit ~0 from every sample; smoothed, it splits the corners.
+        let err = fit_error(&stair);
+        assert!(
+            (0.5..2.0).contains(&err),
+            "err {err} — traced, not smoothed?"
+        );
+    }
+
+    /// The same 2px staircase, with the grid it was quantized to declared. Told what
+    /// the input can actually resolve, the fit stops paying for control points to
+    /// explain a zigzag that is not there.
+    #[test]
+    fn a_coarser_tolerance_smooths_what_a_finer_one_traces() {
+        let mut stair = vec![sample(0.0, 0.0)];
+        for i in 0..12 {
+            let b = (i * 2) as f32;
+            stair.push(sample(b + 2.0, b));
+            stair.push(sample(b + 2.0, b + 2.0));
+        }
+        let fine = fit_with_tolerance(stair.iter().copied(), DEFAULT_TOLERANCE).len();
+        let coarse = fit_with_tolerance(stair.iter().copied(), 2.0).len();
+        // What the *shape* is worth with the quantization taken out: the same reports
+        // projected onto the diagonal they are a staircase of. Declaring the grid can
+        // only buy back what the zigzag costs, never what the stroke is, so that is
+        // the baseline both counts are measured from — a bare ratio of totals would
+        // instead move whenever the finer fit improved, which is not under test.
+        let ideal = fit_with_tolerance(
+            stair.iter().map(|s| {
+                let d = 0.5 * (s.pos.x + s.pos.y);
+                InputSample {
+                    pos: Vec2::splat(d),
+                    ..*s
+                }
+            }),
+            DEFAULT_TOLERANCE,
+        )
+        .len();
+        // The premise. At 1px the zigzag is above the declared tolerance, so the fit does
+        // pay for some of it; without this the comparison below could be satisfied by
+        // both fits being perfect, and the test would have stopped testing anything.
+        assert!(
+            fine > ideal,
+            "nothing left to smooth: {fine} control points over a shape worth {ideal}"
+        );
+        assert!(
+            coarse.saturating_sub(ideal) * 2 <= fine.saturating_sub(ideal),
+            "2px grid declared: {coarse} against {fine} control points, over a shape worth {ideal} — not smoothed"
+        );
+        // And what is left is still the diagonal, not a shortcut across it: every
+        // sample is within a step of the curve.
+        let poly = flatten(
+            &fit_with_tolerance(stair.iter().copied(), 2.0),
+            FLATTEN_TOLERANCE,
+        );
+        let worst = max_deviation(stair.iter().map(|s| s.pos), &poly);
+        assert!(worst < 2.0, "smoothed off the diagonal: {worst}px");
+    }
+
+    #[test]
+    fn fit_keeps_real_corners() {
+        // An L-shape: the corner must survive. The polygon starts far coarser than
+        // this whole gesture, so keeping it depends on the sagitta test refining a
+        // stroke shorter than one control-point interval.
+        let pts = [
+            sample(0.0, 0.0),
+            sample(10.0, 0.0),
+            sample(20.0, 0.0),
+            sample(20.0, 10.0),
+            sample(20.0, 20.0),
+        ];
+        let poly = flatten(&fit(&pts), FLATTEN_TOLERANCE);
+        let nearest = poly
+            .iter()
+            .map(|p| (p.pos - Vec2::new(20.0, 0.0)).length())
+            .fold(f32::INFINITY, f32::min);
+        assert!(
+            nearest < 3.0,
+            "corner lost: curve passes {nearest}px from it"
+        );
+    }
+
+    /// The guarantee incremental repaint rests on: whatever the fitter reports as
+    /// frozen, flattening it now equals flattening it at the end.
+    #[test]
+    fn committed_knots_are_never_revised() {
+        let pts: Vec<InputSample> = (0..60)
+            .map(|i| {
+                let t = i as f32 * 0.15;
+                sample(t * 12.0, (t * 0.9).sin() * 40.0 + (t * 2.7).cos() * 6.0)
+            })
+            .collect();
+        let (fitter, snaps) = fit_incrementally(&pts);
+        let full = fitter.path();
+        let mut checked_nonempty = false;
+        for (path, frozen) in snaps {
+            if frozen == 0 {
+                continue;
+            }
+            checked_nonempty = true;
+            let then = flatten_spans(&path, 0..frozen, 0.0, FLATTEN_TOLERANCE);
+            let now = flatten_spans(&full, 0..frozen, 0.0, FLATTEN_TOLERANCE);
+            assert_eq!(then, now, "frozen prefix of {frozen} spans changed");
+        }
+        assert!(checked_nonempty, "test never observed a frozen span");
+    }
+
+    #[test]
+    fn a_click_fits_to_one_knot() {
+        let fitted = fit(&[sample(3.0, 4.0)]);
+        assert_eq!(fitted.len(), 1);
+        assert_eq!(fitted[0].pos, Vec2::new(3.0, 4.0));
+        // And flattens to a single directionless sample.
+        let poly = flatten(&fitted, FLATTEN_TOLERANCE);
+        assert_eq!(poly.len(), 1);
+        assert_eq!(poly[0].pos, Vec2::new(3.0, 4.0));
+    }
+
+    #[test]
+    fn empty_input_fits_and_flattens_to_nothing() {
+        assert!(fit(&[]).is_empty());
+        assert!(flatten(&[], FLATTEN_TOLERANCE).is_empty());
+    }
+
+    /// **`preview == committed` on the CPU** (§1.3): after every report,
+    /// [`PathFitter::as_finished`] is what a fitter fed the same reports commits at
+    /// [`finish`](PathFitter::finish) — path and marker, to the bit, with and without a
+    /// run-up.
+    ///
+    /// The committing fitter is a clone of a shadow that is never queried — a fitter fed
+    /// the same prefix, without feeding it the prefix again at every report — so a query
+    /// that disturbed a later solve shows as the live fitter parting from it.
+    #[test]
+    fn as_finished_is_what_finish_commits_after_every_report() {
+        for (name, pts) in RECORDED {
+            let samples = with_pen(pts);
+            let (hover, stroke) = split_runup(&samples);
+            for (runup, stroke) in [(&[][..], &samples[..]), (&hover[..], stroke)] {
+                let (mut live, mut shadow) = (PathFitter::new(), PathFitter::new());
+                live.seed_runup(runup);
+                shadow.seed_runup(runup);
+                for (i, s) in stroke.iter().enumerate() {
+                    live.push(*s);
+                    shadow.push(*s);
+                    let (path, start) = live.as_finished();
+                    let mut committed = shadow.clone();
+                    committed.finish();
+                    assert_eq!(
+                        (bits(&path), start.to_bits()),
+                        (bits(&committed.path()), committed.start().to_bits()),
+                        "{name}, {} reports of run-up: report {i} previews another stroke \
+                         than it commits",
+                        runup.len(),
+                    );
+                }
+                live.finish();
+                shadow.finish();
+                assert_eq!(
+                    bits(&live.path()),
+                    bits(&shadow.path()),
+                    "{name}: querying the preview moved the commit",
+                );
+            }
+        }
+    }
+
+    /// A hover along the x axis into a press at the origin, and a gentle curve drawn on
+    /// from it — each channel distinct between the two, so where a value came from shows.
+    fn approach() -> (Vec<InputSample>, Vec<InputSample>) {
+        let hover = (0..12)
+            .map(|i| InputSample {
+                pos: Vec2::new(4.0 * i as f32 - 48.0, 0.0),
+                pressure: 0.0,
+                tilt: Vec2::new(0.3, -0.2),
+                time: 10.0 + 0.01 * i as f64,
+            })
+            .collect();
+        let stroke = (0..40)
+            .map(|i| {
+                let x = 4.0 * i as f32;
+                InputSample {
+                    pos: Vec2::new(x, x * x / 400.0),
+                    pressure: 0.6,
+                    tilt: Vec2::new(0.1, 0.4),
+                    time: 10.12 + 0.01 * i as f64,
+                }
+            })
+            .collect();
+        (hover, stroke)
+    }
+
+    /// The run-up extends the curve back from the press (§6.2): the path is pinned to
+    /// the hover's first report, carrying the press's pressure and the hover's own tilt
+    /// and clock, and the marker names the place the press was fitted.
+    #[test]
+    fn a_run_up_extends_the_curve_back_from_the_press() {
+        let (hover, stroke) = approach();
+        let mut f = PathFitter::new();
+        f.seed_runup(&hover);
+        for s in &stroke {
+            f.push(*s);
+        }
+        f.finish();
+        let path = f.path();
+        let (first, press) = (path[0], stroke[0]);
+        assert_eq!(first.pos, hover[0].pos, "the curve does not reach back");
+        // A hovering pen reports no pressure, so the run-up borrows the press's.
+        assert_eq!(first.pressure, press.pressure);
+        assert_eq!(first.tilt, hover[0].tilt);
+        assert_eq!(first.time, (hover[0].time - press.time) as f32);
+        assert_eq!(path.last().map(|k| k.pos), stroke.last().map(|s| s.pos));
+
+        let marked = point_at(&path, f.start());
+        assert!(
+            f.start() > 0.0 && marked.distance(press.pos) < 0.5,
+            "the marker {} sits at {marked}, the press at {}",
+            f.start(),
+            press.pos,
+        );
+    }
+
+    /// A run-up that arrives too late, or empty, is no run-up — and an inadmissible
+    /// report is dropped from one exactly as from the stroke.
+    #[test]
+    fn a_run_up_seeded_late_or_empty_changes_nothing() {
+        let (hover, stroke) = approach();
+        let run = |before: &[InputSample], after_press: &[InputSample]| {
+            let mut f = PathFitter::new();
+            f.seed_runup(before);
+            for (i, s) in stroke.iter().enumerate() {
+                f.push(*s);
+                if i == 0 {
+                    f.seed_runup(after_press);
+                }
+            }
+            f.finish();
+            (bits(&f.path()), f.start().to_bits())
+        };
+        let cold = run(&[], &[]);
+        assert_eq!(cold, (bits(&fit(&stroke)), 0.0f32.to_bits()));
+        assert_eq!(run(&[], &hover), cold, "a run-up seeded after the press");
+
+        let mut poisoned = hover.clone();
+        poisoned.insert(
+            5,
+            InputSample {
+                pos: Vec2::NAN,
+                ..hover[5]
+            },
+        );
+        poisoned.insert(
+            9,
+            InputSample {
+                time: f64::INFINITY,
+                ..hover[8]
+            },
+        );
+        assert_eq!(
+            run(&poisoned, &[]),
+            run(&hover, &[]),
+            "an inadmissible run-up report was fitted",
+        );
+    }
+
+    /// The trace a shape is recognized from starts at the press (§6.9) — including when
+    /// the press lands on the run-up's newest report, which then stands in for it.
+    #[test]
+    fn the_trace_leaves_the_run_up_out() {
+        let (hover, stroke) = approach();
+        let drawn: Vec<Vec2> = stroke.iter().map(|s| s.pos).collect();
+        let trace = |runup: &[InputSample]| {
+            let mut f = PathFitter::new();
+            f.seed_runup(runup);
+            for s in &stroke {
+                f.push(*s);
+            }
+            f.trace()
+        };
+        assert_eq!(trace(&[]), drawn);
+        assert_eq!(trace(&hover), drawn, "the run-up leaked into the trace");
+
+        let mut landing = hover.clone();
+        landing.push(InputSample {
+            pos: stroke[0].pos,
+            ..hover[hover.len() - 1]
+        });
+        assert_eq!(
+            trace(&landing),
+            drawn,
+            "a press on the run-up lost the start"
+        );
+    }
+
+    /// A stroke paints once it travels past the press, and not before: the run-up's
+    /// arc is evidence, never deposit (§6.2).
+    #[test]
+    fn painted_is_travel_past_the_press() {
+        let (hover, stroke) = approach();
+        let mut f = PathFitter::new();
+        assert!(!f.painted(), "nothing was pushed");
+        f.seed_runup(&hover);
+        f.push(stroke[0]);
+        assert!(!f.painted(), "a press after a watched approach is a click");
+        f.push(stroke[0]);
+        assert!(!f.painted(), "a report that did not move painted");
+        f.push(stroke[1]);
+        assert!(f.painted(), "travel past the press did not paint");
+
+        let mut click = PathFitter::new();
+        click.push(stroke[0]);
+        click.finish();
+        assert!(!click.painted(), "a click painted");
     }
 }

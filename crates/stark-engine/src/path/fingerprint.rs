@@ -6,12 +6,11 @@
 //! only has to agree with itself in-process, while flattening re-runs at every replay
 //! and on every peer.
 
+use super::test_support::{RECORDED, split_runup, with_pen};
 use super::{
     DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, FlattenTolerance, IntermediateSample, PathFitter,
     fit_with_tolerance, flatten_spans_from, span_count,
 };
-use crate::command::InputSample;
-use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
 
 /// blake3 of every fitted control point's channels and marker, in [`fitted`] order.
@@ -32,63 +31,26 @@ const BUDGETS: [FlattenTolerance; 2] = [
     },
 ];
 
-/// The recorded positions with pen channels laid over them, so a channel mis-mapped
-/// onto another changes the hash. Integer arithmetic only: the input has to be the
-/// same bits on every platform the fingerprint runs on.
-fn with_pen(pts: &[[f32; 2]]) -> Vec<InputSample> {
-    pts.iter()
-        .enumerate()
-        .map(|(i, &[x, y])| {
-            // A triangle wave of `period` reports, in `[0, 1]`.
-            let tri = |period: usize| {
-                let half = period as f32 / 2.0;
-                1.0 - ((i % period) as f32 - half).abs() / half
-            };
-            InputSample {
-                pos: Vec2::new(x, y),
-                pressure: 0.2 + 0.6 * tri(64),
-                tilt: Vec2::new(0.5 * tri(50) - 0.25, 0.3 - 0.4 * tri(38)),
-                // Off zero, so the fitter's re-basing onto the stroke's clock is exercised.
-                time: 1000.0 + i as f64 / 240.0,
+/// Every recorded stroke fitted twice — whole, and after a hovering run-up — as
+/// `(path, marker)`.
+fn fitted() -> Vec<(Vec<ControlPoint>, f32)> {
+    RECORDED
+        .into_iter()
+        .flat_map(|(_, pts)| {
+            let samples = with_pen(pts);
+            let whole = fit_with_tolerance(samples.iter().copied(), DEFAULT_TOLERANCE);
+
+            let (hover, stroke) = split_runup(&samples);
+            let mut f = PathFitter::new();
+            f.seed_runup(&hover);
+            for s in stroke {
+                f.push(*s);
             }
+            f.finish();
+
+            [(whole, 0.0), (f.path(), f.start())]
         })
         .collect()
-}
-
-/// Every recorded stroke fitted twice — whole, and with its first quarter seeded as a
-/// hovering run-up — as `(path, marker)`.
-fn fitted() -> Vec<(Vec<ControlPoint>, f32)> {
-    [
-        stark_testdata::HAIRPIN_STROKE,
-        stark_testdata::LOOP_STROKE,
-        stark_testdata::C_STROKE,
-        stark_testdata::SPIRAL_STROKE,
-        stark_testdata::BIG_C_STROKE,
-        stark_testdata::FAST_STROKE,
-    ]
-    .into_iter()
-    .flat_map(|pts| {
-        let samples = with_pen(pts);
-        let whole = fit_with_tolerance(samples.iter().copied(), DEFAULT_TOLERANCE);
-
-        let (hover, stroke) = samples.split_at(samples.len() / 4);
-        let hover: Vec<InputSample> = hover
-            .iter()
-            .map(|s| InputSample {
-                pressure: 0.0,
-                ..*s
-            })
-            .collect();
-        let mut f = PathFitter::new();
-        f.seed_runup(&hover);
-        for s in stroke {
-            f.push(*s);
-        }
-        f.finish();
-
-        [(whole, 0.0), (f.path(), f.start())]
-    })
-    .collect()
 }
 
 fn update_f32s(h: &mut blake3::Hasher, xs: impl IntoIterator<Item = f32>) {

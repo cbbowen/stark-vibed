@@ -247,15 +247,7 @@ impl Tow {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn sample(x: f32, y: f32) -> InputSample {
-        InputSample {
-            pos: Vec2::new(x, y),
-            pressure: 1.0,
-            tilt: Vec2::ZERO,
-            time: 0.0,
-        }
-    }
+    use crate::path::test_support::sample;
 
     /// Feed a polyline through a tow, collecting every emission. At
     /// [`DEFAULT_TOLERANCE`](crate::path::DEFAULT_TOLERANCE), which is what a
