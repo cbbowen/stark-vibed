@@ -19,7 +19,6 @@ use crate::RgbaImage;
 use crate::view::Extent2;
 use crate::{Engine, Result};
 
-pub use crate::colorspace::{all_available, available};
 pub use crate::document::audit::undeclared;
 pub use crate::document::layer::{CompositeParams, Layer, LayerContent};
 pub use crate::document::state::{DocState, Guide};

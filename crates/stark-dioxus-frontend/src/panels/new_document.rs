@@ -50,22 +50,14 @@ pub fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
     // rebuild the GPU state twice.
     let mut pending = use_signal(|| false);
 
-    // One selectable color-space card; `selected` toggles the highlight.
-    let card = |id: ColorSpaceId, title: &str, desc: &str| {
-        let class = if choice() == id {
-            "space-card selected"
-        } else {
-            "space-card"
-        };
-        rsx! {
-            div {
-                class,
-                onclick: move |_| { let mut choice = choice; choice.set(id); },
-                div { class: "space-card-title", "{title}" }
-                div { class: "space-card-desc", "{desc}" }
-            }
-        }
-    };
+    // Every space this build can open, and only those. `ColorSpaceId::Mixbox` is a
+    // variant in every build — the save format's enum indices cannot depend on a
+    // feature (§8) — so what a build without `mixbox` lacks is the space behind it,
+    // which the engine answers for.
+    let spaces = stark_engine::all_available().map(|id| {
+        let (title, desc) = describe(id);
+        (id, title, desc)
+    });
 
     // Every surface on offer, as a row: the bundled ones and then the library's,
     // which is the order the Lighting panel's gallery uses too — so a substrate the
@@ -100,13 +92,15 @@ pub fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
             div { class: "modal-subtitle", "Starting a new document replaces the current canvas." }
 
             div { class: "modal-section-label", "COLOR SPACE" }
-            {card(ColorSpaceId::Oklab, "Oklab", "Perceptual color with smooth, predictable blending. The standard choice for digital painting.")}
-            // Offered only where the engine carries it. `ColorSpaceId::Mixbox` is
-            // a variant in every build — the save format's enum indices cannot
-            // depend on a feature (§8) — so the id below still compiles; what a
-            // build without the `mixbox` feature lacks is the space behind it, and
-            // `ColorSpaceId::available` is the same question this asks.
-            {cfg!(feature = "mixbox").then(|| card(ColorSpaceId::Mixbox, "Mixbox", "Realistic pigment mixing (Mixbox): blue + yellow makes green, like real paint. For natural media."))}
+            for (id, title, desc) in spaces {
+                div {
+                    key: "{id:?}",
+                    class: if choice() == id { "space-card selected" } else { "space-card" },
+                    onclick: move |_| { let mut c = choice; c.set(id); },
+                    div { class: "space-card-title", "{title}" }
+                    div { class: "space-card-desc", "{desc}" }
+                }
+            }
 
             div { class: "modal-section-label", "SURFACE" }
             for (pick, title, desc) in surfaces() {
@@ -140,5 +134,19 @@ pub fn NewDocumentModal(on_close: EventHandler<()>) -> Element {
                 }
             }
         }
+    }
+}
+
+/// A color space's card: what it is called, and what it is for.
+fn describe(id: ColorSpaceId) -> (&'static str, &'static str) {
+    match id {
+        ColorSpaceId::Oklab => (
+            "Oklab",
+            "Perceptual color with smooth, predictable blending. The standard choice for digital painting.",
+        ),
+        ColorSpaceId::Mixbox => (
+            "Mixbox",
+            "Realistic pigment mixing (Mixbox): blue + yellow makes green, like real paint. For natural media.",
+        ),
     }
 }

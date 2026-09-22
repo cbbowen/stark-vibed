@@ -27,8 +27,8 @@ use crate::gpu::tile::TilePool;
 /// render a stroke (§5).
 ///
 /// Every field is a handle, so the type has no borrow lifetime — which is what lets
-/// it be the `Action::Context` — and a clone shares the resources rather than
-/// doubling them, as a preview engine wants (`Engine::new_sharing`, §11).
+/// it be the `Action::Context` — and a sibling's copy shares the resources rather
+/// than doubling them ([`for_sibling`](Self::for_sibling)).
 pub struct ApplyCtx {
     pub(crate) pool: TilePool,
     pub(crate) stroke: StrokeRenderer,
@@ -43,7 +43,7 @@ pub struct ApplyCtx {
     /// The pictures a `PlaceImage` names (§23) — the third content-addressed store,
     /// beside `assets` and `substrates` and for their reason: the log carries the id
     /// and the pixels ride here. Unlike those two it is the **document's**: a reset
-    /// keeps only what the next log names, and a clone starts empty.
+    /// keeps only what the next log names, and a sibling starts empty.
     pub(crate) pictures: crate::pictures::PictureStore,
     /// The device, so a canvas substrate can be built here on demand.
     pub(crate) gpu: crate::gpu::context::GpuContext,
@@ -60,7 +60,7 @@ pub struct ApplyCtx {
     /// take rather than render again — see [`PreparedStroke`].
     ///
     /// Transient: filled immediately before the push that commits the stroke and
-    /// `None` at every other moment, including in every clone. The fold empties it by
+    /// `None` at every other moment, including in every sibling. The fold empties it by
     /// *taking* it, so a slot still full after the push means the offer was declined.
     /// Written through [`offer`](Self::offer) and [`reclaim`](Self::reclaim).
     pub(crate) prepared: Option<PreparedStroke>,
@@ -79,21 +79,17 @@ impl ApplyCtx {
     pub(crate) fn reclaim(&mut self) -> bool {
         self.prepared.take().is_some()
     }
-}
 
-/// Every field is a handle, so a copy is a fistful of refcount bumps — **except
-/// [`prepared`](Self::prepared), which a clone always leaves empty, and
-/// `pictures`, which it starts afresh.**
-///
-/// Hand-written for those two. The slot is a message to one fold, and a derive taken
-/// while it was full would hand a sibling preview engine (`Engine::new_sharing`, §11)
-/// a whole stroke's worth of fresh `Arc<GpuTile>` handles and pin them for its life.
-/// The pictures are the donor's document's, and a shared store would keep them alive
-/// in every sibling — and in any `EngineShared` a frontend holds on to — past the reset
-/// that lets them go. Properties of the type rather than of the engine's call order
-/// (CLAUDE.md: rule out a class).
-impl Clone for ApplyCtx {
-    fn clone(&self) -> Self {
+    /// The context a sibling engine opens with (`Engine::new_sharing`, §11): every
+    /// renderer, the pool and the stores shared by handle — **except** the pictures,
+    /// which start afresh, and the prepared slot, which starts empty.
+    ///
+    /// The pictures are this document's, and a shared store would keep them alive in
+    /// every sibling — and in any `EngineShared` a frontend holds on to — past the reset
+    /// that lets them go. The slot is a message to one fold, and a copy taken while it
+    /// was full would pin a stroke's worth of fresh tiles for the sibling's life. A
+    /// method rather than `Clone`, since a clone that drops both is not one.
+    pub(crate) fn for_sibling(&self) -> Self {
         Self {
             pool: self.pool.clone(),
             stroke: self.stroke.clone(),

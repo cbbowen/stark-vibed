@@ -337,7 +337,7 @@ impl Engine {
     /// `color_space`, **before** anything is reset — so a refusal leaves the open
     /// document alone, the same bargain [`Self::load_document`] makes. A frontend
     /// whose picker comes from
-    /// [`colorspace::all_available`](crate::colorspace::all_available)
+    /// [`all_available`](crate::all_available)
     /// never sees it.
     pub fn new_document(
         &mut self,
@@ -572,7 +572,8 @@ impl Engine {
     /// leaves any shared session: the caller (UI/transport) tears down the
     /// network side; `join_collaboration` re-enables after its reset.
     ///
-    /// `named` is what the next document's log names (§8): the pictures among it are
+    /// `named` is what the next document's log names (§8), sorted as
+    /// [`DocumentFile::required_content`] answers it: the pictures among it are
     /// kept, because a held picture is what let a load pass its content check without
     /// bundling it. Everything else the closed document held goes — see
     /// [`release_closed_document`](Self::release_closed_document).
@@ -615,8 +616,13 @@ impl Engine {
     /// - the compositor's blend scratch and streams, grown to the closed document and
     ///   never shrunk.
     fn release_closed_document(&mut self, named: &[AssetNeed]) {
+        debug_assert!(
+            named.is_sorted(),
+            "`required_content` hands the names over sorted"
+        );
         let pictures = &self.shared.apply.pictures;
-        self.shared.apply.pictures = pictures.keeping(|id| named.contains(&AssetNeed::Picture(id)));
+        self.shared.apply.pictures =
+            pictures.keeping(|id| named.binary_search(&AssetNeed::Picture(id)).is_ok());
         self.shared.apply.pool.release_idle();
         self.compositor = crate::gpu::composite::Compositor::new(&self.compositor_pipeline);
     }

@@ -76,9 +76,11 @@ const ROOT_LAYER: LayerId = LayerId::ROOT;
 /// environment, media parameters — are per-engine values a clone only **seeds** from
 /// the donor, so a sibling opens mirroring the canvas it came from.
 ///
+/// **Pictures are not shared** (§23): they are the donor's document's, so this value,
+/// and every clone of it, holds none (`ApplyCtx::for_sibling`).
+///
 /// Cheap to clone and outlives its donor, so a consumer wanting only the device and
 /// the pipelines (a preset thumbnail) need not borrow a live engine.
-#[derive(Clone)]
 pub struct EngineShared {
     gpu: GpuContext,
     /// The format every pipeline in `passes` was compiled against. A sibling must

@@ -138,7 +138,7 @@ fn releasing_the_idle_textures_keeps_the_ones_in_use() {
 #[test]
 fn a_load_keeps_the_pictures_its_log_names_and_no_others() {
     for space in [ColorSpaceId::Oklab, ColorSpaceId::Mixbox] {
-        if !stark_engine::testing::available(space) {
+        if !stark_engine::available(space) {
             continue;
         }
         let Some(mut engine) = engine_or_skip() else {

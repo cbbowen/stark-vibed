@@ -1201,11 +1201,12 @@ fn culled<V>(
 ///   than `doc_revision` rather than a second, narrower term; both are named because
 ///   a key names the terms its value depends on, not the smallest set that happens to
 ///   cover them.
-/// - `fold` moves whenever the live fold is *rebuilt* (`Preview::rebuild`) — a stroke
-///   in flight commits nothing and replaces no document, so neither counter above
-///   stirs while one is being drawn, and a list keyed without this would hold the
-///   frame at the moment the pen went down. It is the term the two roster keys do not
-///   need: they project what is *shown*, and the fold is not that (`super::ShownKey`).
+/// - `fold` moves whenever the live fold is built or dropped (`Preview::rebuild`); a
+///   rebuild with nothing to drop leaves it alone. A stroke in flight commits nothing
+///   and replaces no document, so neither counter above stirs while one is being
+///   drawn, and a list keyed without this would hold the frame at the moment the pen
+///   went down. It is the term the two roster keys do not need: they project what is
+///   *shown*, and the fold is not that (`super::ShownKey`).
 /// - `content` is which document is being drawn at all. `Live` and `Committed` differ
 ///   by exactly the in-flight gesture, so at one instant they are two different lists.
 /// - `only` and `visible` are the two arguments that shape the list.

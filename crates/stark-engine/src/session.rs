@@ -659,8 +659,9 @@ impl Session {
     /// ([`PathFitter::painted`]).
     ///
     /// A record reaching too far to be drawn at all is one that cannot deposit: every
-    /// render refuses it whole (`gpu::stroke::too_large`), so logging it would also
-    /// hand every peer a record to refuse again.
+    /// render refuses it whole, so logging it would also hand every peer a record to
+    /// refuse again. Asked of the record as the log will hold it, which is also the
+    /// record returned (`gpu::stroke::loggable`).
     pub fn end_stroke(&mut self) -> Option<StrokeRecord> {
         self.in_flight
             .take()
@@ -678,7 +679,8 @@ impl Session {
                 }
                 Some(b.to_record())
             })
-            .filter(|rec| rec.path.len() >= 2 && !crate::gpu::stroke::too_large(rec))
+            .filter(|rec| rec.path.len() >= 2)
+            .and_then(crate::gpu::stroke::loggable)
     }
 
     /// The in-flight tow, for the frontend's string overlay (§6.11): `None`

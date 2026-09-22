@@ -525,6 +525,18 @@ pub(crate) fn too_large(rec: &StrokeRecord) -> bool {
     stroke_rect(rec).count() > MAX_STROKE_TILES
 }
 
+/// `rec` as the log will hold it — through the funnel every logged action passes
+/// (`ActionKind::sanitized`) — or `None` for a record every render refuses whole
+/// ([`too_large`]). What a pen-up asks before it logs, so it asks the fold's question
+/// of the value the fold will be handed.
+pub(crate) fn loggable(rec: StrokeRecord) -> Option<StrokeRecord> {
+    use stark_model::document::ActionKind;
+    let ActionKind::CommitStroke(rec) = ActionKind::CommitStroke(rec).sanitized() else {
+        unreachable!("the sanitizing funnel keeps a stroke a stroke");
+    };
+    (!too_large(&rec)).then_some(rec)
+}
+
 /// The per-stroke quantities **both** render paths read, resolved once from the record
 /// and the scene (§6.2).
 ///

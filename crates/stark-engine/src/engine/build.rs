@@ -31,7 +31,30 @@ use crate::projection::{Memo, Revision};
 use crate::view::{Extent2, ViewTransform};
 use stark_model::{ColorSpaceId, DocError, SubstrateId};
 
+/// A clone is `EngineShared::sibling`: what it holds of a document stays behind.
+impl Clone for EngineShared {
+    fn clone(&self) -> Self {
+        self.sibling()
+    }
+}
+
 impl EngineShared {
+    /// The shared half as a sibling is seeded from: every handle shared, and the
+    /// pictures and the prepared stroke not, being a document's rather than the
+    /// device's (`ApplyCtx::for_sibling`).
+    fn sibling(&self) -> Self {
+        Self {
+            gpu: self.gpu.clone(),
+            target_format: self.target_format,
+            color_space: self.color_space.clone(),
+            apply: self.apply.for_sibling(),
+            scratch: self.scratch.clone(),
+            passes: self.passes.clone(),
+            environment: self.environment.clone(),
+            settings: self.settings,
+        }
+    }
+
     /// The device these engines draw with.
     pub fn gpu(&self) -> &GpuContext {
         &self.gpu
@@ -65,7 +88,7 @@ impl Engine {
     /// Fails with [`DocError::UnsupportedColorSpace`] if this build does not carry
     /// the space — today only `Mixbox` without the `mixbox` feature. A frontend that
     /// builds its picker from
-    /// [`colorspace::all_available`](crate::colorspace::all_available)
+    /// [`all_available`](crate::all_available)
     /// never sees it.
     pub fn new_with_color_space(
         gpu: GpuContext,
@@ -231,7 +254,8 @@ impl Engine {
     /// (§11) — see [`EngineShared`].
     ///
     /// The view settings are read live, so a sibling opens on the look the
-    /// canvas has now rather than the one it was built with.
+    /// canvas has now rather than the one it was built with. The pictures are this
+    /// document's and stay behind (`EngineShared::sibling`).
     pub fn shared(&self) -> EngineShared {
         debug_assert!(
             Arc::ptr_eq(&self.shared.passes, &self.compositor_pipeline.passes()),
@@ -239,7 +263,7 @@ impl Engine {
         );
         EngineShared {
             settings: self.compositor_pipeline.settings(),
-            ..self.shared.clone()
+            ..self.shared.sibling()
         }
     }
 

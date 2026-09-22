@@ -672,7 +672,8 @@ impl Engine {
     /// editor's test-stroke replay.
     ///
     /// Answers the id of the action it committed, or `None` where the samples held no
-    /// stroke — empty, or a hand that never left the first point.
+    /// stroke — empty, a hand that never left the first point, or a reach too large
+    /// for any render to draw.
     pub fn replay_stroke(&mut self, samples: &[crate::command::InputSample]) -> Option<ActionId> {
         self.replay_stroke_seeded(samples, self.authoring.clock, 0.0)
     }
@@ -687,8 +688,9 @@ impl Engine {
     ///
     /// **Answers what it committed**, which is §4's requirement of anything that
     /// mutates and is not a command: a caller has to be able to tell a committed stroke
-    /// from a refused one. `None` is "these samples held no stroke": none at all, or a
-    /// hand that never left its first point.
+    /// from a refused one. `None` is "these samples held no stroke": none at all, a
+    /// hand that never left its first point, or a record refused as too large, which
+    /// every render refuses whole and so is never logged.
     ///
     /// Not routed through `GestureCommand`, deliberately: the command tier's payloads
     /// are values a frontend builds per event, and this takes a borrowed slice a bench
