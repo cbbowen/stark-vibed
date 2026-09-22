@@ -14,8 +14,7 @@
 //! single buffer map, because the map is the latency.
 
 use super::Engine;
-use crate::gpu::channels::Targets;
-use crate::gpu::composite::CompositeGroup;
+use crate::gpu::composite::{CompositeGroup, Patch};
 use crate::view::{Extent2, ViewTransform};
 use stark_model::document::LayerId;
 use stark_model::geom::TileRect;
@@ -293,11 +292,6 @@ impl Engine {
             )
         });
 
-        // Both color spaces store the color channels as four halves (§6.1). A new
-        // one that did not is caught by `read_many_rgba16f` itself, which is the side
-        // that does the decoding and so the side that owns the claim.
-        let formats = self.compositor_pipeline.channel_formats();
-
         // **One draw list for the whole trace**, culled to the union of every patch
         // rather than to each in turn (§6.3): only the cull varies with the point, so a
         // list per sample would be a hundred-odd tree walks for one answer. A union is
@@ -312,56 +306,11 @@ impl Engine {
             let doc = self.presented();
             self.pick_groups(doc, options.source, patch_cull(points, size))
         };
-
-        // **Every point's view first, then every point's draws, then one submit.**
-        // Each patch is its own view of the same document, and the views are slots
-        // (`composite::ViewBindings`), so what orders them is the offset a patch binds
-        // and the whole trace is one encoder rather than a round trip per sample.
-        let views: Vec<crate::view::ViewTransform> =
-            points.iter().map(|&at| patch_view(at, size)).collect();
-        self.compositor
-            .write_views(&self.compositor_pipeline, &views);
-        // The draws, once for the trace. Every patch is the same document under the
-        // same cull, so this is one plan, and it has to be one *upload*: what the
-        // streams write into is one buffer apiece on the compositor
-        // (`Compositor::prepare_pick`). Kept across the loop and past the submit.
-        //
-        // `None` only for an empty trace, where the loop below draws nothing either.
-        let mut prepared = views.first().map(|&first| {
-            self.compositor
-                .prepare_pick(&self.compositor_pipeline, first, &groups)
-        });
-
-        let mut encoder =
-            self.shared
-                .gpu
-                .device
-                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                    label: Some("stark pick encoder"),
-                });
-        let mut colors = Vec::with_capacity(points.len());
-        let mut resids = Vec::with_capacity(points.len());
-        // The `Option` is unwrapped once, around the loop, rather than per slot: "a
-        // non-empty trace prepared above" is a fact about this call, so it is a shape
-        // here instead of an `expect` inside.
-        if let Some(prepared) = &mut prepared {
-            for slot in 0..views.len() {
-                let (color, resid) = self.composite_patch(
-                    &mut encoder,
-                    prepared,
-                    slot,
-                    size,
-                    formats,
-                    ("stark pick color", "stark pick aux", "stark pick resid"),
-                );
-                colors.push(color);
-                resids.push(resid);
-            }
-        }
-        self.shared.gpu.queue.submit([encoder.finish()]);
-        // After the submit, never before: the blend scratch inside destroys its
-        // textures on drop, and a recorded encoder is not in-flight work.
-        drop(prepared);
+        // Each patch is its own view of the same document, so the whole trace is one
+        // upload and one submit rather than a round trip per sample.
+        let views: Vec<ViewTransform> = points.iter().map(|&at| patch_view(at, size)).collect();
+        let mut trace = PickTrace::new(size);
+        trace.record(self, &views, &groups);
 
         // Captured, not read through `self`: the future deliberately does not borrow
         // the engine (see `export`). The color space is an `Arc`, so carrying the
@@ -375,14 +324,15 @@ impl Engine {
             // the alignment callers zip against holds whatever happened.
             // `ObservableState::gpu_failure` is what *reports* the failure.
             let nothing = |n: usize| vec![None; n];
-            let refs: Vec<&wgpu::Texture> = colors.iter().collect();
-            let Ok(texel_sets) = crate::gpu::readback::read_many_rgba16f(&gpu, &refs, size).await
+            let colors = trace.colors();
+            let size = trace.size;
+            let Ok(texel_sets) = crate::gpu::readback::read_many_rgba16f(&gpu, &colors, size).await
             else {
                 return nothing(colors.len());
             };
             // Whether a residual exists is a color-space property, so it is
             // all-or-none across the batch and the two lists stay index-aligned.
-            let resid_refs: Vec<&wgpu::Texture> = resids.iter().flatten().collect();
+            let resid_refs = trace.resids();
             let resid_sets = if resid_refs.is_empty() {
                 None
             } else {
@@ -417,49 +367,77 @@ impl Engine {
                 .collect()
         }
     }
+}
 
-    /// Composite one patch of a prepared plan into fresh attachments, returning the
-    /// two a readback can name.
+/// The GPU half of a pick (§18.0.2): patches of the canvas composited, copied out for
+/// readback and submitted.
+///
+/// **One type owns the sequence, because its order is its correctness.** Every patch's
+/// view and the draws are written before anything is recorded — they are queue writes
+/// into one buffer apiece, which a submit reads the last of — then every patch is
+/// recorded into one encoder, and the prepared state is dropped only after the submit
+/// that reads it, since its targets destroy their textures on drop and a recorded
+/// encoder is not in-flight work.
+struct PickTrace {
+    size: Extent2,
+    patches: Vec<Patch>,
+}
+
+impl PickTrace {
+    /// An empty trace of `size`-square patches.
+    fn new(size: Extent2) -> Self {
+        Self {
+            size,
+            patches: Vec::new(),
+        }
+    }
+
+    /// Composite `groups` once per view in `views` — each `size` square — and keep one
+    /// patch per view, in order: one upload, one encoder, one submit.
     ///
-    /// Shared by both pick paths. `color` and `resid` are read back (the eyedropper
-    /// wants both; a pigment space's residual is just more colour channels), so both
-    /// get `COPY_SRC`. `aux` never is — pass A writes it and the height it accumulates
-    /// says how *much* paint is there, not what colour it is — so it gets none.
-    ///
-    /// `TEXTURE_BINDING` on all three because some filters sample the accumulator.
-    fn composite_patch(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        prepared: &mut crate::gpu::composite::PreparedPick<'_>,
-        slot: usize,
-        size: Extent2,
-        formats: crate::gpu::channels::ChannelFormats,
-        labels: (&str, &str, &str),
-    ) -> (wgpu::Texture, Option<wgpu::Texture>) {
-        let shared = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        let readable = shared | wgpu::TextureUsages::COPY_SRC;
-        let color = self.offscreen_target(labels.0, formats.color, size, readable);
-        let aux = self.offscreen_target(labels.1, formats.aux, size, shared);
-        let resid = formats
-            .resid
-            .map(|f| self.offscreen_target(labels.2, f, size, readable));
-        // Named rather than inlined into the call: a `Targets` borrows its three
-        // views, so they have to outlive it.
-        let default = wgpu::TextureViewDescriptor::default();
-        let (color_view, aux_view) = (color.create_view(&default), aux.create_view(&default));
-        let resid_view = resid.as_ref().map(|t| t.create_view(&default));
-        self.compositor.composite_channels(
-            &self.compositor_pipeline,
-            encoder,
-            Targets {
-                color: &color_view,
-                aux: &aux_view,
-                resid: resid_view.as_ref(),
-            },
-            prepared,
-            slot,
+    /// A trace of several draw lists records each apart (`pick_layer`): each list is
+    /// its own upload, and two uploads before one submit would leave both drawing the
+    /// second's records.
+    fn record(&mut self, engine: &mut Engine, views: &[ViewTransform], groups: &[CompositeGroup]) {
+        if views.is_empty() {
+            return;
+        }
+        debug_assert!(
+            views.iter().all(|v| v.viewport == self.size),
+            "every patch of a trace is the trace's size",
         );
-        (color, resid)
+        let p = &engine.compositor_pipeline;
+        let prepared = engine.compositor.prepare_pick(p, views, groups);
+        let mut encoder =
+            engine
+                .shared
+                .gpu
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("stark pick encoder"),
+                });
+        for slot in 0..prepared.patches() {
+            let patch = engine
+                .compositor
+                .composite_patch(p, &mut encoder, &prepared, slot);
+            self.patches.push(patch);
+        }
+        engine.shared.gpu.queue.submit([encoder.finish()]);
+        drop(prepared);
+    }
+
+    /// Every patch's colour target, in order — what a readback names.
+    fn colors(&self) -> Vec<&wgpu::Texture> {
+        self.patches.iter().map(|p| &p.color).collect()
+    }
+
+    /// Every patch's residual, in order: empty in a space that has none, one per
+    /// patch in one that does (§6.7).
+    fn resids(&self) -> Vec<&wgpu::Texture> {
+        self.patches
+            .iter()
+            .filter_map(|p| p.resid.as_ref())
+            .collect()
     }
 }
 
@@ -565,62 +543,31 @@ impl Engine {
             }
         };
 
-        // Only the color target's alpha is read, at the stride
-        // `read_many_rgba16f` pins.
-        let formats = self.compositor_pipeline.channel_formats();
-        // **One view for every candidate**, since a hit test asks the same patch of
-        // every layer in turn — so one slot, written once.
-        //
-        // A submit per candidate all the same, unlike the eyedropper's trace: each
-        // candidate has its *own* draw list, so each needs its own upload, and the
-        // streams an upload writes are one buffer apiece on the compositor — two
-        // uploads before one submit would leave both candidates drawing the second's
-        // tile origins (`Compositor::prepare_pick`).
-        self.compositor
-            .write_views(&self.compositor_pipeline, &[view]);
-        let mut hits: Vec<(LayerId, wgpu::Texture)> = Vec::with_capacity(lists.len());
-        for (id, groups) in &lists {
-            let mut prepared =
-                self.compositor
-                    .prepare_pick(&self.compositor_pipeline, view, groups);
-            let mut encoder =
-                self.shared
-                    .gpu
-                    .device
-                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                        label: Some("stark hit encoder"),
-                    });
-            // The residual comes back and is dropped: what this path reads is coverage,
-            // and in a pigment space the residual is more colour channels rather than
-            // any part of that.
-            let (color, _resid) = self.composite_patch(
-                &mut encoder,
-                &mut prepared,
-                0,
-                size,
-                formats,
-                ("stark hit color", "stark hit aux", "stark hit resid"),
-            );
-            self.shared.gpu.queue.submit([encoder.finish()]);
-            // After the submit: the scratch inside destroys its textures on drop.
-            drop(prepared);
-            hits.push((*id, color));
+        // One trace across every candidate, recorded a draw list at a time: each has
+        // its own upload, and so its own submit (`PickTrace::record`).
+        let mut trace = PickTrace::new(size);
+        for (_, groups) in &lists {
+            trace.record(self, &[view], groups);
         }
+        let ids: Vec<LayerId> = lists.into_iter().map(|(id, _)| id).collect();
 
         let gpu = self.shared.gpu.clone();
         async move {
-            if hits.is_empty() {
+            if ids.is_empty() {
                 return None;
             }
-            let refs: Vec<&wgpu::Texture> = hits.iter().map(|(_, t)| t).collect();
+            // Only the color target's alpha is read, at the stride
+            // `read_many_rgba16f` pins.
+            let colors = trace.colors();
             // A readback that fails is the GPU failing underneath it (§5), and
             // "nothing under the pointer" is the honest answer for a device that
             // can no longer be read — the eyedropper's stance, for its reason:
             // `ObservableState::gpu_failure` is what *reports* the failure.
-            let Ok(sets) = crate::gpu::readback::read_many_rgba16f(&gpu, &refs, size).await else {
+            let Ok(sets) = crate::gpu::readback::read_many_rgba16f(&gpu, &colors, size).await
+            else {
                 return None;
             };
-            hits.iter().zip(sets).find_map(|((id, _), texels)| {
+            ids.iter().zip(sets).find_map(|(id, texels)| {
                 let coverage = *texels.first_chunk::<4>()?.get(3)?;
                 (coverage.is_finite() && coverage >= LAYER_HIT_COVERAGE).then_some(*id)
             })

@@ -28,6 +28,10 @@ pub(super) struct Attachment {
     view: wgpu::TextureView,
 }
 
+/// What a target a pass renders into and a later pass samples is used for.
+pub(super) const RENDERED: wgpu::TextureUsages =
+    wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::TEXTURE_BINDING);
+
 impl Attachment {
     /// A target a pass renders into and a later pass samples.
     pub(super) fn new(
@@ -36,13 +40,7 @@ impl Attachment {
         format: wgpu::TextureFormat,
         label: &str,
     ) -> Self {
-        Self::with_usage(
-            device,
-            size,
-            format,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            label,
-        )
+        Self::with_usage(device, size, format, RENDERED, label)
     }
 
     /// [`Self::new`] for a target used some other way — the focal blur's planes,
@@ -76,6 +74,11 @@ impl Attachment {
     pub(super) fn view(&self) -> &wgpu::TextureView {
         &self.view
     }
+
+    /// The texture itself, for a copy out of it.
+    pub(super) fn texture(&self) -> &wgpu::Texture {
+        &self.tex
+    }
 }
 
 impl Drop for Attachment {
@@ -99,7 +102,19 @@ impl Trio {
         labels: (&str, &str, &str),
         formats: ChannelFormats,
     ) -> Self {
-        let make = |format, label| Attachment::new(device, size, format, label);
+        Self::with_usage(device, size, labels, formats, RENDERED)
+    }
+
+    /// [`Self::new`] for a trio used some other way too — the eyedropper's, which is
+    /// copied out of (§18.0.2).
+    pub(super) fn with_usage(
+        device: &wgpu::Device,
+        size: Extent2,
+        labels: (&str, &str, &str),
+        formats: ChannelFormats,
+        usage: wgpu::TextureUsages,
+    ) -> Self {
+        let make = |format, label| Attachment::with_usage(device, size, format, usage, label);
         Self {
             color: make(formats.color, labels.0),
             aux: make(formats.aux, labels.1),

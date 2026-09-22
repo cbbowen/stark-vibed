@@ -230,14 +230,13 @@ pub(super) struct ScratchLevel {
     /// and a merge's source is always this level's `iso`. Two phases, so two of each,
     /// however many merges the document has.
     ///
-    /// **Three things invalidate one:** a rebuilt accumulator (`ensure_targets` drops
-    /// the whole scratch with it); each patch of a pick's trace, a target of its own
-    /// ([`Compositor::composite_channels`] drops the groups before it); and a replaced
-    /// uniform buffer — a frame with more merges than the buffer holds replaces the pass's
-    /// ([`UniformSlots::write`]), which `Streams::upload` reports for its callers to
-    /// invalidate.
-    ///
-    /// [`Compositor::composite_channels`]: super::Compositor::composite_channels
+    /// That rests on the caller's target being fixed for the scratch's life — the
+    /// render path's accumulator, or the one trio a pick composites every patch into
+    /// ([`PreparedPick`](super::PreparedPick)). **Two other things invalidate one:** a
+    /// rebuilt accumulator (`ensure_targets` drops the whole scratch with it), and a
+    /// replaced uniform buffer — a frame with more merges than the buffer holds
+    /// replaces the pass's ([`UniformSlots::write`]), which `Streams::upload` reports
+    /// for its callers to invalidate.
     blend_bg: [OnceLock<[wgpu::BindGroup; 2]>; 2],
     filter_bg: [OnceLock<[wgpu::BindGroup; 2]>; 2],
 }

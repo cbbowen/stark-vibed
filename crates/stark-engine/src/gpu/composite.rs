@@ -45,7 +45,7 @@ use crate::gpu::substrate::SubstrateMap;
 use crate::gpu::tile::TilePairHandle;
 use crate::gpu::uniforms::{InstanceStream, UniformSlots};
 use crate::view::{Extent2, ViewTransform};
-use attachment::Attachment;
+use attachment::{Attachment, Trio};
 
 pub(crate) use blend::{BlendPass, BlendUniform};
 use blend::{Bounce, ScratchLevel, ScratchNeeds, ScratchTargets};
@@ -375,16 +375,28 @@ impl TargetPasses {
 }
 
 /// One pick's draws, prepared once and recorded from many times
-/// ([`Compositor::prepare_pick`]).
+/// ([`Compositor::prepare_pick`]), and the one patch-sized target every patch is
+/// composited into.
 ///
 /// **Holding it from before the first patch is recorded until after the submit is
 /// what keeps a trace correct.** Its uploads target buffers this `Compositor` owns one
 /// of, so preparing per patch would leave every patch drawing the last one's records;
-/// and the blend scratch destroys its textures on drop, so dropping it before the
-/// submit would fail the submit and lose the whole trace.
+/// and its targets destroy their textures on drop, so dropping it before the submit
+/// would fail the submit and lose the whole trace.
+///
+/// One set of targets for every patch — the trio, the scratch, the blur planes — is
+/// sound because the patches are recorded into one encoder and commands in an encoder
+/// run in order: each patch clears and rewrites all of them before it reads any, and
+/// its result is copied out of the trio before the next patch begins. And because the
+/// trio is the scratch's level 0 for the scratch's whole life, the bind groups the
+/// scratch caches over it hold for every patch.
 pub(crate) struct PreparedPick<'a> {
     plan: Plan<'a>,
     streams: PreparedStreams<'a>,
+    /// Pass A's target, the patches' size: the plan's `Slot::Target`.
+    target: Trio,
+    /// How many views were written, one per patch.
+    patches: usize,
     scratch: Option<ScratchTargets>,
     /// The pick's own blur scratch when the document has a focal blur (§21.12) —
     /// a patch is a handful of texels, so this is kilobytes where the screen's is
@@ -401,6 +413,20 @@ impl PreparedPick<'_> {
             blur: self.blur.as_ref(),
         }
     }
+
+    /// How many patches were prepared — the slots [`Compositor::composite_patch`]
+    /// takes.
+    pub(crate) fn patches(&self) -> usize {
+        self.patches
+    }
+}
+
+/// One composited patch of a pick, copied out for readback: the paint's colour
+/// channels and, in a space that has one, its residual (§6.7) — both or the colour
+/// alone, as the space decides, never the caller.
+pub(crate) struct Patch {
+    pub(crate) color: wgpu::Texture,
+    pub(crate) resid: Option<wgpu::Texture>,
 }
 
 /// The view settings a [`CompositorPipeline`] holds as plain values: how the media
@@ -767,15 +793,6 @@ impl CompositorPipeline {
     /// The device's largest 2-D texture edge, asked once when the passes were built.
     pub(crate) fn max_dim(&self) -> u32 {
         self.max_dim
-    }
-
-    /// The channel formats pass A writes (§6.7) — what a caller supplying its own
-    /// targets to [`Compositor::composite_channels`] has to allocate.
-    ///
-    /// The whole [`ChannelFormats`] rather than a `(color, aux, resid)` tuple: the
-    /// residual is not a channel a caller may decide to skip.
-    pub(crate) fn channel_formats(&self) -> ChannelFormats {
-        self.formats
     }
 
     /// Point an existing accumulator's media group at this pipeline's current
@@ -1219,38 +1236,39 @@ impl Compositor {
         }
     }
 
-    /// Lay down one view slot per patch, in `views`' order — what the patches of a
-    /// [`prepare_pick`](Self::prepare_pick) trace bind against by index.
+    /// Prepare one pick — **once for a whole trace**, before any of its patches are
+    /// recorded: a view slot per patch, in `views`' order, and the plan's draws
+    /// uploaded.
     ///
-    /// Separate from the recording because it happens *once* for a trace: every slot
-    /// has to be written before the single submit that reads them.
-    pub(crate) fn write_views(&mut self, p: &CompositorPipeline, views: &[ViewTransform]) {
-        self.follow(p);
-        // A pick draws pass A alone into a patch of its own — no outline, so the one
-        // thing the view's transfer lane reaches is not encoded here (§6.5).
-        self.streams.write_views(p, views, Transfer::Srgb);
-    }
-
-    /// Plan and upload one pick's draws — **once for a whole trace**, before any of
-    /// its patches are recorded.
+    /// Once, and not merely as an optimization: the streams write into one buffer
+    /// apiece on this `Compositor`, and `write_buffer` is a queue operation, so N
+    /// uploads before one submit would leave every patch drawing the last one's
+    /// records (`gpu::uniforms`).
     ///
-    /// Not merely an optimization: the streams write into one buffer apiece on this
-    /// `Compositor`, and `write_buffer` is a queue operation, so N uploads before one
-    /// submit would leave every patch drawing the last one's records
-    /// (`gpu::uniforms`).
-    ///
-    /// `view` is any of the patches'. The only thing the streams read it for is the
-    /// chromatic filter's dispersion (§21.10), which is `view.linear()` — zoom,
-    /// rotation and flip — and a trace's patches differ in position alone
-    /// (`pick::patch_view`). A pick whose patches varied the *shape* of their view
+    /// Every view must be the same size, and differ from the others in position alone
+    /// (`pick::patch_view`): the only thing the draws read a view for is the chromatic
+    /// filter's dispersion (§21.10), which is `view.linear()`, so the first view's
+    /// stands for all of them. A pick whose patches varied the *shape* of their view
     /// would have to prepare per patch, and would then have to submit per patch too.
+    ///
+    /// # Panics
+    /// If `views` is empty: a pick with no patch has nothing to prepare.
     pub(crate) fn prepare_pick<'a>(
         &mut self,
         p: &CompositorPipeline,
-        view: ViewTransform,
+        views: &[ViewTransform],
         groups: &'a [CompositeGroup],
     ) -> PreparedPick<'a> {
         self.follow(p);
+        let view = *views.first().expect("a pick prepares at least one patch");
+        let size = view.viewport;
+        debug_assert!(
+            views.iter().all(|v| v.viewport == size),
+            "every patch of a pick is one size",
+        );
+        // A pick draws pass A alone — no outline, so the one thing the view's transfer
+        // lane reaches is not encoded here (§6.5).
+        self.streams.write_views(p, views, Transfer::Srgb);
         let plan = Plan::build(groups);
         let (filters, kernels) = plan.for_view(view);
         let (streams, buffers_moved) = self.streams.upload(p, &plan, &filters);
@@ -1260,85 +1278,83 @@ impl Compositor {
         if let Some(scratch) = self.sized.scratch.as_mut().filter(|_| buffers_moved) {
             scratch.invalidate_bind_groups();
         }
-        // Its own scratch, and the trace's rather than the patch's. A pick viewport is
-        // `2r+1` square, so this is a few kilobytes; sharing the render path's cache
-        // would trade that for reallocating the *window* twice a frame for the whole
-        // of an Alt-drag. Blend modes have to be honoured here or an eyedropper would
-        // report a color the screen never showed.
-        //
-        // One set of textures for every patch is sound because the patches are
-        // recorded into one encoder and commands in an encoder run in order: each
-        // patch's bounces clear and rewrite the scratch before reading it. The bind
-        // groups the scratch caches are not shared, since at level 0 they name the
-        // patch's own target; `composite_channels` drops them per patch. What the
-        // scratch must outlive is the *submit*, which is why it is here and not in the
-        // recording call — `Attachment`'s drop `destroy()`s the texture, and a recorded
-        // encoder is not in-flight work.
-        let scratch = (!plan.scratch.is_empty()).then(|| {
-            ScratchTargets::new(
-                &p.ctx.device,
-                view.viewport,
-                plan.scratch.clone(),
-                p.formats,
-            )
-        });
-        // Its own blur scratch too, on the same argument, and serially sound across
-        // patches for the same reason: each patch's decode and round trip rewrite the
-        // planes before its resolve reads them.
+        // Its own target, scratch and blur planes rather than the screen's: a sample
+        // taken through the screen's compositor must leave the screen's attachments
+        // exactly where they were, and a pick viewport is `2r+1` square — kilobytes,
+        // where sharing the render path's cache would reallocate the *window* twice a
+        // frame for the whole of an Alt-drag. Blend modes have to be honoured here or
+        // an eyedropper would report a color the screen never showed.
+        let target = Trio::with_usage(
+            &p.ctx.device,
+            size,
+            ("stark pick color", "stark pick aux", "stark pick resid"),
+            p.formats,
+            attachment::RENDERED | wgpu::TextureUsages::COPY_SRC,
+        );
+        let scratch = (!plan.scratch.is_empty())
+            .then(|| ScratchTargets::new(&p.ctx.device, size, plan.scratch.clone(), p.formats));
         let mut blur = None;
-        p.blur.prepare(&p.ctx, &mut blur, view.viewport, &kernels);
+        p.blur.prepare(&p.ctx, &mut blur, size, &kernels);
         PreparedPick {
             plan,
             streams,
+            target,
+            patches: views.len(),
             scratch,
             blur,
         }
     }
 
-    /// Record one patch of a prepared pick into the caller's encoder: pass A alone,
-    /// into caller-supplied targets, with no media pass over it.
+    /// Record patch `slot` of a prepared pick into the caller's encoder — pass A alone,
+    /// with no media pass over it — and copy what it composited out for readback.
     ///
-    /// The eyedropper's sampling path (§18.0.2). What lands in `color` is the paint's
+    /// The eyedropper's sampling path (§18.0.2). What the patch holds is the paint's
     /// own channels in the document's working space, which is what a picker has to
     /// read: the lit result has been through image-based lighting, a tonemap and an
     /// sRGB encode, so picking *that* would hand back a color the palette never mixed
     /// — and in a Mixbox document (§6.7) a pigment mixture that cannot be picked back
     /// up.
     ///
-    /// `into` must carry the formats [`CompositorPipeline::channel_formats`] reports
-    /// and be the patch view's viewport in size. It is the caller's, not this
-    /// compositor's: a sample taken through the screen's compositor must leave the
-    /// screen's own attachments exactly where they were, which is why this does not go
-    /// through [`TargetSized::ensure_targets`]. A [`Targets`] rather than three views,
-    /// because a pigment document's pass A **writes three attachments** and
-    /// `ChannelFormats` is what makes "all three or none of them" unsayable (§6.7).
-    ///
     /// **Nothing here submits.** A gradient capture samples up to
     /// [`MAX_SAMPLES`](stark_model::gradient::MAX_SAMPLES) points (§22.2), all patches
-    /// of the same document: the caller writes every view, records every patch and
-    /// submits once, keeping `prepared` alive until it has. `slot` is which of the
-    /// views ([`ViewBindings`]) this patch draws through.
-    pub(crate) fn composite_channels(
+    /// of the same document: the caller records every patch and submits once, keeping
+    /// `prepared` alive until it has (`pick::PickTrace`).
+    pub(crate) fn composite_patch(
         &self,
         p: &CompositorPipeline,
         encoder: &mut wgpu::CommandEncoder,
-        into: Targets<'_>,
-        prepared: &mut PreparedPick<'_>,
+        prepared: &PreparedPick<'_>,
         slot: usize,
-    ) {
-        debug_assert_eq!(
-            into.count(),
-            p.formats.count(),
-            "pass A's attachment count is the color space's, not the caller's",
+    ) -> Patch {
+        assert!(
+            slot < prepared.patches,
+            "patch {slot} of a pick prepared with {} view(s)",
+            prepared.patches,
         );
-        // A bounce at level 0 reads the stack's own target, which is `into` — a
-        // different texture every patch. Groups cached over the previous patch's
-        // would read its accumulator as this one's backdrop.
-        if let Some(scratch) = prepared.scratch.as_mut() {
-            scratch.invalidate_bind_groups();
-        }
+        let trio = &prepared.target;
         self.streams
-            .encode_plan(p, encoder, into, prepared.pass_a(), slot);
+            .encode_plan(p, encoder, trio.targets(), prepared.pass_a(), slot);
+        // The aux is left behind: the height it accumulates says how *much* paint is
+        // there, not what colour it is.
+        let mut copy_out = |from: &Attachment, label| {
+            let into = p.ctx.device.create_texture(&wgpu::TextureDescriptor {
+                usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+                ..desc::sampled_texture(label, from.texture().format(), from.texture().size())
+            });
+            encoder.copy_texture_to_texture(
+                from.texture().as_image_copy(),
+                into.as_image_copy(),
+                from.texture().size(),
+            );
+            into
+        };
+        Patch {
+            color: copy_out(&trio.color, "stark pick color patch"),
+            resid: trio
+                .resid
+                .as_ref()
+                .map(|resid| copy_out(resid, "stark pick resid patch")),
+        }
     }
 
     /// Composite `scene`'s layers, light the result into `target` under `view`, and

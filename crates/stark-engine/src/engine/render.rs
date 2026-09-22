@@ -994,10 +994,9 @@ impl Engine {
         }
     }
 
-    /// A flat 2-D texture to render into off-screen: an export's target, or one of the
-    /// eyedropper's two sample attachments. Everything but the label, the format, the
-    /// size and the usage is the same for all of them: a single mip, a single sample,
-    /// no view formats.
+    /// A flat 2-D texture to render into off-screen: an export's target, or the HDR
+    /// probe's. Everything but the label, the format, the size and the usage is the
+    /// same for both: a single mip, a single sample, no view formats.
     pub(super) fn offscreen_target(
         &self,
         label: &str,
