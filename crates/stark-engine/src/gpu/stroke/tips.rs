@@ -142,9 +142,12 @@ impl TipCache {
     /// recovered field was flat, which the sweep laid as a plateau across the middle of
     /// every stroke. That disc is 0.07 of the radius at hardness 0 and 0.71 at 0.95.
     fn round_tip(&self, hardness: f32) -> RoundTip {
-        let mut cache = unpoisoned(self.round_tip.lock());
-        let (tip, _evicted) = lru(&mut cache, hardness.to_bits(), ROUND_TIPS_KEPT, || {
-            let depth = round_depth(hardness, ROUND_RES);
+        let (tip, _evicted) = cached(&self.round_tip, hardness.to_bits(), ROUND_TIPS_KEPT, || {
+            // The profile once for both readings of it: `RoundProfile::of` scans a few
+            // hundred shoulders and quadratures a normalizing integral, and the depth
+            // field and the rise are the same tip.
+            let profile = RoundProfile::of(hardness);
+            let depth = round_depth(&profile, ROUND_RES);
             // The round tip is rotation-invariant, so a single orientation layer
             // suffices — the shader's wrapping lookup reads it for every
             // orientation (§6.6).
@@ -173,7 +176,7 @@ impl TipCache {
                 prefix,
                 depth: depth_view,
                 warp,
-                rise: round_rise(hardness),
+                rise: round_rise(&profile),
             }
         });
         // An eviction is dropped rather than `destroy()`ed: unlike the per-stroke
@@ -190,16 +193,20 @@ impl TipCache {
         if !cd.is_active() {
             return NoiseLease(Arc::clone(&self.dummy_noise));
         }
-        let mut cache = unpoisoned(self.noise_tiles.lock());
-        let (tile, evicted) = lru(&mut cache, (cd.noise, seed), NOISE_TILES_KEPT, || {
-            let baked = crate::noise::bake(cd.noise, seed);
-            Arc::new(NoiseTile::upload(
-                &self.ctx,
-                baked.res,
-                &baked.texels,
-                "stark noise field",
-            ))
-        });
+        let (tile, evicted) = cached(
+            &self.noise_tiles,
+            (cd.noise, seed),
+            NOISE_TILES_KEPT,
+            || {
+                let baked = crate::noise::bake(cd.noise, seed);
+                Arc::new(NoiseTile::upload(
+                    &self.ctx,
+                    baked.res,
+                    &baked.texels,
+                    "stark noise field",
+                ))
+            },
+        );
         drop(evicted);
         NoiseLease(tile)
     }
@@ -209,22 +216,40 @@ impl TipCache {
 /// back, or `build`'s result pushed there — and, past `kept` entries, the oldest
 /// handed back for the caller to release. A GPU resource dropped is not one freed
 /// (`gpu::scratch`), so which release it gets is the caller's to say.
-fn lru<K: PartialEq, V: Clone>(
-    cache: &mut Vec<(K, V)>,
+///
+/// **`build` runs with the lock released**, because a bake is milliseconds — 256² × 16
+/// samples of the round tip's profile — and every clone of the renderer shares this
+/// list: a hardness slider dragged on one engine would otherwise stall a sibling's
+/// stroke for the length of each frame's bake. Two callers may then bake one key at
+/// once; the first insert is what both read and what the cache keeps, and the loser's
+/// value comes back in the release slot beside an eviction. One wasted bake against a
+/// held lock, and the cache never holds two answers to one key.
+fn cached<K: PartialEq, V: Clone>(
+    lru: &Lru<K, V>,
     key: K,
     kept: usize,
     build: impl FnOnce() -> V,
 ) -> (V, Option<V>) {
-    if let Some(i) = cache.iter().position(|(k, _)| *k == key) {
-        let hit = cache.remove(i);
-        let v = hit.1.clone();
-        cache.push(hit);
+    if let Some(v) = hit(&mut unpoisoned(lru.lock()), &key) {
         return (v, None);
     }
-    let v = build();
-    cache.push((key, v.clone()));
+    let built = build();
+    let mut cache = unpoisoned(lru.lock());
+    if let Some(v) = hit(&mut cache, &key) {
+        return (v, Some(built));
+    }
+    cache.push((key, built.clone()));
     let evicted = (cache.len() > kept).then(|| cache.remove(0).1);
-    (v, evicted)
+    (built, evicted)
+}
+
+/// `key`'s value if the list holds it, moved to the back as the newest.
+fn hit<K: PartialEq, V: Clone>(cache: &mut Vec<(K, V)>, key: &K) -> Option<V> {
+    let i = cache.iter().position(|(k, _)| k == key)?;
+    let entry = cache.remove(i);
+    let v = entry.1.clone();
+    cache.push(entry);
+    Some(v)
 }
 
 /// One stroke's baked color-dynamics field: the texture kept beside its view so an
@@ -576,24 +601,47 @@ fn shoulder_of(peak: f32, p: f32) -> f32 {
 const DEPTH_SUBSAMPLES: u32 = 4;
 
 /// Generate the round tip's **optical depth** field on the bake grid (§6.6): the
-/// radial `κ` of the [`RoundProfile`] `hardness` names, averaged over each texel.
+/// radial `κ` of `profile`, averaged over each texel.
 ///
 /// Finite everywhere, which `build_prefix` requires and a prefix sum gives no second
 /// chance at — `RoundProfile::depth_at` holds the rim, and there is no centre
 /// divergence in this family to hold.
-fn round_depth(hardness: f32, res: u32) -> Vec<f32> {
-    let profile = RoundProfile::of(hardness);
+fn round_depth(profile: &RoundProfile, res: u32) -> Vec<f32> {
     let n = DEPTH_SUBSAMPLES;
     let inv = 1.0 / (n * n) as f32;
+    // Half of one axis of the subsample grid, **squared**, which is how the radius
+    // below reads it.
+    //
+    // Half, because the grid is symmetric about the centre *to the bit*: a subsample
+    // coordinate is `(i + ½)/(res·n/2) − 1`, every step of which is exact in binary, so
+    // the coordinate at `res·n − 1 − i` is exactly the negative of the one at `i` and
+    // their squares are one number. The `res² · n²` evaluations of that expression are
+    // then `res·n/2` of them, and the depth of a subsample — the one `powf` here — is a
+    // function of a *pair* of those squares, so it is baked once per pair rather than
+    // once per subsample: a quarter of the calls, each the one it replaced.
+    let axis = res * n;
+    let half = (axis as usize).div_ceil(2);
+    let sq: Vec<f32> = (0..half as u32)
+        .map(|i| {
+            let f = ((i / n) as f32 + ((i % n) as f32 + 0.5) / n as f32) / res as f32 * 2.0 - 1.0;
+            f * f
+        })
+        .collect();
+    // Which of those a grid index reads: itself, or its mirror in the far half.
+    let fold: Vec<usize> = (0..axis as usize)
+        .map(|i| i.min(axis as usize - 1 - i))
+        .collect();
+    let depth_of: Vec<f32> = (0..half * half)
+        .map(|k| profile.depth_at((sq[k / half] + sq[k % half]).sqrt()))
+        .collect();
     let mut depth = vec![0.0f32; (res * res) as usize];
     for y in 0..res {
         for x in 0..res {
             let mut acc = 0.0f32;
             for sy in 0..n {
-                let fy = (y as f32 + (sy as f32 + 0.5) / n as f32) / res as f32 * 2.0 - 1.0;
+                let fy = fold[(y * n + sy) as usize] * half;
                 for sx in 0..n {
-                    let fx = (x as f32 + (sx as f32 + 0.5) / n as f32) / res as f32 * 2.0 - 1.0;
-                    acc += profile.depth_at((fx * fx + fy * fy).sqrt());
+                    acc += depth_of[fold[(x * n + sx) as usize] + fy];
                 }
             }
             depth[(y * res + x) as usize] = acc * inv;
@@ -607,7 +655,7 @@ fn round_depth(hardness: f32, res: u32) -> Vec<f32> {
 /// any tip narrower than two thousand px can show.
 const RISE_SAMPLES: usize = 2048;
 
-/// The round tip's **rise** (§6.13), in radii: the shortest travel over which its
+/// `profile`'s **rise** (§6.13), in radii: the shortest travel over which its
 /// coverage climbs by [`WARP_CONTRACTION`](super::budget::WARP_CONTRACTION),
 /// anywhere along a pass — what the liquify step budget prices.
 ///
@@ -620,9 +668,8 @@ const RISE_SAMPLES: usize = 2048;
 /// hard tip climbs fastest where its `√(1 − r)` cusp meets the edge, a soft one
 /// somewhere inside. The rim itself is the last sample — a hard tip's whole climb sits
 /// inside the final ten-thousandth of a radius.
-pub(super) fn round_rise(hardness: f32) -> f32 {
+pub(super) fn round_rise(profile: &RoundProfile) -> f32 {
     let n = RISE_SAMPLES;
-    let profile = RoundProfile::of(hardness);
     let cov: Vec<f32> = (0..=n)
         .map(|i| profile.coverage_at(i as f32 / n as f32))
         .collect();
@@ -650,7 +697,9 @@ pub(super) fn round_rise(hardness: f32) -> f32 {
 #[cfg(test)]
 pub(super) fn round_rise_of(b: &BrushParams) -> f32 {
     match b.shape {
-        BrushShape::Round { hardness } => round_rise(effective_hardness(hardness, b.size)),
+        BrushShape::Round { hardness } => {
+            round_rise(&RoundProfile::of(effective_hardness(hardness, b.size)))
+        }
         BrushShape::Stamp(_) => 0.0,
     }
 }
@@ -714,14 +763,14 @@ mod tests {
         // be non-monotone about — its steepest climb is always at the rim.
         let mut last = f32::INFINITY;
         for hardness in [0.0f32, 0.25, 0.5] {
-            let rise = round_rise(hardness);
+            let rise = round_rise(&RoundProfile::of(hardness));
             assert!(
                 rise > 0.0 && rise < last,
                 "hardness {hardness}: rise {rise} after {last}"
             );
             last = rise;
         }
-        let at = round_rise(0.0);
+        let at = round_rise(&RoundProfile::of(0.0));
         assert!(
             (0.15..=0.28).contains(&at),
             "the softest tip rises over {at} radii"
@@ -729,7 +778,7 @@ mod tests {
         // Past the middle of the dial the whole climb is inside the sampling floor,
         // and the budget's texel floor takes over from there (§6.13).
         for hardness in [0.8f32, 0.95, 1.0] {
-            let rise = round_rise(hardness);
+            let rise = round_rise(&RoundProfile::of(hardness));
             assert!(
                 rise <= 2.0 / RISE_SAMPLES as f32,
                 "hardness {hardness} rises over {rise} radii, not inside the sampling",
@@ -782,7 +831,7 @@ mod tests {
         const RES: u32 = ROUND_RES;
         for hardness in [0.0, 0.25, 0.5, 0.8, 0.95] {
             let profile = RoundProfile::of(hardness);
-            let depth = round_depth(hardness, RES);
+            let depth = round_depth(&profile, RES);
             for a in [1.0f32, 0.5, 0.25] {
                 for row in RES / 2..RES {
                     let y = (row as f32 + 0.5) / RES as f32 * 2.0 - 1.0;
@@ -835,7 +884,7 @@ mod tests {
     fn the_round_tip_never_lays_more_than_one_pass() {
         const RES: u32 = ROUND_RES;
         for hardness in [0.0f32, 0.25, 0.5, 0.8, 0.95, 1.0] {
-            let depth = round_depth(hardness, RES);
+            let depth = round_depth(&RoundProfile::of(hardness), RES);
             for row in RES / 2..RES {
                 let tau = swept_tau(&depth, RES, row);
                 // To within the bake's own quadrature: `PEAK_DEPTH` normalizes the
@@ -853,7 +902,7 @@ mod tests {
         // there (`T ≈ T(1 − p·y²)`) and the grid's reading of the disc's own edge moves
         // by more than that between one row and the next.
         for hardness in [0.0f32, 0.5, 0.95] {
-            let depth = round_depth(hardness, RES);
+            let depth = round_depth(&RoundProfile::of(hardness), RES);
             let core = swept_tau(&depth, RES, RES / 2);
             for row in RES / 2..RES {
                 let tau = swept_tau(&depth, RES, row);
@@ -863,6 +912,45 @@ mod tests {
                      centreline's {core}",
                 );
             }
+        }
+    }
+
+    /// The bake's tables are the double loop they replaced, **to the bit**: the
+    /// subsample grid is symmetric about the centre exactly, so a subsample's depth is
+    /// a function of a pair of squared coordinates and comes out of a quarter of the
+    /// `powf` calls unchanged.
+    ///
+    /// Stated against the plain loop, at a smaller grid for the test's sake, because
+    /// nothing else would show a drift of an ulp: the field feeds a prefix sum every
+    /// stroke integrates against, so an ulp here is a re-blessing of every golden a
+    /// round tip drew.
+    #[test]
+    fn the_baked_field_is_the_plain_loops_to_the_bit() {
+        const RES: u32 = 64;
+        let n = DEPTH_SUBSAMPLES;
+        let inv = 1.0 / (n * n) as f32;
+        for hardness in [0.0f32, 0.5, 1.0] {
+            let profile = RoundProfile::of(hardness);
+            let mut want = vec![0.0f32; (RES * RES) as usize];
+            for y in 0..RES {
+                for x in 0..RES {
+                    let mut acc = 0.0f32;
+                    for sy in 0..n {
+                        let fy = (y as f32 + (sy as f32 + 0.5) / n as f32) / RES as f32 * 2.0 - 1.0;
+                        for sx in 0..n {
+                            let fx =
+                                (x as f32 + (sx as f32 + 0.5) / n as f32) / RES as f32 * 2.0 - 1.0;
+                            acc += profile.depth_at((fx * fx + fy * fy).sqrt());
+                        }
+                    }
+                    want[(y * RES + x) as usize] = acc * inv;
+                }
+            }
+            assert_eq!(
+                round_depth(&profile, RES),
+                want,
+                "hardness {hardness}: the tabled bake is not the plain one",
+            );
         }
     }
 }
