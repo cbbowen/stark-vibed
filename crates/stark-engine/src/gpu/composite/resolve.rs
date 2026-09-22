@@ -5,6 +5,7 @@
 //! target directly and this is never bound, so painting at 100% costs exactly
 //! what it always did.
 
+use super::blend::ScratchNeeds;
 use super::display::Transfer;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc::{self, Bindings};
@@ -90,8 +91,7 @@ pub(super) fn supersample(
 /// - the **resolve target**, which only exists above 1× but is what the whole
 ///   question is about, so it is counted unconditionally;
 /// - **two trios per scratch level** that isolates and one per level that only
-///   ping-pongs, which is [`Plan::scratch`](super::plan::Plan::scratch) read as
-///   memory (§18.0.4, §21.3);
+///   ping-pongs ([`ScratchNeeds::bytes_per_px`], §18.0.4, §21.3);
 /// - the **focal blur's FFT planes** when the frame has one (§21.12), which dwarf
 ///   everything above.
 ///
@@ -102,13 +102,12 @@ pub(super) fn supersample(
 pub(super) fn attachment_bytes(
     formats: crate::gpu::channels::ChannelFormats,
     target_format: wgpu::TextureFormat,
-    scratch: &[bool],
+    scratch: &ScratchNeeds,
     blur: bool,
 ) -> u64 {
     let trio = formats.bytes_per_px();
     let resolve = u64::from(target_format.block_copy_size(None).unwrap_or(0));
-    let scratch: u64 = scratch.iter().map(|&iso| trio * (1 + u64::from(iso))).sum();
-    trio + resolve + scratch + if blur { blur_bytes_per_px() } else { 0 }
+    trio + resolve + scratch.bytes_per_px(trio) + if blur { blur_bytes_per_px() } else { 0 }
 }
 
 /// What one supersampled texel costs the focal blur (§21.12): the five `f32` planes —
@@ -268,6 +267,7 @@ impl Supersampled {
 mod tests {
     use super::*;
     use crate::gpu::channels::ChannelFormats;
+    use crate::gpu::composite::blend::Level::{self, Swap, SwapIso};
 
     /// The device this policy is written against: the `downlevel_webgl2` floor's
     /// 8192-px limit, which is what the wasm build can count on.
@@ -297,7 +297,7 @@ mod tests {
 
     /// A flat document: the accumulator and the resolve target, no scratch.
     fn flat() -> u64 {
-        attachment_bytes(oklab(), TARGET, &[], false)
+        attachment_bytes(oklab(), TARGET, &ScratchNeeds::default(), false)
     }
 
     #[test]
@@ -351,8 +351,9 @@ mod tests {
     /// planes and a heavy sample count are not affordable together.
     #[test]
     fn a_focal_blur_gives_up_samples_before_the_planes_overrun() {
+        let flat = ScratchNeeds::default();
         assert_eq!(
-            attachment_bytes(oklab(), TARGET, &[], true),
+            attachment_bytes(oklab(), TARGET, &flat, true),
             14 + 112,
             "the five f32 planes at the padding estimate",
         );
@@ -362,7 +363,7 @@ mod tests {
                 window,
                 0.1,
                 &limits(),
-                attachment_bytes(oklab(), TARGET, &[], blur),
+                attachment_bytes(oklab(), TARGET, &flat, blur),
             )
         };
         assert!(at(false) > at(true), "a blurred frame must give up samples");
@@ -385,23 +386,27 @@ mod tests {
     /// third, about 1.6 GB for the fourth.
     #[test]
     fn the_blend_scratch_is_most_of_what_a_nested_frame_costs() {
-        let cost = |f, s: &[bool]| attachment_bytes(f, TARGET, s, false);
+        let cost = |f, s: &[Level]| attachment_bytes(f, TARGET, &ScratchNeeds::of(s), false);
         assert_eq!(cost(oklab(), &[]), 14);
-        assert_eq!(cost(oklab(), &[true]), 14 + 20, "swap + iso, 10 bytes each");
+        assert_eq!(
+            cost(oklab(), &[SwapIso]),
+            14 + 20,
+            "swap + iso, 10 bytes each"
+        );
         // A level whose only non-direct members are filters ping-pongs and never
         // isolates, so it pays for `swap` alone (§21.3).
-        assert_eq!(cost(oklab(), &[false]), 14 + 10, "swap alone");
+        assert_eq!(cost(oklab(), &[Swap]), 14 + 10, "swap alone");
         assert_eq!(cost(pigment(), &[]), 22, "18 accumulator + 4 target");
-        assert_eq!(cost(pigment(), &[true, true]), 22 + 4 * 18);
+        assert_eq!(cost(pigment(), &[SwapIso, SwapIso]), 22 + 4 * 18);
 
         // And the budget turns that into samples: the same window that supersamples
         // when flat gives them up as the document nests.
         let window = Extent2::new(2560, 1440);
-        let at = |f, s: &[bool]| supersample(window, 0.1, &limits(), cost(f, s));
-        assert!(at(oklab(), &[]) >= at(oklab(), &[true]));
-        assert!(at(oklab(), &[true]) >= at(pigment(), &[true]));
+        let at = |f, s: &[Level]| supersample(window, 0.1, &limits(), cost(f, s));
+        assert!(at(oklab(), &[]) >= at(oklab(), &[SwapIso]));
+        assert!(at(oklab(), &[SwapIso]) >= at(pigment(), &[SwapIso]));
         assert_eq!(
-            at(pigment(), &[true, true]),
+            at(pigment(), &[SwapIso, SwapIso]),
             1,
             "two nested levels in pigment cannot afford a second sample on this window",
         );

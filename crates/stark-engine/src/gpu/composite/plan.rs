@@ -16,7 +16,7 @@ use std::ops::Range;
 
 use crate::gpu::tile::TilePairHandle;
 
-use super::blend::{BlendUniform, blend_uniform};
+use super::blend::{BlendUniform, ScratchNeeds, blend_uniform};
 use super::group::{CompositeGroup, CompositeItem, FilterDraw, GroupContent};
 use super::tiles::{Instance, MatteInstance, Ramp};
 
@@ -129,11 +129,8 @@ pub(super) struct Plan<'a> {
     /// [`Self::scratch`] (§6.4) — has settled.
     pub(super) filters: Vec<&'a FilterDraw>,
 
-    /// One entry per level of nesting this frame reaches; `true` where the level
-    /// isolates something and needs an `Iso` trio as well as a `Swap` pair. Empty
-    /// when every group draws straight into the accumulator, which is the common
-    /// document and allocates nothing.
-    pub(super) scratch: Vec<bool>,
+    /// The scratch every `Swap` and `Iso` a step names lives in.
+    pub(super) scratch: ScratchNeeds,
 }
 
 impl<'a> Plan<'a> {
@@ -148,7 +145,7 @@ impl<'a> Plan<'a> {
             ramps: Vec::new(),
             blends: Vec::new(),
             filters: Vec::new(),
-            scratch: Vec::new(),
+            scratch: ScratchNeeds::default(),
         };
         plan.stack(groups, Slot::Target, 0);
         plan
@@ -178,8 +175,8 @@ impl<'a> Plan<'a> {
         // is also exactly when `Slot::Swap(level)` is named below — so the entry and
         // the name that needs it are one decision. A nested stack whose members all
         // draw directly consumes none, which is what makes organizing free (§14.7).
-        if bounces > 0 && self.scratch.len() <= level {
-            self.scratch.resize(level + 1, false);
+        if bounces > 0 {
+            self.scratch.reach(level);
         }
         // With nothing to bounce there is no ping-pong at all: `cur` is the caller's
         // target throughout and `alt` is never reached.
@@ -233,7 +230,7 @@ impl<'a> Plan<'a> {
             // The group, alone on nothing — the isolation its mode and its clip are
             // both defined against. Recorded here rather than by a separate walk, so
             // "this level isolates" and "this step reads an `Iso`" are one decision.
-            self.scratch[level] = true;
+            self.scratch.isolate(level);
             let iso = Slot::Iso(level);
             match &member.content {
                 GroupContent::Run(items) => self.draw(items, iso, true),
@@ -315,6 +312,7 @@ impl<'a> Plan<'a> {
 mod tests {
     use super::*;
     use crate::document::CompositeParams;
+    use crate::gpu::composite::blend::Level::{Swap, SwapIso};
     use crate::gpu::composite::group::MatteDraw;
     use stark_model::document::BlendMode;
 
@@ -363,15 +361,17 @@ mod tests {
     /// Checkable here because the plan is plain data; held anywhere else, its failure
     /// is an `expect` mid-encode naming whichever feature happened to ask.
     fn every_slot_is_allocated(plan: &Plan<'_>) {
+        let levels = plan.scratch.levels();
         let check = |slot: Slot| match slot {
             Slot::Target => {}
             Slot::Swap(l) => assert!(
-                l < plan.scratch.len(),
+                l < levels.len(),
                 "Swap({l}) with {} level(s) allocated",
-                plan.scratch.len(),
+                levels.len(),
             ),
-            Slot::Iso(l) => assert!(
-                plan.scratch.get(l).copied().unwrap_or(false),
+            Slot::Iso(l) => assert_eq!(
+                levels.get(l),
+                Some(&SwapIso),
                 "Iso({l}) at a level not allocated with an iso trio",
             ),
         };
@@ -452,7 +452,7 @@ mod tests {
     fn an_odd_number_of_bounces_starts_in_the_scratch() {
         let groups = vec![plain(), blended()];
         let plan = Plan::build(&groups);
-        assert_eq!(plan.scratch, vec![true]);
+        assert_eq!(plan.scratch.levels(), [SwapIso]);
         assert!(
             matches!(
                 plan.steps[0],
@@ -499,7 +499,7 @@ mod tests {
     fn a_filter_only_level_never_allocates_an_iso() {
         let groups = vec![plain(), filter()];
         let plan = Plan::build(&groups);
-        assert_eq!(plan.scratch, vec![false], "a filter isolates nothing");
+        assert_eq!(plan.scratch.levels(), [Swap], "a filter isolates nothing");
         assert!(plan.steps.iter().all(|s| !matches!(
             s,
             Step::Draw {
@@ -515,7 +515,7 @@ mod tests {
     #[test]
     fn nesting_costs_a_level_per_level() {
         let side_by_side = vec![blended(), blended()];
-        assert_eq!(Plan::build(&side_by_side).scratch, vec![true]);
+        assert_eq!(Plan::build(&side_by_side).scratch.levels(), [SwapIso]);
 
         let nested = vec![CompositeGroup::stack(
             CompositeParams {
@@ -525,7 +525,7 @@ mod tests {
             vec![plain(), blended()],
         )];
         let plan = Plan::build(&nested);
-        assert_eq!(plan.scratch, vec![true, true]);
+        assert_eq!(plan.scratch.levels(), [SwapIso, SwapIso]);
         check(&plan);
     }
 
@@ -541,7 +541,11 @@ mod tests {
             vec![plain(), plain()],
         )];
         let plan = Plan::build(&groups);
-        assert_eq!(plan.scratch, vec![true], "the parent's level, and no more");
+        assert_eq!(
+            plan.scratch.levels(),
+            [SwapIso],
+            "the parent's level, and no more"
+        );
         check(&plan);
     }
 

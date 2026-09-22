@@ -294,17 +294,95 @@ impl ScratchLevel {
         self.swap.targets()
     }
 
-    /// Whether this level was allocated with an isolation trio — what
-    /// `ensure_scratch` checks a cached level against the frame's needs with.
-    pub(super) fn has_iso(&self) -> bool {
-        self.iso.is_some()
-    }
-
     pub(super) fn iso(&self) -> Targets<'_> {
         self.iso
             .as_ref()
             .expect("a merge at a level allocated without iso scratch (Plan::scratch)")
             .targets()
+    }
+}
+
+/// What one level of the scratch holds (§18.0.4, §21.3). Ordered by what it holds, so
+/// the level that serves two needs is the greater of them.
+#[derive(Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub(super) enum Level {
+    /// The ping-pong's other half alone: a level whose only bounces are filters,
+    /// which isolate nothing.
+    Swap,
+    /// The swap and an isolation trio, for a group composited alone.
+    SwapIso,
+}
+
+impl Level {
+    /// How many channel trios the level allocates.
+    fn trios(self) -> u64 {
+        match self {
+            Level::Swap => 1,
+            Level::SwapIso => 2,
+        }
+    }
+}
+
+/// The scratch a frame needs: one [`Level`] per level of nesting it bounces at, and
+/// empty for a document whose every group draws straight into the accumulator — the
+/// common case, which allocates nothing.
+///
+/// Decided by [`Plan::build`](super::plan::Plan::build), and what a [`ScratchTargets`]
+/// records it was allocated for.
+#[derive(Clone, Default, PartialEq, Eq, Debug)]
+pub(super) struct ScratchNeeds(Vec<Level>);
+
+impl ScratchNeeds {
+    #[cfg(test)]
+    pub(super) fn of(levels: &[Level]) -> Self {
+        Self(levels.to_vec())
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub(super) fn levels(&self) -> &[Level] {
+        &self.0
+    }
+
+    /// Make sure level `level` exists, as a [`Level::Swap`] if it is new.
+    pub(super) fn reach(&mut self, level: usize) {
+        if self.0.len() <= level {
+            self.0.resize(level + 1, Level::Swap);
+        }
+    }
+
+    /// Give level `level` an isolation trio, reaching it first.
+    pub(super) fn isolate(&mut self, level: usize) {
+        self.reach(level);
+        self.0[level] = Level::SwapIso;
+    }
+
+    /// Whether scratch allocated for `have` serves these needs: at least as deep, and
+    /// isolating wherever these isolate.
+    pub(super) fn served_by(&self, have: &Self) -> bool {
+        self.0.len() <= have.0.len() && self.0.iter().zip(&have.0).all(|(need, has)| need <= has)
+    }
+
+    /// The least scratch that serves both.
+    pub(super) fn union(&self, other: &Self) -> Self {
+        let (long, short) = if self.0.len() >= other.0.len() {
+            (self, other)
+        } else {
+            (other, self)
+        };
+        let mut levels = long.0.clone();
+        for (level, &other) in levels.iter_mut().zip(&short.0) {
+            *level = (*level).max(other);
+        }
+        Self(levels)
+    }
+
+    /// What one texel of this scratch costs, given what one channel `trio` does —
+    /// [`resolve::attachment_bytes`](super::resolve::attachment_bytes)'s scratch term.
+    pub(super) fn bytes_per_px(&self, trio: u64) -> u64 {
+        self.0.iter().map(|level| trio * level.trios()).sum()
     }
 }
 
@@ -314,11 +392,12 @@ impl ScratchLevel {
 /// A group's members isolate into *its* level's `iso`, which is what the next level
 /// down composites into — so nesting costs one of these per level, not one per group.
 /// Allocated only when something has to be isolated at all (an ordinary painting never
-/// pays the ~40 MB), and each level allocates only the half its stack uses (`needs`,
-/// from [`Plan::scratch`](super::plan::Plan::scratch)): a document whose only
-/// non-`Normal` thing is a filter pays for the ping-pong pair alone.
+/// pays the ~40 MB), and each level allocates only the half its stack uses: a document
+/// whose only non-`Normal` thing is a filter pays for the ping-pong pair alone.
 pub(super) struct ScratchTargets {
-    pub(super) size: Extent2,
+    size: Extent2,
+    /// What the levels were allocated for.
+    needs: ScratchNeeds,
     pub(super) levels: Vec<ScratchLevel>,
 }
 
@@ -335,16 +414,55 @@ impl ScratchTargets {
     pub(super) fn new(
         device: &wgpu::Device,
         size: Extent2,
-        needs: &[bool],
+        needs: ScratchNeeds,
         formats: ChannelFormats,
     ) -> Self {
+        let levels = needs
+            .levels()
+            .iter()
+            .map(|&level| ScratchLevel::new(device, size, level == Level::SwapIso, formats))
+            .collect();
         Self {
             size,
-            levels: needs
-                .iter()
-                .map(|&iso| ScratchLevel::new(device, size, iso, formats))
-                .collect(),
+            needs,
+            levels,
         }
+    }
+
+    /// Make sure `cache` holds scratch at `size` serving `needs`. Nothing when the frame
+    /// bounces nowhere — the common case, which never allocates.
+    ///
+    /// Grown to the most the document has *reached* — depth and per-level isolation
+    /// alike — and never shrunk within a size: a group opened and closed again over and
+    /// over would otherwise reallocate viewport-sized targets each time. A new size
+    /// starts over, since nothing at the old one can be kept.
+    pub(super) fn ensure(
+        cache: &mut Option<Self>,
+        device: &wgpu::Device,
+        size: Extent2,
+        needs: &ScratchNeeds,
+        formats: ChannelFormats,
+    ) {
+        let cached = cache.as_ref().map(|s| (s.size, &s.needs));
+        if let Some(levels) = rebuild_for(cached, size, needs) {
+            *cache = Some(Self::new(device, size, levels, formats));
+        }
+    }
+}
+
+/// What to allocate for a frame at `size` needing `needs`, given the cached scratch's
+/// size and levels — `None` when the cache already serves, or the frame needs none.
+fn rebuild_for(
+    cached: Option<(Extent2, &ScratchNeeds)>,
+    size: Extent2,
+    needs: &ScratchNeeds,
+) -> Option<ScratchNeeds> {
+    if needs.is_empty() {
+        return None;
+    }
+    match cached {
+        Some((at, have)) if at == size => (!needs.served_by(have)).then(|| needs.union(have)),
+        _ => Some(needs.clone()),
     }
 }
 
@@ -353,4 +471,88 @@ impl ScratchTargets {
 /// fold the clear into its own load op.
 pub(super) fn clear_targets(encoder: &mut wgpu::CommandEncoder, into: Targets<'_>) {
     desc::begin_pass(encoder, "stark composite clear", into);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use Level::{Swap, SwapIso};
+
+    fn size() -> Extent2 {
+        Extent2::new(64, 64)
+    }
+
+    /// [`rebuild_for`] with the cache at `size()`, or with none.
+    fn plan(cached: Option<&[Level]>, needs: &[Level]) -> Option<Vec<Level>> {
+        let cached = cached.map(ScratchNeeds::of);
+        rebuild_for(
+            cached.as_ref().map(|have| (size(), have)),
+            size(),
+            &ScratchNeeds::of(needs),
+        )
+        .map(|n| n.levels().to_vec())
+    }
+
+    #[test]
+    fn no_cache_allocates_exactly_what_the_frame_needs() {
+        assert_eq!(plan(None, &[SwapIso, Swap]), Some(vec![SwapIso, Swap]));
+    }
+
+    #[test]
+    fn a_frame_that_bounces_nowhere_allocates_nothing() {
+        assert_eq!(plan(None, &[]), None);
+    }
+
+    #[test]
+    fn an_equal_cache_is_reused() {
+        assert_eq!(plan(Some(&[SwapIso, Swap]), &[SwapIso, Swap]), None);
+    }
+
+    #[test]
+    fn a_deeper_cache_than_the_frame_is_reused() {
+        assert_eq!(plan(Some(&[SwapIso, SwapIso, Swap]), &[SwapIso]), None);
+    }
+
+    #[test]
+    fn a_shallower_cache_is_rebuilt_to_the_union() {
+        assert_eq!(
+            plan(Some(&[SwapIso]), &[Swap, SwapIso]),
+            Some(vec![SwapIso, SwapIso])
+        );
+    }
+
+    #[test]
+    fn iso_needed_where_the_cache_has_none_rebuilds_keeping_the_rest() {
+        assert_eq!(
+            plan(Some(&[Swap, SwapIso]), &[SwapIso, Swap]),
+            Some(vec![SwapIso, SwapIso])
+        );
+    }
+
+    #[test]
+    fn iso_cached_where_the_frame_needs_none_is_reused() {
+        assert_eq!(plan(Some(&[SwapIso]), &[Swap]), None);
+    }
+
+    #[test]
+    fn a_resized_target_starts_the_scratch_over() {
+        // Not the union: nothing at the old size can be kept, so the new set is the
+        // frame's own needs and no deeper.
+        let have = ScratchNeeds::of(&[SwapIso, SwapIso]);
+        assert_eq!(
+            rebuild_for(
+                Some((Extent2::new(65, 64), &have)),
+                size(),
+                &ScratchNeeds::of(&[Swap]),
+            ),
+            Some(ScratchNeeds::of(&[Swap]))
+        );
+    }
+
+    /// A level that only ping-pongs costs one trio, an isolating one two.
+    #[test]
+    fn a_level_costs_a_trio_per_target_it_holds() {
+        assert_eq!(ScratchNeeds::default().bytes_per_px(10), 0);
+        assert_eq!(ScratchNeeds::of(&[Swap, SwapIso]).bytes_per_px(10), 30);
+    }
 }

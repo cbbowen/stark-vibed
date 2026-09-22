@@ -64,7 +64,7 @@ use crate::view::{Extent2, ViewTransform};
 use attachment::Attachment;
 
 pub(crate) use blend::{BlendPass, BlendUniform};
-use blend::{Bounce, ScratchLevel, ScratchTargets};
+use blend::{Bounce, ScratchLevel, ScratchNeeds, ScratchTargets};
 use blur::{BlurFrame, BlurPass};
 pub(crate) use display::export_format;
 use display::is_eight_bit;
@@ -792,7 +792,7 @@ impl TargetSized {
         target_size: Extent2,
         ss: u32,
         format: wgpu::TextureFormat,
-        needs: &[bool],
+        needs: &ScratchNeeds,
         kernels: &[(u32, f32, blur::Aperture)],
         buffers_moved: bool,
     ) -> Frame<'_> {
@@ -850,7 +850,13 @@ impl TargetSized {
             kernels,
             p.ctx.device.limits().max_texture_dimension_2d,
         );
-        ensure_scratch(&mut self.scratch, p, built.key.size, needs);
+        ScratchTargets::ensure(
+            &mut self.scratch,
+            &p.ctx.device,
+            built.key.size,
+            needs,
+            p.formats,
+        );
         if let Some(scratch) = self
             .scratch
             .as_mut()
@@ -868,73 +874,6 @@ impl TargetSized {
             },
             blur: self.blur.as_ref(),
         }
-    }
-}
-
-/// What [`ensure_scratch`] does for one frame, over plain data so it can be decided
-/// without a device.
-#[derive(Debug, PartialEq, Eq)]
-enum ScratchDecision {
-    /// The cached set serves: at least as deep as the frame needs, isolating
-    /// wherever it does.
-    Reuse,
-    /// Allocate afresh for these levels — the frame's needs, unioned with what the
-    /// cache at this size already held.
-    Rebuild(Vec<bool>),
-}
-
-/// Whether a cached scratch set — `cached` is its size and which of its levels
-/// isolate, `None` when there is none — serves a frame at `size` whose plan `needs`
-/// these levels ([`Plan::scratch`]).
-///
-/// Grown to the most the document has *reached* — depth and per-level iso alike —
-/// and never shrunk within a size: a group opened and closed again over and over
-/// would otherwise reallocate viewport-sized targets each time. A new size starts
-/// over, since nothing at the old one can be kept.
-fn scratch_plan<I>(cached: Option<(Extent2, I)>, size: Extent2, needs: &[bool]) -> ScratchDecision
-where
-    I: ExactSizeIterator<Item = bool> + Clone,
-{
-    let Some((_, cached)) = cached.filter(|&(at, _)| at == size) else {
-        return ScratchDecision::Rebuild(needs.to_vec());
-    };
-    let sufficient = needs.len() <= cached.len()
-        && needs
-            .iter()
-            .zip(cached.clone())
-            .all(|(&need, iso)| iso || !need);
-    if sufficient {
-        return ScratchDecision::Reuse;
-    }
-    let mut union = needs.to_vec();
-    union.resize(union.len().max(cached.len()), false);
-    for (need, iso) in union.iter_mut().zip(cached) {
-        *need |= iso;
-    }
-    ScratchDecision::Rebuild(union)
-}
-
-/// Make sure `cache` holds scratch targets at `size` for every level `needs`
-/// ([`scratch_plan`] says when it already does). Nothing when the frame bounces
-/// nowhere — the common case, which never allocates.
-///
-/// The render path's alone. [`Compositor::composite_channels`] deliberately does not
-/// use it: a pick viewport is a handful of texels, and sharing one cache would
-/// reallocate a target-sized pair twice a frame for the whole of an Alt-drag.
-fn ensure_scratch(
-    cache: &mut Option<ScratchTargets>,
-    p: &CompositorPipeline,
-    size: Extent2,
-    needs: &[bool],
-) {
-    if needs.is_empty() {
-        return;
-    }
-    let cached = cache
-        .as_ref()
-        .map(|s| (s.size, s.levels.iter().map(ScratchLevel::has_iso)));
-    if let ScratchDecision::Rebuild(levels) = scratch_plan(cached, size, needs) {
-        *cache = Some(ScratchTargets::new(&p.ctx.device, size, &levels, p.formats));
     }
 }
 
@@ -1049,7 +988,7 @@ impl Streams {
     ///
     /// `scratch` is the extra target sets the frame's bounces need, sized to match
     /// `target`. It may be `None` only when `plan.scratch` is empty — which
-    /// [`ensure_scratch`] guarantees, having been given that very vector.
+    /// [`ScratchTargets::ensure`] guarantees, having been given those very needs.
     ///
     /// `view_slot` is which of the views the last
     /// [`ViewBindings::write`](view::ViewBindings::write) laid down this plan draws
@@ -1214,9 +1153,9 @@ impl Compositor {
         }
         // Its own scratch, and the trace's rather than the patch's. A pick viewport is
         // `2r+1` square, so this is a few kilobytes; sharing the render path's cache
-        // would trade that for reallocating the *window* twice a frame (see
-        // `ensure_scratch`). Blend modes have to be honoured here or an eyedropper
-        // would report a color the screen never showed.
+        // would trade that for reallocating the *window* twice a frame for the whole
+        // of an Alt-drag. Blend modes have to be honoured here or an eyedropper would
+        // report a color the screen never showed.
         //
         // One set of textures for every patch is sound because the patches are
         // recorded into one encoder and commands in an encoder run in order: each
@@ -1226,8 +1165,14 @@ impl Compositor {
         // scratch must outlive is the *submit*, which is why it is here and not in the
         // recording call — `Attachment`'s drop `destroy()`s the texture, and a recorded
         // encoder is not in-flight work.
-        let scratch = (!plan.scratch.is_empty())
-            .then(|| ScratchTargets::new(&p.ctx.device, view.viewport, &plan.scratch, p.formats));
+        let scratch = (!plan.scratch.is_empty()).then(|| {
+            ScratchTargets::new(
+                &p.ctx.device,
+                view.viewport,
+                plan.scratch.clone(),
+                p.formats,
+            )
+        });
         // Its own blur scratch too, on the same argument, and serially sound across
         // patches for the same reason: each patch's decode and round trip rewrite the
         // planes before its resolve reads them.
@@ -1547,75 +1492,5 @@ mod tests {
             ..key()
         };
         assert_ne!(key(), rebuilt);
-    }
-
-    // `scratch_plan` over slices: the cache's iso flags at `at`, the frame's needs at
-    // `size()`.
-
-    fn plan(cached: Option<(Extent2, &[bool])>, needs: &[bool]) -> ScratchDecision {
-        scratch_plan(
-            cached.map(|(at, iso)| (at, iso.iter().copied())),
-            size(),
-            needs,
-        )
-    }
-
-    fn cached(iso: &[bool]) -> Option<(Extent2, &[bool])> {
-        Some((size(), iso))
-    }
-
-    #[test]
-    fn no_cache_allocates_exactly_what_the_frame_needs() {
-        assert_eq!(
-            plan(None, &[true, false]),
-            ScratchDecision::Rebuild(vec![true, false])
-        );
-    }
-
-    #[test]
-    fn an_equal_cache_is_reused() {
-        assert_eq!(
-            plan(cached(&[true, false]), &[true, false]),
-            ScratchDecision::Reuse
-        );
-    }
-
-    #[test]
-    fn a_deeper_cache_than_the_frame_is_reused() {
-        assert_eq!(
-            plan(cached(&[true, true, false]), &[true]),
-            ScratchDecision::Reuse
-        );
-    }
-
-    #[test]
-    fn a_shallower_cache_is_rebuilt_to_the_union() {
-        assert_eq!(
-            plan(cached(&[true]), &[false, true]),
-            ScratchDecision::Rebuild(vec![true, true])
-        );
-    }
-
-    #[test]
-    fn iso_needed_where_the_cache_has_none_rebuilds_keeping_the_rest() {
-        assert_eq!(
-            plan(cached(&[false, true]), &[true, false]),
-            ScratchDecision::Rebuild(vec![true, true])
-        );
-    }
-
-    #[test]
-    fn iso_cached_where_the_frame_needs_none_is_reused() {
-        assert_eq!(plan(cached(&[true]), &[false]), ScratchDecision::Reuse);
-    }
-
-    #[test]
-    fn a_resized_target_starts_the_scratch_over() {
-        // Not the union: nothing at the old size can be kept, so the new set is the
-        // frame's own needs and no deeper.
-        assert_eq!(
-            plan(Some((Extent2::new(65, 64), &[true, true])), &[false]),
-            ScratchDecision::Rebuild(vec![false])
-        );
     }
 }
