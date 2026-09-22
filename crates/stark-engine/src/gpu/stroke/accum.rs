@@ -28,7 +28,6 @@
 //! is seeded into a shared region at a per-tile offset, no pass ever binds it, and its
 //! copy-on-write tiles come from the region write-back rather than a landing pass.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use stark_model::geom::TileCoord;
@@ -168,8 +167,24 @@ impl Ring {
 /// ([`Carried::Parcel`]): the payloads are the same shape, but the lane count is the
 /// effect's, so which one a stroke resumes is still asserted.
 pub(super) struct ParcelCarry {
-    pub(super) tiles: BTreeMap<TileCoord, ParcelTile>,
+    pub(super) tiles: ParcelTiles,
 }
+
+/// A carry's tiles, **persistent** rather than a `BTreeMap`.
+///
+/// The map holds every tile the stroke has ever touched, and it has to: a stroke can
+/// cross back over any of them, and a tile whose parcel had been dropped would be
+/// resumed from the *head's own output* instead of from pristine paint — the
+/// compounding [`ParcelTile::pristine`] exists to rule out. So the entries cannot be
+/// pruned, and what is left to fix is the *copying*: a capturing render shares what
+/// the pieces before it accumulated and replaces only the tiles it drew, where
+/// cloning a `BTreeMap` walked the whole of it. That was the one term in a live
+/// stroke's per-move cost that followed its length rather than its tail, bounded
+/// only by [`MAX_STROKE_TILES`](stark_model::document::MAX_STROKE_TILES) — a million.
+///
+/// Nothing iterates it, so the hash map's order costs no determinism (§12.6): the
+/// carry is read by `get` at a coordinate the sweep named.
+pub(super) type ParcelTiles = rpds::HashTrieMap<TileCoord, ParcelTile>;
 
 /// One tile's share of a [`ParcelCarry`].
 #[derive(Clone)]
@@ -290,8 +305,10 @@ pub(super) fn land_tiles(
         Lanes::Resume(resume) => (resume.prior.map(|t| t.parcels(land.effect)), resume.capture),
     };
     // A carry shares every tile the pieces before it accumulated, this piece's own
-    // replacing theirs below. Built only when a later piece will read it.
-    let mut carry = capture.then(|| prior.map(|p| p.tiles.clone()).unwrap_or_default());
+    // replacing theirs below — structurally, so resuming costs the tiles this piece
+    // draws and not the stroke's length (see `ParcelTiles`). Built only when a later
+    // piece will read it.
+    let mut carry = capture.then(|| prior.map_or_else(ParcelTiles::new, |p| p.tiles.clone()));
     let mut ring = Ring::default();
     // The copy-on-write map being built. The pristine fallback is read out of
     // `scene.base` rather than out of this: they start equal, but this one accumulates
@@ -378,7 +395,7 @@ pub(super) fn land_tiles(
         map = map.insert(*coord, dst);
         dirty.push(*coord);
         if let (Some(tiles), Some(parcel)) = (&mut carry, parcel) {
-            tiles.insert(
+            tiles.insert_mut(
                 *coord,
                 ParcelTile {
                     pristine,

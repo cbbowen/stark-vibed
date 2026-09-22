@@ -688,8 +688,8 @@ fn stroke_spans_multiple_tiles_via_cow() {
 /// queued work. A brush people actually paint with is a smear brush, so that was the
 /// responsiveness users felt.
 ///
-/// The path is a travelling sine, wide and tall enough to keep growing the tile set
-/// the compositor walks. It replaced a spiral, which was the wrong shape to measure
+/// The path is a travelling sine, long enough that the stroke keeps reaching tiles it
+/// has not reached before. It replaced a spiral, which was the wrong shape to measure
 /// with: a spiral's spans get steadily longer in arc as the radius opens out, so the
 /// live tail — a fixed number of *control points* — covers more and more distance, and
 /// on the stamp loop (whose cost is per flattened segment) that read as growth even
@@ -697,6 +697,32 @@ fn stroke_spans_multiple_tiles_via_cow() {
 /// statistically the same at both ends, so what is left is what the test means to
 /// measure. It still catches the regression it exists for: a stroke re-rendered whole
 /// would climb from ~150 segments a move to several thousand.
+///
+/// # The view is one tile, and that is the measurement
+///
+/// The readback composites the **whole viewport**, and what that costs is a property
+/// of the picture, not of the move — so a viewport wide enough to hold the stroke
+/// puts the cost of *showing* a filling canvas inside a per-move number and calls it
+/// stroke work. It is not a small term: against a 1280×800 view this measured 1.6 ms
+/// early and 3.4 ms late, every millisecond of the difference in `render.composite`
+/// and the GPU behind it, while `stroke.range` and `stroke.swept` stood at 0.24 ms
+/// and 0.21 ms from the first move to the last. Three controls say so outright —
+/// with the pointer *standing still* the same readback went 1.3 ms → 11.1 ms over
+/// the same stroke; it stayed at 11.1 ms after the gesture had ended, with nothing
+/// in flight at all; and laying solid paint over those same 22 tiles (33 tiles
+/// afterwards) took it back to 1.4 ms. What the compositor is answering to there is
+/// how much *paint edge* is in view — a fatter brush over the same region, or the
+/// same region crossed once instead of five times, is as cheap as bare canvas — and
+/// that belongs to a test about compositing.
+///
+/// So the viewport is [`common::SIZE`](crate::common::SIZE), about one tile, while
+/// the stroke still runs ±590 px across it: the frame is a real frame with paint in
+/// it, its cost is the same on the first move as on the nine-hundredth, and what is
+/// left in the number is the fit, the fold, the stroke render and the GPU time
+/// behind it. The readback stays, for the reason it was added — `process` only
+/// queues, and the blocking map waits on everything the move submitted — and it is
+/// about half of what is measured (0.55 ms per move, against 0.29 ms of fold and
+/// stroke render).
 ///
 /// **Answers `None` where there is no GPU**, rather than a pair — and the difference
 /// is the whole reason this does not build its own device. It used to, and returned
@@ -707,11 +733,7 @@ fn stroke_spans_multiple_tiles_via_cow() {
 /// *failure* unless the skip was asked for (CLAUDE.md), and this was the one place
 /// that had quietly opted out.
 fn measure_per_move_growth(b: BrushParams) -> Option<(f64, f64)> {
-    let size = stark_engine::Extent2 {
-        width: 1280,
-        height: 800,
-    };
-    let mut engine = crate::common::engine_or_skip_sized(size)?;
+    let mut engine = crate::common::engine_or_skip_sized(crate::common::SIZE)?;
     engine.process(ViewCommand::set_brush(b));
     let n = 900usize;
     let path: Vec<Vec2> = (0..n)
@@ -736,7 +758,8 @@ fn measure_per_move_growth(b: BrushParams) -> Option<(f64, f64)> {
         });
         // The readback is what makes this a measurement of the *work*, not just of
         // encoding it: `process` only queues, so without waiting here a path that
-        // queued ten times the GPU work would look identical.
+        // queued ten times the GPU work would look identical. It is also the whole
+        // reason the viewport is one tile — see this function's note.
         let _ = engine.render_to_image();
         let ms = at.elapsed().as_secs_f64() * 1000.0;
         // Skip the middle: the first stretch also pays for warm-up.
@@ -760,10 +783,17 @@ fn per_move_cost_does_not_grow_with_stroke_length() {
         let Some((early, late)) = measure_per_move_growth(b) else {
             return;
         };
-        // Generous, because this is a wall-clock measurement on a shared machine. What
-        // it has to catch is *growth*, and the failure it guards against is severalfold.
+        // Still loose, because this is a wall-clock measurement on a shared machine —
+        // but 1.6 rather than the 2.0 it was, because the viewport no longer spends
+        // most of the budget on compositing a filling canvas (see above). Five
+        // consecutive solo runs measured 0.91–0.96x swept and 1.06–1.10x on the loop,
+        // and the pure CPU rows behind them — `stroke.range`, `stroke.swept`,
+        // `stroke.dynamics`, which carry no readback at all — agree at 1.04–1.12x. The
+        // loop's few per cent is `LoopCarry`'s per-tile maps, which every capturing
+        // render still rebuilds entry by entry (`dynamics::run`); the swept path's
+        // equivalent is shared rather than copied (`accum::ParcelTiles`).
         assert!(
-            late < early * 2.0,
+            late < early * 1.6,
             "{what}: per-move cost grew with stroke length: \
              {early:.2} ms early vs {late:.2} ms late"
         );
