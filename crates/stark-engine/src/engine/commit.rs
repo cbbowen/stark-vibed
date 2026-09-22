@@ -365,11 +365,11 @@ impl Engine {
 
     /// Point the brush at `id` if it landed and can take a stroke.
     ///
-    /// **Both halves matter**, and four callers (`AddLayer`, `PlaceImage`,
-    /// `DuplicateLayer`, `MergeLayerDown`) would otherwise each choose which to ask: an
-    /// unknown carrier adds nothing (§14.8), so arming an id no layer has leaves the
-    /// next stroke with nowhere to go — and a matte or a filter has no tile map, so
-    /// arming one swallows that stroke instead (§15.7, §21.4).
+    /// **Both halves matter**, and its callers ([`mint_layer`](Self::mint_layer) and
+    /// `MergeLayerDown`) would otherwise each choose which to ask: an unknown carrier
+    /// adds nothing (§14.8), so arming an id no layer has leaves the next stroke with
+    /// nowhere to go — and a matte or a filter has no tile map, so arming one swallows
+    /// that stroke instead (§15.7, §21.4).
     ///
     /// A no-op otherwise, deliberately: the brush stays somewhere that exists rather
     /// than moving somewhere that cannot be painted on.
@@ -421,5 +421,18 @@ impl Engine {
         }
         self.commit_with_id(id, kind);
         id
+    }
+
+    /// Commit an action that mints a **paint layer** — `AddLayer`, `PlaceImage`,
+    /// `DuplicateLayer`, `FloatSelection` — and arm the first layer it mints, since
+    /// new paint is what the next stroke goes on.
+    ///
+    /// `build` is handed the action's id, which the minted ids derive from
+    /// ([`commit_minting`](Self::commit_minting)), and the number the layer wears
+    /// until it is named (§14.6), read off the document the action is aimed at.
+    pub(super) fn mint_layer(&mut self, build: impl FnOnce(ActionId, Option<u32>) -> ActionKind) {
+        let number = Some(self.document().next_layer_number());
+        let action = self.commit_minting(|id| build(id, number));
+        self.arm_active(LayerId::new(action, 0));
     }
 }

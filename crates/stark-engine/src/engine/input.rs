@@ -341,19 +341,15 @@ impl Engine {
                 // the fold's own refusals, off the same committed state, so a float
                 // that would cut nothing logs nothing (§16.12).
                 let frame = self.frame_of(layer);
-                let doc = self.timeline.current();
-                if crate::document::apply::float_cut_offered(doc, self.actor(), layer, frame) {
-                    let number = Some(doc.next_layer_number());
-                    let action = self.commit_minting(|a| ActionKind::FloatSelection {
+                let (doc, actor) = (self.document(), self.actor());
+                if crate::document::apply::float_cut_offered(doc, actor, layer, frame) {
+                    // The float is also what the hand is about to move.
+                    self.mint_layer(|a, number| ActionKind::FloatSelection {
                         layer,
                         child: LayerId::new(a, 0),
                         translation: frame,
                         number,
                     });
-                    // The float is what the hand is about to move — and it is
-                    // paint, so the next stroke has somewhere to go (`AddLayer`'s
-                    // reason).
-                    self.arm_active(LayerId::new(action, 0));
                 }
             }
             DocCommand::SetSubstrate(id) => {
@@ -372,17 +368,12 @@ impl Engine {
                 self.apply_document_substrate();
             }
             DocCommand::AddLayer { carrier, above } => {
-                // A freshly added layer becomes the active painting target — but only
-                // if it landed and can take a stroke, which is `arm_active`'s whole
-                // question.
-                let number = Some(self.document().next_layer_number());
-                let action = self.commit_minting(|a| ActionKind::AddLayer {
+                self.mint_layer(|a, number| ActionKind::AddLayer {
                     id: LayerId::new(a, 0),
                     carrier,
                     above,
                     number,
                 });
-                self.arm_active(LayerId::new(action, 0));
             }
             DocCommand::PlaceImage {
                 carrier,
@@ -391,10 +382,7 @@ impl Engine {
                 name,
                 image,
             } => {
-                // The active layer, exactly as an `AddLayer` is and for its reason:
-                // it is paint, so the next stroke has somewhere to go.
-                let number = Some(self.document().next_layer_number());
-                let action = self.commit_minting(|a| ActionKind::PlaceImage {
+                self.mint_layer(|a, number| ActionKind::PlaceImage {
                     id: LayerId::new(a, 0),
                     carrier,
                     above,
@@ -403,7 +391,6 @@ impl Engine {
                     image,
                     number,
                 });
-                self.arm_active(LayerId::new(action, 0));
             }
             DocCommand::AddMatte {
                 carrier,
@@ -456,10 +443,9 @@ impl Engine {
                 // `duplicate_layer` walks, so a copy of the traversal here would be two
                 // walks that must agree — on this client and on every peer.
                 if let Some(sources) = self.document().subtree_ids(source) {
-                    // The first of the run the copies wear, `ids`' own order deciding
-                    // the rest — see `ActionKind::DuplicateLayer`'s `number`.
-                    let number = Some(self.document().next_layer_number());
-                    let action = self.commit_minting(|a| ActionKind::DuplicateLayer {
+                    // `number` is the first of the run the copies wear, `ids`' own
+                    // order deciding the rest — see `ActionKind::DuplicateLayer`.
+                    self.mint_layer(|a, number| ActionKind::DuplicateLayer {
                         ids: sources
                             .iter()
                             .enumerate()
@@ -467,8 +453,6 @@ impl Engine {
                             .collect(),
                         number,
                     });
-                    // The copy is what you go on to work on.
-                    self.arm_active(LayerId::new(action, 0));
                 }
             }
             // The subtree travels in the action, read off the document the command was
