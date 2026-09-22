@@ -59,8 +59,8 @@ import package::lib::paint_common::{COVERAGE_EPS};
 
 // Filter codes — the shader ABI for `document::Filter`, so they live next to the
 // shader rather than on the enum, which has no business knowing a `u32`. Mirrored
-// into the host by the generator (§6.10, `build.rs` `CONSTS`); `FilterDraw::new`
-// (`gpu/composite/group.rs`) maps each `Filter` variant through the mirror, so an
+// into the host by the generator (§6.10); `filter_uniform`
+// (`gpu/composite/filter.rs`) maps each filter op through the mirror, so an
 // unmirrored kind cannot compile host-side.
 const FILTER_COLOR: u32 = 0u;
 const FILTER_CHROMATIC: u32 = 1u;
