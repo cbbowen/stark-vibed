@@ -16,7 +16,7 @@ use stark_shaders::mirror::stamp_common::binding as sc;
 use stark_shaders::mirror::stamp_common::decl as sd;
 use stark_shaders::{Lane, Stages};
 
-use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap};
+use crate::gpu::tile::{AllocSource, SCRATCH_AUX_FORMAT, TileMap, TilePairHandle};
 
 use super::accum::{
     BareCanvas, IncrementalTileAccumulator, Land, Landed, Landing, LaneKeys, Sweep, lane_key,
@@ -338,7 +338,7 @@ impl StrokeRenderer {
             // The pristine paint under this tile, or the 1×1 zeroes where the layer
             // has none: the integrate clamps its loads, so bare canvas costs no tile at
             // all (§6.8's pattern).
-            let base_t = super::accum::base_targets(self, base.get(coord));
+            let base_t = self.zeroes.or(base.get(coord).map(TilePairHandle::targets));
             // The coverage alone: the mask's opacity is in `k.opacity` already
             // (`stroke_constants`), which the integrate multiplies this by.
             let mask_view = self.selection.mask_for(selection, *coord);

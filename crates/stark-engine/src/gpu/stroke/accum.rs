@@ -342,7 +342,10 @@ impl<'a> IncrementalTileAccumulator<'a> {
             // it, so it outlives what described it.
             let bg = {
                 let landing = Landing {
-                    base: base_targets(self.r, pristine.as_ref()),
+                    base: self
+                        .r
+                        .zeroes
+                        .or(pristine.as_ref().map(TilePairHandle::targets)),
                     parcel: &work,
                     mask: mask.view(),
                 };
@@ -383,25 +386,5 @@ impl<'a> IncrementalTileAccumulator<'a> {
             carry: ParcelCarry { tiles: self.tiles },
             dirty: self.dirty,
         }
-    }
-}
-
-/// The pristine tile's channels as a landing pass reads them, with the renderer's 1×1
-/// zeroes standing in where the layer has nothing (§6.8's pattern) — the landing shaders
-/// clamp their loads, so bare canvas costs no tile at all.
-pub(super) fn base_targets<'a>(
-    r: &'a StrokeRenderer,
-    pristine: Option<&'a TilePairHandle>,
-) -> Targets<'a> {
-    Targets {
-        color: pristine.map_or(&r.zeroes.color, TilePairHandle::color_view),
-        aux: pristine.map_or(&r.zeroes.aux, TilePairHandle::aux_view),
-        // The resident residual, or the 1×1 zero on bare canvas — the same pairing
-        // the color above makes, since the two are one color (§6.7).
-        resid: r.zeroes.resid.as_ref().map(|zero| {
-            pristine
-                .and_then(TilePairHandle::resid_view)
-                .unwrap_or(zero)
-        }),
     }
 }
