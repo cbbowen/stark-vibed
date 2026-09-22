@@ -145,8 +145,12 @@ impl Selection {
     ///
     /// Unclamped here: the number arrives through `ActionKind::sanitized`, the one
     /// funnel an action passes into the document through, and a second bound would
-    /// be a second policy to keep in step (§8).
+    /// be a second policy to keep in step (§8) — so debug builds only check it did.
     pub(crate) fn with_opacity(&self, opacity: f32) -> Self {
+        debug_assert!(
+            (0.0..=1.0).contains(&opacity),
+            "{opacity} reached a selection without passing `ActionKind::sanitized` (§6.8)",
+        );
         Self::from_parts(
             self.tiles.clone(),
             self.outside,

@@ -218,6 +218,27 @@ pub enum PropValue {
     Translation(IVec2),
 }
 
+impl PropValue {
+    /// Whether this is already what `ActionKind::sanitized` makes of it — **the one
+    /// sanitizing policy** (§21.5), which every action passes on its way into a state
+    /// (`Logged::new`: a local commit, a file's replay and a peer's action alike) and
+    /// every preview before it folds. State stores what it is handed; this is the debug
+    /// build's check that nothing reached a layer around the funnel.
+    fn is_sanitized(&self) -> bool {
+        match self {
+            PropValue::Blend(blend) => *blend == blend.sanitized(),
+            // The funnel's fixed points, exactly: a NaN fails the range too.
+            PropValue::Opacity(opacity) => (0.0..=1.0).contains(opacity),
+            PropValue::Matte(_, paint) => *paint == paint.clone().sanitized(),
+            PropValue::Filter(filter) => *filter == filter.clone().sanitized(),
+            PropValue::Clip(_)
+            | PropValue::Visible(_)
+            | PropValue::Name(_)
+            | PropValue::Translation(_) => true,
+        }
+    }
+}
+
 /// A single layer: its content, what it carries, and its presentation
 /// properties.
 ///
@@ -379,8 +400,13 @@ impl Layer {
         }
     }
 
-    /// A filter layer running `filter` over the stack beneath it (§21).
+    /// A filter layer running `filter` over the stack beneath it (§21). The filter
+    /// arrives sanitized, as [`with_prop`](Self::with_prop)'s values do.
     pub(crate) fn filter_layer(id: LayerId, filter: Filter) -> Self {
+        debug_assert!(
+            PropValue::Filter(filter.clone()).is_sanitized(),
+            "{filter:?} reached state without passing `ActionKind::sanitized` (§21.5)",
+        );
         Self {
             content: LayerContent::Filter(filter),
             ..Self::new(id)
@@ -626,19 +652,21 @@ impl Layer {
     /// - A **matte's region and paint** on anything but a matte, and a **filter** on
     ///   anything but a filter — the properties [`prop`](Self::prop) answers `None` for.
     ///
-    /// The mode and the filter are **sanitized on the way in** (§21.5), and the
-    /// opacity clamped to [0, 1]: each carries numbers a fullscreen pass reads.
+    /// The value arrives **already sanitized** (§21.5) — see `PropValue::is_sanitized`,
+    /// which debug builds hold it to.
     pub(crate) fn with_prop(&self, value: PropValue) -> Self {
+        debug_assert!(
+            value.is_sanitized(),
+            "{value:?} reached state without passing `ActionKind::sanitized` (§21.5)",
+        );
         let mut out = self.clone();
         match value {
             PropValue::Blend(blend) => match self.content {
                 LayerContent::Filter(_) => {}
-                LayerContent::Paint(_) | LayerContent::Matte { .. } => {
-                    out.composite.blend = blend.sanitized();
-                }
+                LayerContent::Paint(_) | LayerContent::Matte { .. } => out.composite.blend = blend,
             },
             PropValue::Clip(clip) => out.composite.clip = clip,
-            PropValue::Opacity(opacity) => out.composite.opacity = opacity.clamp(0.0, 1.0),
+            PropValue::Opacity(opacity) => out.composite.opacity = opacity,
             PropValue::Visible(visible) => out.visible = visible,
             // Whatever it is given: a name is normalized once where the action is minted
             // (`Engine::process`), so replay puts back exactly what was recorded.
@@ -648,7 +676,7 @@ impl Layer {
                 LayerContent::Paint(_) | LayerContent::Filter(_) => {}
             },
             PropValue::Filter(filter) => match self.content {
-                LayerContent::Filter(_) => out.content = LayerContent::Filter(filter.sanitized()),
+                LayerContent::Filter(_) => out.content = LayerContent::Filter(filter),
                 LayerContent::Paint(_) | LayerContent::Matte { .. } => {}
             },
             PropValue::Translation(to) => {

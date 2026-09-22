@@ -108,10 +108,10 @@ impl Filter {
     /// The same filter with every parameter finite and in range — the funnel every
     /// filter passes through on its way into the document.
     ///
-    /// Applied where the action is minted (`Engine::process`) and again where a filter
-    /// enters state (`DocState::set_filter` / `insert_filter`), since a loaded file or
-    /// a remote peer reaches state without passing through `process`. Idempotent. A
-    /// `NaN` saturation reaching a fullscreen pass poisons every texel of the frame,
+    /// Applied, through `ActionKind::sanitized`, where the action is minted
+    /// (`Engine::process`) and again where it enters the history (`Logged::new`),
+    /// which a loaded file and a remote peer's action pass through as well. Idempotent.
+    /// A `NaN` saturation reaching a fullscreen pass poisons every texel of the frame,
     /// and nothing downstream can notice.
     #[must_use]
     pub fn sanitized(self) -> Self {

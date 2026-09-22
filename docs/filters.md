@@ -290,10 +290,12 @@ the documented ranges and replaces a non-finite value with the *neutral* setting
 that knob, because `NaN` says nothing about which end was meant and the identity is the
 one answer that cannot make a picture worse. It runs where the action is minted, so
 replay puts back what was applied rather than re-deriving it (the funnel `SetLayerName`
-already goes through) — and again where a filter **enters state**
-(`DocState::set_filter` / `insert_filter`), because a loaded file's replay and a
-remote peer's action never pass through the mint. Idempotent on any log this engine
-wrote; the only line of defence against one it did not.
+already goes through) — and again where the action **enters the history**
+(`Logged::new`), because a loaded file's replay and a remote peer's action never pass
+through the mint. State then stores what it is handed and only debug-checks it: a pass
+of its own in the setters would be a second policy, and when there was one it disagreed
+with this one about `NaN`. Idempotent on any log this engine wrote; the only line of
+defence against one it did not.
 
 ### 21.6 Interaction
 

@@ -614,8 +614,6 @@ impl DocState {
 
     /// Insert a **filter** layer the same way — §21. It rewrites whatever is
     /// composited beneath it in the stack it lands in.
-    ///
-    /// Sanitized on the way in, as a filter written by [`Layer::with_prop`] is.
     pub(crate) fn insert_filter(
         &self,
         id: LayerId,
@@ -623,11 +621,7 @@ impl DocState {
         above: Option<LayerId>,
         filter: Filter,
     ) -> Self {
-        self.insert(
-            Layer::filter_layer(id, filter.sanitized()),
-            carrier,
-            Place::from(above),
-        )
+        self.insert(Layer::filter_layer(id, filter), carrier, Place::from(above))
     }
 
     /// Land a floated child at the **foot** of its source's carried stack (§16.12) —
@@ -1279,12 +1273,35 @@ mod tests {
         assert!(base.composite.clip);
     }
 
-    /// Every filter is sanitized where it **enters state**, not only where a local
-    /// command is minted — the path a corrupted file's replay and a nonconforming
-    /// peer's action take (§21.5). A NaN that got through would reach every texel of
-    /// the frame with nothing able to say why.
+    /// **The funnel is the one policy** (§21.5). Every action reaches a fold through
+    /// `Logged::new`, which runs `ActionKind::sanitized` — a local commit, a corrupted
+    /// file's replay and a nonconforming peer's action alike — so a wild filter,
+    /// bend or opacity lands in state as the funnel leaves it. A NaN in a fullscreen
+    /// pass would reach every texel of the frame with nothing able to say why.
+    ///
+    /// The opacity rows are where two policies used to disagree: the funnel's NaN is
+    /// the neutral 1, where the setter's own `clamp` kept the NaN.
     #[test]
-    fn a_filter_is_sanitized_wherever_it_enters_state() {
+    fn a_wild_value_lands_as_the_funnel_leaves_it() {
+        use super::super::apply::{Folded, apply_pure};
+        use stark_model::document::{Action, ActionId, ActionKind, Logged};
+
+        // Through the door the history folds through, then the fold itself.
+        let fold = |state: &DocState, kind: ActionKind| {
+            let logged = Logged::<DocState>::new(Action {
+                id: ActionId {
+                    lamport: 1,
+                    actor: ActorId(1),
+                },
+                kind,
+            });
+            let Folded::Done(state) = apply_pure(&logged.kind, state.clone(), logged.id.actor)
+            else {
+                panic!("every kind here is the pure half's");
+            };
+            state
+        };
+
         let wild = Filter::Color(ColorAdjust {
             exposure: f32::NAN,
             contrast: f32::INFINITY,
@@ -1292,43 +1309,52 @@ mod tests {
             hue: f32::NEG_INFINITY,
             tint: [9.0, f32::NAN],
         });
-        let expect = wild.clone().sanitized();
-        assert_ne!(wild, expect, "the wild filter must need sanitizing");
-
-        let inserted = DocState::with_layer(BASE).insert_filter(FILTER, None, None, wild.clone());
-        assert_eq!(
-            inserted.layer(FILTER).and_then(Layer::filter),
-            Some(expect.clone()),
-            "insert_filter installed an unsanitized filter",
+        let clean = Some(wild.clone().sanitized());
+        assert_ne!(
+            Some(wild.clone()),
+            clean,
+            "the wild filter must need sanitizing"
         );
+        let added = ActionKind::AddFilter {
+            id: FILTER,
+            carrier: None,
+            above: None,
+            filter: wild.clone(),
+        };
+        let filter_of = |s: &DocState| s.layer(FILTER).and_then(Layer::filter);
+        assert_eq!(filter_of(&fold(&DocState::with_layer(BASE), added)), clean);
+        let set = ActionKind::SetFilter(FILTER, wild);
+        assert_eq!(filter_of(&fold(&with_filter(), set)), clean);
 
-        let set = with_filter().set_prop(FILTER, PropValue::Filter(wild));
-        assert_eq!(
-            set.layer(FILTER).and_then(Layer::filter),
-            Some(expect),
-            "set_prop installed an unsanitized filter",
-        );
+        let base = DocState::with_layer(BASE).set_prop(BASE, PropValue::Opacity(0.5));
+        let blend = |k: f32| {
+            fold(
+                &base,
+                ActionKind::SetLayerBlend(BASE, BlendMode::Drago { k }),
+            )
+            .layer(BASE)
+            .map(|l| l.composite.blend)
+        };
+        assert_eq!(blend(f32::NAN), Some(BlendMode::Drago { k: DRAGO_K }));
+        assert_eq!(blend(1e9), Some(BlendMode::Drago { k: DRAGO_K_RANGE.1 }));
+        let opacity = |a: f32| {
+            fold(&base, ActionKind::SetLayerOpacity(BASE, a))
+                .layer(BASE)
+                .map(|l| l.composite.opacity)
+        };
+        assert_eq!(opacity(f32::NAN), Some(1.0));
+        assert_eq!(opacity(-3.0), Some(0.0));
     }
 
-    /// And so is a **blend mode**, now that one carries numbers of its own (§18.0.4):
-    /// the same argument down the same path, and a NaN bend reaches the blend pass,
-    /// which is fullscreen.
+    /// …and a value that went around the funnel is a bug the debug build names,
+    /// rather than one a second policy quietly repairs its own way.
     #[test]
-    fn a_blend_mode_is_sanitized_wherever_it_enters_state() {
-        let wild = BlendMode::Drago { k: f32::NAN };
-        let state = DocState::with_layer(BASE).set_prop(BASE, PropValue::Blend(wild));
-        assert_eq!(
-            state.layer(BASE).map(|l| l.composite.blend),
-            Some(BlendMode::Drago { k: DRAGO_K }),
-            "set_prop installed an unusable bend",
-        );
-        let state = state.set_prop(BASE, PropValue::Blend(BlendMode::Drago { k: 1e9 }));
-        assert_eq!(
-            state.layer(BASE).map(|l| l.composite.blend),
-            Some(BlendMode::Drago { k: DRAGO_K_RANGE.1 }),
-            "set_prop installed a bend past the end of its range",
-        );
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "ActionKind::sanitized")]
+    fn a_raw_value_handed_to_state_is_caught() {
+        let _ = DocState::with_layer(BASE).set_prop(BASE, PropValue::Opacity(f32::NAN));
     }
+
     /// The box every layer carries for its subtree, recomputed from nothing.
     fn recomputed(l: &Layer) -> CanvasBounds {
         l.carries()

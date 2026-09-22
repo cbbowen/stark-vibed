@@ -312,9 +312,9 @@ impl BlendMode {
 
     /// The same mode with every parameter finite and in range — the funnel a mode
     /// passes through on its way into the document, applied where the action is minted
-    /// (`Engine::process`), so the log records what was applied, and where a mode
-    /// enters state (`DocState::set_layer_blend`), because a loaded file or a remote
-    /// peer reaches state without passing through `process`.
+    /// (`Engine::process`), so the log records what was applied, and again where it
+    /// enters the history (`Logged::new`), which a loaded file and a remote peer's
+    /// action pass through as well.
     ///
     /// A non-finite `k` falls back to [`DRAGO_K`] rather than to a bound: `NaN` says
     /// nothing about which end was meant.

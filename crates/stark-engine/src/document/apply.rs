@@ -805,9 +805,6 @@ pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> 
         } => state.insert_matte(*id, *carrier, *at, *region, paint.clone()),
         ActionKind::SetMatteRect(id, min, max) => state.set_matte_rect(*id, *min, *max),
         ActionKind::SetMattePaint(id, paint) => state.set_matte_paint(*id, paint.clone()),
-        // The payload is sanitized inside `insert_filter`/`Layer::with_prop` — the
-        // funnel sits in state, where replayed files and remote peers land too,
-        // not only where a local command is minted (§21.6).
         ActionKind::AddFilter {
             id,
             carrier,
