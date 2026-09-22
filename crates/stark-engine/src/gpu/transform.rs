@@ -21,6 +21,8 @@
 //!   for the affine, residue-plus-max-blended-union for the gated families
 //!   (§16.8).
 //!
+//! The uniform each draw reads is packed on the CPU, in [`pack`].
+//!
 //! Like [`StrokeRenderer`](super::stroke::StrokeRenderer) this holds only
 //! immutable GPU objects, so it is cheap to `Clone` and rides in the
 //! `Action::Context` (§5).
@@ -28,14 +30,12 @@
 use crate::gpu::tile::TilePairHandle;
 use std::collections::BTreeMap;
 
-use bytemuck::Zeroable;
 use rpds::HashTrieMap;
 
 use crate::colorspace::ColorSpace;
 use crate::document::selection::Selection;
 use crate::document::transform::{
-    FragMap, GatedKind, SourceUnit, gated_geometry, plan_gated_mask, plan_gated_paint, plan_mask,
-    plan_paint,
+    gated_geometry, plan_gated_mask, plan_gated_paint, plan_mask, plan_paint,
 };
 use crate::gpu::channels::Zeroes;
 use crate::gpu::channels::{ChannelFormats, Channels};
@@ -43,9 +43,9 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use crate::gpu::scratch::{LeasedSlots, ScratchPool, SubmitScope};
 use crate::gpu::selection::{MaskSource, SelectionRenderer, outside_clear};
-use crate::gpu::tile::{AllocSource, MASK_FORMAT, TileMap, TilePool, mask_tex_origin};
-use stark_model::document::{Homography, TransformMap};
-use stark_model::geom::{Affine2, Mat2, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
+use crate::gpu::tile::{AllocSource, MASK_FORMAT, TileMap, TilePool};
+use stark_model::document::TransformMap;
+use stark_model::geom::{Affine2, TileCoord, TileRect, Vec2};
 use stark_shaders::mirror::transform::binding as t;
 use stark_shaders::mirror::transform::decl as td;
 use stark_shaders::mirror::transform::{
@@ -53,104 +53,12 @@ use stark_shaders::mirror::transform::{
 };
 use stark_shaders::{EntryPoint, Stages};
 
-/// One source tile's interior quad, drawn into `dest`'s texture (paint and mask
-/// tiles share the `TILE_TEX` geometry).
-fn quad_uniform(affine: Affine2, src: TileCoord, dest: TileCoord, opacity: f32) -> QuadUniform {
-    let dest_origin = mask_tex_origin(dest);
-    let src_origin = src.origin();
-    let src_tex_origin = mask_tex_origin(src);
-    let m = affine.matrix2;
-    let t = affine.translation;
-    // The fragment stage maps back through the inverse (see `src_uv` in the
-    // shader). Exact for the exactness-invariant affines: the identity's
-    // inverse is the identity, a translation's is its negation, an axis
-    // flip's is itself.
-    let inv = affine.inverse();
-    let (im, it) = (inv.matrix2, inv.translation);
-    QuadUniform {
-        a: [dest_origin.x, dest_origin.y, TILE_TEX as f32, 0.0],
-        // Shader rows: c.x = m.x·p.x + m.y·p.y; glam's Mat2 is column-major.
-        m: [m.x_axis.x, m.y_axis.x, m.x_axis.y, m.y_axis.y],
-        t: [t.x, t.y, src_tex_origin.x, src_tex_origin.y],
-        u: [src_origin.x, src_origin.y, TILE_SIZE as f32, opacity],
-        i: [im.x_axis.x, im.y_axis.x, im.x_axis.y, im.y_axis.y],
-        j: [it.x, it.y, 0.0, 0.0],
-    }
-}
+mod pack;
 
-/// One [`SourceUnit`] drawn into `dest`'s texture — one piece of a rect-scoped map
-/// (§16.8, §16.9). `inv` is the map's shared inverse homography (perspective); warp
-/// cells carry their own fragment map in the unit.
-fn gated_uniform(
-    unit: &SourceUnit,
-    inv: Option<&Homography>,
-    rect: (Vec2, Vec2),
-    dest: TileCoord,
-    opacity: f32,
-) -> GatedUniform {
-    let mut u = gated_base(rect, dest);
-    let c = &unit.corners;
-    u.c0 = [c[0].x, c[0].y, c[1].x, c[1].y];
-    u.c1 = [c[2].x, c[2].y, c[3].x, c[3].y];
-    let src_tex_origin = mask_tex_origin(unit.src);
-    u.t = [src_tex_origin.x, src_tex_origin.y, opacity, 0.0];
-    match &unit.frag {
-        FragMap::Persp => {
-            let h = inv.expect("perspective units carry a shared inverse");
-            set_rows(&mut u, &h.rows);
-        }
-        FragMap::Cell { g, min, size } => {
-            let d = g[3] - g[1] - g[2] + g[0];
-            if d == Vec2::ZERO {
-                // The cell is a parallelogram — an affine, inverted through
-                // the same arithmetic the affine action trusts, so an
-                // untouched cell (whose map is exactly the identity) keeps
-                // §16.4's tap exactness.
-                let m = Mat2::from_cols((g[1] - g[0]) / size.x, (g[2] - g[0]) / size.y);
-                let fwd = Affine2::from_mat2_translation(m, g[0] - m * *min);
-                set_rows(&mut u, &Homography::from_affine(fwd.inverse()).rows);
-            } else {
-                u.a[3] = 1.0; // inverse-bilinear mode
-                u.g0 = [g[0].x, g[0].y, g[1].x, g[1].y];
-                u.g1 = [g[2].x, g[2].y, g[3].x, g[3].y];
-                u.s = [min.x, min.y, size.x, size.y];
-            }
-        }
-    }
-    u
-}
-
-/// The uniform for `fs_mask_base`: only the destination origin and the gate rect
-/// matter — the residue pass has no piece.
-fn gated_base(rect: (Vec2, Vec2), dest: TileCoord) -> GatedUniform {
-    let dest_origin = mask_tex_origin(dest);
-    let mut u = GatedUniform::zeroed();
-    u.a = [dest_origin.x, dest_origin.y, TILE_TEX as f32, 0.0];
-    u.r = [rect.0.x, rect.0.y, rect.1.x, rect.1.y];
-    u
-}
-
-fn set_rows(u: &mut GatedUniform, rows: &[[f32; 3]; 3]) {
-    u.i0 = [rows[0][0], rows[0][1], rows[0][2], 0.0];
-    u.i1 = [rows[1][0], rows[1][1], rows[1][2], 0.0];
-    u.i2 = [rows[2][0], rows[2][1], rows[2][2], 0.0];
-}
-
-/// Whether (and where) the cut is gated by a source rect. The affine's whole-plane cut
-/// binds the zero gate.
-fn combine_uniform(dest: TileCoord, gate: Option<(Vec2, Vec2)>, opacity: f32) -> CombineUniform {
-    let dest_origin = mask_tex_origin(dest);
-    match gate {
-        Some(rect) => CombineUniform {
-            a: [dest_origin.x, dest_origin.y, 1.0, opacity],
-            r: [rect.0.x, rect.0.y, rect.1.x, rect.1.y],
-        },
-        None => CombineUniform {
-            a: [dest_origin.x, dest_origin.y, 0.0, opacity],
-            r: [0.0; 4],
-        },
-    }
-}
+use pack::{
+    Gated, combine_uniform, slot_count, stage_combines, stage_gated_masks, stage_gated_parcels,
+    stage_quads,
+};
 
 /// Every group-0 uniform of one kind that an `apply` draws with, staged in full before
 /// anything is submitted ([`SubmitScope::run_slots`]), and a cursor handing the draws
@@ -223,58 +131,20 @@ impl<T: bytemuck::Pod> Group<'_, T> {
     fn spent(&self) -> bool {
         self.slots.spent()
     }
-}
 
-/// How many draws `rewrites` plans — one per source reaching each destination — and
-/// so exactly how many slots to stage, read off the plan before anything is encoded.
-fn slot_count<S>(rewrites: &[(TileCoord, Vec<S>)]) -> usize {
-    rewrites.iter().map(|(_, sources)| sources.len()).sum()
-}
-
-/// The affine's quad uniforms in draw order: destination-major, sources in the plan's
-/// order — what [`TransformRenderer::render_parcel`] and `render_mask` walk.
-fn stage_quads(
-    affine: Affine2,
-    rewrites: &[(TileCoord, Vec<TileCoord>)],
-    opacity: f32,
-    into: &mut Vec<QuadUniform>,
-) {
-    for (dest, sources) in rewrites {
-        for src in sources {
-            into.push(quad_uniform(affine, *src, *dest, opacity));
+    /// Draw one quad per `(slot, group 1)`: this group at the draw's slot, and `src`'s
+    /// group over what that draw samples.
+    fn draw_quads(&self, pass: &mut wgpu::RenderPass<'_>, src: &desc::Bindings, draws: &[Draw]) {
+        for (offset, src_bg) in draws {
+            self.set(pass, *offset);
+            src.set(pass, src_bg, &[]);
+            pass.draw(desc::QUAD_VERTICES, 0..1);
         }
     }
 }
 
-/// The gated parcel's piece uniforms in draw order (`render_gated_parcel`).
-fn stage_gated_parcels(
-    g: &Gated<'_>,
-    rewrites: &[(TileCoord, Vec<usize>)],
-    opacity: f32,
-    into: &mut Vec<GatedUniform>,
-) {
-    for (dest, idxs) in rewrites {
-        for idx in idxs {
-            into.push(gated_uniform(&g.units[*idx], g.inv, g.rect, *dest, opacity));
-        }
-    }
-}
-
-/// The gated mask's uniforms in draw order (`render_gated_mask`): per destination
-/// the residue first, then its pieces at 1.0 — the mask pass carries coverage rather
-/// than gating by it, so the opacity rides on the moved `Selection` instead (§6.8).
-fn stage_gated_masks(
-    g: &Gated<'_>,
-    rewrites: &[(TileCoord, Vec<usize>)],
-    into: &mut Vec<GatedUniform>,
-) {
-    for (dest, idxs) in rewrites {
-        into.push(gated_base(g.rect, *dest));
-        for idx in idxs {
-            into.push(gated_uniform(&g.units[*idx], g.inv, g.rect, *dest, 1.0));
-        }
-    }
-}
+/// One quad draw: its group-0 slot, and the group-1 bind over what it samples.
+type Draw = (u32, wgpu::BindGroup);
 
 /// The base tiles around `coord` that the identity parcel draws — the tile and its
 /// neighbours, not the tile alone: a tile's texture reaches an apron past its
@@ -315,15 +185,6 @@ impl<'a> Source<'a> {
     }
 }
 
-/// The rect-scoped map a gated pass draws **through** (§16.8, §16.9): the pieces, the
-/// shared inverse homography a perspective carries (a warp's cells carry their own
-/// fragment map instead), and the source rect that scopes the whole thing.
-struct Gated<'a> {
-    units: &'a [SourceUnit],
-    inv: Option<&'a Homography>,
-    rect: (Vec2, Vec2),
-}
-
 /// A tile's paint channels as this module passes them around: the moved parcel a
 /// quad pass writes, and the destination a combine writes.
 type Parcel = Channels;
@@ -331,18 +192,13 @@ type Parcel = Channels;
 /// The tile rect spanning `base`'s keys — every coord whose gate a cut can read
 /// (sources are base tiles; a destination's mask only ever cuts base paint), so
 /// the shifted mask is built no wider than the layer's extent (§14.12).
-fn base_rect(base: &TileMap) -> stark_model::geom::TileRect {
-    let mut keys = base.keys();
-    let Some(first) = keys.next() else {
-        return stark_model::geom::TileRect::EMPTY;
-    };
-    let mut min = (first.x, first.y);
-    let mut max = min;
-    for k in keys {
-        min = (min.0.min(k.x), min.1.min(k.y));
-        max = (max.0.max(k.x), max.1.max(k.y));
-    }
-    stark_model::geom::TileRect { min, max }
+fn base_rect(base: &TileMap) -> TileRect {
+    base.keys()
+        .map(|c| TileRect {
+            min: (c.x, c.y),
+            max: (c.x, c.y),
+        })
+        .fold(TileRect::EMPTY, TileRect::union)
 }
 
 #[derive(Clone)]
@@ -736,7 +592,14 @@ impl TransformRenderer {
             remaining = remaining.remove(coord);
         }
         for (coord, sources) in &partial {
-            let parcel = self.render_parcel(&mut scope, &mut from, &mut quads, sources);
+            let parcel = self.render_parcel_from(
+                &mut scope,
+                &mut from,
+                &mut quads,
+                sources.iter().copied(),
+                &self.parcel_pipeline,
+                "stark transform parcel",
+            );
             // The cut: the base under its mask, no parcel stacked back (§16.2).
             let cut = Channels::acquire(pool, self.formats, AllocSource::TransformDestination);
             self.combine(&mut scope, &from, &mut combines, *coord, None, &cut);
@@ -800,31 +663,26 @@ impl TransformRenderer {
             "stark transform quads",
             &quad_uniforms,
         );
-        let combine_uniforms: Vec<CombineUniform> = plan
-            .rewrites
-            .iter()
-            .map(|(dest, _)| combine_uniform(*dest, None, gate.opacity()))
-            .collect();
+        let combine_uniforms = stage_combines(&plan.rewrites, None, gate.opacity());
         let mut combines = Slots::stage(&mut scope, "stark transform combines", &combine_uniforms);
 
-        let mut tiles = base.clone();
-        for (dest, sources) in &plan.rewrites {
-            let parcel = self.render_parcel(&mut scope, &mut from, &mut quads, sources);
-            let dst = Channels::acquire(pool, self.formats, AllocSource::TransformDestination);
-            self.combine(
-                &mut scope,
-                &from,
-                &mut combines,
-                *dest,
-                parcel.as_ref(),
-                &dst,
-            );
-            tiles = tiles.insert(*dest, dst.into_tile());
-            scope.tile_done();
-        }
-        for coord in &plan.drops {
-            tiles = tiles.remove(coord);
-        }
+        let tiles = self.rewrite_paint(
+            &mut scope,
+            &mut from,
+            &mut combines,
+            &plan.rewrites,
+            &plan.drops,
+            |scope, from, sources| {
+                self.render_parcel_from(
+                    scope,
+                    from,
+                    &mut quads,
+                    sources.iter().copied(),
+                    &self.parcel_pipeline,
+                    "stark transform parcel",
+                )
+            },
+        );
 
         // The mask, carried under the canvas affine (pure Replace — §16.1).
         let mut mask_tiles: HashTrieMap<TileCoord, crate::gpu::tile::MaskHandle> =
@@ -888,28 +746,12 @@ impl TransformRenderer {
         let gate = self.shifted_selection_in(pool, selection, translation, base_rect(base));
         let plan = plan_gated_paint(base, &gate, lrect, &lgeo)?;
         let mask_plan = plan_gated_mask(selection, rect, &geo)?;
-        let linv = match &lgeo.kind {
-            GatedKind::Persp { inv, .. } => Some(*inv),
-            GatedKind::Warp { .. } => None,
-        };
-        let inv = match &geo.kind {
-            GatedKind::Persp { inv, .. } => Some(*inv),
-            GatedKind::Warp { .. } => None,
-        };
 
         let mut scope = self.scratch.scope(&self.ctx, "stark transform gated");
 
         let mut from = Source::new(pool, base, &gate);
-        let paint = Gated {
-            units: &plan.units,
-            inv: linv.as_ref(),
-            rect: lrect,
-        };
-        let mask = Gated {
-            units: &mask_plan.units,
-            inv: inv.as_ref(),
-            rect,
-        };
+        let paint = Gated::new(&plan.units, lrect, &lgeo);
+        let mask = Gated::new(&mask_plan.units, rect, &geo);
 
         // Every group-0 uniform, staged before the first submit (`Slots`): the paint
         // pieces, then the mask's residues and pieces — one buffer, since all three
@@ -929,36 +771,30 @@ impl TransformRenderer {
             "stark transform pieces",
             &piece_uniforms,
         );
-        let combine_uniforms: Vec<CombineUniform> = plan
-            .rewrites
-            .iter()
-            .map(|(dest, _)| combine_uniform(*dest, Some(lrect), gate.opacity()))
-            .collect();
+        let combine_uniforms = stage_combines(&plan.rewrites, Some(lrect), gate.opacity());
         let mut combines = Slots::stage(
             &mut scope,
             "stark transform gated combines",
             &combine_uniforms,
         );
 
-        let mut tiles = base.clone();
-        for (dest, unit_idxs) in &plan.rewrites {
-            let parcel =
-                self.render_gated_parcel(&mut scope, &mut from, &paint, &mut pieces, unit_idxs);
-            let dst = Channels::acquire(pool, self.formats, AllocSource::TransformDestination);
-            self.combine(
-                &mut scope,
-                &from,
-                &mut combines,
-                *dest,
-                parcel.as_ref(),
-                &dst,
-            );
-            tiles = tiles.insert(*dest, dst.into_tile());
-            scope.tile_done();
-        }
-        for coord in &plan.drops {
-            tiles = tiles.remove(coord);
-        }
+        let tiles = self.rewrite_paint(
+            &mut scope,
+            &mut from,
+            &mut combines,
+            &plan.rewrites,
+            &plan.drops,
+            |scope, from, unit_idxs| {
+                self.render_parcel_from(
+                    scope,
+                    from,
+                    &mut pieces,
+                    unit_idxs.iter().map(|i| paint.units[*i].src),
+                    &self.parcel_gated_pipeline,
+                    "stark transform parcel gated",
+                )
+            },
+        );
 
         // The mask: tiles outside the rect keep their handles; touched and
         // receiving tiles are rebuilt as residue + moved coverage. A universal
@@ -1024,18 +860,49 @@ impl TransformRenderer {
         }
     }
 
-    /// Rasterize the pieces reaching `dest` into a fresh scratch pair —
-    /// [`render_parcel`](Self::render_parcel)'s shape, with quads generalized
-    /// to [`SourceUnit`]s and the deposit gated by the source rect.
-    fn render_gated_parcel(
+    /// The paint half of an apply: each destination `rewrites` names gets the parcel
+    /// `render` draws from its sources, cut and stacked over its base by the combine
+    /// into a fresh tile; then `drops` leave the map.
+    fn rewrite_paint<S>(
         &self,
         scope: &mut SubmitScope,
         from: &mut Source<'_>,
-        g: &Gated<'_>,
-        pieces: &mut Group<'_, GatedUniform>,
-        unit_idxs: &[usize],
+        combines: &mut Slots<CombineUniform>,
+        rewrites: &[(TileCoord, Vec<S>)],
+        drops: &[TileCoord],
+        mut render: impl FnMut(&mut SubmitScope, &mut Source<'_>, &[S]) -> Option<Parcel>,
+    ) -> TileMap {
+        let mut tiles = from.base.clone();
+        for (dest, sources) in rewrites {
+            let parcel = render(scope, from, sources);
+            let dst = Channels::acquire(from.pool, self.formats, AllocSource::TransformDestination);
+            self.combine(scope, from, combines, *dest, parcel.as_ref(), &dst);
+            tiles = tiles.insert(*dest, dst.into_tile());
+            scope.tile_done();
+        }
+        for coord in drops {
+            tiles = tiles.remove(coord);
+        }
+        tiles
+    }
+
+    /// Rasterize the transformed sources reaching one destination into a fresh scratch
+    /// pair through `pipeline`: `(premult color as-is, height·mask)` — the moved parcel.
+    /// `None` when nothing reaches the tile (a cut with no incoming paint).
+    ///
+    /// `srcs` is one source tile per draw, in the order `group`'s slots were staged:
+    /// the affine's whole-tile quads, or a gated map's pieces, whose deposit its
+    /// uniform gates by the source rect.
+    fn render_parcel_from<T: bytemuck::Pod>(
+        &self,
+        scope: &mut SubmitScope,
+        from: &mut Source<'_>,
+        group: &mut Group<'_, T>,
+        srcs: impl ExactSizeIterator<Item = TileCoord>,
+        pipeline: &wgpu::RenderPipeline,
+        label: &str,
     ) -> Option<Parcel> {
-        if unit_idxs.is_empty() {
+        if srcs.len() == 0 {
             return None;
         }
         // The parcel carries the residual it was cut with: the lift scales height
@@ -1047,38 +914,29 @@ impl TransformRenderer {
             AllocSource::TransformScratch,
         );
 
-        let mut draws: Vec<(u32, wgpu::BindGroup)> = Vec::with_capacity(unit_idxs.len());
-        for idx in unit_idxs {
-            let unit = &g.units[*idx];
-            // Taken before the skip: the staging walk counted this piece (`Slots`).
-            let offset = pieces.take();
-            let Some(tile) = from.base.get(&unit.src) else {
+        let mut draws: Vec<Draw> = Vec::with_capacity(srcs.len());
+        for src in srcs {
+            // Taken before the skip: the staging walk counted this source (`Slots`).
+            let offset = group.take();
+            let Some(tile) = from.base.get(&src) else {
                 continue;
             };
             let src_bg = from
                 .src_bgs
-                .entry(unit.src)
+                .entry(src)
                 .or_insert_with(|| {
-                    // A gating read — the opacity reaches `fs_parcel_gated`
-                    // through the piece's uniform (`gated_uniform`).
-                    let mask = self.selection.mask_for(from.selection, unit.src);
+                    // A gating read — the opacity reaches the fragment stage through
+                    // the draw's own uniform (`pack`).
+                    let mask = self.selection.mask_for(from.selection, src);
                     self.src_bg(tile, &mask)
                 })
                 .clone();
             draws.push((offset, src_bg));
         }
 
-        let mut pass = desc::begin_pass(
-            scope.encoder(),
-            "stark transform parcel gated",
-            parcel.targets(),
-        );
-        pass.set_pipeline(&self.parcel_gated_pipeline);
-        for (offset, src_bg) in &draws {
-            pieces.set(&mut pass, *offset);
-            self.src_bindings.set(&mut pass, src_bg, &[]);
-            pass.draw(desc::QUAD_VERTICES, 0..1);
-        }
+        let mut pass = desc::begin_pass(scope.encoder(), label, parcel.targets());
+        pass.set_pipeline(pipeline);
+        group.draw_quads(&mut pass, &self.src_bindings, &draws);
         drop(pass);
         Some(parcel)
     }
@@ -1101,7 +959,7 @@ impl TransformRenderer {
         // was staged first (`stage_gated_masks`), then the pieces' in order.
         let old = self.selection.mask_for(selection, dest);
         let base_draw = (pieces.take(), self.mask_src_bg(old.view()));
-        let mut draws: Vec<(u32, wgpu::BindGroup)> = Vec::with_capacity(unit_idxs.len());
+        let mut draws: Vec<Draw> = Vec::with_capacity(unit_idxs.len());
         for idx in unit_idxs {
             let unit = &g.units[*idx];
             let src = self.selection.mask_for(selection, unit.src);
@@ -1114,11 +972,7 @@ impl TransformRenderer {
         self.mask_src_bindings.set(&mut pass, &base_draw.1, &[]);
         pass.draw(desc::FULLSCREEN_VERTICES, 0..1);
         pass.set_pipeline(&self.mask_gated_pipeline);
-        for (offset, src_bg) in &draws {
-            pieces.set(&mut pass, *offset);
-            self.mask_src_bindings.set(&mut pass, src_bg, &[]);
-            pass.draw(desc::QUAD_VERTICES, 0..1);
-        }
+        pieces.draw_quads(&mut pass, &self.mask_src_bindings, &draws);
     }
 
     /// The group-1 bind for one source tile: its channels and the mask over it, all
@@ -1146,60 +1000,6 @@ impl TransformRenderer {
             })
     }
 
-    /// Rasterize the transformed source quads reaching `dest` into a fresh
-    /// scratch pair: `(premult color as-is, height·mask)` — the moved parcel.
-    /// `None` when nothing reaches this tile (a cut with no incoming paint).
-    fn render_parcel(
-        &self,
-        scope: &mut SubmitScope,
-        from: &mut Source<'_>,
-        quads: &mut Group<'_, QuadUniform>,
-        sources: &[TileCoord],
-    ) -> Option<Parcel> {
-        if sources.is_empty() {
-            return None;
-        }
-        // The parcel carries the residual it was cut with: the lift scales height
-        // alone, so the color — both halves of it — rides through unscaled (§16.2).
-        let parcel = Channels::scratch(
-            scope,
-            from.pool,
-            self.formats,
-            AllocSource::TransformScratch,
-        );
-
-        let mut draws: Vec<(u32, wgpu::BindGroup)> = Vec::with_capacity(sources.len());
-        for src in sources {
-            // Taken before the skip: the staging walk counted this source (`Slots`).
-            let offset = quads.take();
-            let Some(tile) = from.base.get(src) else {
-                continue;
-            };
-            let src_bg = from
-                .src_bgs
-                .entry(*src)
-                .or_insert_with(|| {
-                    // A gating read — the opacity reaches `fs_parcel` through
-                    // the quad's uniform (`quad_uniform`).
-                    let mask = self.selection.mask_for(from.selection, *src);
-                    self.src_bg(tile, &mask)
-                })
-                .clone();
-            draws.push((offset, src_bg));
-        }
-
-        let mut pass =
-            desc::begin_pass(scope.encoder(), "stark transform parcel", parcel.targets());
-        pass.set_pipeline(&self.parcel_pipeline);
-        for (offset, src_bg) in &draws {
-            quads.set(&mut pass, *offset);
-            self.src_bindings.set(&mut pass, src_bg, &[]);
-            pass.draw(desc::QUAD_VERTICES, 0..1);
-        }
-        drop(pass);
-        Some(parcel)
-    }
-
     /// Cut `dest`'s base by its own mask and stack the parcel over it, into the
     /// fresh CoW `(color, aux)` pair `dst`. Whether the cut is scoped to a source
     /// rect (§16.8) or is the affine's whole-plane one rides in the staged uniform
@@ -1223,7 +1023,7 @@ impl TransformRenderer {
             .or(from.base.get(&dest).map(TilePairHandle::targets));
         let carried = self.zeroes.or(parcel.map(Channels::targets));
         // A gating read: the base is cut by `coverage · opacity`, the identical
-        // factor the parcel side took at the source (`combine_uniform` above).
+        // factor the parcel side took at the source (`pack::combine_uniform`).
         let base_mask = self.selection.mask_for(from.selection, dest);
         let bg = self
             .combine
@@ -1261,7 +1061,7 @@ impl TransformRenderer {
         sources: &[TileCoord],
         dst: &crate::gpu::tile::MaskHandle,
     ) {
-        let mut draws: Vec<(u32, wgpu::BindGroup)> = Vec::with_capacity(sources.len());
+        let mut draws: Vec<Draw> = Vec::with_capacity(sources.len());
         for src in sources {
             // Taken before the skip: the staging walk counted this source (`Slots`).
             // Its uniform was staged at 1.0: this pass carries the mask, it does not
@@ -1279,47 +1079,6 @@ impl TransformRenderer {
             desc::Attachments::cleared_to(dst.view(), outside_clear(selection)),
         );
         pass.set_pipeline(&self.mask_pipeline);
-        for (offset, src_bg) in &draws {
-            quads.set(&mut pass, *offset);
-            self.mask_src_bindings.set(&mut pass, src_bg, &[]);
-            pass.draw(desc::QUAD_VERTICES, 0..1);
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::document::transform::TransformPlan;
-
-    /// A transform's draw count is a pure function of its plan — the sum over the
-    /// destinations of the sources reaching each — so the slot buffer is sized exactly
-    /// before a command is encoded, and [`stage_quads`] stages one uniform per draw in
-    /// the order [`Slots::take`] will hand them back: destination-major, sources as
-    /// the plan lists them. Adapter-free; the GPU half is the `spent` assertions.
-    #[test]
-    fn a_plans_draws_are_counted_and_staged_in_draw_order() {
-        let c = |x, y| TileCoord::new(x, y);
-        let plan = TransformPlan {
-            rewrites: vec![
-                (c(0, 0), vec![c(0, 0), c(1, 0)]),
-                (c(1, 0), vec![]), // a cut with no incoming paint draws nothing
-                (c(2, 1), vec![c(1, 1)]),
-            ],
-            drops: vec![],
-        };
-        assert_eq!(slot_count(&plan.rewrites), 3);
-
-        let mut staged = Vec::new();
-        stage_quads(Affine2::IDENTITY, &plan.rewrites, 0.5, &mut staged);
-        assert_eq!(staged.len(), slot_count(&plan.rewrites));
-        let expect = [(c(0, 0), c(0, 0)), (c(0, 0), c(1, 0)), (c(2, 1), c(1, 1))];
-        for (u, (dest, src)) in staged.iter().zip(expect) {
-            let d = mask_tex_origin(dest);
-            let s = src.origin();
-            assert_eq!(&u.a[..2], &[d.x, d.y], "destination origin");
-            assert_eq!(&u.u[..2], &[s.x, s.y], "source origin");
-            assert_eq!(u.u[3], 0.5, "the gate's opacity rides in the quad");
-        }
+        quads.draw_quads(&mut pass, &self.mask_src_bindings, &draws);
     }
 }
