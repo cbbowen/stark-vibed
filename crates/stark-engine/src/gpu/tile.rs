@@ -289,7 +289,7 @@ impl TexHandle {
     /// The formats must match (a copy's are required to), which is the write-back's
     /// own guarantee: it copies each tile channel from a region-sized texture of that
     /// channel's format.
-    pub fn copy_into(
+    pub(crate) fn copy_into(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         src: &wgpu::Texture,
@@ -325,7 +325,7 @@ impl TexHandle {
     /// `src` is the block's origin in this texture, `dst_origin` where it lands, and
     /// `extent` the block; a block past either texture is a validation error, which
     /// is what the caller's clipping arithmetic is for.
-    pub fn copy_block_out(
+    pub(crate) fn copy_block_out(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         src: wgpu::Origin3d,
@@ -372,7 +372,7 @@ impl TexHandle {
     /// # Panics
     ///
     /// Panics unless `bytes` is exactly one block.
-    pub fn write_block(&self, queue: &wgpu::Queue, bytes: &[u8]) {
+    pub(crate) fn write_block(&self, queue: &wgpu::Queue, bytes: &[u8]) {
         let dst = self
             .0
             .tex
@@ -498,16 +498,16 @@ impl TilePairHandle {
         self.0.composite_bg.get_or_init(make)
     }
 
-    pub fn color_view(&self) -> &wgpu::TextureView {
+    pub(crate) fn color_view(&self) -> &wgpu::TextureView {
         self.0.color.view()
     }
-    pub fn aux_view(&self) -> &wgpu::TextureView {
+    pub(crate) fn aux_view(&self) -> &wgpu::TextureView {
         self.0.aux.view()
     }
     /// The residual channel's view, or `None` in a space that has no residual
     /// (§6.7). A caller in a pigment document may `expect` it: the space decides,
     /// once, for every tile it ever makes.
-    pub fn resid_view(&self) -> Option<&wgpu::TextureView> {
+    pub(crate) fn resid_view(&self) -> Option<&wgpu::TextureView> {
         self.0.resid.as_ref().map(TexHandle::view)
     }
 
@@ -525,7 +525,7 @@ impl TilePairHandle {
     /// `wgpu::Texture`s and a tile hands none out ([`TexHandle`]); what leaves this
     /// call is the decoded texels. `readback` keeps the row-padding arithmetic.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn read_channels(&self, ctx: &crate::gpu::context::GpuContext) -> TileChannels {
+    pub(crate) fn read_channels(&self, ctx: &crate::gpu::context::GpuContext) -> TileChannels {
         use crate::gpu::readback::{begin_read, decode_rgba16f, map_blocking, take_rows};
         let block = crate::view::Extent2::new(TILE_TEX, TILE_TEX);
         let read = |tex: &wgpu::Texture, lanes: u32| {
@@ -566,7 +566,7 @@ impl TilePairHandle {
     /// narrowed aux, and the residual where the color space has one. Copies, so the
     /// tile is bit-identical to the region block it was cut from, and every
     /// rewritten tile's apron to its neighbour's interior (§6.4).
-    pub fn copy_from_region(
+    pub(crate) fn copy_from_region(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         color: &wgpu::Texture,
@@ -592,7 +592,7 @@ impl TilePairHandle {
     /// rewritten once a commit lands — copy-on-write hands out a fresh tile
     /// instead (§5.2) — so identity doubles as "unchanged", which is
     /// what the timeline's patch capture diffs by (§12.6).
-    pub fn same(&self, other: &Self) -> bool {
+    pub(crate) fn same(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
 }
@@ -641,7 +641,7 @@ impl MaskHandle {
     /// Whether two handles are the same allocation — [`TilePairHandle::same`]
     /// for masks, and true for the same reason: a mask tile is rasterized
     /// afresh rather than rewritten, so identity doubles as "unchanged".
-    pub fn same(&self, other: &Self) -> bool {
+    pub(crate) fn same(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0.0, &other.0.0)
     }
 }
@@ -921,7 +921,7 @@ impl TilePool {
     /// Acquire a selection mask tile ([`MASK_FORMAT`], §6.8). Contents are
     /// undefined until rasterized; the selection renderer always writes the whole
     /// target, aprons included.
-    pub fn acquire_mask(&self, source: AllocSource) -> MaskHandle {
+    pub(crate) fn acquire_mask(&self, source: AllocSource) -> MaskHandle {
         MaskHandle(
             self.acquire_tex(MASK_FORMAT, source),
             Arc::new(MaskGroups::default()),

@@ -121,7 +121,7 @@ impl Substrate {
     /// `tile_px` as an exact fraction ([`SubstrateMap::texels_per_px()`]): the substrate the
     /// paint catches on and the substrate the light catches on have to be the *same*
     /// substrate, or the highlights sit beside the grain instead of on it.
-    pub fn uv_scale(self) -> f32 {
+    pub(crate) fn uv_scale(self) -> f32 {
         1.0 / self.tile_px()
     }
 }

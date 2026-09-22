@@ -83,7 +83,7 @@ impl Default for Selection {
 impl Selection {
     /// The unrestricted selection: no mask tiles, everything selected. This is the
     /// state of a fresh document and of an explicit "deselect".
-    pub fn everything() -> Self {
+    pub(crate) fn everything() -> Self {
         Self {
             tiles: HashTrieMap::new(),
             outside: 1.0,
@@ -106,7 +106,7 @@ impl Selection {
     /// A partial plane is *not* universal: `outside = 0.5` with no tiles gates every
     /// tool to half strength everywhere, which is a mask doing its job rather than
     /// the absence of one.
-    pub fn is_universal(&self) -> bool {
+    pub(crate) fn is_universal(&self) -> bool {
         self.tiles.is_empty() && self.outside >= 1.0
     }
 
@@ -121,7 +121,7 @@ impl Selection {
     /// the one `DocState` does not store. A universal mask read below 1 is not
     /// it: it masks nothing and gates everything, which is a state with a number
     /// to keep (see [`opacity`](Self::opacity)).
-    pub fn is_everything(&self) -> bool {
+    pub(crate) fn is_everything(&self) -> bool {
         self.is_universal() && self.opacity >= 1.0
     }
 
@@ -157,12 +157,12 @@ impl Selection {
 
     /// The level whose half the outline traces, and that inversion reflects
     /// through — see the field docs.
-    pub fn level(&self) -> f32 {
+    pub(crate) fn level(&self) -> f32 {
         self.level
     }
 
     /// This tile's mask, if the selection has one here.
-    pub fn tile(&self, coord: TileCoord) -> Option<&MaskHandle> {
+    pub(crate) fn tile(&self, coord: TileCoord) -> Option<&MaskHandle> {
         self.tiles.get(&coord)
     }
 

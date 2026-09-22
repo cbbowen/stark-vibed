@@ -44,7 +44,7 @@ impl Engine {
     /// [`end_collaboration`](Self::end_collaboration) gives the history back in the
     /// same breath as it drops the outbox, so there is no state in which this and
     /// [`scrub_range`](Self::scrub_range) disagree about whose the document is.
-    pub fn is_shared(&self) -> bool {
+    pub(crate) fn is_shared(&self) -> bool {
         self.authoring.outbox.is_some()
     }
 

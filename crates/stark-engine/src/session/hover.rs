@@ -164,7 +164,7 @@ impl Session {
 
     /// Drop the hover mark. Answers whether there was one to drop, so a caller
     /// can skip the refold — and the repaint — when there was not.
-    pub fn clear_hover(&mut self) -> bool {
+    pub(crate) fn clear_hover(&mut self) -> bool {
         self.hover.take().is_some()
     }
 

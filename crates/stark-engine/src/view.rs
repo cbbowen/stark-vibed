@@ -83,7 +83,7 @@ impl ViewTransform {
     /// anything a shader measures in target px comes out `n` times wider in a picture
     /// about to be `n` times smaller — the same width, drawn with `n²` samples of
     /// coverage instead of one.
-    pub fn supersampled(self, n: u32) -> Self {
+    pub(crate) fn supersampled(self, n: u32) -> Self {
         Self {
             zoom: self.zoom * n as f32,
             viewport: Extent2::new(self.viewport.width * n, self.viewport.height * n),
@@ -119,7 +119,7 @@ impl ViewTransform {
 
     /// The screen→canvas linear map. The transpose rather than a general inverse,
     /// because [`orientation`](Self::orientation) is orthogonal.
-    pub fn inverse_linear(self) -> Mat2 {
+    pub(crate) fn inverse_linear(self) -> Mat2 {
         self.orientation().transpose() * (1.0 / self.zoom)
     }
 
@@ -134,7 +134,7 @@ impl ViewTransform {
     ///
     /// The y row is negated because canvas y is downward while NDC y is upward; an
     /// upright, unmirrored view leaves `m` diagonal.
-    pub fn canvas_to_ndc(self) -> (Mat2, Vec2) {
+    pub(crate) fn canvas_to_ndc(self) -> (Mat2, Vec2) {
         let vw = self.viewport.width.max(1) as f32;
         let vh = self.viewport.height.max(1) as f32;
         // The screen→NDC scale with the zoom already folded in, so an upright view
@@ -243,7 +243,7 @@ impl ViewTransform {
     /// Pan by a **screen-pixel** drag: content follows the cursor, so the centre
     /// moves opposite, carried into canvas units through the whole map (a turned or
     /// mirrored canvas sends a screen drag somewhere else entirely).
-    pub fn pan_by(&mut self, screen_delta: Vec2) {
+    pub(crate) fn pan_by(&mut self, screen_delta: Vec2) {
         let delta = self.canvas_delta(screen_delta);
         self.commit(Self {
             center: self.center - delta,
@@ -271,7 +271,7 @@ impl ViewTransform {
     ///
     /// A rect no view could be fitted to — inverted or empty — leaves the view
     /// exactly as it was.
-    pub fn show_rect(&mut self, min: Vec2, max: Vec2, margin: f32) {
+    pub(crate) fn show_rect(&mut self, min: Vec2, max: Vec2, margin: f32) {
         let size = max - min;
         // Also the NaN gate: every comparison against one is false, so a rect with a
         // NaN corner is refused here rather than reaching the clamp below, which
@@ -314,7 +314,7 @@ impl ViewTransform {
     /// A reflection pushes back through a rotation (`M·R(θ) = R(−θ)·M`), so the view
     /// stays a rotation-and-a-mirror and doing this twice is exactly the identity —
     /// which is what makes it a toggle rather than a setting.
-    pub fn mirror_screen_h(&mut self) {
+    pub(crate) fn mirror_screen_h(&mut self) {
         // One commit rather than a `set_rotation` and a toggle: the pair *is* the
         // reflection (`M·R(θ) = R(−θ)·M`), so a refused half would leave a view that
         // is neither the one before nor the one after.
@@ -384,7 +384,7 @@ impl ViewTransform {
     /// `None` when the box cannot be measured (a non-finite view, or one so far out
     /// that whole tiles fall off the `i32` grid): culling is an optimization, and one
     /// that cannot measure its input must do nothing rather than guess.
-    pub fn visible_tiles(self) -> Option<TileRect> {
+    pub(crate) fn visible_tiles(self) -> Option<TileRect> {
         let (lo, hi) = self.visible_bounds();
         TileRect::covering(lo, hi, 0)
     }

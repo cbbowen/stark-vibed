@@ -188,8 +188,8 @@ pub(crate) struct StrokeCarry {
     /// measured along the flattened polyline — and both the `drain` falloff and the
     /// color-dynamics noise read it, so restarting it at zero would make the middle
     /// of a stroke look like the start of one.
-    pub dist: f32,
-    pub progress: Progress,
+    pub(crate) dist: f32,
+    pub(crate) progress: Progress,
 }
 
 /// Whether a range render happened at all. One value with what a finished range

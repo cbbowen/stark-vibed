@@ -220,7 +220,7 @@ impl Session {
         self.active_layer
     }
 
-    pub fn set_tool(&mut self, tool: Tool) {
+    pub(crate) fn set_tool(&mut self, tool: Tool) {
         self.cancel_stroke();
         self.tool = tool;
     }
@@ -247,7 +247,11 @@ impl Session {
     /// the preview path. Answers whether it landed.
     ///
     /// Takes the document because a session holds none.
-    pub fn set_active_layer(&mut self, id: LayerId, doc: &crate::document::DocState) -> bool {
+    pub(crate) fn set_active_layer(
+        &mut self,
+        id: LayerId,
+        doc: &crate::document::DocState,
+    ) -> bool {
         let known = doc.contains_layer(id);
         if known {
             self.active_layer = id;
@@ -260,7 +264,7 @@ impl Session {
     /// A setter rather than a `pub` field because the value arrives in a command from
     /// outside and this is where the floor holds. NaN lands on 0, the neutral setting,
     /// since both of its comparisons are false.
-    pub fn set_selection_feather(&mut self, feather: f32) {
+    pub(crate) fn set_selection_feather(&mut self, feather: f32) {
         self.selection_feather = if feather > 0.0 { feather } else { 0.0 };
     }
 
@@ -270,7 +274,7 @@ impl Session {
     }
 
     /// How strongly the next fill gesture's parcel lands, clamped to `0..=1`.
-    pub fn set_shape_opacity(&mut self, opacity: f32) {
+    pub(crate) fn set_shape_opacity(&mut self, opacity: f32) {
         // `clamp01`'s rule, spelled here because the model keeps it private: NaN lands
         // on 0 rather than passing through, since both of its comparisons are false.
         self.shape_opacity = if opacity > 0.0 { opacity.min(1.0) } else { 0.0 };
@@ -287,14 +291,14 @@ impl Session {
     /// **not** drawn, which is what an absent entry in [`visible_guides`] means (§20.5).
     ///
     /// [`visible_guides`]: Self::visible_guides
-    pub fn guide_visible(&self, id: GuideId) -> bool {
+    pub(crate) fn guide_visible(&self, id: GuideId) -> bool {
         self.visible_guides.contains(&id)
     }
 
     /// Open or shut a guide's eye. Answers whether that changed anything, so a
     /// command that says what is already true costs no repaint and no
     /// observation.
-    pub fn set_guide_visible(&mut self, id: GuideId, visible: bool) -> bool {
+    pub(crate) fn set_guide_visible(&mut self, id: GuideId, visible: bool) -> bool {
         if visible {
             self.visible_guides.insert(id)
         } else {
@@ -311,7 +315,7 @@ impl Session {
     /// Takes the document because a `Session` holds none, and which one it is combined
     /// with is the caller's: the committed document for a commit, the previewed one
     /// for what is on screen.
-    pub fn shown_guides<'a>(
+    pub(crate) fn shown_guides<'a>(
         &'a self,
         doc: &'a crate::document::DocState,
     ) -> impl Iterator<Item = &'a crate::document::Guide> {
@@ -331,14 +335,14 @@ impl Session {
     /// [`adopt_identity`](Self::adopt_identity) will not overwrite a name set
     /// here. Setting it empty gives the choice back, and peers resume showing the
     /// id-derived default.
-    pub fn set_name(&mut self, name: String) {
+    pub(crate) fn set_name(&mut self, name: String) {
         self.presence.set_name(&name);
     }
 
     /// Where this client's pointer is, or `None` when it is off the canvas.
     /// **Filtered**, because this one goes on the wire and the guide rays are
     /// drawn through it (§20.9): a non-finite position is refused into `None`.
-    pub fn set_cursor(&mut self, at: Option<Vec2>) {
+    pub(crate) fn set_cursor(&mut self, at: Option<Vec2>) {
         self.presence.set_cursor(at);
     }
 
@@ -350,7 +354,7 @@ impl Session {
     /// Adopt the identity a session has given this client: the run counter every
     /// published frame carries, and the id-derived name as a default — unless the
     /// user has chosen one ([`set_name`](Self::set_name)).
-    pub fn adopt_identity(&mut self, identity: Identity) {
+    pub(crate) fn adopt_identity(&mut self, identity: Identity) {
         self.presence.adopt_identity(identity);
     }
 
@@ -368,7 +372,7 @@ impl Session {
     /// Whether [`publish`](Self::publish) could produce a frame — conservative, so
     /// an idle session costs the pump nothing: it may say yes where `publish` then
     /// returns `None`, but never no where `publish` would have produced a frame.
-    pub fn publish_due(&self, now: f64) -> bool {
+    pub(crate) fn publish_due(&self, now: f64) -> bool {
         let in_gesture = self.in_flight.is_some() || self.selecting.is_some();
         self.presence
             .publish_due(now, self.active_layer, in_gesture)
@@ -376,7 +380,7 @@ impl Session {
 
     /// The farewell frame: one publish that removes this client from every peer's
     /// roster at once, rather than making them wait out [`PEER_TIMEOUT`](stark_model::peer::PEER_TIMEOUT).
-    pub fn publish_leaving(&mut self) -> PeerFrame {
+    pub(crate) fn publish_leaving(&mut self) -> PeerFrame {
         self.presence.publish_leaving(self.active_layer)
     }
 
@@ -598,7 +602,7 @@ impl Session {
     /// `actor` — the same shape [`Peer::gesture_view`](crate::peer::Peer::gesture_view)
     /// produces for everyone else, so the fold treats them alike without either being
     /// stored in the other's form.
-    pub fn gesture_view(&self, actor: ActorId) -> Option<GestureView> {
+    pub(crate) fn gesture_view(&self, actor: ActorId) -> Option<GestureView> {
         let (gesture, frozen_spans) = match self.preview_record() {
             Some(rec) => (LiveGesture::Stroke(rec), self.frozen_spans()),
             // A marquee has no settled prefix to retire: its closing edge follows the
@@ -693,7 +697,7 @@ impl Session {
     /// with it: every caller — a pinch's cancel, a tool switch, the reset before
     /// a load — is a moment the hypothesis stopped describing anything, and the
     /// next hover report re-seeds it.
-    pub fn cancel_stroke(&mut self) {
+    pub(crate) fn cancel_stroke(&mut self) {
         self.in_flight = None;
         self.selecting = None;
         self.hover = None;
@@ -711,7 +715,7 @@ impl Session {
     /// would reopen itself on a guide nobody here has ever seen.
     ///
     /// [`visible_guides`]: Self::visible_guides
-    pub fn forget_document(&mut self) {
+    pub(crate) fn forget_document(&mut self) {
         self.cancel_stroke();
         self.visible_guides.clear();
     }

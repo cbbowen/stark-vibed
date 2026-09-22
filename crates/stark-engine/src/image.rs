@@ -50,7 +50,7 @@ impl RgbaImage {
     /// is RGBA by definition, so a BGRA target has to be swizzled. Skipping it swaps
     /// red and blue — invisible where tests render to `Rgba8Unorm`, but a browser
     /// substrate is typically `Bgra8Unorm`.
-    pub fn from_target_bytes(
+    pub(crate) fn from_target_bytes(
         width: u32,
         height: u32,
         mut bytes: Vec<u8>,

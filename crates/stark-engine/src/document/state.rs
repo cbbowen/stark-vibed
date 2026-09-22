@@ -103,7 +103,7 @@ impl CanvasBounds {
 /// than a full index path, because ids are stable and a path goes stale the moment
 /// anything below it moves.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LayerSite {
+pub(crate) struct LayerSite {
     /// The layer whose carried stack this one is in, or `None` for the root
     /// stack.
     pub carrier: Option<LayerId>,
@@ -235,7 +235,7 @@ impl DocState {
     ///
     /// Built by *inserting* that layer, so [`with_layers`](Self::with_layers) stays
     /// the one place `bounds` is ever written.
-    pub fn with_layer(id: LayerId) -> Self {
+    pub(crate) fn with_layer(id: LayerId) -> Self {
         Self {
             layers: Vector::new(),
             bounds: CanvasBounds::default(),
@@ -441,7 +441,7 @@ impl DocState {
     /// Every actor with a selection stored, in no particular order — one in force,
     /// or a universal mask read below full strength; never
     /// [`Selection::everything`] itself ([`with_selection`](Self::with_selection)).
-    pub fn selections(&self) -> impl Iterator<Item = (ActorId, &Selection)> {
+    pub(crate) fn selections(&self) -> impl Iterator<Item = (ActorId, &Selection)> {
         self.selections.iter().map(|(a, s)| (*a, s))
     }
 
@@ -500,7 +500,7 @@ impl DocState {
     }
 
     /// Whether a layer with this id exists at all.
-    pub fn contains_layer(&self, id: LayerId) -> bool {
+    pub(crate) fn contains_layer(&self, id: LayerId) -> bool {
         self.layer(id).is_some()
     }
 
@@ -545,12 +545,12 @@ impl DocState {
     /// Which layer carries `id`, or `None` when it sits in the root stack (or
     /// does not exist). The two read the same way here: neither is inside
     /// anything.
-    pub fn carrier_of(&self, id: LayerId) -> Option<LayerId> {
+    pub(crate) fn carrier_of(&self, id: LayerId) -> Option<LayerId> {
         self.locate(id).and_then(|(_, site)| site.carrier)
     }
 
     /// Where `id` sits, for a restore to put it back (§14.8).
-    pub fn site_of(&self, id: LayerId) -> Option<LayerSite> {
+    pub(crate) fn site_of(&self, id: LayerId) -> Option<LayerSite> {
         self.locate(id).map(|(_, site)| site)
     }
 
@@ -854,7 +854,7 @@ impl DocState {
     /// folding; a duplication takes this one, and `duplicate_layer` declines unless
     /// `ids` names exactly the subtree *it* walks. Two walks that had to agree would be
     /// the §12.6 hazard one level down.
-    pub fn subtree_ids(&self, id: LayerId) -> Option<Vec<LayerId>> {
+    pub(crate) fn subtree_ids(&self, id: LayerId) -> Option<Vec<LayerId>> {
         let layer = self.layer(id)?;
         let mut out = Vec::new();
         layer.visit(0, &mut |l, _| out.push(l.id));
@@ -868,7 +868,7 @@ impl DocState {
     /// [`ActionKind::RemoveLayer`]'s `carried` is minted in.
     ///
     /// [`ActionKind::RemoveLayer`]: stark_model::document::ActionKind::RemoveLayer
-    pub fn carried_ids(&self, id: LayerId) -> Option<Vec<LayerId>> {
+    pub(crate) fn carried_ids(&self, id: LayerId) -> Option<Vec<LayerId>> {
         let mut ids = self.subtree_ids(id)?;
         ids.remove(0);
         Some(ids)

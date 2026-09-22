@@ -183,18 +183,18 @@ impl Complaints {
 /// through every entry point, so they are one parameter rather than four at each hop.
 #[derive(Copy, Clone)]
 pub(crate) struct StrokeScene<'a> {
-    pub pool: &'a TilePool,
+    pub(crate) pool: &'a TilePool,
     /// Read once, at the gate: the brush's shape resolves against it
     /// ([`render_range`](StrokeRenderer::render_range)), and the paths are handed
     /// the resolved tip ([`ResolvedRange`]).
-    pub assets: &'a AssetStore,
+    pub(crate) assets: &'a AssetStore,
     /// The layer's committed tiles: what the stroke composites over.
-    pub base: &'a TileMap,
+    pub(crate) base: &'a TileMap,
     /// The liquify run those tiles are composed through (§6.13), if the layer has
     /// one — what a liquify stroke composes into, and what every other path ignores.
-    pub liquify: Option<&'a Rc<LiquifyRun>>,
+    pub(crate) liquify: Option<&'a Rc<LiquifyRun>>,
     /// The selection in force, which gates the deposit (§6.8).
-    pub selection: &'a Selection,
+    pub(crate) selection: &'a Selection,
     /// The canvas substrate the document was on when this stroke was made (§6.4) —
     /// the substrate whose tooth gates how much of the brush's own paint lands
     /// (`BrushParams::tooth_give`).
@@ -202,7 +202,7 @@ pub(crate) struct StrokeScene<'a> {
     /// Handed in per call rather than held on the renderer: it is *document* state,
     /// and a renderer that cached it would answer a replayed stroke with whatever the
     /// compositor happens to be showing (§6.4).
-    pub substrate: &'a crate::gpu::substrate::SubstrateMap,
+    pub(crate) substrate: &'a crate::gpu::substrate::SubstrateMap,
 }
 
 /// What a stroke render leaves on the layer: the tiles, and — for a liquify stroke —
@@ -211,8 +211,8 @@ pub(crate) struct StrokeScene<'a> {
 ///
 /// [`Layer::with_painted`]: crate::document::Layer::with_painted
 pub(crate) struct Painted {
-    pub tiles: TileMap,
-    pub liquify: Option<Rc<LiquifyRun>>,
+    pub(crate) tiles: TileMap,
+    pub(crate) liquify: Option<Rc<LiquifyRun>>,
 }
 
 impl Painted {

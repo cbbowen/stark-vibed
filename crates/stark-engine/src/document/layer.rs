@@ -68,7 +68,7 @@ impl CompositeParams {
     ///
     /// One predicate over all three rather than three tests at each call site: a
     /// layer needs isolating if *any* of them does something.
-    pub fn is_free(self) -> bool {
+    pub(crate) fn is_free(self) -> bool {
         self.blend.is_normal() && !self.clip && self.opacity >= 1.0
     }
 }
@@ -314,7 +314,7 @@ impl Layer {
     /// Fully transparent counts as hidden because it is: the compositor multiplies by
     /// this weight, so zero contributes nothing and the subtree beneath it is a draw
     /// list nobody can see.
-    pub fn is_shown(&self) -> bool {
+    pub(crate) fn is_shown(&self) -> bool {
         self.visible && self.composite.opacity > 0.0
     }
 
@@ -324,7 +324,7 @@ impl Layer {
     ///
     /// Says nothing about what the layer carries; [`Self::is_shown`] is the other
     /// half.
-    pub fn draws_content(&self) -> bool {
+    pub(crate) fn draws_content(&self) -> bool {
         match &self.content {
             LayerContent::Matte { .. } => true,
             LayerContent::Paint(_) => self.tiles().is_some_and(|t| !t.is_empty()),
@@ -372,7 +372,7 @@ impl Layer {
     }
 
     /// A filter layer running `filter` over the stack beneath it (§21).
-    pub fn filter_layer(id: LayerId, filter: Filter) -> Self {
+    pub(crate) fn filter_layer(id: LayerId, filter: Filter) -> Self {
         Self {
             content: LayerContent::Filter(filter),
             ..Self::new(id)
@@ -416,7 +416,7 @@ impl Layer {
     }
 
     /// The matte region this layer fills, if it is a matte.
-    pub fn matte_region(&self) -> Option<MatteRegion> {
+    pub(crate) fn matte_region(&self) -> Option<MatteRegion> {
         match &self.content {
             LayerContent::Matte { region, .. } => Some(*region),
             LayerContent::Paint(_) | LayerContent::Filter(_) => None,
@@ -449,7 +449,7 @@ impl Layer {
     /// One predicate rather than two matches, because the fold and the gesture's
     /// subtree expansion must leave out exactly the same layers
     /// (`DocState::translate_layers`, `Engine::translate_moves`).
-    pub fn is_translatable(&self) -> bool {
+    pub(crate) fn is_translatable(&self) -> bool {
         match &self.content {
             LayerContent::Paint(_) | LayerContent::Matte { .. } => true,
             LayerContent::Filter(_) => false,
@@ -475,7 +475,7 @@ impl Layer {
     /// edit commute with a liquify stroke beyond its reach (§12.6). Whether the run
     /// it leaves is stale is the next liquify stroke's question, answered by tile
     /// identity ([`LiquifyRun::is_fresh`]).
-    pub fn with_tiles(&self, tiles: TileMap) -> Self {
+    pub(crate) fn with_tiles(&self, tiles: TileMap) -> Self {
         match &self.content {
             LayerContent::Paint(current) if current.map().ptr_eq(&tiles) => self.clone(),
             LayerContent::Paint(current) => Self {
@@ -490,7 +490,7 @@ impl Layer {
     /// what a liquify stroke's render lands (§6.13). `run` is the run the new tiles
     /// are composed through; `None` says the render was not a liquify stroke's and
     /// the run in place stays, which is [`with_tiles`](Self::with_tiles) exactly.
-    pub fn with_painted(&self, tiles: TileMap, run: Option<Rc<LiquifyRun>>) -> Self {
+    pub(crate) fn with_painted(&self, tiles: TileMap, run: Option<Rc<LiquifyRun>>) -> Self {
         match run {
             Some(run) => match &self.content {
                 LayerContent::Paint(_) => Self {
@@ -545,7 +545,7 @@ impl Layer {
     /// with the children ([`CarriedBounds`]). The own half is placed here rather
     /// than cached, since `translation` and `content` are written by literals
     /// and a box that depended on them could be left behind.
-    pub fn subtree_bounds(&self) -> CanvasBounds {
+    pub(crate) fn subtree_bounds(&self) -> CanvasBounds {
         let mut out = self.bounds().shifted(self.translation);
         out.union(self.carried.0);
         out
@@ -553,7 +553,7 @@ impl Layer {
 
     /// The same layer carrying `carries` instead — and knowing their extent,
     /// which is O(children) here because each child already knows its own.
-    pub fn with_carries(&self, carries: Vector<Layer>) -> Self {
+    pub(crate) fn with_carries(&self, carries: Vector<Layer>) -> Self {
         let mut carried = CanvasBounds::default();
         for l in carries.iter() {
             carried.union(l.subtree_bounds());

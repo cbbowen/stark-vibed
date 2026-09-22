@@ -113,7 +113,7 @@ impl InputSample {
     /// apart differ by infinity — from which `arc` divides `inf / inf` and hands the
     /// solve the NaN it was written to refuse. So the position is bounded as well as
     /// finite, by [`COORD_LIMIT`].
-    pub fn is_admissible(&self) -> bool {
+    pub(crate) fn is_admissible(&self) -> bool {
         self.pos.is_finite()
             && self.pos.abs().max_element() < COORD_LIMIT
             && self.pressure.is_finite()
@@ -139,7 +139,7 @@ impl InputSample {
 /// under `2 · COORD_LIMIT` ≈ 10¹² apart, so no difference of two positions is
 /// infinite, and the normal equations square that to ~10²⁴ where an `f32` still has
 /// fourteen orders of magnitude in hand.
-pub const COORD_LIMIT: f32 = i32::MAX as f32 * stark_model::geom::TILE_SIZE as f32;
+pub(crate) const COORD_LIMIT: f32 = i32::MAX as f32 * stark_model::geom::TILE_SIZE as f32;
 
 impl Default for InputSample {
     fn default() -> Self {

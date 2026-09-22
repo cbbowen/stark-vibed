@@ -10,11 +10,14 @@
 //! self-referential dev-dependency, would have to enable it.
 
 use stark_model::SubstrateId;
-use stark_model::document::LayerId;
-use stark_model::geom::{TileCoord, Vec2};
+use stark_model::geom::Vec2;
+#[cfg(not(target_arch = "wasm32"))]
+use stark_model::{document::LayerId, geom::TileCoord};
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::RgbaImage;
 use crate::view::Extent2;
-use crate::{Engine, Result, RgbaImage};
+use crate::{Engine, Result};
 
 pub use crate::colorspace::{all_available, available};
 pub use crate::document::audit::undeclared;
@@ -105,11 +108,11 @@ pub trait Probe {
 /// stopped finding a device would take the golden, seam and dynamics rounds green
 /// having rendered nothing (CLAUDE.md). CI sets it because CI has no adapter; a
 /// developer's machine must not.
-pub const ALLOW_NO_GPU: &str = "STARK_ALLOW_NO_GPU";
+const ALLOW_NO_GPU: &str = "STARK_ALLOW_NO_GPU";
 
 /// Whether the environment permits skipping GPU work. Exactly `"1"`: an empty or
 /// misspelt value must not read as permission.
-pub fn allowed_to_skip() -> bool {
+fn allowed_to_skip() -> bool {
     std::env::var(ALLOW_NO_GPU).is_ok_and(|v| v == "1")
 }
 

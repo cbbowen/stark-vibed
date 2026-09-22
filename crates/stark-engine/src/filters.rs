@@ -31,9 +31,7 @@ pub const CONTRAST_PIVOT: f32 = stark_shaders::mirror::filter_common::CONTRAST_P
 use stark_model::color::light_to_linear;
 
 /// The reddest wavelength the dispersion integral carries, in nm — parameter `s = 0`.
-pub const LAMBDA_RED: f32 = stark_shaders::mirror::filter_common::CA_LAMBDA_RED;
-/// The bluest, at `s = 1`.
-pub const LAMBDA_BLUE: f32 = stark_shaders::mirror::filter_common::CA_LAMBDA_BLUE;
+const LAMBDA_RED: f32 = stark_shaders::mirror::filter_common::CA_LAMBDA_RED;
 
 /// The wavelength (nm) whose refraction lands at dispersion parameter `s ∈ [0, 1]`
 /// — 0 the red end of the fringe, 1 the blue.
@@ -41,7 +39,7 @@ pub const LAMBDA_BLUE: f32 = stark_shaders::mirror::filter_common::CA_LAMBDA_BLU
 /// Cauchy's law inverted, exactly as the pass inverts it: `(λ_red/λ)²` runs linearly
 /// across the range, which is what makes the taps uniform in *displacement* and the
 /// blue end spread farther than an equal run of the red (§21.10).
-pub fn dispersion_lambda(s: f32) -> f32 {
+fn dispersion_lambda(s: f32) -> f32 {
     LAMBDA_RED / (1.0 + s * stark_shaders::mirror::filter_common::CA_CAUCHY_SPAN).sqrt()
 }
 
@@ -93,7 +91,8 @@ mod tests {
     #[test]
     fn dispersion_lambda_spans_the_visible() {
         assert!((dispersion_lambda(0.0) - LAMBDA_RED).abs() < 1e-3);
-        assert!((dispersion_lambda(1.0) - LAMBDA_BLUE).abs() < 1e-2);
+        let blue = stark_shaders::mirror::filter_common::CA_LAMBDA_BLUE;
+        assert!((dispersion_lambda(1.0) - blue).abs() < 1e-2);
     }
 
     /// A fringe is a rainbow: red at one end, blue at the other, and nothing negative

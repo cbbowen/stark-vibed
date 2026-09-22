@@ -3,8 +3,9 @@
 //! method of the same name, which method resolution prefers over the trait's.
 
 use stark_model::SubstrateId;
-use stark_model::document::LayerId;
-use stark_model::geom::{TileCoord, Vec2};
+use stark_model::geom::Vec2;
+#[cfg(not(target_arch = "wasm32"))]
+use stark_model::{document::LayerId, geom::TileCoord};
 
 use super::Engine;
 #[cfg(not(target_arch = "wasm32"))]

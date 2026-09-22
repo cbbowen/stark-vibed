@@ -58,7 +58,7 @@ pub struct GpuHealth(Arc<Mutex<Option<DeviceFailure>>>);
 
 impl GpuHealth {
     /// The failure this device has suffered, if any.
-    pub fn failure(&self) -> Option<DeviceFailure> {
+    pub(crate) fn failure(&self) -> Option<DeviceFailure> {
         self.lock().clone()
     }
 

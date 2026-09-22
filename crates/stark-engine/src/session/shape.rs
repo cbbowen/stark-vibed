@@ -22,7 +22,7 @@ const LASSO_MIN_STEP: f32 = 2.0;
 /// decides which of the two the release commits, so nothing downstream has to ask
 /// what tool was in hand.
 #[derive(Clone, Debug, PartialEq)]
-pub enum ShapeResult {
+pub(crate) enum ShapeResult {
     Select(SelectionOp),
     Fill {
         /// The layer the fill lands on — the active layer **at the press**, pinned
@@ -254,7 +254,7 @@ impl Session {
 
     /// What the in-flight gesture currently stands for, for live preview — the very
     /// same call [`Self::end_shape`] commits, so preview == committed.
-    pub fn preview_shape(&self) -> Option<ShapeResult> {
+    pub(crate) fn preview_shape(&self) -> Option<ShapeResult> {
         self.selecting.as_ref().and_then(ShapeDrag::to_result)
     }
 
@@ -269,7 +269,7 @@ impl Session {
     ///
     /// A gesture that enclosed nothing (a stray click) leaves the tool armed either
     /// way, so a mis-click doesn't disarm it.
-    pub fn end_shape(&mut self) -> Option<ShapeResult> {
+    pub(crate) fn end_shape(&mut self) -> Option<ShapeResult> {
         let result = self.selecting.take().and_then(|d| d.to_result());
         if matches!(result, Some(ShapeResult::Select(_))) {
             self.tool = Tool::Brush;

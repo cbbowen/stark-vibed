@@ -40,11 +40,13 @@
 //!
 //! # What is public
 //!
-//! A module here is `pub` **or** its types are re-exported below, never both: two
-//! public paths to a type are two ways to spell an import and no way to tell which
-//! one the crate meant to offer. So `stark_engine::RgbaImage`, not
-//! `stark_engine::image::RgbaImage`. A name nothing outside `src/` spells is not
-//! offered, and one only the suite spells is offered by [`testing`] instead.
+//! What a frontend needs, each name by one path: a module is `pub` **or** its types
+//! are re-exported below, never both, so `stark_engine::RgbaImage` and not
+//! `stark_engine::image::RgbaImage`. That includes every type a frontend-facing
+//! signature carries, so it can be named. What only the suite, the benchmarks and
+//! the examples need is offered by [`testing`], except [`path`]'s, which they reach
+//! at its own path. Everything else is `pub(crate)` or narrower, and
+//! `unreachable_pub` holds every `pub` to that.
 //!
 //! Build status lives in §13, not here.
 

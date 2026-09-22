@@ -331,7 +331,7 @@ impl PathFitter {
     ///
     /// Clamped to `[1/64, 64]`; a non-finite tolerance falls back to
     /// [`DEFAULT_TOLERANCE`].
-    pub fn with_tolerance(tolerance: f32) -> Self {
+    pub(crate) fn with_tolerance(tolerance: f32) -> Self {
         Self {
             pts: Vec::new(),
             runup: Vec::new(),
@@ -375,7 +375,7 @@ impl PathFitter {
     /// pressure begins at the press — a hovering pen reports none — and geometry
     /// is what the run-up is evidence of. Tilt and time are kept; both are
     /// continuous through a press.
-    pub fn seed_runup(&mut self, samples: &[InputSample]) {
+    pub(crate) fn seed_runup(&mut self, samples: &[InputSample]) {
         if !self.pts.is_empty() || self.finished {
             return;
         }
@@ -628,7 +628,7 @@ impl PathFitter {
     /// (§17.5): a frozen control point never moves again, so a peer that
     /// has been told about it never has to be told again, and the wire cost of a
     /// stroke follows its tail rather than its length.
-    pub fn frozen_points(&self) -> usize {
+    pub(crate) fn frozen_points(&self) -> usize {
         let n = self.path_len();
         if self.finished {
             n

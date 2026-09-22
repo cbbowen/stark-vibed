@@ -88,9 +88,9 @@ pub const FLATTEN_TOLERANCE: FlattenTolerance = FlattenTolerance {
 
 impl FlattenTolerance {
     /// The same budget with the *error* bounds scaled by `k`, the length cap left
-    /// alone — a cap encodes a hard requirement, not an error. Used to trade
-    /// fidelity for a bounded segment count on an extreme stroke.
-    pub fn relaxed(self, k: f32) -> Self {
+    /// alone — a cap encodes a hard requirement, not an error.
+    #[cfg(test)]
+    pub(crate) fn relaxed(self, k: f32) -> Self {
         Self {
             position: self.position * k,
             angle: self.angle * k,
