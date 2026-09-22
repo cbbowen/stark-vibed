@@ -7,7 +7,6 @@ use super::arclen::{ARC_SAMPLES_PER_SPAN, arc_profile_into, param_at};
 use super::{frozen_spans_for, span_count};
 use crate::command::InputSample;
 use crate::spline::{CubicBSpline, Observations, SplineIndex};
-use nalgebra::{Const, Dyn, OMatrix};
 use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
 use std::cell::RefCell;
@@ -153,9 +152,6 @@ pub(crate) fn control_point_from(pos: Vec2, row: [f32; CHANNELS]) -> ControlPoin
     ControlPoint::clamped(pos, pressure, Vec2::new(tilt_x, tilt_y), time)
 }
 
-type ChannelCtrl = OMatrix<f32, Dyn, Const<CHANNELS>>;
-type GeomCtrl = OMatrix<f32, Dyn, Const<2>>;
-
 /// Streams [`InputSample`]s into [`ControlPoint`]s, append-only.
 ///
 /// The fit is a **least-squares clamped cubic B-spline** solved over a *fixed-size
@@ -211,8 +207,8 @@ pub struct PathFitter {
     /// First sample that can still reach a control point being solved for.
     first_live: usize,
     /// Control points: geometry, and the pen channels riding the same knots.
-    geom: GeomCtrl,
-    attr: ChannelCtrl,
+    geom: Vec<[f32; 2]>,
+    attr: Vec<[f32; CHANNELS]>,
     /// Arc length through the accepted samples (canvas px).
     arc: f32,
     /// Arc profile of the frozen spans, reused across updates (see `arc_profile`).
@@ -305,7 +301,7 @@ impl std::fmt::Debug for PathFitter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PathFitter")
             .field("samples", &self.pts.len())
-            .field("control_points", &self.geom.nrows())
+            .field("control_points", &self.geom.len())
             .field("frozen_spans", &self.frozen_spans())
             .field("tolerance", &self.tolerance)
             .field("arc", &self.arc)
@@ -341,8 +337,8 @@ impl PathFitter {
             pts: Vec::new(),
             runup: Vec::new(),
             first_live: 0,
-            geom: GeomCtrl::zeros_generic(Dyn(0), Const::<2>),
-            attr: ChannelCtrl::zeros_generic(Dyn(0), Const::<CHANNELS>),
+            geom: Vec::new(),
+            attr: Vec::new(),
             arc: 0.0,
             settled_profile: Vec::new(),
             grown_at: 0.0,
@@ -478,10 +474,10 @@ impl PathFitter {
     /// two *is* the growth rule, and adopting the larger one is what freezes the
     /// control point it pushes out of the window.
     fn grow_or_hold(&mut self) {
-        if self.geom.nrows() < 2 {
+        if self.geom.len() < 2 {
             self.grow_to(2);
         }
-        let m = self.geom.nrows();
+        let m = self.geom.len();
         let mut scratch = std::mem::take(self.scratch.get_mut());
         let Scratch {
             windows: [as_is_w, grown_w],
@@ -531,12 +527,12 @@ impl PathFitter {
             return;
         }
         self.finished = true;
-        if self.geom.nrows() >= 2 {
+        if self.geom.len() >= 2 {
             // One last solve with the window still free — those control points have
             // had no chance to settle against data that will never arrive.
             let mut scratch = std::mem::take(self.scratch.get_mut());
             let w = &mut scratch.windows[0];
-            let last = self.solve(self.geom.nrows(), w);
+            let last = self.solve(self.geom.len(), w);
             self.adopt(last, w);
             *self.scratch.get_mut() = scratch;
         }
@@ -547,7 +543,7 @@ impl PathFitter {
     /// The trailing `FREE_CONTROL_POINTS` may still move; everything before them
     /// is final. After [`finish`](Self::finish) the whole path is.
     pub fn path(&self) -> Vec<ControlPoint> {
-        if self.geom.nrows() == 0 {
+        if self.geom.is_empty() {
             // A click: one report, so one point and no curve.
             return self
                 .pts
@@ -584,7 +580,7 @@ impl PathFitter {
     /// Memoized ([`Memo`]): the fold and the presence frame both ask, per frame,
     /// from the same state, and the second answer is a clone of the first.
     pub fn as_finished(&self) -> (Vec<ControlPoint>, f32) {
-        if self.finished || self.geom.nrows() < 2 {
+        if self.finished || self.geom.len() < 2 {
             return (self.path(), self.start_param);
         }
         let key = (self.pts.len(), self.start_arc);
@@ -598,7 +594,7 @@ impl PathFitter {
         }
         let mut scratch = self.scratch.take();
         let w = &mut scratch.windows[0];
-        let f = self.solve(self.geom.nrows(), w);
+        let f = self.solve(self.geom.len(), w);
         let start = self.start_on(&w.profile);
         let path = control_points(&f.geom, &f.attr);
         *self.scratch.borrow_mut() = scratch;
@@ -620,9 +616,9 @@ impl PathFitter {
     /// `0..frozen_spans()` once and re-render only the short tail after it.
     pub fn frozen_spans(&self) -> usize {
         if self.finished {
-            span_count(self.geom.nrows())
+            span_count(self.geom.len())
         } else {
-            frozen_spans_for(self.frozen(), self.geom.nrows())
+            frozen_spans_for(self.frozen(), self.geom.len())
         }
     }
 
@@ -645,17 +641,17 @@ impl PathFitter {
     /// How many control points [`path`](Self::path) would return, without building
     /// it.
     fn path_len(&self) -> usize {
-        if self.geom.nrows() == 0 {
+        if self.geom.is_empty() {
             usize::from(!self.pts.is_empty())
         } else {
-            self.geom.nrows()
+            self.geom.len()
         }
     }
 
     /// Control points held at their values: everything but the window at the live
     /// end, and the pinned endpoint inside it.
     fn frozen(&self) -> usize {
-        frozen_at(self.geom.nrows())
+        frozen_at(self.geom.len())
     }
 
     /// The total arc the fit parameterizes against, floored off zero.
@@ -677,10 +673,9 @@ impl PathFitter {
         self.observation_window(&fit, w);
         let frozen = frozen_at(m);
         let index = SplineIndex::new(m).expect("at least two control points");
-        // Solved **into** the candidate polygon: the prior and the result are one
-        // buffer, which is sound because the solve reads every row it uses as a prior
-        // before it writes any (`SplineIndex::fit_into`). An owned result would be a
-        // copy of the whole polygon per fit, four fits per pointer report.
+        // Solved **into** the candidate polygon, which is also the ridge's prior. An
+        // owned result would be a copy of the whole polygon per fit, four fits per
+        // pointer report.
         index.fit_into(
             Observations {
                 ts: &w.ts,
@@ -719,9 +714,9 @@ impl PathFitter {
         let Fit { mut geom, mut attr } = self.grown(m);
         let first = self.pts[0];
         let last = *self.pts.last().expect("a sample");
-        set_row(&mut geom, 0, [first.pos.x, first.pos.y]);
-        set_row(&mut geom, m - 1, [last.pos.x, last.pos.y]);
-        set_row(&mut attr, 0, first.channels);
+        geom[0] = first.pos.to_array();
+        geom[m - 1] = last.pos.to_array();
+        attr[0] = first.channels;
         // **The attribute end is held at its neighbour, not pinned to the last report.**
         //
         // The geometry's endpoint has to be the last report — the mark must end where
@@ -738,13 +733,12 @@ impl PathFitter {
         // catches up on the next — including at `finish`, whose last solve is the one
         // `as_finished` mirrors, so preview and commit see the same lag and agree to
         // the bit (§1.3).
-        let held: [f32; CHANNELS] = std::array::from_fn(|d| attr[(m - 2, d)]);
-        set_row(&mut attr, m - 1, held);
+        attr[m - 1] = attr[m - 2];
         // …except the clock, which is not a pen attribute at all: the release genuinely
         // happened when its report says, and carrying the neighbour's time instead
         // would shorten every stroke's recorded duration by a span and skew the
         // timelapse (§8).
-        attr[(m - 1, TIME_CHANNEL)] = last.channels[TIME_CHANNEL];
+        attr[m - 1][TIME_CHANNEL] = last.channels[TIME_CHANNEL];
         Fit { geom, attr }
     }
 
@@ -765,7 +759,7 @@ impl PathFitter {
         // the candidate themselves ([`SplineIndex`]).
         let spline: CubicBSpline<'_, 2> =
             CubicBSpline::new(&candidate.geom).expect("at least two control points");
-        let m = candidate.geom.nrows();
+        let m = candidate.geom.len();
         let spans = spline.num_spans() as f32;
         arc_profile_into(&spline, &self.settled_profile, profile);
         let total = self.arc_total();
@@ -891,11 +885,8 @@ impl PathFitter {
     /// the way along the stroke ([`Self::at_fraction`]).
     fn grown(&self, m: usize) -> Fit {
         Fit {
-            geom: grow_rows(&self.geom, m, |j, d| {
-                let p = self.at_fraction(j, m).pos;
-                if d == 0 { p.x } else { p.y }
-            }),
-            attr: grow_rows(&self.attr, m, |j, d| self.at_fraction(j, m).channels[d]),
+            geom: grow_rows(&self.geom, m, |j| self.at_fraction(j, m).pos.to_array()),
+            attr: grow_rows(&self.attr, m, |j| self.at_fraction(j, m).channels),
         }
     }
 
@@ -1101,14 +1092,11 @@ fn window_indices(pts: &[Accepted], lo: usize, out: &mut Vec<usize>) {
 /// The control points a `(geom, attr)` pair stands for — one mapping shared by
 /// [`PathFitter::path`], [`PathFitter::as_finished`] and `assist::realize`, so none
 /// of them can disagree about anything but which solve they read.
-pub(crate) fn control_points(geom: &GeomCtrl, attr: &ChannelCtrl) -> Vec<ControlPoint> {
-    (0..geom.nrows())
-        .map(|j| {
-            control_point_from(
-                Vec2::new(geom[(j, 0)], geom[(j, 1)]),
-                std::array::from_fn(|d| attr[(j, d)]),
-            )
-        })
+pub(crate) fn control_points(geom: &[[f32; 2]], attr: &[[f32; CHANNELS]]) -> Vec<ControlPoint> {
+    debug_assert_eq!(geom.len(), attr.len(), "one channel row per control point");
+    geom.iter()
+        .zip(attr)
+        .map(|(&pos, &row)| control_point_from(Vec2::from_array(pos), row))
         .collect()
 }
 
@@ -1116,35 +1104,27 @@ pub(crate) fn control_points(geom: &GeomCtrl, attr: &ChannelCtrl) -> Vec<Control
 /// What was read off it to solve it — and what adopting it keeps — is in the
 /// [`Window`] it was solved over.
 struct Fit {
-    geom: GeomCtrl,
-    attr: ChannelCtrl,
+    geom: Vec<[f32; 2]>,
+    attr: Vec<[f32; CHANNELS]>,
 }
 
-/// `rows` lengthened to `m`, with new entries from `seed`.
+/// `rows` lengthened to `m`, row `j` of the new ones from `seed(j)`.
 fn grow_rows<const E: usize>(
-    rows: &OMatrix<f32, Dyn, Const<E>>,
+    rows: &[[f32; E]],
     m: usize,
-    seed: impl Fn(usize, usize) -> f32,
-) -> OMatrix<f32, Dyn, Const<E>> {
-    let have = rows.nrows();
-    // Never called to shrink: the early return would hand back *more* rows than `m`,
-    // and `solve` then writes its pinned endpoint to `m - 1`, the wrong row.
+    seed: impl Fn(usize) -> [f32; E],
+) -> Vec<[f32; E]> {
+    // Never called to shrink: it would hand back *more* rows than `m`, and `solve` then
+    // writes its pinned endpoint to `m - 1`, the wrong row.
     debug_assert!(
-        have <= m,
-        "grow_rows shrinks nothing: asked for {m} rows from {have}",
+        rows.len() <= m,
+        "grow_rows shrinks nothing: asked for {m} rows from {}",
+        rows.len(),
     );
-    if have >= m {
-        return rows.clone();
-    }
-    OMatrix::<f32, Dyn, Const<E>>::from_fn_generic(Dyn(m), Const::<E>, |j, d| {
-        if j < have { rows[(j, d)] } else { seed(j, d) }
-    })
-}
-
-fn set_row<const E: usize>(rows: &mut OMatrix<f32, Dyn, Const<E>>, j: usize, v: [f32; E]) {
-    for (d, x) in v.into_iter().enumerate() {
-        rows[(j, d)] = x;
-    }
+    let mut out = Vec::with_capacity(m);
+    out.extend_from_slice(rows);
+    out.extend((rows.len()..m).map(seed));
+    out
 }
 
 /// Fit a whole sample sequence in one call at [`DEFAULT_TOLERANCE`] — the batch form

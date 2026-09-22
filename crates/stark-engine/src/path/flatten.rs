@@ -522,8 +522,6 @@ mod tests {
     /// place.
     #[test]
     fn span_form_matches_the_fitted_spline() {
-        use nalgebra::{Const, Dyn, OMatrix};
-
         for m in 2..9usize {
             let ctrl: Vec<Vec2> = (0..m)
                 .map(|j| {
@@ -533,13 +531,10 @@ mod tests {
                 .collect();
             let knots: Vec<ControlPoint> = ctrl.iter().map(|&p| ControlPoint::at(p)).collect();
 
-            let rows =
-                OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
-                    if d == 0 { ctrl[j].x } else { ctrl[j].y }
-                });
+            let rows: Vec<[f32; 2]> = ctrl.iter().map(|p| p.to_array()).collect();
             let reference: CubicBSpline<'_, 2> = CubicBSpline::new(&rows).unwrap();
 
-            // That `reference`, built from a matrix rather than from `m`, has the `m`
+            // That `reference`, built from the rows rather than from `m`, has the `m`
             // this loop thinks it has. The loop below is the real claim: the Bézier
             // conversion evaluates to the same curve.
             assert_eq!(
@@ -554,7 +549,7 @@ mod tests {
                     let u = i as f32 / 8.0;
                     let want = reference.evaluate(k as f32 + u);
                     let got = sp.eval(u).pos;
-                    let off = (got - Vec2::new(want[0], want[1])).length();
+                    let off = (got - Vec2::from_array(want)).length();
                     assert!(off < 1e-3, "m={m} span {k} at u={u}: off by {off}");
                 }
             }

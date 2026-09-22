@@ -12,7 +12,6 @@ use crate::path::{
     flatten_spans_from, locate, param_at, pen_row, span_count,
 };
 use crate::spline::{CubicBSpline, Observations, SplineIndex};
-use nalgebra::{Const, Dyn, OMatrix};
 use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
 use std::f32::consts::TAU;
@@ -178,9 +177,7 @@ fn realize(
     fit_geometry: bool,
 ) -> Vec<ControlPoint> {
     let m = seed.len();
-    let mut geom = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
-        if d == 0 { seed[j].x } else { seed[j].y }
-    });
+    let mut geom: Vec<[f32; 2]> = seed.iter().map(|p| p.to_array()).collect();
     let Ok(index) = SplineIndex::new(m) else {
         // Fewer than two control points is not a curve; the caller's clamps rule it
         // out, and there is nothing to draw if they ever did not.
@@ -200,17 +197,16 @@ fn realize(
         .collect();
 
     if fit_geometry {
-        let values: Vec<[f32; 2]> = targets.iter().map(|p| [p.x, p.y]).collect();
+        let values: Vec<[f32; 2]> = targets.iter().map(|p| p.to_array()).collect();
         index.fit_into(Observations::even(&ts, &values), &mut geom, 0, 0, 0.0);
     }
 
     // Seeded from the profile at each control point's own share of the polygon, not
     // from zero: the solve's proximal ridge pulls towards its prior, and a prior of
     // zero biases every channel low by about a percent (see `spline`'s tests).
-    let mut attr =
-        OMatrix::<f32, Dyn, Const<CHANNELS>>::from_fn_generic(Dyn(m), Const::<CHANNELS>, |j, d| {
-            pen.sample(j as f32 / (m - 1).max(1) as f32)[d]
-        });
+    let mut attr: Vec<[f32; CHANNELS]> = (0..m)
+        .map(|j| pen.sample(j as f32 / (m - 1).max(1) as f32))
+        .collect();
     let values: Vec<[f32; CHANNELS]> = fractions.iter().map(|&f| pen.sample(f)).collect();
     index.fit_into(Observations::even(&ts, &values), &mut attr, 0, 0, 0.0);
 

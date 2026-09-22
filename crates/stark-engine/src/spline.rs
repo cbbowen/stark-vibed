@@ -15,6 +15,10 @@
 //! solve with a frozen prefix, a held tail, and an optional curvature penalty. The
 //! correspondence between samples and curve parameters is the caller's; nothing here
 //! searches for it.
+//!
+//! Control points are plain rows, `[f32; D]` per point. nalgebra is the solve's
+//! arithmetic and nothing else: a window's rows go into it at the start of a solve and
+//! the solved ones come back out at the end ([`SplineIndex::fit_into`]).
 
 use nalgebra::{Cholesky, Const, Dyn, OMatrix, SMatrix, SVector};
 
@@ -64,7 +68,7 @@ pub(crate) struct SplineIndex {
 /// every construction an `O(stroke length)` copy on the interactive drawing path.
 pub(crate) struct CubicBSpline<'a, const D: usize> {
     index: SplineIndex,
-    control_points: &'a OMatrix<f32, Dyn, Const<D>>,
+    control_points: &'a [[f32; D]],
 }
 
 /// What one [`SplineIndex::fit_into`] is solved against: where each value sits on
@@ -245,14 +249,14 @@ impl SplineIndex {
     pub(crate) fn fit_into<const E: usize>(
         self,
         obs: Observations<'_, E>,
-        values: &mut OMatrix<f32, Dyn, Const<E>>,
+        values: &mut [[f32; E]],
         frozen: usize,
         tail: usize,
         smoothing: f32,
     ) {
         let m = self.m;
         assert_eq!(
-            values.nrows(),
+            values.len(),
             m,
             "in-place fit needs one row per control point",
         );
@@ -276,12 +280,12 @@ impl SplineIndex {
     fn solve_window<const E: usize>(
         self,
         obs: Observations<'_, E>,
-        control: &mut OMatrix<f32, Dyn, Const<E>>,
+        control: &mut [[f32; E]],
         frozen: usize,
         tail: usize,
         smoothing: f32,
     ) {
-        let m = control.nrows();
+        let m = control.len();
         if frozen + tail >= m || obs.values.is_empty() {
             // Nothing left to solve for, or nothing to solve against. With no values the
             // normal equations are all ridge, whose solution is `control` exactly, so in
@@ -304,10 +308,19 @@ impl SplineIndex {
                 smoothing * ((n as f64 / m as f64) as f32),
             );
         }
-        let prior = control.rows(base, m - base).into_owned();
+        // Where the rows enter nalgebra, and below, where the solved ones leave it.
+        let window = &mut control[base..];
+        let prior = OMatrix::<f32, Dyn, Const<E>>::from_fn_generic(
+            Dyn(window.len()),
+            Const::<E>,
+            |j, d| window[j][d],
+        );
         // `None` keeps `control` as it arrived — see `solve_free_block`.
         if let Some(solved) = solve_free_block(&btb, &btp, &prior, frozen - base, tail, n) {
-            control.rows_mut(frozen, solved.nrows()).copy_from(&solved);
+            // The free rows only: `solved` stops short of the held tail.
+            for (row, got) in window[frozen - base..].iter_mut().zip(solved.row_iter()) {
+                *row = std::array::from_fn(|d| got[d]);
+            }
         }
     }
 
@@ -423,11 +436,9 @@ fn solve_free_block<const E: usize>(
 
 impl<'a, const D: usize> CubicBSpline<'a, D> {
     /// A spline reading `control_points`, which it borrows for its lifetime.
-    pub(crate) fn new(
-        control_points: &'a OMatrix<f32, Dyn, Const<D>>,
-    ) -> Result<Self, NotEnoughControlPoints> {
+    pub(crate) fn new(control_points: &'a [[f32; D]]) -> Result<Self, NotEnoughControlPoints> {
         Ok(Self {
-            index: SplineIndex::new(control_points.nrows())?,
+            index: SplineIndex::new(control_points.len())?,
             control_points,
         })
     }
@@ -438,22 +449,20 @@ impl<'a, const D: usize> CubicBSpline<'a, D> {
     }
 
     /// The point on the curve at parameter `t`.
-    pub(crate) fn evaluate(&self, t: f32) -> SVector<f32, D> {
+    pub(crate) fn evaluate(&self, t: f32) -> [f32; D] {
         // De Boor's algorithm. Only the `DEGREE + 1` conceptual control points
         // k..=k+DEGREE support span k; their backing rows come from the duplicating
         // knot view. On the uniform (cardinal) integer knot vector the recurrence
         // weights reduce to `alpha = (p + u - a) / (p - r + 1)`, so the basis matrix
         // never has to be formed.
         let (k, u) = self.index.span_and_local(t);
-        let mut d: [SVector<f32, D>; ORDER] = std::array::from_fn(|a| {
-            let r = self.index.knot_row(k + a);
-            SVector::<f32, D>::from_fn(|dim, _| self.control_points[(r, dim)])
-        });
+        let mut d: [[f32; D]; ORDER] =
+            std::array::from_fn(|a| self.control_points[self.index.knot_row(k + a)]);
         for r in 1..=DEGREE {
             let denom = (DEGREE - r + 1) as f32;
             for a in (r..=DEGREE).rev() {
                 let alpha = (DEGREE as f32 + u - a as f32) / denom;
-                d[a] = d[a - 1] * (1.0 - alpha) + d[a] * alpha;
+                d[a] = std::array::from_fn(|i| d[a - 1][i] * (1.0 - alpha) + d[a][i] * alpha);
             }
         }
         d[DEGREE]
@@ -464,17 +473,10 @@ impl<'a, const D: usize> CubicBSpline<'a, D> {
 mod tests {
     use super::*;
 
-    /// Control points as the matrix a spline reads. Returned owned, and the tests
-    /// keep it alive themselves, because a [`CubicBSpline`] borrows rather than owns
-    /// — which is the point of the type and so has to be what the tests exercise.
-    fn ctrl<const D: usize>(pts: &[[f32; D]]) -> OMatrix<f32, Dyn, Const<D>> {
-        OMatrix::<f32, Dyn, Const<D>>::from_fn_generic(Dyn(pts.len()), Const::<D>, |i, j| pts[i][j])
-    }
-
     /// The index over a polygon — what the fit is solved against, and all most of
     /// these tests need.
-    fn index_of<const D: usize>(pts: &OMatrix<f32, Dyn, Const<D>>) -> SplineIndex {
-        SplineIndex::new(pts.nrows()).expect("enough knots")
+    fn index_of<const D: usize>(pts: &[[f32; D]]) -> SplineIndex {
+        SplineIndex::new(pts.len()).expect("enough knots")
     }
 
     fn assert_close(a: f32, b: f32, tol: f32) {
@@ -484,20 +486,19 @@ mod tests {
     /// Control points at x = 0..5 on the x-axis (domain [0, 7]). By the linear
     /// precision of the uniform basis, x(t) = t - 1 exactly on the interior spans
     /// t ∈ [2, 5], easing in from x=0 at t=0 and out to x=5 at t=7 at the clamped ends.
-    fn line_pts() -> OMatrix<f32, Dyn, Const<2>> {
-        let pts: Vec<[f32; 2]> = (0..6).map(|x| [x as f32, 0.0]).collect();
-        ctrl(&pts)
+    fn line_pts() -> Vec<[f32; 2]> {
+        (0..6).map(|x| [x as f32, 0.0]).collect()
     }
 
-    fn wiggle_pts() -> OMatrix<f32, Dyn, Const<2>> {
-        ctrl(&[
+    fn wiggle_pts() -> Vec<[f32; 2]> {
+        vec![
             [0.0, 0.0],
             [1.0, 2.0],
             [2.0, -2.0],
             [3.0, 2.0],
             [4.0, -2.0],
             [5.0, 0.0],
-        ])
+        ]
     }
 
     #[test]
@@ -555,7 +556,7 @@ mod tests {
 
     #[test]
     fn evaluate_of_constant_spline_is_constant() {
-        let c = ctrl(&[[1.0, 2.0]; 5]);
+        let c = [[1.0, 2.0]; 5];
         let s = CubicBSpline::new(&c).expect("enough knots");
         for i in 0..=24 {
             let v = s.evaluate(i as f32 * 0.25);
@@ -581,25 +582,25 @@ mod tests {
     fn channel_fitting_recovers_an_exact_channel() {
         let c = wiggle_pts();
         let s = index_of(&c);
-        let m = c.nrows();
-        let truth = OMatrix::<f32, Dyn, Const<1>>::from_fn_generic(Dyn(m), Const::<1>, |j, _| {
-            0.3 + 0.7 * (j as f32 * 1.7).sin()
-        });
+        let m = c.len();
+        let truth: Vec<[f32; 1]> = (0..m)
+            .map(|j| [0.3 + 0.7 * (j as f32 * 1.7).sin()])
+            .collect();
         let basis = SplineIndex::basis_matrix();
         let channel_at = |t: f32| {
             let (k, u) = s.span_and_local(t);
             let w = basis * SplineIndex::u_powers(u);
             (0..ORDER)
-                .map(|a| truth[(s.knot_row(k + a), 0)] * w[a])
+                .map(|a| truth[s.knot_row(k + a)][0] * w[a])
                 .sum::<f32>()
         };
         let ts = spread(s, 60);
         let values: Vec<[f32; 1]> = ts.iter().map(|&t| [channel_at(t)]).collect();
 
-        let mut got = OMatrix::<f32, Dyn, Const<1>>::zeros_generic(Dyn(m), Const::<1>);
+        let mut got = vec![[0.0f32; 1]; m];
         s.fit_into(Observations::even(&ts, &values), &mut got, 0, 0, 0.0);
-        for j in 0..m {
-            assert_close(got[(j, 0)], truth[(j, 0)], 1e-2);
+        for (got, truth) in got.iter().zip(&truth) {
+            assert_close(got[0], truth[0], 1e-2);
         }
     }
 
@@ -611,10 +612,9 @@ mod tests {
     fn a_solve_with_no_points_returns_the_control() {
         let c = wiggle_pts();
         let s = index_of(&c);
-        let m = c.nrows();
-        let control = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
-            (j * 2 + d) as f32
-        });
+        let control: Vec<[f32; 2]> = (0..c.len())
+            .map(|j| [(j * 2) as f32, (j * 2 + 1) as f32])
+            .collect();
         let mut got = control.clone();
         s.fit_into(Observations::even(&[], &[]), &mut got, 0, 0, 0.0);
         assert_eq!(got, control);
@@ -625,26 +625,24 @@ mod tests {
     fn frozen_channel_rows_come_back_untouched() {
         let c = wiggle_pts();
         let s = index_of(&c);
-        let m = c.nrows();
         let ts = spread(s, 40);
         let values: Vec<[f32; 2]> = (0..ts.len())
             .map(|i| [i as f32 / ts.len() as f32, (i as f32 * 0.3).cos()])
             .collect();
 
-        let control = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
-            (j + d) as f32 * 0.25
-        });
+        let control: Vec<[f32; 2]> = (0..c.len())
+            .map(|j| [j as f32 * 0.25, (j + 1) as f32 * 0.25])
+            .collect();
         let frozen = 3;
         let mut got = control.clone();
         s.fit_into(Observations::even(&ts, &values), &mut got, frozen, 0, 0.0);
-        for j in 0..frozen {
-            for d in 0..2 {
-                assert_eq!(got[(j, d)], control[(j, d)], "frozen row {j} moved");
-            }
-        }
+        assert_eq!(got[..frozen], control[..frozen], "a frozen row moved");
         // And the free rows actually moved off their seed — the solve did something.
-        let moved = (frozen..m).any(|j| (0..2).any(|d| got[(j, d)] != control[(j, d)]));
-        assert!(moved, "no free channel row was solved for");
+        assert_ne!(
+            got[frozen..],
+            control[frozen..],
+            "no free channel row was solved for"
+        );
     }
 
     /// The held tail is the other half of the window: `PathFitter` pins the stroke's
@@ -653,24 +651,19 @@ mod tests {
     fn a_held_tail_comes_back_untouched() {
         let c = wiggle_pts();
         let s = index_of(&c);
-        let m = c.nrows();
+        let m = c.len();
         let ts = spread(s, 30);
         let values: Vec<[f32; 2]> = ts.iter().map(|&t| [t, -t]).collect();
-        let control = OMatrix::<f32, Dyn, Const<2>>::from_fn_generic(Dyn(m), Const::<2>, |j, d| {
-            (j + d) as f32
-        });
+        let control: Vec<[f32; 2]> = (0..m).map(|j| [j as f32, (j + 1) as f32]).collect();
         let mut got = control.clone();
         s.fit_into(Observations::even(&ts, &values), &mut got, 1, 1, 0.0);
-        for d in 0..2 {
-            assert_eq!(got[(0, d)], control[(0, d)], "frozen head moved");
-            assert_eq!(got[(m - 1, d)], control[(m - 1, d)], "held tail moved");
-        }
+        assert_eq!(got[0], control[0], "frozen head moved");
+        assert_eq!(got[m - 1], control[m - 1], "held tail moved");
     }
 
     #[test]
     fn too_few_control_points_is_an_error() {
-        let one = OMatrix::<f32, Dyn, Const<2>>::zeros_generic(Dyn(1), Const::<2>);
-        assert!(CubicBSpline::new(&one).is_err());
+        assert!(CubicBSpline::new(&[[0.0f32; 2]]).is_err());
         assert!(SplineIndex::new(1).is_err());
     }
 }
