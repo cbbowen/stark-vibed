@@ -191,8 +191,8 @@ Both perf tools print a **phase table** per configuration (§7.1), and the same 
 are live in the app behind the command search → Timing stats. Which question each answers:
 `--bench stroke` is the regression **gate** — totals, confidence intervals, a saved
 baseline — with the split under each line; `--example stroke_bench` is the quick
-look, seconds not minutes, and the only one that accounts for the GPU drain
-(`bench.gpu_wait`). Read the shares, not the totals: this class of box drifts ~15%
+look, seconds not minutes. Both run one scenario (`benches/scenario/`), so both
+account for the GPU drain (`bench.gpu_wait`). Read the shares, not the totals: this class of box drifts ~15%
 between runs of identical code.
 
 CI (`.github/workflows/ci.yml`) runs fmt, clippy `-D warnings`, the test suite
