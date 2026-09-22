@@ -283,7 +283,6 @@ mod tests {
     fn a_hover_during_a_stroke_does_not_advance_the_gesture_ordinal() {
         let mut s = session(ShapeAction::default());
         s.start_stroke(
-            Tool::Brush,
             InputSample::at(Vec2::ZERO),
             0,
             TOLERANCE,
@@ -347,7 +346,6 @@ mod tests {
                 .collect();
             let press = |dx: f32| InputSample::at(Vec2::new(x + gap + dx, 0.0));
             s.start_stroke(
-                Tool::Brush,
                 press(0.0),
                 0,
                 tolerance,

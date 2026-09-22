@@ -355,7 +355,7 @@ impl Preview {
         rope: f32,
     ) -> bool {
         self.engine
-            .replay_stroke_seeded(stark_engine::command::Tool::Brush, samples, seed, rope)
+            .replay_stroke_seeded(samples, seed, rope)
             .is_some()
     }
 

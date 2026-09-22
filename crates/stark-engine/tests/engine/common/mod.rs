@@ -341,7 +341,7 @@ pub fn paint(engine: &mut Engine, color: [f32; 3], radius: f32, points: &[Vec2])
 pub fn replay_with(engine: &mut Engine, b: BrushParams, points: &[Vec2]) {
     engine.process(ViewCommand::set_brush(b));
     let samples: Vec<InputSample> = points.iter().copied().map(InputSample::at).collect();
-    engine.replay_stroke(Tool::Brush, &samples);
+    engine.replay_stroke(&samples);
 }
 
 /// The committed document rendered again **whole**: undo and redo re-fold the last

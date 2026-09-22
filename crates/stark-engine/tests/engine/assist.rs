@@ -48,7 +48,6 @@ fn nothing() -> Scaffold {
 /// Drag a stroke out through `f`, sampled `n` times, without ending it.
 fn drag(session: &mut Session, n: usize, f: impl Fn(f32) -> Vec2) {
     session.start_stroke(
-        Tool::Brush,
         InputSample::at(f(0.0)),
         1,
         DEFAULT_TOLERANCE,
@@ -488,7 +487,6 @@ fn a_run_up_does_not_shift_the_snapped_pen() {
         }
     };
     session.start_stroke(
-        Tool::Brush,
         at(0),
         1,
         DEFAULT_TOLERANCE,

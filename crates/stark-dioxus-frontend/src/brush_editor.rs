@@ -876,7 +876,7 @@ fn paint_reference_stroke(r: &mut Renderer) {
         brush: stark_ui::brush_editor::reference_brush(),
         color: stark_ui::brush_editor::REFERENCE_COLOR,
     });
-    r.replay_stroke(Tool::Brush, &samples);
+    r.replay_stroke(&samples);
 }
 
 /// Re-render the test stroke with the current brush: undo the committed one,
@@ -920,7 +920,7 @@ fn restroke(state: AppState, mut preview: Preview) {
     // What the replay actually did, not what it was asked for: samples that hold no
     // stroke commit nothing, and claiming otherwise would send the next undo one
     // step too far — into the reference band beneath (`TestStroke`).
-    let committed = r.replay_stroke_seeded(Tool::Brush, &samples, PREVIEW_STROKE_SEED, rope);
+    let committed = r.replay_stroke_seeded(&samples, PREVIEW_STROKE_SEED, rope);
     r.paint();
     drop(guard);
     preview.stroke.write().replayed(committed);

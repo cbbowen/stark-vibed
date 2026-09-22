@@ -507,7 +507,7 @@ fn a_stroke_commits_the_tiles_it_previewed() {
 
     replayed.process(ViewCommand::set_brush(brush(RED, 14.0)));
     let samples: Vec<InputSample> = long_wave().into_iter().map(InputSample::at).collect();
-    replayed.replay_stroke(Tool::Brush, &samples);
+    replayed.replay_stroke(&samples);
     assert_eq!(
         replayed.strokes_reused(),
         0,
@@ -546,7 +546,7 @@ fn a_stroke_committed_without_fast_commit_is_the_replay() {
 
     replayed.process(ViewCommand::set_brush(brush(RED, 14.0)));
     let samples: Vec<InputSample> = long_wave().into_iter().map(InputSample::at).collect();
-    replayed.replay_stroke(Tool::Brush, &samples);
+    replayed.replay_stroke(&samples);
 
     assert!(
         images_match(&committed, &replayed.render_to_image(), 0),
@@ -602,7 +602,7 @@ fn a_live_stroke_grown_past_the_cap_is_neither_drawn_nor_logged() {
         InputSample::at(Vec2::ZERO),
         InputSample::at(Vec2::splat(1.0e6)),
     ];
-    assert_eq!(engine.replay_stroke(Tool::Brush, &reach), None);
+    assert_eq!(engine.replay_stroke(&reach), None);
     assert!(
         engine.document_file().actions.is_empty(),
         "the replayed stroke was logged"

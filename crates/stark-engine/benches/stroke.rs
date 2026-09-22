@@ -92,7 +92,7 @@ fn commit(c: &mut Criterion) {
     // prefix-τ cache, which would otherwise land inside one benchmark's samples and
     // not the others'.
     engine.process(ViewCommand::set_brush(smear(30.0)));
-    engine.replay_stroke(Tool::Brush, &pts);
+    engine.replay_stroke(&pts);
     wait_idle(&engine);
     rewind(&mut engine);
 
@@ -133,7 +133,7 @@ fn commit(c: &mut Criterion) {
                     let mut total = Duration::ZERO;
                     for _ in 0..iters {
                         let t = Instant::now();
-                        engine.replay_stroke(Tool::Brush, &pts);
+                        engine.replay_stroke(&pts);
                         wait_idle(&engine);
                         total += t.elapsed();
                         rewind(&mut engine);
@@ -160,7 +160,7 @@ fn live(c: &mut Criterion) {
     let Some(mut engine) = engine() else { return };
     let pts = samples(N);
     engine.process(ViewCommand::set_brush(smear(30.0)));
-    engine.replay_stroke(Tool::Brush, &pts);
+    engine.replay_stroke(&pts);
     wait_idle(&engine);
     rewind(&mut engine);
 

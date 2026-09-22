@@ -10,7 +10,6 @@
 //! What is here is what the surface adds. The engine's own methods are reached
 //! through [`Renderer::desk`], never re-spelled.
 
-use stark_engine::command::Tool;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -133,8 +132,8 @@ impl Renderer {
 
     /// Replay a full stroke as one commit — a single render, no per-sample
     /// live-preview refresh (see `Engine::replay_stroke`).
-    pub fn replay_stroke(&mut self, tool: Tool, samples: &[InputSample]) {
-        self.desk.engine_mut().replay_stroke(tool, samples);
+    pub fn replay_stroke(&mut self, samples: &[InputSample]) {
+        self.desk.engine_mut().replay_stroke(samples);
     }
 
     /// Replay a full stroke with a caller-chosen jitter seed, so repeated
@@ -146,16 +145,10 @@ impl Renderer {
     /// editor's preview has to know: it undoes the committed stroke before each
     /// replay, and an undo for a commit that never happened reaches past into the
     /// reference band beneath (`stark_ui::brush_editor::TestStroke`).
-    pub fn replay_stroke_seeded(
-        &mut self,
-        tool: Tool,
-        samples: &[InputSample],
-        seed: u64,
-        rope: f32,
-    ) -> bool {
+    pub fn replay_stroke_seeded(&mut self, samples: &[InputSample], seed: u64, rope: f32) -> bool {
         self.desk
             .engine_mut()
-            .replay_stroke_seeded(tool, samples, seed, rope)
+            .replay_stroke_seeded(samples, seed, rope)
             .is_some()
     }
 

@@ -96,7 +96,7 @@ fn bench_commit(engine: &mut stark_engine::Engine, brush: BrushParams, n: usize)
     let pts = samples(n);
     wait_idle(engine);
     let t = Instant::now();
-    engine.replay_stroke(Tool::Brush, &pts);
+    engine.replay_stroke(&pts);
     wait_idle(engine);
     t.elapsed().as_secs_f64() * 1000.0
 }

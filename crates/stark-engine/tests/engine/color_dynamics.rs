@@ -257,7 +257,7 @@ fn each_stroke_lays_its_own_field() {
     let samples: Vec<InputSample> = S_CURVE.iter().copied().map(InputSample::at).collect();
     for (engine, seed) in [(&mut a, 1u64), (&mut b, 2), (&mut again, 1)] {
         engine.process(ViewCommand::set_brush(jb));
-        engine.replay_stroke_seeded(Tool::Brush, &samples, seed, 0.0);
+        engine.replay_stroke_seeded(&samples, seed, 0.0);
     }
 
     let (ia, ib, ic) = (

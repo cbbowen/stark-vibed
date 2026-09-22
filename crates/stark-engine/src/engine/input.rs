@@ -6,7 +6,7 @@
 //! nothing about either.
 
 use super::Engine;
-use crate::command::{DocCommand, GestureCommand, PeerCommand, Tool, ViewCommand};
+use crate::command::{DocCommand, GestureCommand, PeerCommand, ViewCommand};
 use crate::document::Step;
 use crate::session::ShapeResult;
 use stark_model::document::{
@@ -169,7 +169,7 @@ impl Engine {
                     let seed = self.authoring.clock;
                     let frame = self.frame_of(self.session.active_layer());
                     self.session
-                        .start_stroke(tool, sample, seed, tolerance, rope, frame);
+                        .start_stroke(sample, seed, tolerance, rope, frame);
                     self.note_debug_sample(Capture::Restart, sample);
                 }
                 self.mark_live_stale();
@@ -724,12 +724,8 @@ impl Engine {
     ///
     /// Answers the id of the action it committed, or `None` where the samples held no
     /// stroke — empty, or a hand that never left the first point.
-    pub fn replay_stroke(
-        &mut self,
-        tool: Tool,
-        samples: &[crate::command::InputSample],
-    ) -> Option<ActionId> {
-        self.replay_stroke_seeded(tool, samples, self.authoring.clock, 0.0)
+    pub fn replay_stroke(&mut self, samples: &[crate::command::InputSample]) -> Option<ActionId> {
+        self.replay_stroke_seeded(samples, self.authoring.clock, 0.0)
     }
 
     /// [`Engine::replay_stroke`] with an explicit jitter `seed` instead of the Lamport
@@ -750,7 +746,6 @@ impl Engine {
     /// replays in a loop.
     pub fn replay_stroke_seeded(
         &mut self,
-        tool: Tool,
         samples: &[crate::command::InputSample],
         seed: u64,
         rope: f32,
@@ -760,14 +755,8 @@ impl Engine {
         // Replayed samples are already in canvas space and came from a fit or from a
         // generator, not from a device, so there is no device tolerance to declare.
         let frame = self.frame_of(self.session.active_layer());
-        self.session.start_stroke(
-            tool,
-            *first,
-            seed,
-            crate::path::DEFAULT_TOLERANCE,
-            rope,
-            frame,
-        );
+        self.session
+            .start_stroke(*first, seed, crate::path::DEFAULT_TOLERANCE, rope, frame);
         for s in it {
             self.session.stroke_to(*s);
         }

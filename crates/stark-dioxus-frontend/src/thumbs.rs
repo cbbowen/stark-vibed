@@ -40,7 +40,6 @@
 //! one back, so there is no publish to pair a mutation with.
 
 use dioxus::prelude::*;
-use stark_engine::command::Tool;
 use stark_model::Srgb;
 
 use stark_engine::Extent2;
@@ -283,7 +282,7 @@ async fn generate(state: AppState, key: Key) -> Result<Picture, NoRenderer> {
         });
         let rope = stark_ui::input::rope(view, w.smoothing);
         rig.engine
-            .replay_stroke_seeded(Tool::Brush, &test_stroke(&view), THUMB_SEED, rope);
+            .replay_stroke_seeded(&test_stroke(&view), THUMB_SEED, rope);
         // The whole rig document, which is only ever the thumbnail in flight — there
         // is no layer here to single out.
         let readback = rig.engine.export_view(

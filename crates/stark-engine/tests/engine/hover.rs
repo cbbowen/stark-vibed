@@ -421,7 +421,6 @@ fn the_run_up_conditions_the_strokes_entry() {
     let after_hover = 32.0 * 0.016;
     let stroke = |s: &mut Session, press: Vec2| {
         s.start_stroke(
-            Tool::Brush,
             InputSample {
                 pos: press,
                 time: after_hover,

@@ -443,7 +443,7 @@ impl Session {
         self.gesture_ordinal
     }
 
-    /// Begin a stroke, replacing any abandoned in-flight one.
+    /// Begin a brush stroke, replacing any abandoned in-flight one.
     ///
     /// `seed` is the engine's, so it can be derived deterministically (§6.2).
     /// `tolerance` is what the frontend says its input resolves to, in canvas px
@@ -454,7 +454,6 @@ impl Session {
     /// the record against its own gating.
     pub fn start_stroke(
         &mut self,
-        tool: Tool,
         sample: InputSample,
         seed: u64,
         tolerance: f32,
@@ -464,7 +463,7 @@ impl Session {
         // Held to the fit's range once, so the run-up, the fitter, the tow and the
         // assist all read the same number.
         let tolerance = crate::path::clamp_tolerance(tolerance);
-        self.tool = tool;
+        self.tool = Tool::Brush;
         self.selecting = None;
         // The hover window becomes the stroke's **run-up** (§6.2,
         // `PathFitter::seed_runup`): real leading samples the fitted curve extends
@@ -783,14 +782,7 @@ mod tests {
     fn snapped(tolerance: f32, n: usize, f: impl Fn(f32) -> Vec2) -> Option<Assisted> {
         let mut s = session(ShapeAction::default());
         let at = |i: usize| InputSample::at(f(i as f32 / (n - 1) as f32));
-        s.start_stroke(
-            Tool::Brush,
-            at(0),
-            1,
-            tolerance,
-            0.0,
-            stark_model::geom::IVec2::ZERO,
-        );
+        s.start_stroke(at(0), 1, tolerance, 0.0, stark_model::geom::IVec2::ZERO);
         for i in 1..n {
             s.stroke_to(at(i));
         }

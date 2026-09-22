@@ -739,7 +739,7 @@ mod tests {
         assert_eq!(stroke.start, 0.25);
     }
 
-    use crate::command::{InputSample, Tool};
+    use crate::command::InputSample;
     use crate::path::DEFAULT_TOLERANCE;
     use crate::peer::{Peer, Peers};
     use crate::session::Session;
@@ -801,7 +801,6 @@ mod tests {
                 let mut watermark = 0usize;
                 let seedling = u64::from(gesture);
                 session.start_stroke(
-                    Tool::Brush,
                     InputSample::at(Vec2::new(0.0, f32::from(gesture as u16) * 10.0)),
                     seedling,
                     DEFAULT_TOLERANCE,
