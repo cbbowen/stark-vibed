@@ -147,13 +147,12 @@ fn selections_agree(a: &Selection, b: &Selection) -> bool {
 /// Everything that differs between two states, as resources.
 fn differences(before: &DocState, after: &DocState) -> Vec<Diff> {
     let mut out = Vec::new();
-    // **The substrate and the scale together**, because `Resource::Substrate` is one
-    // resource for the two (§6.4): comparing only the id would leave
-    // `SetSubstrateScale` with no difference to report, and so no footprint checked.
-    if before.substrate != after.substrate || before.substrate_scale != after.substrate_scale {
+    // The id and the scale as one value, as `Resource::Substrate` is one resource for
+    // the two (§6.4).
+    if before.substrate() != after.substrate() {
         out.push(Diff::Named(Resource::Substrate));
     }
-    if before.substrate_color != after.substrate_color {
+    if before.substrate_color() != after.substrate_color() {
         out.push(Diff::Named(Resource::SubstrateColor));
     }
     if shape(before) != shape(after) {

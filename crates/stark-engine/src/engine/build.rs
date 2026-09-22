@@ -10,7 +10,7 @@ use super::{
 use crate::Result;
 use crate::assets::AssetStore;
 use crate::colorspace::ColorSpace;
-use crate::document::{ApplyCtx, DocState};
+use crate::document::{ApplyCtx, DEFAULT_SUBSTRATE, DocState};
 use crate::gpu::channels::Zeroes;
 use crate::gpu::composite::ViewSettings;
 use crate::gpu::composite::{BlendPass, Compositor, CompositorPipeline, FilterPass};
@@ -29,7 +29,7 @@ use crate::peer::Peers;
 use crate::pictures::PictureStore;
 use crate::projection::{Memo, Revision};
 use crate::view::{Extent2, ViewTransform};
-use stark_model::{ColorSpaceId, DocError, SubstrateId};
+use stark_model::{ColorSpaceId, DocError};
 
 impl EngineShared {
     /// The shared half as a sibling is seeded from: every handle shared, and the
@@ -91,11 +91,12 @@ impl Engine {
     ) -> Result<Self> {
         let color_space = crate::colorspace::make(color_space)
             .ok_or(DocError::UnsupportedColorSpace(color_space))?;
-        // The registry starts on the builtin flat substrate: it is all that can be
-        // built before any bytes exist, and it is also what a fresh document is on
-        // (`DEFAULT_SUBSTRATE`). A substrate is named by the hash of its height map
-        // (§6.4), so an engine with no bytes has exactly one it can truthfully name.
-        let substrates = Registry::<Substrate>::new(&gpu, Substrate::default());
+        // The registry and the document both start on the builtin flat substrate: it
+        // is all that can be built before any bytes exist. A substrate is named by the
+        // hash of its height map (§6.4), so an engine with no bytes has exactly one it
+        // can truthfully name.
+        let initial = Substrate::new(DEFAULT_SUBSTRATE);
+        let substrates = Registry::<Substrate>::new(&gpu, initial);
         // Lighting starts on the procedural neutral environment; image HDRs are
         // registered later by the frontend (§6.3).
         let environments = Registry::<EnvironmentId>::new(&gpu, EnvironmentId::default());
@@ -121,14 +122,10 @@ impl Engine {
             settings: ViewSettings::default(),
         });
 
-        let initial = DocState::with_layer(ROOT_LAYER);
-        let initial_substrate = initial.substrate;
-
         Ok(Self::assemble(
             built.shared,
             built.compositor,
             built.compositor_pipeline,
-            initial_substrate,
             initial,
             viewport,
         ))
@@ -169,11 +166,9 @@ impl Engine {
     /// The document opens on `shared`'s current substrate, so a preview needs no
     /// `SetSubstrate` step — and no substrate bytes handed across.
     pub fn on_shared(shared: EngineShared, viewport: Extent2) -> Self {
-        let substrate = shared.apply.substrates.id();
-        let initial_substrate = substrate.id;
-        let initial = DocState::with_layer(ROOT_LAYER)
-            .with_substrate(initial_substrate)
-            .with_substrate_scale(substrate.scale);
+        // The pair, scale included: the one way an engine starts on a substrate laid
+        // at other than its natural size.
+        let initial = shared.apply.substrates.id();
         // Its own view settings over the shared passes — the whole of what a
         // sibling's compositor costs — seeded from `shared` so it opens mirroring the
         // canvas it came from.
@@ -184,14 +179,7 @@ impl Engine {
             shared.settings,
         );
         let compositor = Compositor::new(&compositor_pipeline);
-        Self::assemble(
-            shared,
-            compositor,
-            compositor_pipeline,
-            initial_substrate,
-            initial,
-            viewport,
-        )
+        Self::assemble(shared, compositor, compositor_pipeline, initial, viewport)
     }
 
     /// The fields every engine opens with, wrapped around the handful that differ —
@@ -207,16 +195,15 @@ impl Engine {
         shared: EngineShared,
         compositor: Compositor,
         compositor_pipeline: CompositorPipeline,
-        initial_substrate: SubstrateId,
-        initial: DocState,
+        initial: Substrate,
         viewport: Extent2,
     ) -> Self {
         let mut engine = Self {
             shared,
             compositor,
             compositor_pipeline,
-            initial_substrate,
-            timeline: super::commit::Committed::opening(initial),
+            initial,
+            timeline: super::commit::Committed::opening(origin(initial)),
             // An engine opens on its viewport, aimed at the root layer its timeline
             // was seeded with.
             session: crate::session::Session::new(ViewTransform::identity(viewport), ROOT_LAYER),
@@ -241,6 +228,13 @@ impl Engine {
         // Here rather than at the two call sites: every engine owes it.
         engine.apply_document_substrate();
         engine
+    }
+
+    /// **The document the log replays onto** (§8): one root layer, on the substrate
+    /// the log starts from. The engine opens on it, and a reset, a share and a join
+    /// rebuild from it, so no two of them can start from different documents.
+    pub(super) fn origin(&self) -> DocState {
+        origin(self.initial)
     }
 
     /// The expensive half of this engine, for building another on the same device
@@ -297,6 +291,11 @@ impl Engine {
         self.compositor = built.compositor;
         self.compositor_pipeline = built.compositor_pipeline;
     }
+}
+
+/// [`Engine::origin`], for the engine not yet built around it.
+fn origin(initial: Substrate) -> DocState {
+    DocState::with_layer(ROOT_LAYER).with_substrate(initial)
 }
 
 /// What the color-space-dependent GPU subsystems are built from. Grouped because the

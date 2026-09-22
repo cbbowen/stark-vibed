@@ -316,7 +316,7 @@ impl Engine {
         let scene = CompositeScene {
             // Document state (§15.5), so the substrate a piece was painted on travels
             // with it rather than with whichever frontend renders it.
-            substrate: self.shared.color_space.rgb_to_latent(doc.substrate_color),
+            substrate: self.shared.color_space.rgb_to_latent(doc.substrate_color()),
             // Off `doc`, which is the *previewed* document when one is up — so an
             // unlogged scale drag re-lights the substrate at pointer rate (§6.4).
             substrate_uv_scale: doc.substrate().uv_scale(),

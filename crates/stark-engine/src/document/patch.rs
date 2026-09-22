@@ -19,13 +19,13 @@ use super::layer::{Layer, PropValue};
 use super::liquify::LiquifyRun;
 use super::selection::Selection;
 use super::state::{DocState, Guide, LayerSite};
+use crate::gpu::substrate::Substrate;
 use crate::gpu::tile::TilePairHandle;
 use stark_model::Srgb;
 use stark_model::document::ActorId;
 use stark_model::document::LayerId;
 use stark_model::document::{Footprint, Prop, Resource};
 use stark_model::geom::{TileCoord, TileRect};
-use stark_model::{SubstrateId, SubstrateScale};
 
 /// One restorable write. Each variant covers exactly one [`footprint
 /// resource`](stark_model::document::Resource), never more — a commuting action in
@@ -57,14 +57,9 @@ enum PatchOp {
     /// One property of one layer — [`Resource::Prop`] exactly.
     Prop(LayerId, PropValue),
     Selection(ActorId, Selection),
-    /// The canvas substrate **and the size it is laid at** — one op, because
-    /// `Resource::Substrate` is one resource for the two (§6.4): the tooth reads the
-    /// substrate's rise over a reach in canvas px, so which substrate and how large
-    /// it is laid decide a deposit together.
-    ///
-    /// Restoring the id alone would leave the document holding a scale its own log no
-    /// longer contains, and a later stroke toothed against it.
-    Substrate(SubstrateId, SubstrateScale),
+    /// The canvas substrate **and the size it is laid at** — one value, as
+    /// `Resource::Substrate` is one resource for the two (§6.4).
+    Substrate(Substrate),
     SubstrateColor(Srgb),
     /// The **whole drawing-guide roster** (§20.5): every guide and the order they
     /// were arranged in.
@@ -105,7 +100,7 @@ impl PatchOp {
             PatchOp::Structure(shape) => restore_structure(state, shape),
             PatchOp::Prop(id, value) => state.set_prop(*id, value.clone()),
             PatchOp::Selection(actor, selection) => state.with_selection(*actor, selection.clone()),
-            PatchOp::Substrate(id, scale) => state.with_substrate(*id).with_substrate_scale(*scale),
+            PatchOp::Substrate(substrate) => state.with_substrate(*substrate),
             PatchOp::SubstrateColor(rgb) => state.with_substrate_color(*rgb),
             PatchOp::Guides(guides) => state.with_guides(guides.clone()),
             PatchOp::LiquifyRun(id, run) => {
@@ -203,8 +198,8 @@ fn capture_resource(resource: &Resource, to: &DocState, from: &DocState, ops: &m
         }
         Resource::StackOrder => ops.push(PatchOp::Structure(structure(to))),
         Resource::Selection(actor) => ops.push(PatchOp::Selection(*actor, to.selection_of(*actor))),
-        Resource::Substrate => ops.push(PatchOp::Substrate(to.substrate, to.substrate_scale)),
-        Resource::SubstrateColor => ops.push(PatchOp::SubstrateColor(to.substrate_color)),
+        Resource::Substrate => ops.push(PatchOp::Substrate(to.substrate())),
+        Resource::SubstrateColor => ops.push(PatchOp::SubstrateColor(to.substrate_color())),
         Resource::Guides => ops.push(PatchOp::Guides(to.guides().clone())),
     }
 }
@@ -563,25 +558,40 @@ mod tests {
     }
 
     /// The canvas's own two resources, which belong to the document rather than to
-    /// any layer.
+    /// any layer. The substrate starts off its natural size, so a switch that dropped
+    /// the scale, or a restore that put back only the id, would show.
     #[test]
     fn the_canvas_round_trips() {
-        let before = flat().with_substrate_color(Srgb::new([0.5, 0.5, 0.5]));
-        let after = before.with_substrate_color(Srgb::new([0.1, 0.2, 0.3]));
-        let back = undo(
-            &act(ActionKind::SetSubstrateColor(Srgb::new([0.1, 0.2, 0.3]))),
-            &before,
-            &after,
-        );
-        assert_eq!(back.substrate_color, before.substrate_color);
+        let linen = SubstrateId::Image(AssetId([7; 32]));
+        let laid = SubstrateScale::new(140);
+        let before = fold(&act(ActionKind::SetSubstrateScale(laid)), &flat())
+            .with_substrate_color(Srgb::new([0.5, 0.5, 0.5]));
+        let canvas = |s: &DocState| (s.substrate(), s.substrate_color());
+        for kind in [
+            ActionKind::SetSubstrateColor(Srgb::new([0.1, 0.2, 0.3])),
+            ActionKind::SetSubstrate(linen),
+            ActionKind::SetSubstrateScale(SubstrateScale::new(60)),
+        ] {
+            let what = kind.tag().label();
+            let action = act(kind);
+            let after = fold(&action, &before);
+            assert_ne!(canvas(&after), canvas(&before), "{what} was a no-op");
+            let back = undo(&action, &before, &after);
+            assert_eq!(canvas(&back), canvas(&before), "{what} did not come back");
+        }
 
-        let after = before.with_substrate(SubstrateId::Flat);
-        let back = undo(
-            &act(ActionKind::SetSubstrate(SubstrateId::Flat)),
-            &before,
-            &after,
+        // Each substrate action moves its own half of the pair and keeps the other.
+        let switched = fold(&act(ActionKind::SetSubstrate(linen)), &before);
+        assert_eq!(switched.substrate().scale, laid, "a switch keeps the size");
+        let resized = fold(
+            &act(ActionKind::SetSubstrateScale(SubstrateScale::new(60))),
+            &switched,
         );
-        assert_eq!(back.substrate, before.substrate);
+        assert_eq!(
+            resized.substrate().id,
+            linen,
+            "a resize keeps the substrate"
+        );
     }
 
     /// `Undo` is resolved by the timeline and never materialized, which is *why* its

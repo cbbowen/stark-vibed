@@ -12,7 +12,7 @@ use stark_model::DocError;
 use super::commit::Drag;
 use super::{Authoring, Engine, ROOT_LAYER};
 use crate::Result;
-use crate::document::{DocState, LinearTimeline, Timeline};
+use crate::document::{LinearTimeline, Timeline};
 use crate::gpu::environment::EnvironmentId;
 use crate::gpu::substrate::Substrate;
 use stark_model::AssetId;
@@ -75,7 +75,10 @@ impl Engine {
         // Before the scan below, which reads it: the substrate the log *starts* on is
         // named by the container rather than by any action, and is otherwise the one
         // piece of content nothing asks for.
-        file.canvas.substrate = self.initial_substrate;
+        //
+        // The id alone: `CanvasMeta` has no field for the scale it starts at, so a
+        // document begun off its natural size (`Engine::on_shared`) reopens at it.
+        file.canvas.substrate = self.initial.id;
         // One bag, keyed by the need itself, so a store is asked only for the bytes
         // it can decode (§8). The match is over *which store*, not over which bag to
         // push to — the key carries that.
@@ -144,7 +147,7 @@ impl Engine {
     /// A substrate or a shape that fails to install is logged and skipped rather than
     /// fatal: the document still opens, degraded.
     pub(super) fn adopt(&mut self, file: ValidatedFile<'_>) {
-        self.initial_substrate = file.canvas.substrate;
+        self.initial = Substrate::new(file.canvas.substrate);
         self.reset_document(&file.required_content());
         if file.canvas.color_space != self.shared.color_space.id() {
             // Infallible because of the argument's *type*: a [`ValidatedFile`] is one
@@ -346,7 +349,7 @@ impl Engine {
     ) -> crate::error::Result<()> {
         let cs = crate::colorspace::make(color_space)
             .ok_or(DocError::UnsupportedColorSpace(color_space))?;
-        self.initial_substrate = substrate;
+        self.initial = Substrate::new(substrate);
         self.reset_document(&[]);
         // The pipelines are the color space's, not the document's: the same space
         // keeps them (§6.7).
@@ -360,7 +363,7 @@ impl Engine {
     /// The document's current substrate (§6.4). Change it with
     /// [`crate::command::DocCommand::SetSubstrate`].
     pub fn substrate(&self) -> SubstrateId {
-        self.document().substrate
+        self.document().substrate().id
     }
 
     /// The canonical PNG bytes of a loaded image substrate — what a save file bundles
@@ -584,7 +587,7 @@ impl Engine {
     /// bundling it. Everything else the closed document held goes — see
     /// [`release_closed_document`](Self::release_closed_document).
     fn reset_document(&mut self, named: &[AssetNeed]) {
-        let initial = DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate);
+        let initial = self.origin();
         self.change_committed(Drag::Supersede, |timeline, _| {
             *timeline = Timeline::Linear(LinearTimeline::new(initial));
             true

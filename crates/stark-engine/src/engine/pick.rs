@@ -288,7 +288,7 @@ impl Engine {
             crate::gpu::composite::media::substrate_lanes(
                 self.shared
                     .color_space
-                    .rgb_to_latent(self.presented().substrate_color),
+                    .rgb_to_latent(self.presented().substrate_color()),
             )
         });
 

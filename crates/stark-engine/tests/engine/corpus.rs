@@ -555,7 +555,7 @@ fn check_translation(case: &Case, brush: BrushParams, committed: &RgbaImage, rep
     // Asked of the **document** rather than declared per case, so the exemption cannot
     // go stale — `Flat` is the one substrate with no relief, and a case that stops using
     // linen stops being exempt in the same edit.
-    if moved.document().substrate != SubstrateId::Flat {
+    if moved.document().substrate().id != SubstrateId::Flat {
         // Checked in the opposite direction, because an exemption nothing tests is an
         // exemption that quietly widens. A woven case that came through translation
         // *unchanged* would mean the grain is no longer being read at canvas position,

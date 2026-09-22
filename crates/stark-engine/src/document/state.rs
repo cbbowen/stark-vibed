@@ -12,12 +12,13 @@ use rpds::{HashTrieMap, Vector};
 
 use super::layer::{Layer, LayerContent, PropValue};
 use super::selection::Selection;
+use crate::gpu::substrate::Substrate;
 use stark_model::Srgb;
+use stark_model::SubstrateId;
 use stark_model::document::ActorId;
 use stark_model::document::Filter;
 use stark_model::document::{GuideId, LayerId, MatteRegion, Parcel, PerspectiveGuide, Place};
 use stark_model::geom::{IVec2, TileCoord, TileRect, Vec2};
-use stark_model::{SubstrateId, SubstrateScale};
 
 /// Inclusive tile-coordinate bounding box of all populated tiles (§6),
 /// i.e. the explored extent of the infinite canvas.
@@ -156,29 +157,21 @@ pub struct DocState {
     ///
     /// An absent entry is the unrestricted selection.
     selections: HashTrieMap<ActorId, Selection>,
-    /// The physical canvas substrate (§6.4). Document state: which canvas a piece was
-    /// painted on is part of what the document *is*, and it is saved.
+    /// The physical canvas substrate **and the size it is laid at** (§6.4) — one value,
+    /// because the tooth reads the substrate's rise over a reach in canvas px, so the
+    /// pair decides what a stroke deposits. Document state: a deposit is stored, and a
+    /// stroke replayed from before a change bites the substrate as it was laid then.
     ///
-    /// Read by the media pass (§6.3) *and* by the deposition tooth (§6.4). A switch is
-    /// an ordinary action, so a stroke deposits against the substrate the log stood on
-    /// when it was made, on replay and on a peer alike.
-    pub substrate: SubstrateId,
-    /// **How large that substrate is laid** (§6.4) — the other half of the same fact.
-    ///
-    /// Document state on `substrate`'s own argument rather than a view setting: the
-    /// tooth reads the substrate's rise over a reach in canvas px, so the scale decides
-    /// what a stroke *deposits*, and a deposit is stored. A stroke replayed from before
-    /// a change bites the substrate at the size it was laid at when it was made.
-    pub substrate_scale: SubstrateScale,
+    /// Private, with [`substrate`](Self::substrate) to read it, so no reader can take
+    /// the id without its scale.
+    substrate: Substrate,
     /// The canvas substrate color — the substrate the paint sits on — as straight
-    /// sRGB (§15.5).
-    ///
-    /// Document state on the argument §6.4 makes for the substrate: a view setting the
-    /// frontend owned would leave the paper color of a painting stored nowhere at all.
+    /// sRGB (§15.5). Document state on §6.4's argument: the paper color of a painting
+    /// has to be stored somewhere.
     ///
     /// Distinct from a matte layer, which is a slab of opaque *paint*: the substrate
     /// sits under everything, is lit, and the paint composites over it (§6.3).
-    pub substrate_color: Srgb,
+    substrate_color: Srgb,
     /// The **drawing guides** the artist has set up, in roster order (§20.5).
     ///
     /// Document state on the argument the substrate above makes: a perspective built
@@ -243,8 +236,7 @@ impl DocState {
             layers: Vector::new(),
             bounds: CanvasBounds::default(),
             selections: HashTrieMap::new(),
-            substrate: DEFAULT_SUBSTRATE,
-            substrate_scale: SubstrateScale::NATURAL,
+            substrate: Substrate::new(DEFAULT_SUBSTRATE),
             substrate_color: DEFAULT_SUBSTRATE_COLOR,
             guides: Vector::new(),
         }
@@ -268,33 +260,24 @@ impl DocState {
         self.bounds
     }
 
-    /// The same document on a different canvas substrate (§6.4).
-    pub(crate) fn with_substrate(&self, substrate: SubstrateId) -> Self {
+    /// **The canvas substrate and the size it is laid at** (§6.4), read as the one
+    /// fact the deposit, the media pass and the registry's key all take.
+    pub fn substrate(&self) -> Substrate {
+        self.substrate
+    }
+
+    /// The same document on a different substrate, or the same one laid at a
+    /// different size (§6.4).
+    pub(crate) fn with_substrate(&self, substrate: Substrate) -> Self {
         Self {
             substrate,
             ..self.clone()
         }
     }
 
-    /// **The canvas substrate as the renderer asks for it** (§6.4): the substrate and the
-    /// size it is laid at, together.
-    ///
-    /// The two are one fact and are read as one everywhere downstream — the deposit,
-    /// the media pass, the registry's key — so a `substrate` read without its scale
-    /// beside it is the bug this method exists to make hard to write.
-    pub fn substrate(&self) -> crate::gpu::substrate::Substrate {
-        crate::gpu::substrate::Substrate {
-            id: self.substrate,
-            scale: self.substrate_scale,
-        }
-    }
-
-    /// The same document with its substrate laid at a different size (§6.4).
-    pub(crate) fn with_substrate_scale(&self, substrate_scale: SubstrateScale) -> Self {
-        Self {
-            substrate_scale,
-            ..self.clone()
-        }
+    /// The canvas substrate color, as straight sRGB (§15.5).
+    pub fn substrate_color(&self) -> Srgb {
+        self.substrate_color
     }
 
     /// The same document on a different substrate color (§15.5).
@@ -960,7 +943,6 @@ impl DocState {
             bounds,
             selections: self.selections.clone(),
             substrate: self.substrate,
-            substrate_scale: self.substrate_scale,
             substrate_color: self.substrate_color,
             guides: self.guides.clone(),
         }

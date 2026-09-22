@@ -793,8 +793,16 @@ pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> 
         // is read, so this touches one number and no tile (§6.8) — which is exactly
         // why it is here and its two siblings are not.
         ActionKind::SetSelectionOpacity(opacity) => state.with_selection_opacity(actor, *opacity),
-        ActionKind::SetSubstrate(id) => state.with_substrate(*id),
-        ActionKind::SetSubstrateScale(scale) => state.with_substrate_scale(*scale),
+        // Each moves its half of the pair and keeps the other: a switch keeps the size
+        // the substrate is laid at, and a resize keeps the substrate.
+        ActionKind::SetSubstrate(id) => state.with_substrate(Substrate {
+            id: *id,
+            ..state.substrate()
+        }),
+        ActionKind::SetSubstrateScale(scale) => state.with_substrate(Substrate {
+            scale: *scale,
+            ..state.substrate()
+        }),
         ActionKind::SetSubstrateColor(rgb) => state.with_substrate_color(*rgb),
         ActionKind::AddMatte {
             id,

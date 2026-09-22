@@ -57,12 +57,13 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::environment::EnvironmentId;
 use crate::gpu::registry::Registry;
 use crate::gpu::scratch::ScratchPool;
+use crate::gpu::substrate::Substrate;
 use crate::peer::Peers;
 use crate::projection::{Memo, Revision};
 use crate::view::ViewTransform;
 use observe::{GuideKey, ShownKey};
 use stark_model::document::{Action, ActorId, LayerId, Scaffold};
-use stark_model::{AssetId, ColorSpaceId, SubstrateId};
+use stark_model::{AssetId, ColorSpaceId};
 
 /// The starting layer present in every new document.
 const ROOT_LAYER: LayerId = LayerId::ROOT;
@@ -132,11 +133,10 @@ pub struct Engine {
     /// view settings the media pass reads have one owner, so two consumers cannot
     /// disagree about the canvas substrate or the lighting.
     compositor_pipeline: CompositorPipeline,
-    /// The substrate the action log starts from, written to `CanvasMeta` and used to
-    /// seed the document. Plays the same role as `CanvasMeta::color_space`: it
-    /// describes the empty document that the log is replayed onto, and is not
-    /// itself a logged change.
-    initial_substrate: SubstrateId,
+    /// The substrate the action log starts from, and the size it is laid at — the
+    /// initial condition [`origin`](Self::origin) builds the replay base on, as
+    /// `CanvasMeta::color_space` is the other. Not itself a logged change.
+    initial: Substrate,
     /// The action log and the committed document it folds to — changed only through
     /// [`Engine::change_committed`] (see [`commit::Committed`]).
     timeline: commit::Committed,

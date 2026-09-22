@@ -91,11 +91,7 @@ impl Engine {
         // is: `SOLO` authors no action in a shared session, so nothing this actor mints
         // from here on can land on one of these — and there is no per-actor counter to
         // recover (§17.9).
-        //
-        // Replay from the substrate this document's log *starts* from, not from the
-        // default — same base state `reset_document` builds, so re-hosting a document
-        // that was created on a non-default canvas doesn't silently move it.
-        let initial = DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate);
+        let initial = self.origin();
         // The document is re-materialized from its log, which supersedes a drag over it.
         self.change_committed(Drag::Supersede, |timeline, ctx| {
             *timeline =
@@ -134,7 +130,7 @@ impl Engine {
         // Everything the shared log needs before it can be replayed, in the order that
         // makes it a replay rather than an approximation.
         self.adopt(validated);
-        let initial = DocState::with_layer(ROOT_LAYER).with_substrate(self.initial_substrate);
+        let initial = self.origin();
         self.change_committed(Drag::Supersede, |timeline, ctx| {
             *timeline = Timeline::Replicated(ReplicatedTimeline::from_log(
                 actor,

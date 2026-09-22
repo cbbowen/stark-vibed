@@ -72,7 +72,7 @@ impl Probe for Engine {
         let substrate = Substrate {
             id,
             // The document's scale: the substrate a stroke would bite right now.
-            scale: Engine::document(self).substrate_scale,
+            ..Engine::document(self).substrate()
         };
         self.shared
             .apply

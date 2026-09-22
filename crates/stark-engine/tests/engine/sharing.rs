@@ -14,8 +14,10 @@ use crate::common::palette::RED;
 use crate::common::*;
 use stark_engine::Extent2;
 use stark_engine::ViewTransform;
-use stark_engine::command::DocCommand;
+use stark_engine::command::{DocCommand, Edit};
 use stark_engine::{Background, Engine, Offscreen, Rendered};
+use stark_model::SubstrateScale;
+use stark_model::document::ActorId;
 use stark_model::geom::Vec2;
 
 /// The suites' standard diagonal, replayed identically on both engines.
@@ -254,5 +256,31 @@ fn one_shared_half_seeds_independent_engines() {
         b.document().bounds().tile_range(),
         None,
         "a sibling picked up the other's paint",
+    );
+}
+
+/// **A sibling opens on the donor's substrate at the donor's scale, and sharing its
+/// document keeps it there** — the log replays onto the document the engine started
+/// from, not onto one laid at the natural size.
+#[test]
+fn a_shared_document_stays_on_the_scale_it_opened_on() {
+    let Some(mut donor) = engine_or_skip() else {
+        return;
+    };
+    let laid = SubstrateScale::new(140);
+    donor.process(DocCommand::Set(Edit::SubstrateScale(laid)));
+
+    let mut sibling = Engine::on_shared(donor.shared(), SIZE);
+    assert_eq!(
+        sibling.observe().substrate_scale,
+        laid,
+        "opened off the donor"
+    );
+    diagonal(&mut sibling);
+    assert!(sibling.start_collaboration(ActorId(1)));
+    assert_eq!(
+        sibling.observe().substrate_scale,
+        laid,
+        "sharing replayed the log onto a different canvas than it was painted on",
     );
 }

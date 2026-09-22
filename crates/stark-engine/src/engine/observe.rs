@@ -389,9 +389,9 @@ impl Engine {
             output: self.compositor_pipeline.output(),
             environment: self.shared.environment.id(),
             color_space: self.shared.color_space.id(),
-            substrate: doc.substrate,
-            substrate_scale: doc.substrate_scale,
-            substrate_color: shown.substrate_color,
+            substrate: doc.substrate().id,
+            substrate_scale: doc.substrate().scale,
+            substrate_color: shown.substrate_color(),
             gpu_failure: self.shared.gpu.health().failure().map(Arc::new),
         }
     }

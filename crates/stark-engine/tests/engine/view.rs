@@ -291,7 +291,11 @@ impl Committed {
             bounds: doc.bounds(),
             layers,
             guides: doc.guides().iter().cloned().collect(),
-            substrate: (doc.substrate, doc.substrate_scale, doc.substrate_color),
+            substrate: (
+                doc.substrate().id,
+                doc.substrate().scale,
+                doc.substrate_color(),
+            ),
             selection: (
                 selection.opacity(),
                 selection.outside(),
