@@ -24,7 +24,7 @@ use crate::gpu::scratch::Kept;
 /// A stroke's carried state at a cut point (§6.2) — what its path threads between
 /// pieces that does not already live on the canvas. Which kind it holds cannot
 /// disagree with the path: the path is a pure function of the brush
-/// ([`dynamics_setup`](super::dynamics::dynamics_setup)), and a carry only ever
+/// ([`StrokePlan::of`](super::path::StrokePlan::of)), and a carry only ever
 /// resumes the stroke that captured it.
 ///
 /// The textures ride in [`Kept`] leases, which is sound only because a run

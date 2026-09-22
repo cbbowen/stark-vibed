@@ -112,7 +112,7 @@ const RESERVOIR_EXCHANGE_STEP: f32 = 0.125;
 /// The shortest segment worth cutting, in canvas px — the floor under every length
 /// cap here. It is also the least [`fit_len`] must afford for the stamp loop to run
 /// at all: a fit below it means the tip *alone* overflows the region, which is
-/// [`dynamics_setup`](super::dynamics::dynamics_setup)'s refusal rather than a
+/// [`StrokePlan::of`](super::path::StrokePlan::of)'s refusal rather than a
 /// flattening problem.
 pub(super) const MIN_SEGMENT_LEN: f32 = 0.5;
 
@@ -216,7 +216,7 @@ fn axes(b: &BrushParams) -> stark_model::document::BrushDynamics {
 
 /// **The largest tip reach — `size × elongation`, canvas px — the stamp loop can
 /// draw for a brush settled like `b`** (§6.2). A brush past it loses its dynamics
-/// altogether ([`StrokePath::TipTooLarge`](super::dynamics::StrokePath)), because
+/// altogether ([`StrokePath::TipTooLarge`](super::path::StrokePath::TipTooLarge)), because
 /// the region is a single texture bounded by
 /// [`MAX_TEXTURE_DIM_2D`](crate::gpu::context::MAX_TEXTURE_DIM_2D) and one tip has
 /// to fit inside it whole.
@@ -252,7 +252,7 @@ pub fn max_tip_reach(b: &BrushParams) -> f32 {
 /// and an ulp on the wrong side is a brush the gate refuses and the slider offered. So
 /// the answer is settled by **asking the gate**: [`max_tip_reach`] only supplies the
 /// starting guess, and the knob is stepped down until [`fit_len`] — the very call
-/// [`dynamics_setup`](super::dynamics::dynamics_setup) makes — accepts the brush.
+/// [`StrokePlan::of`](super::path::StrokePlan::of) makes — accepts the brush.
 /// `the_offered_stretch_is_always_drawable` is what keeps that caught.
 pub fn max_stretch(b: &BrushParams) -> f32 {
     let drawable = |knob: f32| {
@@ -486,7 +486,7 @@ pub(super) fn flatten_budget(
     // The region floor's price (§6.2): a tip so wide that a full-length segment's
     // extent would overflow [`MAX_REGION_DIM`] gets shorter segments instead of losing
     // its dynamics. Never taken below [`MIN_SEGMENT_LEN`]: a fit under the floor means
-    // the tip alone overflows, which is `dynamics_setup`'s refusal, and capping here
+    // the tip alone overflows, which is `StrokePlan::of`'s refusal, and capping here
     // would flatten dust for a loop that cannot run.
     let fit = fit_len(b);
     if fit < MIN_SEGMENT_LEN {

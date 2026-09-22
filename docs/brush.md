@@ -452,7 +452,7 @@ exchange step a segment's length sets is a first-order discretization that
 tightens as segments shrink. The renderer warns once per stroke when the
 shortening binds, because the loop pays per segment. Only a brush whose tip
 *alone* overflows the region still degrades to the swept deposit. See
-`gpu::stroke::dynamics::dynamics_setup`.
+`gpu::stroke::path::StrokePlan::of`.
 
 **That last limit is published rather than discovered.** The region is a single
 texture bounded by `MAX_TEXTURE_DIM_2D`, which is *the* number: the engine asks the
@@ -1330,7 +1330,7 @@ sees is `param · factor(input)`, `factor(0) = floor`, `factor(1) = 1`. That bou
 is the design, not a simplification of it. Every guarantee the engine derives
 from a brush is stated against the brush's own numbers — the frozen-span radius
 bound (`safe_frozen`), the region fit, the swept-vs-loop choice
-(`dynamics_setup`), the flattener's exchange step (`exchange_travel`) — and each
+(`StrokePlan::of`), the flattener's exchange step (`exchange_travel`) — and each
 one stays sound with no part of it learning that modulation exists, because a
 parameter can only ever be *smaller* than its slider says. A remap that could
 also scale up would put a correction into all of them, and a missed one is a
@@ -1341,7 +1341,7 @@ the maximum and the pen takes it away.**
 
 Two consequences fall straight out and are worth stating, because they are what
 would otherwise need checking at each call site. An axis the brush leaves at zero
-is zero at every point of every stroke it could draw, so `dynamics_setup` and
+is zero at every point of every stroke it could draw, so `StrokePlan::of` and
 `bleed_fires` can gate on the brush's own rate and be exactly right. And a
 modulated rate is never above the brush's, so `exchange_travel` prices the worst
 case and every segment comes in under it — the wet flow included: the plan
@@ -2335,7 +2335,7 @@ one in force, so the color lands on the remembered paint side, and a fill drawn
 mid-erase still lays it (the hand's color rides beside the params on
 `ViewCommand::SetBrush`, into `Session::color`). That the dynamics axes do not
 run is the enum, not a rule: an `Erase` brush has none. No region is ever needed
-either, so no tip is too large for this path (`dynamics_setup` answers `Erase`
+either, so no tip is too large for this path (`StrokePlan::of` answers `Erase`
 off the variant alone).
 
 ### Why the extent accumulates across pieces

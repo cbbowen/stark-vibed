@@ -306,13 +306,15 @@ pub(super) fn integrate_pass(device: &wgpu::Device, color_space: &dyn ColorSpace
 }
 
 impl StrokeRenderer {
-    /// [`Self::render_range`] through the swept deposit. The segments and constants
+    /// [`Self::render_range`] through the swept deposit, rasterized at `ss` subsample
+    /// texels per canvas px (`budget::supersample_scale`). The segments and constants
     /// arrive already resolved and flattened ([`ResolvedRange`]), and every tile lands
     /// through [`land_tiles`].
     pub(super) fn render_swept(
         &self,
         scene: StrokeScene<'_>,
         range: ResolvedRange<'_>,
+        ss: u32,
     ) -> (TileMap, StrokeCarry) {
         // The control every dynamics row is read against: the same geometry, the
         // same tiles, one instanced draw instead of a dispatch chain per segment.
@@ -323,7 +325,6 @@ impl StrokeRenderer {
             base, substrate, ..
         } = scene;
         let ResolvedRange {
-            rec,
             consts: k,
             end_dist,
             resume,
@@ -338,12 +339,10 @@ impl StrokeRenderer {
         // it (`accum::ParcelCarry`), or a stroke crossing itself would outrun the dial
         // or the mask.
         //
-        // A supersampled stroke (`budget::supersample_scale`) needs the same shape one
-        // level up: the resolve averages the parcel's *finished* visible alpha, and an
+        // A supersampled stroke needs the same shape one level up: the resolve averages the parcel's *finished* visible alpha, and an
         // average of per-piece parcels differs from the whole parcel averaged by the
         // covariance of the subsample alphas — worth a quarter of the alpha at a rim
         // texel where pieces meet.
-        let ss = super::budget::supersample_scale(&rec.brush);
         let carries = k.capped || ss > 1;
 
         // The per-stroke buffers and the working parcels ride in the scope, and only

@@ -297,7 +297,7 @@ impl StrokeRenderer {
 struct DynamicsRun<'a> {
     r: &'a StrokeRenderer,
     rec: &'a StrokeRecord,
-    /// The budget the range was flattened at ([`dynamics_setup`](super::dynamics_setup)),
+    /// The budget the range was flattened at ([`StrokePlan::of`](crate::gpu::stroke::path::StrokePlan::of)),
     /// carried so a plan
     /// can re-cut a piece of the record the same way — see [`PlanCtx::tol`].
     tol: crate::path::FlattenTolerance,

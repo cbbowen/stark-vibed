@@ -393,7 +393,7 @@ impl Rates {
 /// mappings make of the ceiling and of the rates at one pen reading (§6.2).
 ///
 /// A fact about the *brush*, so every segment of every stroke answers it the same way
-/// (`dynamics_setup`'s purity argument).
+/// (`StrokePlan::of`'s purity argument).
 #[derive(Clone, Copy)]
 enum EffectReader<'a> {
     Paint(&'a PaintEffect),

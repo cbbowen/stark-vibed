@@ -402,7 +402,7 @@ impl Slot {
 /// to these.
 pub(super) struct PlanCtx<'a> {
     pub(super) rec: &'a StrokeRecord,
-    /// The budget `rec` was flattened at, handed down from [`dynamics_setup`](super::dynamics_setup) rather
+    /// The budget `rec` was flattened at, handed down from [`StrokePlan::of`](crate::gpu::stroke::path::StrokePlan::of) rather
     /// than recomputed — one place answers what a stroke's segments are. Only the
     /// pen-up frame reads it ([`settle_tangent`]), which re-flattens an extent's
     /// worth of the record and must cut it exactly as the segments in hand were cut.

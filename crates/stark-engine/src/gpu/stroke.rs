@@ -16,7 +16,7 @@
 //! the sequential swept-exchange loop in `dynamics.wesl`; one that erases
 //! (`BrushEffect::Erase`, §6.12) runs the same sweep into a per-stroke
 //! accumulator and turns it on the base's visible opacity (`erase.rs`).
-//! `dynamics_setup` decides which path a record takes.
+//! `path::StrokePlan::of` decides which path a record takes.
 //!
 //! The renderer is parameterized by a [`ColorSpace`] (the residual, channel
 //! mapping, shader). It holds only immutable GPU objects plus `Arc`-backed
@@ -44,6 +44,7 @@ mod budget;
 mod dynamics;
 mod erase;
 mod incremental;
+mod path;
 mod region;
 mod segments;
 mod swept;
@@ -52,8 +53,9 @@ mod tips;
 use crate::gpu::desc;
 use crate::gpu::scratch::ScratchPool;
 use budget::MAX_REGION_DIM;
-use dynamics::{DynamicsKit, StrokePath, build_dynamics_kit, dynamics_setup};
+use dynamics::{DynamicsKit, build_dynamics_kit};
 use incremental::Resume;
+use path::{StrokePath, StrokePlan};
 use segments::{Segment, generate_segments_in};
 use swept::SweepKit;
 use tips::{ResolvedTip, TipCache};
@@ -76,9 +78,8 @@ pub(crate) struct StrokeRenderer {
     /// The erase's landing pass (§6.12), for a brush that erases
     /// (`BrushEffect::Erase`).
     erase: desc::OnePass,
-    /// The sequential stamp loop (§6.2), used when the brush manipulates existing
-    /// paint (`lift` / `deposit` / `charge` / `bleed` — the four axes `dynamics_setup`
-    /// gates on).
+    /// The sequential stamp loop (§6.2) and the liquify warp's region machinery
+    /// (§6.13): the effects that work paint already on the canvas.
     dynamics: DynamicsKit,
 
     /// What a brush resolves to, and the lazily-baked caches behind it (§6.6) — the
@@ -146,7 +147,7 @@ impl Complaint {
 ///
 /// Every gate behind this is re-asked on each render, and deliberately so — each is a
 /// pure function of the brush, which is what lets a live tail and its commit agree for
-/// free ([`dynamics_setup`]). But the *answers* are properties of the record, so
+/// free ([`StrokePlan::of`]). But the *answers* are properties of the record, so
 /// repeating them per frame turns one undrawable brush into an unbounded stream of
 /// `error!`.
 ///
@@ -341,7 +342,7 @@ impl StrokeRenderer {
         // Which path the stroke takes — and how finely it flattens — is decided from
         // the record, never from the piece in hand. A live tail and the commit that
         // eventually replaces it have to make the same choice, or releasing the pointer
-        // would visibly redraw the stroke. See `dynamics_setup`.
+        // would visibly redraw the stroke. See [`StrokePlan::of`].
         let Some(tip) = self.tips.resolve(scene.assets, &rec.brush) else {
             if self.complained.say(rec.seed, Complaint::AssetMissing) {
                 tracing::warn!(
@@ -357,7 +358,7 @@ impl StrokeRenderer {
                 StrokeCarry::deferred(spans.dist()),
             );
         };
-        let plan = dynamics_setup(&rec.brush, tip.rise);
+        let plan = StrokePlan::of(&rec.brush, tip.rise);
         // What the plan cost, said before the range is flattened so an empty range
         // says it too — and once per stroke, because every gate here is a pure
         // function of the brush ([`Complaints`]).
@@ -378,30 +379,26 @@ impl StrokeRenderer {
                 s.wanted / s.got,
             );
         }
-        // An error, not a warning: what lands is not a rougher version of the
-        // stroke that was asked for but a different brush — the swept deposit
-        // only ever adds paint, so `lift`, `deposit` and `charge` all silently
-        // do nothing. It is the one degradation left: stroke *length* is
-        // handled by drawing the stroke in pieces (§6.2) and an oversized
-        // *segment* by shortening it (`budget::fit_len`), so only a tip whose
-        // own extent overflows the region lands here.
-        //
-        // **No brush this app can build does.** The frontier is published as
-        // [`max_tip_reach`](budget::max_tip_reach) and the chrome clamps every
-        // brush to it (`stark_ui::brush_config::BrushConfig::settle`, which both
-        // frontends run at their one door), so reaching this arm means a record
-        // came from somewhere that did not — a peer, or a file written by
-        // another build — and is not being honoured.
-        if matches!(plan.path, StrokePath::TipTooLarge)
-            && self.complained.say(rec.seed, Complaint::TipTooLarge)
-        {
-            tracing::error!(
-                radius = rec.brush.size,
-                max_region_dim = MAX_REGION_DIM,
-                "brush tip too large for one dynamics region: falling back to \
-                 the swept deposit, so this stroke's lift/deposit/charge do \
-                 nothing",
-            );
+        // An error, not a warning: what lands is a different brush
+        // ([`StrokePath::TipTooLarge`]), from a record some other build wrote.
+        if matches!(plan.path, StrokePath::TipTooLarge) {
+            if self.complained.say(rec.seed, Complaint::TipTooLarge) {
+                tracing::error!(
+                    radius = rec.brush.size,
+                    max_region_dim = MAX_REGION_DIM,
+                    "brush tip too large for one region: drawing only the swept \
+                     deposit of its own paint, without its lift, deposit, charge \
+                     or warp",
+                );
+            }
+            // A warp lays no paint of its own, so the fallback has nothing to draw
+            // and nothing to flatten.
+            if rec.brush.liquify().is_some() {
+                return (
+                    Painted::plain(scene.base.clone()),
+                    StrokeCarry::unchanged(spans.dist()),
+                );
+            }
         }
         // Both halves of "is this range resuming, and will it be resumed" — read once
         // here, where `spans` and the record are both in hand, rather than in each of
@@ -440,9 +437,10 @@ impl StrokeRenderer {
         match plan.path {
             StrokePath::Loop { dynamics } => plain(self.render_dynamic(scene, range, dynamics)),
             StrokePath::Liquify => self.render_liquify(scene, range),
-            // The oversized tip draws what the swept deposit can of it, which is the
-            // brush's own `add` paint and none of the manipulation (the error above).
-            StrokePath::Swept | StrokePath::TipTooLarge => plain(self.render_swept(scene, range)),
+            StrokePath::Swept { ss } => plain(self.render_swept(scene, range, ss)),
+            // What the swept deposit can draw of an oversized tip: the brush's own
+            // `add` paint, at 1× like every effect but paint.
+            StrokePath::TipTooLarge => plain(self.render_swept(scene, range, 1)),
             StrokePath::Erase => plain(self.render_erase(scene, range)),
         }
     }
@@ -521,7 +519,7 @@ pub(crate) fn loggable(rec: StrokeRecord) -> Option<StrokeRecord> {
 ///
 /// Nothing here is path-specific. The swept sweep puts them in a `TileXform` and the
 /// stamp loop in a `Stamp` slot, but they are the same numbers — and they have to be,
-/// because which path a brush takes is decided by `dynamics_setup` from axes that have
+/// because which path a brush takes is decided by `StrokePlan::of` from axes that have
 /// nothing to do with any of this: nudge `deposit` off zero and the same color, the
 /// same flow and the same substrate must still lay the same paint
 /// (`a_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs`). Resolving them in one
