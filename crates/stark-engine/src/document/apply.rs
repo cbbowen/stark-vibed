@@ -8,18 +8,20 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::gpu::substrate::Substrate;
-use stark_model::document::ActorId;
+use stark_model::AssetId;
 use stark_model::document::{
-    Action, ActionId, ActionKind, Footprint, Materialize, Resource, compute_footprint,
+    Action, ActionId, ActionKind, ActorId, FillOp, Footprint, LayerId, Materialize, Resource,
+    SelectionOp, StrokeRecord, TransformMap, compute_footprint,
 };
+use stark_model::geom::{IVec2, TileRect};
 
 use super::layer::Layer;
 use super::liquify::LiquifyRun;
+use super::selection::Selection;
 use super::state::DocState;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::stroke::StrokeRenderer;
 use crate::gpu::tile::TilePool;
-use stark_model::document::LayerId;
 
 /// Side-channel passed through [`Materialize::fold`]: the GPU resources needed to
 /// render a stroke (§5).
@@ -165,98 +167,197 @@ impl ApplyCtx {
     pub(crate) fn substrate(&self, substrate: Substrate) -> crate::gpu::substrate::SubstrateMap {
         self.substrates.get(&self.gpu, substrate)
     }
-}
 
-/// **The gate every action that lays or moves paint passes through** — the layer's
-/// tiles, the author's mask, the renderer's answer, and the rewrite — in one place.
-///
-/// Four actions lay or move paint (a stroke, a fill, a transform, a merge), and this
-/// settles the three things each would otherwise get right on its own:
-///
-/// - a **matte or an absent layer refuses** the edit rather than swallowing it
-///   ([`paint_base`], §15.7) — here, in the engine, so replay and peers agree about a
-///   log that contains one;
-/// - the mask is the **author's**, keyed off `action.id.actor` and never off the
-///   session (§17.3), so a collaborator's lasso cannot clip this edit;
-/// - a renderer that declines leaves the state alone, **deterministically**.
-///
-/// `edit` answers `None` to decline, or the new tiles — with the liquify run a liquify
-/// stroke leaves behind them (§6.13), `None` from every other edit, which keeps the
-/// run in place ([`Layer::with_painted`]).
-fn paint_edit(
-    state: DocState,
-    layer: LayerId,
-    actor: ActorId,
-    refused: &'static str,
-    edit: impl FnOnce(
-        &DocState,
-        &Layer,
-        &super::selection::Selection,
-    ) -> Option<(crate::gpu::tile::TileMap, Option<Rc<LiquifyRun>>)>,
-) -> DocState {
-    let Some(target) = state.layer(layer).filter(|l| l.tiles().is_some()).cloned() else {
-        return state;
-    };
-    let selection = state.selection_of(actor);
-    match edit(&state, &target, &selection) {
-        Some((tiles, run)) => state.map_layer(layer, |l| l.with_painted(tiles, run)),
-        None => {
-            tracing::warn!("{refused}");
-            state
-        }
+    /// The mask a paint edit by `actor` lays through: the **author's** (§17.3), brought
+    /// into the frame the edit is stated in (§14.12) and scoped to the tiles `claim`
+    /// reaches — the mask itself, by handle, whenever the frame is zero.
+    pub(crate) fn author_gate(
+        &self,
+        state: &DocState,
+        actor: ActorId,
+        frame: IVec2,
+        claim: TileRect,
+    ) -> Selection {
+        self.transform
+            .shifted_selection_in(&self.pool, &state.selection_of(actor), frame, claim)
     }
 }
 
-/// [`paint_edit`] for the one family that also **moves the author's mask**: the three
-/// transforms, which cut the selected paint out and restack it under the map, and
-/// carry the mask with it (§16).
-fn paint_and_mask_edit(
-    state: DocState,
-    layer: LayerId,
-    actor: ActorId,
-    refused: &'static str,
-    edit: impl FnOnce(
-        &crate::gpu::tile::TileMap,
-        &super::selection::Selection,
-    ) -> Option<(crate::gpu::tile::TileMap, super::selection::Selection)>,
-) -> DocState {
-    let Some(base) = paint_base(&state, layer) else {
-        return state;
-    };
-    let selection = state.selection_of(actor);
-    match edit(&base, &selection) {
-        Some((tiles, moved)) => state
-            .map_layer(layer, |l| l.with_tiles(tiles))
-            .with_selection(actor, moved),
-        None => {
-            tracing::warn!("{refused}");
-            state
-        }
-    }
+/// A deterministic refusal (§12.1): the state as it arrived, and a warning saying why.
+/// Only the fold says so — a preview of the same refusal shows the committed document
+/// and says nothing, since it would say it on every pointer move.
+fn declined(state: DocState, why: &'static str) -> DocState {
+    tracing::warn!("{why}; ignored");
+    state
 }
 
-fn transform_apply(
-    state: DocState,
+/// Why [`transform_onto`] declines, for the three arms that call it.
+const TRANSFORM_DECLINED: &str =
+    "transform declined (no paint layer, unusable map or too many tiles)";
+
+/// `state` with `op` filled into `layer` through the author's mask (§18.0.4): the
+/// `Fill` arm of the fold, and every preview of a fill (§22.4).
+///
+/// `op` and `frame` are the action's: the op stated in the layer's frame, and where
+/// that frame sits (§14.12). `None` is a deterministic refusal — a layer holding no
+/// paint (§15.7), or an op the renderer declines as unbounded or past the tile cap.
+pub(crate) fn fill_onto(
+    state: &DocState,
     ctx: &ApplyCtx,
     actor: ActorId,
     layer: LayerId,
-    map: &stark_model::document::TransformMap,
-    translation: stark_model::geom::IVec2,
-) -> DocState {
-    // The mask travels with the paint it gated (§16), which is what the second
-    // helper is for. `frame` is the action's own (§14.12): the renderer runs the
-    // map conjugated into the layer's frame on the paint and the canvas map on
-    // the mask.
-    paint_and_mask_edit(
-        state,
-        layer,
-        actor,
-        "transform rejected (unusable map or too many tiles); ignored",
-        |base, selection| {
-            ctx.transform
-                .apply(&ctx.pool, base, selection, map, translation)
-        },
+    op: &FillOp,
+    frame: IVec2,
+) -> Option<DocState> {
+    let base = paint_base(state, layer)?;
+    let gate = ctx.author_gate(state, actor, frame, stark_model::document::fill_rect(op));
+    let tiles = ctx.fill.apply(&ctx.pool, base, &gate, op)?;
+    // A fill leaves the liquify run in place (§6.13).
+    Some(state.map_layer(layer, |l| l.with_tiles(tiles)))
+}
+
+/// `state` with the author's selected paint on `layer` cut, restacked under `map` and
+/// the mask carried with it (§16): the three transform arms of the fold, and their
+/// preview (§16.6).
+///
+/// `map` is stated on the canvas and `frame` is the action's (§14.12): the renderer runs
+/// the map conjugated into the frame on the paint and the canvas map on the mask. `None`
+/// is a deterministic refusal — a layer holding no paint, an unusable map, or a plan
+/// past the tile caps (§16.1).
+pub(crate) fn transform_onto(
+    state: &DocState,
+    ctx: &ApplyCtx,
+    actor: ActorId,
+    layer: LayerId,
+    map: &TransformMap,
+    frame: IVec2,
+) -> Option<DocState> {
+    let base = paint_base(state, layer)?;
+    let (tiles, moved) =
+        ctx.transform
+            .apply(&ctx.pool, base, &state.selection_of(actor), map, frame)?;
+    Some(
+        state
+            .map_layer(layer, |l| l.with_tiles(tiles))
+            .with_selection(actor, moved),
     )
+}
+
+/// `state` with `op` folded into the author's own mask (§6.8, §17.3): the `Select` arm
+/// of the fold, and the marquee's live preview. `None` for an op too large to
+/// rasterize (`MAX_SELECTION_TILES`), a bound that is a pure function of the op.
+pub(crate) fn select_onto(
+    state: &DocState,
+    ctx: &ApplyCtx,
+    actor: ActorId,
+    op: &SelectionOp,
+) -> Option<DocState> {
+    let selection = ctx
+        .selection
+        .apply(&ctx.pool, &state.selection_of(actor), op)?;
+    Some(state.with_selection(actor, selection))
+}
+
+/// The body of [`ActionKind::CommitStroke`] (§6.2): the stroke laid on its layer
+/// through the author's mask — from the preview's tiles where the preview drew this
+/// very stroke over this very base ([`PreparedStroke`]), and rendered here otherwise,
+/// which is every replay, every peer's copy and every redo.
+///
+/// Refused, and deterministically, on a layer holding no paint (§15.7) and for a record
+/// every render refuses whole ([`StrokeRenderer::refuses`]).
+fn stroke_apply(
+    state: DocState,
+    ctx: &mut ApplyCtx,
+    actor: ActorId,
+    rec: &StrokeRecord,
+) -> DocState {
+    if ctx.stroke.refuses(rec) {
+        return state;
+    }
+    let Some(target) = state.layer(rec.layer) else {
+        return state;
+    };
+    let Some(base) = target.tiles() else {
+        return state;
+    };
+    let run = target.liquify_run();
+    let (tiles, liquify) = match ctx.prepared.take_if(|p| p.is_render_of(rec, base, run)) {
+        Some(prepared) => (prepared.tiles, prepared.liquify),
+        // The gate and the substrate are resolved only here: a pen-up that takes the
+        // preview's tiles on a translated layer would otherwise pay for a mask shift.
+        None => {
+            // The substrate as the log stood at this action (§6.4), so a mid-document
+            // `SetSubstrate` changes only what comes after it.
+            let substrate = ctx.substrate(state.substrate());
+            let gate = ctx.author_gate(
+                &state,
+                actor,
+                rec.translation,
+                stark_model::document::stroke_rect(rec),
+            );
+            let painted = ctx.stroke.render(
+                crate::gpu::stroke::StrokeScene {
+                    pool: &ctx.pool,
+                    assets: &ctx.assets,
+                    base,
+                    liquify: run,
+                    selection: &gate,
+                    substrate: &substrate,
+                },
+                rec,
+            );
+            (painted.tiles, painted.liquify)
+        }
+    };
+    state.map_layer(rec.layer, |l| l.with_painted(tiles, liquify))
+}
+
+/// The body of [`ActionKind::PlaceImage`] (§23): the layer `add` mints — by exactly
+/// the call an `AddLayer` makes, so an unknown carrier declines it identically —
+/// holding the picture `image` with its top-left texel at `at`.
+///
+/// The tiles are built only once the layer is known to have landed: for a layer that
+/// is not there they would be a photograph's worth of GPU memory for nothing. They
+/// come from the CPU rather than from a pass, which makes them the same bytes on every
+/// adapter (`gpu::place`).
+fn place_apply(
+    state: DocState,
+    ctx: &ApplyCtx,
+    id: LayerId,
+    add: impl FnOnce(&DocState) -> DocState,
+    at: IVec2,
+    image: AssetId,
+) -> DocState {
+    // A held id is refused outright, as float and duplicate refuse theirs:
+    // `insert_layer` would decline it, but the name and the tiles would still land on
+    // the layer that holds it.
+    if state.contains_layer(id) {
+        tracing::warn!(
+            ?id,
+            "placement names a layer the document already holds; ignored"
+        );
+        return state;
+    }
+    let state = add(&state);
+    if !state.contains_layer(id) {
+        return state;
+    }
+    // Absent means the picture has not arrived, which the loader and the transport
+    // both rule out before this runs (`unresolved_content`, and the waitlist parking
+    // the action until its content lands).
+    let Some(picture) = ctx.pictures.get(image) else {
+        tracing::warn!(?image, "placing an image this session does not hold");
+        return state;
+    };
+    match ctx.place.render(&ctx.pool, at, &picture) {
+        Some(tiles) => state.map_layer(id, |l| l.with_tiles(tiles)),
+        None => {
+            // Off the tile grid an `i32` can address. The layer stays — it is what the
+            // action minted, and withdrawing it would leave the action half-applied.
+            tracing::warn!("placed image is off the addressable canvas; no tiles written");
+            state
+        }
+    }
 }
 
 /// The body of [`ActionKind::MergeLayerDown`] (§14.11): fold `source` into the
@@ -276,8 +377,6 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
         tracing::warn!("merge down no longer names this destination; ignored");
         return state;
     }
-    // Cloned out before the rewrite for the reason `paint_base` clones: a handful of
-    // `Arc` bumps, and it keeps the borrow of the state off the tree being rebuilt.
     let Some(lower) = paint_base(&state, dest) else {
         return state;
     };
@@ -297,11 +396,11 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
             // has nothing to write. Running it would spend a pass per tile to land the
             // identity *plus* one round trip's rounding.
             let merged = if filter.is_neutral() {
-                lower
+                lower.clone()
             } else {
                 ctx.merge.apply_filter(
                     &ctx.pool,
-                    &lower,
+                    lower,
                     // Built through the very constructor the draw list goes through,
                     // off the very params the compositor reads (§21.4) — so the merged
                     // tile is what the screen was showing, not a second reading of the
@@ -338,7 +437,7 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
             };
             let shift = frame_of(source) - frame_of(dest);
             let upper = if shift == stark_model::geom::IVec2::ZERO {
-                upper
+                upper.clone()
             } else {
                 let map = stark_model::document::TransformMap::Affine(
                     stark_model::geom::Affine2::from_translation(shift.as_vec2()),
@@ -346,7 +445,7 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
                 let everything = super::selection::Selection::everything();
                 match ctx.transform.apply(
                     &ctx.pool,
-                    &upper,
+                    upper,
                     &everything,
                     &map,
                     stark_model::geom::IVec2::ZERO,
@@ -362,7 +461,7 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
                 &ctx.pool,
                 crate::gpu::merge::MergeScene {
                     lower: crate::gpu::merge::MergeSide {
-                        tiles: &lower,
+                        tiles: lower,
                         opacity: dest_opacity,
                     },
                     upper: crate::gpu::merge::MergeSide {
@@ -415,7 +514,7 @@ fn float_apply(
     }
     let Some((remaining, lifted)) = ctx
         .transform
-        .float(&ctx.pool, &base, &selection, translation)
+        .float(&ctx.pool, base, &selection, translation)
     else {
         tracing::warn!("float rejected (empty cut or too many tiles); ignored");
         return state;
@@ -443,12 +542,8 @@ fn float_apply(
 /// rasterized (§15.7) — and turned away *here*, in the engine, not only in the
 /// frontend, which is what keeps replay and peers agreeing about a log that happens
 /// to contain such an action. An absent layer reads the same way.
-///
-/// Cloned out of the tree before anything is rebuilt: the map is persistent, so this
-/// is a handful of `Arc` bumps, and it keeps the borrow of the state from outliving
-/// the rewrite that follows.
-fn paint_base(state: &DocState, layer: LayerId) -> Option<crate::gpu::tile::TileMap> {
-    state.layer(layer).and_then(|l| l.tiles()).cloned()
+fn paint_base(state: &DocState, layer: LayerId) -> Option<&crate::gpu::tile::TileMap> {
+    state.layer(layer).and_then(|l| l.tiles())
 }
 
 /// [`DocState`] is what this crate folds a log into (§2, §5): a persistent map of
@@ -494,7 +589,8 @@ impl Materialize for DocState {
 /// Fold one action into the state — the whole of what applying means (§4).
 ///
 /// **The ten kinds that need a renderer** — a stroke, a placed image, the two
-/// selection ops, the three transforms, a merge, a float and a fill. Everything else
+/// selection ops, the three transforms, a merge, a float and a fill — each dispatch to
+/// the one function that folds them, which the previews call too. Everything else
 /// folds without touching one and is [`apply_pure`]'s, which this match ends by
 /// handing over to. Both matches are exhaustive with no `_` arm, so a kind added
 /// later has to name itself on one side of the line rather than defaulting into
@@ -504,72 +600,9 @@ impl Materialize for DocState {
 /// transform past the tile caps — returns the state unchanged rather than an error,
 /// so every peer declines it identically (`Materialize::fold`).
 fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
+    let actor = action.id.actor;
     match &action.kind {
-        // Refused before the mask is shifted or a layer read: the render would hand
-        // the base back untouched, and this is that same state without the GPU work.
-        ActionKind::CommitStroke(rec) if ctx.stroke.refuses(rec) => state,
-        // The **author's** mask gates the stroke, read from the state being folded
-        // over so replay reproduces it exactly and keyed by the author so a
-        // collaborator's lasso never clips it (§6.8, §17.3) — both of which
-        // [`paint_edit`] settles, along with the refusal on a matte.
-        ActionKind::CommitStroke(rec) => paint_edit(
-            state,
-            rec.layer,
-            action.id.actor,
-            // Unreachable: a stroke either takes the preview's tiles or renders, and
-            // neither declines. The gate above it — a matte, an absent layer — is
-            // `paint_edit`'s own and returns before this is read.
-            "stroke rendered nothing; ignored",
-            |state, target, selection| {
-                let base = target.tiles().expect("paint_edit hands over a paint layer");
-                let run = target.liquify_run();
-                // The preview's tiles, where the preview drew this very stroke over
-                // this very base — see `PreparedStroke`. Otherwise the stroke is
-                // rendered here, which is every replay, every peer's copy and every
-                // redo: the log carries the stroke, never its pixels.
-                let painted = match ctx.prepared.take_if(|p| p.is_render_of(rec, base, run)) {
-                    Some(prepared) => (prepared.tiles, prepared.liquify),
-                    None => {
-                        // The substrate this stroke was painted on, as the log stood
-                        // here — not as it stands now (§6.4). The tooth gates the
-                        // deposit by it, so a mid-document `SetSubstrate` changes only
-                        // what comes *after* it, on replay exactly as it did live.
-                        let substrate = ctx.substrate(state.substrate());
-                        // The author's canvas mask, brought into the layer's frame
-                        // the record was made in (§14.12) — scoped to the stroke's
-                        // own claim, and the mask itself, by handle, whenever the
-                        // frame is zero.
-                        let gate = ctx.transform.shifted_selection_in(
-                            &ctx.pool,
-                            selection,
-                            rec.translation,
-                            stark_model::document::stroke_rect(rec),
-                        );
-                        let painted = ctx.stroke.render(
-                            crate::gpu::stroke::StrokeScene {
-                                pool: &ctx.pool,
-                                assets: &ctx.assets,
-                                base,
-                                liquify: run,
-                                selection: &gate,
-                                substrate: &substrate,
-                            },
-                            rec,
-                        );
-                        (painted.tiles, painted.liquify)
-                    }
-                };
-                // A stroke lays paint through the author's mask and never moves it.
-                Some(painted)
-            },
-        ),
-        // An image from outside the document, as a layer holding it (§23). The layer
-        // arrives first, by exactly the call an `AddLayer` makes, so an unknown carrier
-        // declines it identically — and the tiles are built only once the layer is
-        // known to have landed, since building them for a layer that is not there is a
-        // photograph's worth of GPU memory for nothing. They come from the CPU rather
-        // than from a pass, which is what makes them the same bytes on every adapter:
-        // see `gpu::place`.
+        ActionKind::CommitStroke(rec) => stroke_apply(state, ctx, actor, rec),
         ActionKind::PlaceImage {
             id,
             carrier,
@@ -578,146 +611,81 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             name,
             image,
             number,
-        } => {
-            // A held id is refused outright, as float and duplicate refuse theirs:
-            // `insert_layer` would decline it, but the rename and the tiles below
-            // would still land on the layer that holds it.
-            if state.contains_layer(*id) {
-                tracing::warn!(
-                    ?id,
-                    "placement names a layer the document already holds; ignored"
-                );
-                return state;
-            }
-            let state = state
-                .insert_layer(*id, *carrier, *above, *number)
-                .set_layer_name(*id, name.as_deref().map(Into::into));
-            if !state.contains_layer(*id) {
-                return state;
-            }
-            // The picture, by the id the log carries (§23). Absent means it has not
-            // arrived, which the loader and the transport both make sure cannot happen
-            // before this runs (`unresolved_content`, and the waitlist parking the
-            // action until its content lands).
-            let Some(picture) = ctx.pictures.get(*image) else {
-                tracing::warn!(?image, "placing an image this session does not hold");
-                return state;
-            };
-            match ctx.place.render(&ctx.pool, *at, &picture) {
-                Some(tiles) => state.map_layer(*id, |l| l.with_tiles(tiles)),
-                None => {
-                    // Off the tile grid an `i32` can address. The layer stays — it is
-                    // what the action minted, and withdrawing it here would leave the
-                    // action half-applied — and is simply empty.
-                    tracing::warn!("placed image is off the addressable canvas; no tiles written");
-                    state
-                }
-            }
-        }
-        // The author's own selection, and only ever the author's: the key is taken
-        // from `action.id.actor`, never from the payload, so an action cannot address
-        // anyone else's mask (§17.3). An op too large to rasterize (see
-        // `MAX_SELECTION_TILES`) leaves the selection alone — deterministically, since
-        // the bound is a pure function of the op, so peers and replays agree.
-        ActionKind::Select(op) => {
-            let prev = state.selection_of(action.id.actor);
-            match ctx.selection.apply(&ctx.pool, &prev, op) {
-                Some(selection) => state.with_selection(action.id.actor, selection),
-                None => {
-                    tracing::warn!("selection op too large to rasterize; ignored");
-                    state
-                }
-            }
-        }
+        } => place_apply(
+            state,
+            ctx,
+            *id,
+            |state| {
+                state
+                    .insert_layer(*id, *carrier, *above, *number)
+                    .set_layer_name(*id, name.as_deref().map(Into::into))
+            },
+            *at,
+            *image,
+        ),
+        ActionKind::Select(op) => select_onto(&state, ctx, actor, op)
+            .unwrap_or_else(|| declined(state, "selection op too large to rasterize")),
         ActionKind::InvertSelection => {
-            let prev = state.selection_of(action.id.actor);
+            let prev = state.selection_of(actor);
             let selection = ctx.selection.invert(&ctx.pool, &prev);
-            state.with_selection(action.id.actor, selection)
+            state.with_selection(actor, selection)
         }
-        // Cut the author's selected paint, restack it under the affine, and carry the
-        // author's mask with it (§16). Gated and keyed exactly as a stroke is; an
-        // unusable or oversized transform is rejected deterministically, so peers and
-        // replays agree.
         ActionKind::Transform {
             layer,
             affine,
             translation: frame,
-        } => transform_apply(
-            state,
+        } => transform_onto(
+            &state,
             ctx,
-            action.id.actor,
+            actor,
             *layer,
-            &stark_model::document::TransformMap::Affine(*affine),
+            &TransformMap::Affine(*affine),
             *frame,
-        ),
-        // The rect-scoped siblings (§16.8, §16.9): identical shape — cut,
-        // restack, carry the mask — differing only in the map handed to
-        // the renderer.
+        )
+        .unwrap_or_else(|| declined(state, TRANSFORM_DECLINED)),
         ActionKind::TransformPerspective {
             layer,
             map,
             translation: frame,
-        } => transform_apply(
-            state,
+        } => transform_onto(
+            &state,
             ctx,
-            action.id.actor,
+            actor,
             *layer,
-            &stark_model::document::TransformMap::Perspective(*map),
+            &TransformMap::Perspective(*map),
             *frame,
-        ),
+        )
+        .unwrap_or_else(|| declined(state, TRANSFORM_DECLINED)),
         ActionKind::TransformWarp {
             layer,
             map,
             translation: frame,
-        } => transform_apply(
-            state,
+        } => transform_onto(
+            &state,
             ctx,
-            action.id.actor,
+            actor,
             *layer,
-            &stark_model::document::TransformMap::Warp(map.clone()),
+            &TransformMap::Warp(map.clone()),
             *frame,
-        ),
-        // Fold two layers into one without moving a pixel of the composite
-        // (§14.11) — the orchestration is `merge_apply`, beside `transform_apply`
-        // and for its reason.
+        )
+        .unwrap_or_else(|| declined(state, TRANSFORM_DECLINED)),
         ActionKind::MergeLayerDown { source, dest } => merge_apply(state, ctx, *source, *dest),
-        // Reify the author's selection as a layer a drag can move for the price
-        // of a property write (§16.12) — the orchestration is `float_apply`.
         ActionKind::FloatSelection {
             layer,
             child,
             translation: frame,
             number,
-        } => float_apply(state, ctx, action.id.actor, *layer, *child, *frame, *number),
-        // Lay a parcel of paint through the region's coverage, gated by the author's
-        // selection — the same gate a stroke passes through, so a fill is clipped by a
-        // selection exactly as a brush is (§18.0.4). Refused on a matte or absent
-        // layer, and deterministically when unbounded or oversized.
+        } => float_apply(state, ctx, actor, *layer, *child, *frame, *number),
         ActionKind::Fill {
             layer,
             op,
             translation: frame,
-        } => paint_edit(
-            state,
-            *layer,
-            action.id.actor,
-            "fill rejected (unbounded region or too many tiles); ignored",
-            // The mask is brought into the layer's frame first, as a stroke's is
-            // (§14.12).
-            |_, target, selection| {
-                let base = target.tiles().expect("paint_edit hands over a paint layer");
-                let gate = ctx.transform.shifted_selection_in(
-                    &ctx.pool,
-                    selection,
-                    *frame,
-                    stark_model::document::fill_rect(op),
-                );
-                // A fill leaves the run in place (§6.13).
-                ctx.fill
-                    .apply(&ctx.pool, base, &gate, op)
-                    .map(|t| (t, None))
-            },
-        ),
+        } => fill_onto(&state, ctx, actor, *layer, op, *frame).unwrap_or_else(|| {
+            declined(
+                state,
+                "fill declined (no paint layer, unbounded region or too many tiles)",
+            )
+        }),
 
         // Everything that needs no renderer, written out rather than swept up by a
         // `_`: which side of the line a new kind belongs on is a question the
@@ -907,38 +875,76 @@ impl Folded {
 }
 
 /// The document as committing `kind` would leave it, **without logging it** — the
-/// preview half of every setter command (§21.6).
+/// preview half of every setter command (§21.6), or `None` where the commit would be
+/// declined, which the preview shows as the committed document.
 ///
-/// A drag previews by folding the very action its release will commit: the same
-/// [`apply`] arm, behind the same [`ActionKind::sanitized`] funnel. One function
-/// rather than a line in each preview arm, because a per-arm sanitize is a habit, and
-/// a preview that skips it shows the artist a document the release would then decline
-/// to store — a `preview == committed` break (§1.3) in the one class of action with
-/// no pixels of its own to give it away.
+/// A drag previews by folding the very action its release will commit: behind the same
+/// [`ActionKind::sanitized`] funnel, through the same function [`apply`]'s arm calls —
+/// [`fill_onto`], [`transform_onto`], or the pure half. A preview that skipped the
+/// funnel would show the artist a document the release then declines to store — a
+/// `preview == committed` break (§1.3).
 ///
-/// **Only the kinds that move state and nothing else.** A preview mints no layer,
-/// folds no stroke and takes no prepared tiles. The two previews that *do* touch the
-/// GPU — the transform and the fill — keep their own entry points, because what they
-/// have to answer first is whether the parcel can be cut at all.
-///
-/// The id is provisional: no kind that reaches here reads the Lamport clock. The
-/// actor is real, because the author's own selection is keyed by it (§17.3) and
-/// `SetSelectionOpacity` previews through here.
+/// **The context is shared, not exclusive**, so a preview cannot take the prepared
+/// tiles, and a kind the pure half does not fold and no arm here names — a stroke, and
+/// everything that mints or removes a layer — has no preview.
 pub(crate) fn preview_of(
     kind: ActionKind,
     state: &DocState,
     actor: ActorId,
-    ctx: &mut ApplyCtx,
-) -> DocState {
-    debug_assert!(
-        !matches!(kind, ActionKind::CommitStroke(_)),
-        "a preview folds a setter; `CommitStroke` would consume the prepared tiles",
-    );
-    let action = Action {
-        id: ActionId { lamport: 0, actor },
-        kind: kind.sanitized(),
-    };
-    apply(&action, state.clone(), ctx)
+    ctx: &ApplyCtx,
+) -> Option<DocState> {
+    let kind = kind.sanitized();
+    match &kind {
+        ActionKind::Fill {
+            layer,
+            op,
+            translation: frame,
+        } => fill_onto(state, ctx, actor, *layer, op, *frame),
+        ActionKind::Transform {
+            layer,
+            affine,
+            translation: frame,
+        } => transform_onto(
+            state,
+            ctx,
+            actor,
+            *layer,
+            &TransformMap::Affine(*affine),
+            *frame,
+        ),
+        ActionKind::TransformPerspective {
+            layer,
+            map,
+            translation: frame,
+        } => transform_onto(
+            state,
+            ctx,
+            actor,
+            *layer,
+            &TransformMap::Perspective(*map),
+            *frame,
+        ),
+        ActionKind::TransformWarp {
+            layer,
+            map,
+            translation: frame,
+        } => transform_onto(
+            state,
+            ctx,
+            actor,
+            *layer,
+            &TransformMap::Warp(map.clone()),
+            *frame,
+        ),
+        // The pure half's partition is exhaustive, so this arm is every other kind.
+        other => match apply_pure(other, state.clone(), actor) {
+            Folded::Done(shown) => Some(shown),
+            Folded::NeedsRenderer(_) => {
+                debug_assert!(false, "{} has no preview", other.label());
+                None
+            }
+        },
+    }
 }
 
 /// Whether applying this to `state` would leave it exactly as it found it — so a

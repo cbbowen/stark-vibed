@@ -11,6 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::Engine;
+use crate::document::apply::{fill_onto, select_onto};
 use crate::document::{ApplyCtx, DocState, PreparedStroke};
 use crate::gpu::stroke::Progress;
 use crate::gpu::stroke::StrokeSpans;
@@ -203,6 +204,10 @@ impl Preview {
         // `out`'s tile map for the layer is still the base's, which decides whether
         // the overlay can be a swap.
         let mut touched: BTreeSet<LayerId> = BTreeSet::new();
+        // Which actor folded last: each folds at most one gesture, so `out` still holds
+        // `base`'s mask for the actor being folded — which is what lets a marquee or a
+        // fill read the mask off `out`, as its commit reads it off the state it folds.
+        let mut last: Option<ActorId> = None;
         for GestureView {
             actor,
             gesture,
@@ -210,41 +215,31 @@ impl Preview {
             frozen_spans: frozen,
         } in gestures
         {
+            debug_assert!(
+                last.is_none_or(|l| l < actor),
+                "gestures fold one per actor, in ascending order",
+            );
+            last = Some(actor);
             match gesture {
+                // A marquee previews as the mask it will commit (§6.8).
                 LiveGesture::Selection(op) => {
-                    // A marquee previews as the mask it will commit — the very same
-                    // call `Select` makes (§6.8), so what is previewed is what lands.
-                    let prev = base.selection_of(actor);
-                    if let Some(selection) = ctx.selection.apply(&ctx.pool, &prev, &op) {
-                        out = out.with_selection(actor, selection);
+                    if let Some(shown) = select_onto(&out, ctx, actor, &op) {
+                        out = shown;
                     }
                 }
-                // A fill previews through the same `FillRenderer::apply` the commit
-                // makes, over the same base, so what is on screen mid-drag is the
-                // result. Redone from the base on each move rather than accumulated,
-                // so dragging a rectangle out does not stack a hundred glazes.
+                // A fill previews as its commit, redone from the base on each move
+                // rather than accumulated, so dragging a rectangle out does not stack
+                // a hundred glazes. Already chained: it reads `out`, not `base`, and
+                // replaces the layer's whole tile map rather than copying tiles across.
                 LiveGesture::Fill {
                     layer,
                     op,
                     translation: frame,
                 } => {
-                    // Already chained: it reads `out`, not `base`, and replaces the
-                    // layer's whole tile map rather than copying tiles across.
-                    let rect = stark_model::document::fill_rect(&op);
-                    claimed.push((layer, rect));
+                    claimed.push((layer, stark_model::document::fill_rect(&op)));
                     touched.insert(layer);
-                    if let Some(tiles) = out.layer(layer).and_then(|l| l.tiles()).cloned() {
-                        // The author's canvas mask, in the layer's frame the op is
-                        // in — the very shift the commit makes (§14.12).
-                        let gate = ctx.transform.shifted_selection_in(
-                            &ctx.pool,
-                            &base.selection_of(actor),
-                            frame,
-                            rect,
-                        );
-                        if let Some(filled) = ctx.fill.apply(&ctx.pool, &tiles, &gate, &op) {
-                            out = out.map_layer(layer, |l| l.with_tiles(filled));
-                        }
+                    if let Some(shown) = fill_onto(&out, ctx, actor, layer, &op, frame) {
+                        out = shown;
                     }
                 }
                 LiveGesture::Stroke(rec) => {
@@ -487,69 +482,6 @@ impl Engine {
         self.preview.presented(self.timeline.current())
     }
 
-    /// The document as a `Transform` commit of `map` would leave it, built through
-    /// the **same renderer** the commit uses, so what is shown is what "Done" will
-    /// produce (§16.6). `None` when the layer cannot be transformed (a matte, absent)
-    /// or the transform is rejected — the preview then shows the committed document,
-    /// matching the commit's refusal.
-    pub(super) fn preview_transform(
-        &self,
-        layer: LayerId,
-        map: &stark_model::document::TransformMap,
-    ) -> Option<DocState> {
-        let doc = self.timeline.current();
-        let target = doc.layer(layer)?;
-        // The frame the commit will stamp — the layer's, read off the same
-        // committed document (`Engine::frame_of`), so preview == committed
-        // holds for the conjugation too.
-        let frame = target.translation;
-        let base = target.tiles()?;
-        let selection = doc.selection_of(self.actor());
-        let (tiles, moved) = self.shared.apply.transform.apply(
-            &self.shared.apply.pool,
-            base,
-            &selection,
-            map,
-            frame,
-        )?;
-        Some(
-            doc.map_layer(layer, |l| l.with_tiles(tiles))
-                .with_selection(self.actor(), moved),
-        )
-    }
-
-    /// The document as a `Fill` commit of `op` would leave it — the gradient fill's
-    /// composing preview (§22.4), built through the **same** `FillRenderer::apply` the
-    /// commit uses, for `preview_transform`'s reason. `None` when the layer cannot
-    /// take paint or the fill is refused (unbounded, over the cap), matching the
-    /// commit.
-    pub(super) fn preview_fill(
-        &self,
-        layer: LayerId,
-        op: &stark_model::document::FillOp,
-    ) -> Option<DocState> {
-        let doc = self.timeline.current();
-        let target = doc.layer(layer)?;
-        // The op arrives on the canvas, as the command that will commit it does;
-        // both convert into the layer's frame here and at `DocCommand::Fill`
-        // through the same pair of calls (§14.12).
-        let frame = target.translation;
-        let base = target.tiles()?.clone();
-        let op = op.translated(-frame.as_vec2());
-        let gate = self.shared.apply.transform.shifted_selection_in(
-            &self.shared.apply.pool,
-            &doc.selection_of(self.actor()),
-            frame,
-            stark_model::document::fill_rect(&op),
-        );
-        let tiles = self
-            .shared
-            .apply
-            .fill
-            .apply(&self.shared.apply.pool, &base, &gate, &op)?;
-        Some(doc.map_layer(layer, |l| l.with_tiles(tiles)))
-    }
-
     /// Note that the fold no longer shows what is there — the call every change to the
     /// *gestures* it folds ends with. A change to the document under them marks it
     /// through [`Preview::invalidate`] instead.
@@ -714,13 +646,12 @@ fn render_span_range(
         return (base.clone(), carry_only(spans.dist()));
     };
     let tiles_base = target.tiles().expect("filtered on tiles");
-    // The **author's** mask, exactly as the commit reads it, which is what lets one
-    // client's live stroke be reproduced on another's screen while their selections
-    // differ (§17.3). Brought into the record's frame by the record's own offset, as
-    // the commit brings it (§14.12).
-    let selection = ctx.transform.shifted_selection_in(
-        &ctx.pool,
-        &base.selection_of(author),
+    // The **author's** mask, through the gate the commit lays through, which is what
+    // lets one client's live stroke be reproduced on another's screen while their
+    // selections differ (§17.3).
+    let selection = ctx.author_gate(
+        base,
+        author,
         rec.translation,
         stark_model::document::stroke_rect(rec),
     );

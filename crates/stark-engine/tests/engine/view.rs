@@ -412,8 +412,8 @@ preview_table! { seed:
 /// *shows*; this walks the table, sending each variant carrying its sample and then
 /// carrying nothing, and reads the committed document whole after both.
 ///
-/// The renders are what keep the walk from being vacuous: `preview_transform` and
-/// `preview_fill` answer `None` for a layer they cannot work on, and a sample the
+/// The renders are what keep the walk from being vacuous: a transform or a fill
+/// previews as nothing on a layer it cannot work on, and a sample the
 /// engine declined leaves the document alone trivially — so every sample but the
 /// selection's strength has to move a pixel, and every drop has to put it back. The
 /// committed export at either end is for the one leak no reading above sees: a
