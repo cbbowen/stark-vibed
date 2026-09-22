@@ -200,10 +200,11 @@ pub fn flatten(knots: &[ControlPoint], tol: FlattenTolerance) -> Vec<Intermediat
 /// [`flatten`] restricted to `spans`, with the arc-length accumulator starting at
 /// `dist0`.
 ///
-/// The polyline starts at the first span's own start knot, so adjacent ranges share
-/// exactly one point and their segments tile the stroke with no gap and no overlap —
-/// what an incremental renderer wants, with
-/// [`PathFitter::frozen_spans`](super::PathFitter::frozen_spans).
+/// The polyline starts with the sample a flatten of the whole stroke passes there, bit
+/// for bit, so adjacent ranges share exactly one sample and their segments tile the
+/// stroke with no gap and no overlap — what an incremental renderer wants, with
+/// [`PathFitter::frozen_spans`](super::PathFitter::frozen_spans), and the same pixels a
+/// replay flattening the whole stroke lays.
 pub(crate) fn flatten_spans(
     knots: &[ControlPoint],
     spans: Range<usize>,
@@ -282,8 +283,16 @@ pub fn flatten_spans_from(
     };
 
     let mut out = Vec::with_capacity((spans.end - first_span) * 4);
-    let first = span(ix, knots, first_span);
-    let mut start = first.eval(u0);
+    let mut start = if from < spans.start as f32 {
+        // A flatten from further back arrives here as span `k - 1`'s end, and measures
+        // the first edge after it (`emit`) from that span's derivative. This span's own
+        // start is the same point and, in exact arithmetic, the same tangent — rounded
+        // differently, which would part a cached head and a live tail from a replay by
+        // an ulp of `dist` that every later sample carries.
+        span(ix, knots, spans.start - 1).eval(1.0)
+    } else {
+        span(ix, knots, first_span).eval(u0)
+    };
     start.dist = dist0;
     out.push(start);
     for i in first_span..spans.end {
@@ -868,30 +877,50 @@ mod tests {
 
     #[test]
     fn flatten_spans_tile_the_whole_path() {
-        let knots = [
+        let gentle = vec![
             knot(0.0, 0.0),
             knot(20.0, 30.0),
             knot(60.0, 30.0),
             knot(90.0, 0.0),
             knot(120.0, -40.0),
         ];
-        let all = span_count(knots.len());
-        let whole = flatten(&knots, FLATTEN_TOLERANCE);
-        // Split anywhere: what an incremental renderer does is exactly this, with the
-        // cut at `PathFitter::frozen_spans`.
-        for cut in 1..all {
-            let head = flatten_spans(&knots, 0..cut, 0.0, FLATTEN_TOLERANCE);
-            let tail = flatten_spans(
-                &knots,
-                cut..all,
-                head.last().unwrap().dist,
-                FLATTEN_TOLERANCE,
-            );
-            // The ranges share exactly one point, so the pieces concatenate into the
-            // whole with no gap and no duplicated segment.
-            let joined: Vec<IntermediateSample> =
-                head.iter().chain(tail[1..].iter()).copied().collect();
-            assert_eq!(joined, whole, "cut at span {cut}");
+        // A tail starting at span 2 of these, its first edge measured from its own
+        // span's start derivative rather than the previous span's end, came out an ulp
+        // of `dist` long — `a_range_cut_anywhere_tiles_the_whole`'s counterexample.
+        let rounded = [
+            (228.84665, 81.236916),
+            (-107.13048, 186.27963),
+            (259.62787, 289.8578),
+            (35.154945, 141.37578),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (x, y))| ControlPoint {
+            pressure: 0.0,
+            time: i as f32 * 0.1,
+            ..knot(x, y)
+        })
+        .collect();
+        for knots in [gentle, rounded] {
+            let all = span_count(knots.len());
+            let whole = flatten(&knots, FLATTEN_TOLERANCE);
+            // Split anywhere: what an incremental renderer does is exactly this, with
+            // the cut at `PathFitter::frozen_spans`.
+            for cut in 1..all {
+                let head = flatten_spans(&knots, 0..cut, 0.0, FLATTEN_TOLERANCE);
+                let tail = flatten_spans(
+                    &knots,
+                    cut..all,
+                    head.last().unwrap().dist,
+                    FLATTEN_TOLERANCE,
+                );
+                // The ranges share exactly one sample, so the pieces concatenate into
+                // the whole with no gap and no duplicated segment.
+                assert_eq!(tail[0], *head.last().unwrap(), "cut at span {cut}");
+                let joined: Vec<IntermediateSample> =
+                    head.iter().chain(tail[1..].iter()).copied().collect();
+                assert_eq!(joined, whole, "cut at span {cut}");
+            }
         }
     }
 
@@ -937,13 +966,8 @@ mod tests {
 
         /// `flatten_spans_tile_the_whole_path` over any polygon, budget and marker: a
         /// range cut in two at any span flattens to the whole range, sample for sample
-        /// — what the incremental renderer's cached head and live tail rest on (§6.2).
-        ///
-        /// Exact in every field but `dist`, which may part by an ulp at the cut and
-        /// carry it on: the first edge after a cut is measured (`emit`) from the new
-        /// span's own derivative, where the whole range measures it from the previous
-        /// span's — one tangent in exact arithmetic, two in rounding. Four knots at the
-        /// shipped budget, cut at span 2 of 5, reach it: 252.21733 against 252.21732.
+        /// and bit for bit, `dist` included — what the incremental renderer's cached
+        /// head and live tail rest on, and what makes them a replay's pixels (§6.2).
         #[test]
         fn a_range_cut_anywhere_tiles_the_whole(
             knots in polygon(),
@@ -962,13 +986,7 @@ mod tests {
                     head.iter().chain(&tail[skip..]).copied().collect();
                 prop_assert_eq!(joined.len(), whole.len(), "cut at span {} of {}", cut, all);
                 for (i, (j, w)) in joined.iter().zip(&whole).enumerate() {
-                    let same = IntermediateSample { dist: w.dist, ..*j };
-                    prop_assert_eq!(same, *w, "cut at span {} of {}, sample {}", cut, all, i);
-                    prop_assert!(
-                        (j.dist - w.dist).abs() <= 1e-6 * w.dist.max(1.0),
-                        "cut at span {} of {}, sample {}: dist {} against {}",
-                        cut, all, i, j.dist, w.dist
-                    );
+                    prop_assert_eq!(j, w, "cut at span {} of {}, sample {}", cut, all, i);
                 }
             }
         }
