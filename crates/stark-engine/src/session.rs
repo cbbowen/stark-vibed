@@ -15,21 +15,21 @@ mod hover;
 mod shape;
 
 pub use shape::Outline;
-pub(crate) use shape::ShapeResult;
 
 use crate::assist::{AssistShape, PenProfile};
 use crate::command::InputSample;
 use crate::command::Tool;
-use crate::path::{InputTolerance, PathFitter};
-use crate::peer::{GestureView, Identity, LiveGesture};
-use crate::presence::{GestureSource, PresenceTx};
+use crate::gesture::{GestureView, LiveGesture};
+use crate::path::{InputTolerance, PathFitter, frozen_spans_for};
+use crate::peer::Identity;
+use crate::presence::PresenceTx;
 use crate::tow::{Tow, TowString};
 use crate::view::ViewTransform;
 use stark_model::document::Scaffold;
 use stark_model::document::{ActorId, BrushParams, GuideId, LayerId, ShapeAction, StrokeRecord};
 use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
-use stark_model::peer::{PeerFrame, StrokeHead};
+use stark_model::peer::PeerFrame;
 
 use hover::HoverStroke;
 use shape::ShapeDrag;
@@ -404,14 +404,12 @@ impl Session {
     }
 
     /// The publishable half of this session, if anything a peer would care about has
-    /// changed since the last call — otherwise `None` (§17.5). A **latch, not a
-    /// queue**: the path delta is computed here, at drain time, against what has
-    /// actually been sent, which is what lets a 240 Hz pen coalesce losslessly
-    /// into a 30 Hz tick.
+    /// changed since the last call — otherwise `None`. A latch rather than a queue,
+    /// and the delta is computed at drain time; see `PresenceTx::publish` (§17.5).
     pub fn publish(&mut self, now: f64) -> Option<PeerFrame> {
-        let source = self.gesture_source();
+        let live = self.live();
         self.presence
-            .publish(now, self.active_layer, self.gesture_ordinal, source)
+            .publish(now, self.active_layer, self.gesture_ordinal, live)
     }
 
     /// Whether [`publish`](Self::publish) could produce a frame — conservative, so
@@ -429,53 +427,30 @@ impl Session {
         self.presence.publish_leaving(self.active_layer)
     }
 
-    /// The gesture in flight, in the form the encoder reads it — a window onto the
-    /// live fitter, not a copy of it. `None` when nothing is being dragged out (which
-    /// includes a selection gesture that so far encloses nothing, and a hand that is
-    /// only hovering: a hypothesis never publishes).
+    // --- the gesture in flight (§6.2, §6.8) -------------------------------------
+
+    /// **What this client is dragging out, and how much of it is settled** — the one
+    /// thing the session says about a gesture (§17.4). The wire reads it
+    /// ([`PresenceTx::publish`]), the preview fold reads it
+    /// ([`live_view`](Self::live_view)), and the release commits it
+    /// ([`end_gesture`](Self::end_gesture)), so none of the three can disagree about
+    /// what is being drawn.
     ///
-    /// Only frozen control points are reported as settled; the provisional tail is
-    /// resent every frame because it can still move (§6.2) — the renderer's
-    /// `FrozenHead` partition, spent on the wire instead of on the GPU.
-    fn gesture_source(&self) -> Option<GestureSource> {
+    /// The count is of **frozen control points** (§6.2): leading points the fitter
+    /// has stopped revising, which is what lets the wire send a delta and the fold
+    /// keep a rendered head. Zero for everything else — a region's closing edge
+    /// follows the cursor, so no part of it has settled.
+    ///
+    /// `None` when nothing is being dragged out: an idle hand, a shape gesture that
+    /// so far encloses nothing, and a hand that is only hovering, since a hypothesis
+    /// commits nothing and publishes nothing (§18.1.10).
+    pub(crate) fn live(&self) -> Option<(LiveGesture, usize)> {
         match &self.hand {
-            Hand::Stroking(b) => {
-                let (path, start) = b.fitted();
-                Some(GestureSource::Stroke {
-                    head: Box::new(StrokeHead {
-                        layer: b.layer,
-                        brush: b.brush,
-                        seed: b.seed,
-                        translation: b.translation,
-                    }),
-                    // In the layer's frame, as [`to_record`] converts it — the wire
-                    // carries what a receiver's fold renders, so the two convert in
-                    // the same place or not at all.
-                    path: path_in_frame(path, b.translation),
-                    frozen: b.frozen_points(),
-                    start,
-                })
-            }
-            Hand::Dragging(_) => self.preview_shape().map(|r| match r {
-                ShapeResult::Select(op) => GestureSource::Selection(op),
-                // The wire's fill rides `PeerFrame::active_layer` for its target
-                // (§17.5); the pinned layer travels only in-process, so a peer's
-                // preview can drift from the commit across the retarget race the
-                // pin closes locally — a preview, not the document.
-                ShapeResult::Fill {
-                    op,
-                    translation: frame,
-                    ..
-                } => GestureSource::Fill {
-                    op,
-                    translation: frame,
-                },
-            }),
+            Hand::Stroking(b) => Some((LiveGesture::Stroke(b.to_record()), b.frozen_points())),
+            Hand::Dragging(d) => Some((d.to_gesture()?, 0)),
             Hand::Idle | Hand::Hovering(_) => None,
         }
     }
-
-    // --- the gesture in flight (§6.2, §6.8) -------------------------------------
 
     pub fn is_stroking(&self) -> bool {
         self.stroke().is_some()
@@ -616,47 +591,41 @@ impl Session {
         self.stroke().and_then(StrokeBuilder::assisted)
     }
 
-    /// This client's gesture in flight as the preview fold wants it, authored by
-    /// `actor` — the same [`GestureView`] [`Peer::gesture_view`] produces for everyone
-    /// else, so the fold treats them alike without either being stored in the other's
-    /// form.
+    /// [`Session::live`](Self::live) as the preview fold wants it, authored by
+    /// `actor` — the same [`GestureView`] `Peer::gesture_view` produces for everyone
+    /// else, so the fold treats them alike without either being stored in the
+    /// other's form.
     ///
     /// A hand that is only *hovering* offers the §18.1.10 mark instead: the stroke its
     /// recent reports would have committed, in the same shape, so the fold cannot tell
     /// it from a real gesture and `hover == committed` is inherited rather than
     /// maintained. One value out, because an actor folds at most one gesture and a
-    /// fact outranks a hypothesis — which [`Hand`] now says rather than a `match` at
+    /// fact outranks a hypothesis — which `Hand` now says rather than a `match` at
     /// the fold.
     ///
     /// `seed` and `translation` are the hover's alone: a probe has no press to pin
     /// them at.
-    ///
-    /// [`Peer::gesture_view`]: crate::peer::Peer::gesture_view
     pub fn live_view(
         &self,
         actor: ActorId,
         seed: u64,
         translation: stark_model::geom::IVec2,
     ) -> Option<GestureView> {
-        let (gesture, frozen_spans) = match &self.hand {
-            Hand::Stroking(b) => (LiveGesture::Stroke(b.to_record()), b.frozen_spans()),
-            // A marquee has no settled prefix to retire: its closing edge follows the
-            // cursor, so every part of it can still move.
-            Hand::Dragging(_) => (self.preview_shape()?.into(), 0),
-            // A selection tool drags a shape rather than paint, so it folds no mark —
-            // the same refusal `hover_to` makes at the door (§18.1.10). An unpaintable
-            // active layer needs no test: the stroke renderer refuses it as a commit
-            // would.
-            Hand::Hovering(h) if !self.tool.is_selection() => {
-                (LiveGesture::Stroke(h.record(self, seed, translation)), 0)
-            }
-            Hand::Hovering(_) | Hand::Idle => return None,
+        let (gesture, frozen) = match self.live() {
+            Some(live) => live,
+            None => (LiveGesture::Stroke(self.hover_probe(seed, translation)?), 0),
         };
         Some(GestureView {
             actor,
+            // The same count the wire carries, converted to spans the one way a
+            // receiver converts it (`GestureRx::frozen_spans`) — so what this client
+            // retires from a repaint and what a peer retires are one number (§17.6).
+            frozen_spans: match &gesture {
+                LiveGesture::Stroke(rec) => frozen_spans_for(frozen, rec.path.len()),
+                LiveGesture::Selection(_) | LiveGesture::Fill { .. } => 0,
+            },
             gesture,
             ordinal: self.gesture_ordinal,
-            frozen_spans,
         })
     }
 
@@ -664,16 +633,6 @@ impl Session {
     /// preview (§6.2). `None` if no stroke is active.
     pub fn preview_record(&self) -> Option<StrokeRecord> {
         self.stroke().map(StrokeBuilder::to_record)
-    }
-
-    /// How many spans of the in-flight stroke are settled — the prefix a live
-    /// preview could render once instead of repainting per pointer move
-    /// (see [`PathFitter::frozen_spans`]). 0 when no stroke is active.
-    ///
-    /// Also 0 once the stroke has snapped (§6.9): steering a shape moves every control
-    /// point, so there is no settled prefix to retire.
-    pub fn frozen_spans(&self) -> usize {
-        self.stroke().map_or(0, StrokeBuilder::frozen_spans)
     }
 
     /// Finish the gesture in flight, returning what to commit — and nothing at all if
@@ -700,16 +659,16 @@ impl Session {
     /// that enclosed nothing (a stray click) leaves the tool armed either way, so a
     /// mis-click doesn't disarm it.
     pub fn end_gesture(&mut self) -> Option<LiveGesture> {
-        // Read through the same call the preview makes, and before the hand is
-        // emptied: preview == committed (§1.3). `None` for every other hand.
-        let shape = self.preview_shape();
         match std::mem::take(&mut self.hand) {
             Hand::Stroking(b) => b.finish().map(LiveGesture::Stroke),
-            Hand::Dragging(_) => {
-                if matches!(shape, Some(ShapeResult::Select(_))) {
+            Hand::Dragging(d) => {
+                // Through the very call the preview and the wire read (`Session::live`),
+                // so preview == committed (§1.3).
+                let committed = d.to_gesture();
+                if matches!(committed, Some(LiveGesture::Selection(_))) {
                     self.tool = Tool::Brush;
                 }
-                shape.map(Into::into)
+                committed
             }
             // A hover is not a gesture: it commits nothing, so a release with nothing
             // in flight must leave the mark where it was.
@@ -844,16 +803,6 @@ impl StrokeBuilder {
         match &self.trace {
             Trace::Snapped(_) => 0,
             Trace::Fitting { fitter, .. } => fitter.frozen_points(),
-        }
-    }
-
-    /// How many leading *spans* of [`fitted`](Self::fitted) are settled — the same
-    /// partition [`frozen_points`](Self::frozen_points) reports, in the unit an
-    /// incremental repaint wants.
-    fn frozen_spans(&self) -> usize {
-        match &self.trace {
-            Trace::Snapped(_) => 0,
-            Trace::Fitting { fitter, .. } => fitter.frozen_spans(),
         }
     }
 

@@ -23,8 +23,8 @@ use stark_engine::path::{
     DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, IntermediateSample, flatten, flatten_spans_from,
     span_count,
 };
-use stark_engine::testing::{LiveGesture, Outline, Session};
-use stark_model::document::{LayerId, PerspectiveGuide, Scaffold, StrokeRecord};
+use stark_engine::testing::{GestureView, LiveGesture, Outline, Session};
+use stark_model::document::{ActorId, LayerId, PerspectiveGuide, Scaffold, StrokeRecord};
 use stark_model::geom::{Ellipse, Vec2};
 
 fn session() -> Session {
@@ -43,6 +43,14 @@ fn session() -> Session {
 /// on the screen without a document.
 fn nothing() -> Scaffold {
     Scaffold::default()
+}
+
+/// The gesture in flight as the preview fold takes it — where a peer's frozen prefix
+/// and this client's are the one number ([`GestureView::frozen_spans`]).
+fn folded(session: &Session) -> GestureView {
+    session
+        .live_view(ActorId::SOLO, 0, stark_model::geom::IVec2::ZERO)
+        .expect("a gesture in flight")
 }
 
 /// The record a release commits. A brush gesture can end on nothing else, which is
@@ -127,7 +135,7 @@ fn holding_snaps_a_rough_drag_to_a_line() {
          peer splices a delta onto a path that no longer exists (§17.5)"
     );
     assert_eq!(
-        session.frozen_spans(),
+        folded(&session).frozen_spans,
         0,
         "steering a shape moves every control point, so nothing may be retired"
     );

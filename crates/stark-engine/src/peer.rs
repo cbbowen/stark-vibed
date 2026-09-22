@@ -8,10 +8,11 @@
 
 use std::collections::BTreeMap;
 
-use stark_model::document::{ActorId, FillOp, LayerId, SelectionOp, StrokeRecord};
+use stark_model::document::{ActorId, LayerId, StrokeRecord};
 use stark_model::geom::Vec2;
 use stark_model::peer::{GESTURE_TIMEOUT, PEER_TIMEOUT, PeerFrame};
 
+use crate::gesture::{GestureView, LiveGesture};
 use crate::presence::GestureRx;
 
 /// Who this client is on the wire.
@@ -45,47 +46,6 @@ impl From<ActorId> for Identity {
     fn from(actor: ActorId) -> Self {
         Self { actor, boot: 0 }
     }
-}
-
-/// What a peer is doing right now — the preview of the action it will become.
-///
-/// [`Stroke`](Self::Stroke) carries a [`StrokeRecord`] — the very type the commit will
-/// carry, rendered through the same entry point, so there is no second representation
-/// for live and committed pixels to disagree over.
-#[derive(Clone, Debug)]
-pub enum LiveGesture {
-    Stroke(StrokeRecord),
-    Selection(SelectionOp),
-    /// A region being dragged out to fill (§18.0.4). Carries its
-    /// layer, because unlike a [`StrokeRecord`] a [`FillOp`] is the *region*, not
-    /// the whole edit — the layer is the author's active one at the time.
-    Fill {
-        layer: LayerId,
-        op: FillOp,
-        /// The layer's translation the op is in (§14.12) — a record carries its own,
-        /// and a fill op is not a record.
-        translation: stark_model::geom::IVec2,
-    },
-}
-
-/// One gesture in flight, from whoever is making it — the shape the preview fold
-/// consumes, and the only place the local client and a peer are interchangeable.
-///
-/// They are deliberately *not* stored alike: the local gesture is derived from the
-/// session's live [`PathFitter`](crate::path::PathFitter), the single source of truth
-/// `preview == committed` rests on, while a peer's is reassembled from frames. Copying
-/// the local one into the roster would make two sources of truth for exactly that, so
-/// the two meet here, at the point of use.
-#[derive(Clone, Debug)]
-pub struct GestureView {
-    pub actor: ActorId,
-    pub gesture: LiveGesture,
-    /// Per-actor ordinal: what tells a cached render of *this* gesture apart from a
-    /// render of the one before it.
-    pub ordinal: u64,
-    /// How many leading spans are settled, so an incremental repaint can retire them
-    /// (§6.2, §17.6).
-    pub frozen_spans: usize,
 }
 
 /// A participant, as everyone else sees them.
@@ -133,7 +93,7 @@ impl Peer {
     }
 
     /// This peer's gesture as the preview fold wants it — the same shape
-    /// [`Session::gesture_view`](crate::session::Session::gesture_view) produces for
+    /// [`Session::live_view`](crate::session::Session::live_view) produces for
     /// the local client.
     pub(crate) fn gesture_view(&self) -> Option<GestureView> {
         Some(GestureView {
@@ -442,7 +402,7 @@ fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
 mod tests {
     use super::*;
     use stark_model::document::BrushParams;
-    use stark_model::document::{SelectionMode, SelectionShape};
+    use stark_model::document::{SelectionMode, SelectionOp, SelectionShape};
     use stark_model::path::ControlPoint;
     use stark_model::peer::{GestureFrame, StrokeHead};
 

@@ -3,7 +3,7 @@
 
 use super::{Hand, Session};
 use crate::command::Tool;
-use crate::peer::LiveGesture;
+use crate::gesture::LiveGesture;
 use stark_model::Srgb;
 use stark_model::document::{
     FillOp, LayerId, SelectionMode, SelectionOp, SelectionShape, ShapeAction,
@@ -22,12 +22,12 @@ const LASSO_MIN_STEP: f32 = 2.0;
 ///
 /// A [`Tool`] in its place could be [`Tool::Brush`], which drags no region at all, so
 /// the drag carried an arm no press could reach and a vertex list two thirds of it
-/// never filled. What a tool answers is now [`Tool::outline`], asked once at the press.
+/// never filled. What a tool answers is now `Tool::outline`, asked once at the press.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outline {
     Rect,
     Ellipse,
-    /// The decimated outline so far, oldest first ([`LASSO_MIN_STEP`]).
+    /// The decimated outline so far, oldest first (`LASSO_MIN_STEP` apart).
     Lasso(Vec<Vec2>),
 }
 
@@ -44,46 +44,6 @@ impl Tool {
             Tool::SelectEllipse => Some(Outline::Ellipse),
             // Seeded by the press, through `push` like every later vertex.
             Tool::SelectLasso => Some(Outline::Lasso(Vec::new())),
-        }
-    }
-}
-
-/// What a finished shape gesture resolves to (§6.8,
-/// §18.0.4): an edit to the selection, or a fill.
-///
-/// One gesture with one preview: the [`ShapeAction`] chosen when the drag started
-/// decides which of the two the release commits, so nothing downstream has to ask
-/// what tool was in hand.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum ShapeResult {
-    Select(SelectionOp),
-    Fill {
-        /// The layer the fill lands on — the active layer **at the press**, pinned
-        /// beside the frame it decides, so a retarget landing mid-drag (a peer
-        /// removing the layer under the hand) cannot land an op converted into one
-        /// layer's frame on another layer.
-        layer: LayerId,
-        /// In that layer's frame (§14.12) — converted where the gesture becomes
-        /// an op, so the preview, the wire and the commit take one value.
-        op: FillOp,
-        /// The translation of the layer, pinned at the press.
-        translation: stark_model::geom::IVec2,
-    },
-}
-
-impl From<ShapeResult> for LiveGesture {
-    fn from(result: ShapeResult) -> Self {
-        match result {
-            ShapeResult::Select(op) => LiveGesture::Selection(op),
-            ShapeResult::Fill {
-                layer,
-                op,
-                translation,
-            } => LiveGesture::Fill {
-                layer,
-                op,
-                translation,
-            },
         }
     }
 }
@@ -114,9 +74,9 @@ fn against_selection(action: ShapeAction, has_selection: bool) -> ShapeAction {
     }
 }
 
-/// The shape gesture currently being dragged out (§6.8). Like a stroke it
-/// is ephemeral: only the [`ShapeResult`] it resolves to on release is committed,
-/// and the shape is derived from the drag on demand so a live preview and the
+/// The shape gesture currently being dragged out (§6.8). Like a stroke it is
+/// ephemeral: only the [`LiveGesture`] it resolves to on release is committed, and
+/// that is derived from the drag on demand, so a live preview, the wire and the
 /// committed op come from exactly the same code.
 pub(super) struct ShapeDrag {
     outline: Outline,
@@ -144,9 +104,10 @@ pub(super) struct ShapeDrag {
     start: Vec2,
     /// The newest sample, so the marquees can span `start`..`current`.
     current: Vec2,
-    /// The active layer at the press — a **fill**'s target, pinned with the
-    /// frame below (see [`ShapeResult::Fill`]). A selecting gesture never reads
-    /// either.
+    /// The active layer at the press — a **fill**'s target, pinned beside the frame
+    /// below, so a retarget landing mid-drag (a peer removing the layer under the
+    /// hand) cannot land an op converted into one layer's frame on another layer. A
+    /// selecting gesture never reads either.
     layer: LayerId,
     /// The active layer's translation at the press (§14.12) — what a **fill** result is
     /// converted into. A selecting gesture never reads it: the mask lives on the
@@ -193,18 +154,22 @@ impl ShapeDrag {
         }
     }
 
-    /// The action this drag currently stands for — what a release right now would
-    /// commit, and equally what the preview fold draws.
-    fn to_result(&self) -> Option<ShapeResult> {
+    /// The gesture this drag currently stands for — what a release right now would
+    /// commit, what the preview fold draws, and what the wire carries (§18.0.4).
+    ///
+    /// One gesture with one preview: the [`ShapeAction`] chosen when the drag started
+    /// decides which of the two it is, so nothing downstream has to ask what tool was
+    /// in hand.
+    pub(super) fn to_gesture(&self) -> Option<LiveGesture> {
         let shape = self.to_shape()?;
         Some(match self.action {
             // At full strength: the mask's own opacity is a separate, retroactive
             // number (`ActionKind::SetSelectionOpacity`, §6.8), so a shape says
             // *where* and never how strongly.
             ShapeAction::Select(mode) => {
-                ShapeResult::Select(SelectionOp::new(mode, shape, self.feather))
+                LiveGesture::Selection(SelectionOp::new(mode, shape, self.feather))
             }
-            ShapeAction::Fill => ShapeResult::Fill {
+            ShapeAction::Fill => LiveGesture::Fill {
                 layer: self.layer,
                 // The shape is dragged on the canvas and the paint lands in the
                 // layer's frame — one conversion, here, where the gesture becomes
@@ -230,7 +195,7 @@ impl Session {
     /// Begin a shape gesture with the session's current action, feather and brush.
     /// Whatever the hand was doing is abandoned.
     ///
-    /// `outline` is what the tool drags ([`Tool::outline`]), asked at the engine's
+    /// `outline` is what the tool drags (`Tool::outline`), asked at the engine's
     /// press dispatch because that is where the two kinds of gesture part. `tool` is
     /// carried alongside it because the hand still has to *say* which tool it holds —
     /// that is a view setting, not a fact about the drag.
@@ -284,21 +249,22 @@ impl Session {
         drag.push(pos);
         self.hand = Hand::Dragging(drag);
     }
-
-    /// What the in-flight gesture currently stands for, for live preview — the very
-    /// same call [`Self::end_gesture`] commits, so preview == committed.
-    pub(crate) fn preview_shape(&self) -> Option<ShapeResult> {
-        match &self.hand {
-            Hand::Dragging(d) => d.to_result(),
-            Hand::Idle | Hand::Hovering(_) | Hand::Stroking(_) => None,
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::session::fixtures::{press, session};
+
+    /// A pointer report at `p`, through the one door a gesture takes them at.
+    fn to(s: &mut Session, p: Vec2) {
+        s.gesture_to(crate::command::InputSample::at(p));
+    }
+
+    /// What the drag in flight currently stands for.
+    fn drawn(s: &Session) -> Option<LiveGesture> {
+        s.live().map(|(gesture, _)| gesture)
+    }
 
     /// The mode a marquee dragged across `(0,0)..(10,10)` resolves to.
     fn dragged(action: ShapeAction, has_selection: bool) -> SelectionMode {
@@ -310,10 +276,10 @@ mod tests {
             has_selection,
             stark_model::geom::IVec2::ZERO,
         );
-        s.gesture_to(crate::command::InputSample::at(Vec2::splat(10.0)));
-        match s.preview_shape().expect("the marquee encloses something") {
-            ShapeResult::Select(op) => op.mode(),
-            ShapeResult::Fill { .. } => panic!("a selecting action does not fill"),
+        to(&mut s, Vec2::splat(10.0));
+        match drawn(&s).expect("the marquee encloses something") {
+            LiveGesture::Selection(op) => op.mode(),
+            other => panic!("a selecting action does not draw {other:?}"),
         }
     }
 
@@ -346,8 +312,8 @@ mod tests {
         }
         let mut s = session(ShapeAction::Fill);
         press(&mut s, Tool::SelectRect, Vec2::ZERO);
-        s.gesture_to(crate::command::InputSample::at(Vec2::splat(10.0)));
-        assert!(matches!(s.preview_shape(), Some(ShapeResult::Fill { .. })));
+        to(&mut s, Vec2::splat(10.0));
+        assert!(matches!(drawn(&s), Some(LiveGesture::Fill { .. })));
     }
 
     /// A non-finite press encloses nothing rather than a region of NaN, so the release
@@ -372,8 +338,8 @@ mod tests {
 
             let mut s = session(ShapeAction::Select(SelectionMode::Replace));
             press(&mut s, Tool::SelectRect, pos);
-            s.gesture_to(crate::command::InputSample::at(Vec2::splat(10.0)));
-            assert_eq!(s.preview_shape(), None, "{pos} drew a region");
+            to(&mut s, Vec2::splat(10.0));
+            assert_eq!(drawn(&s), None, "{pos} drew a region");
             assert!(s.end_gesture().is_none(), "{pos} dragged into an op");
         }
     }
@@ -385,16 +351,15 @@ mod tests {
     #[test]
     fn a_non_finite_move_does_not_reach_the_shape_drag() {
         let junk = [Vec2::splat(f32::NAN), Vec2::new(0.0, f32::INFINITY)];
-        let to = |s: &mut Session, p: Vec2| s.gesture_to(crate::command::InputSample::at(p));
 
         let mut s = session(ShapeAction::Select(SelectionMode::Replace));
         press(&mut s, Tool::SelectRect, Vec2::ZERO);
         to(&mut s, Vec2::splat(10.0));
-        let drawn = s.preview_shape().expect("the marquee encloses a region");
+        let held = drawn(&s).expect("the marquee encloses a region");
         for p in junk {
             to(&mut s, p);
         }
-        assert_eq!(s.preview_shape(), Some(drawn));
+        assert_eq!(drawn(&s), Some(held));
 
         let mut s = session(ShapeAction::Select(SelectionMode::Replace));
         press(&mut s, Tool::SelectLasso, Vec2::ZERO);
@@ -405,10 +370,10 @@ mod tests {
         ] {
             to(&mut s, p);
         }
-        let drawn = s.preview_shape().expect("the loop encloses a region");
+        let held = drawn(&s).expect("the loop encloses a region");
         for p in junk {
             to(&mut s, p);
         }
-        assert_eq!(s.preview_shape(), Some(drawn));
+        assert_eq!(drawn(&s), Some(held));
     }
 }

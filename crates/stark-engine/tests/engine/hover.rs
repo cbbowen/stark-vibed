@@ -617,7 +617,7 @@ fn the_run_up_is_evidence_never_paint() {
 /// A click at the end of a watched approach is still a click: its curve holds
 /// the whole run-up, its marker sits at the very end of it, so it can deposit
 /// nothing — and a release that cannot deposit commits nothing (§6.2,
-/// `Session::end_stroke`).
+/// `Session::end_gesture`).
 #[test]
 fn a_click_after_a_watched_approach_commits_nothing() {
     let Some(mut engine) = engine_or_skip() else {

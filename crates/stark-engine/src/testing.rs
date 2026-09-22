@@ -24,12 +24,12 @@ pub use crate::document::guides::Guide;
 pub use crate::document::layer::{CompositeParams, Layer, LayerContent, PropValue};
 pub use crate::document::state::DocState;
 pub use crate::document::timeline::TimelineStats;
+pub use crate::gesture::{GestureView, LiveGesture};
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::gpu::tile::TileChannels;
 /// The recycling tile pool (§6.1), for the one test that drives it directly
 /// (`tests/engine/tile_pool.rs`), and the tag `acquire_tex` demands of a caller.
 pub use crate::gpu::tile::{AllocSource, TilePool};
-pub use crate::peer::{GestureView, LiveGesture};
 pub use crate::session::{Outline, Session};
 
 /// An engine on a headless device, in the default color space.

@@ -108,8 +108,8 @@ fn fit(c: &mut Criterion) {
             b.iter(|| path::fit(black_box(pts)));
         });
 
-        // The live form. `Session::stroke_to` is `fitter.push`, but the fold
-        // (`flush_live` → `gesture_view` → `preview_record`) and the presence frame
+        // The live form. `Session::gesture_to` is `fitter.push`, but the fold
+        // (`flush_live` → `live_view` → `preview_record`) and the presence frame
         // (`publish` → `gesture_source`) both reach `StrokeBuilder::fitted` →
         // `PathFitter::as_finished` — a whole free-window *solve*, not the cached
         // `path()`. That third solve, over the two `push` already pays per report, is

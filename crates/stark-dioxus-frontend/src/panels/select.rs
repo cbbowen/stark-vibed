@@ -23,7 +23,7 @@ use stark_ui::selection::Dial;
 /// they enclose, and the feather applied to its edge.
 ///
 /// The tool chips **arm** a tool rather than a mode: drawing a selection disarms it
-/// (the engine's `Session::end_shape`), and no chip lit is the
+/// (the engine's `Session::end_gesture`), and no chip lit is the
 /// brush. Each chip is a registry command (`crate::commands`).
 ///
 /// The action row answers *what does this shape do?* Four combine modes land coverage on

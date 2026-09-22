@@ -22,42 +22,13 @@
 //! The wire *types* stay in [`crate::peer`]. What lives here is the state that
 //! interprets them.
 
+use crate::gesture::LiveGesture;
 use crate::path::frozen_spans_for;
-use crate::peer::{Identity, LiveGesture, default_name};
-use stark_model::document::{FillOp, LayerId, SelectionOp, StrokeRecord};
+use crate::peer::{Identity, default_name};
+use stark_model::document::{LayerId, StrokeRecord};
 use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
 use stark_model::peer::{GESTURE_RESYNC, GestureFrame, HEARTBEAT, PeerFrame, StrokeHead};
-
-/// The gesture a sender has in flight, in the form [`GestureTx::encode`] reads it.
-///
-/// A narrow window onto what the caller already holds — for
-/// [`Session`](crate::session::Session) the live [`PathFitter`](crate::path::PathFitter),
-/// which stays the single source of truth for the local stroke — never a second copy
-/// of it.
-pub(crate) enum GestureSource {
-    Stroke {
-        /// Boxed: a `StrokeHead` is three times the next variant, and `publish` builds
-        /// an `Option<GestureSource>` every frame whether or not a stroke is in flight.
-        head: Box<StrokeHead>,
-        path: Vec<ControlPoint>,
-        /// How many leading control points are final (§6.2).
-        frozen: usize,
-        /// Where on `path`'s curve the stroke begins
-        /// ([`StrokeRecord::start`](stark_model::document::StrokeRecord::start)). Read
-        /// fresh per frame: it refines until the entry spans freeze.
-        start: f32,
-    },
-    Selection(SelectionOp),
-    /// A region being dragged out to fill (§18.0.4). No layer: the
-    /// frame's own [`active_layer`](stark_model::peer::PeerFrame::active_layer) is it, and
-    /// a second copy could disagree with that one.
-    Fill {
-        op: FillOp,
-        /// The layer's translation (§14.12).
-        translation: stark_model::geom::IVec2,
-    },
-}
 
 /// The sending half: what this client has told the wire about its gesture.
 pub(crate) struct GestureTx {
@@ -97,7 +68,11 @@ impl GestureTx {
         self.sent_id.is_some()
     }
 
-    /// Encode `source` for the wire, advancing the watermarks.
+    /// Encode the gesture `live` for the wire, advancing the watermarks.
+    ///
+    /// `live` is the session's own answer (`Session::live`) — the gesture and how many
+    /// of its leading control points are final (§6.2) — so the wire reads the same
+    /// value the preview fold draws rather than a second window onto the fitter.
     ///
     /// **Call this only for a frame that is actually going out.** The watermarks
     /// record what the receiver has been *told*; advancing them for a frame the caller
@@ -106,16 +81,16 @@ impl GestureTx {
     pub(crate) fn encode(
         &mut self,
         id: u64,
-        source: Option<GestureSource>,
+        live: Option<(LiveGesture, usize)>,
         resync: bool,
     ) -> Option<GestureFrame> {
-        let Some(source) = source else {
+        let Some((gesture, frozen)) = live else {
             self.sent_id = None;
             self.sent = 0;
             return None;
         };
-        match source {
-            GestureSource::Selection(op) => {
+        match gesture {
+            LiveGesture::Selection(op) => {
                 // A marquee or lasso goes whole: it is already decimated, and unlike a
                 // stroke its tail is not append-only — the closing edge follows the
                 // cursor, so there is no frozen prefix to exploit.
@@ -124,26 +99,24 @@ impl GestureTx {
                 Some(GestureFrame::Selection { id, op })
             }
             // A fill's region is a shape, sent whole for exactly the reasons a
-            // selection's is. The layer rides `PeerFrame::active_layer`.
-            GestureSource::Fill {
-                op,
-                translation: frame,
+            // selection's is. **The layer is dropped here**: the frame's own
+            // `PeerFrame::active_layer` is it, and a second copy could disagree with
+            // that one. The pinned layer therefore travels only in-process, so a
+            // peer's preview can drift from the commit across the retarget race the
+            // pin closes locally — a preview, not the document (§17.5).
+            LiveGesture::Fill {
+                op, translation, ..
             } => {
                 self.sent_id = Some(id);
                 self.sent = 0;
                 Some(GestureFrame::Fill {
                     id,
                     op,
-                    translation: frame,
+                    translation,
                 })
             }
-            GestureSource::Stroke {
-                head,
-                path,
-                frozen,
-                start,
-            } => {
-                let frozen = frozen.min(path.len());
+            LiveGesture::Stroke(rec) => {
+                let frozen = frozen.min(rec.path.len());
                 debug_assert!(
                     self.sent_id != Some(id) || frozen >= self.sent,
                     "the frozen watermark must not walk back within one gesture"
@@ -151,19 +124,33 @@ impl GestureTx {
                 // A frame is *fresh* — it carries the head and starts from 0 — for a
                 // gesture the wire has not carried yet, and on every resync.
                 let fresh = resync || self.sent_id != Some(id);
-                let from = if fresh { 0 } else { self.sent.min(path.len()) };
-                let points = path[from..].to_vec();
+                let from = if fresh {
+                    0
+                } else {
+                    self.sent.min(rec.path.len())
+                };
+                let points = rec.path[from..].to_vec();
                 self.sent_id = Some(id);
                 self.sent = frozen;
                 Some(GestureFrame::Stroke {
                     id,
-                    // Already boxed here for this enum's own width, and the wire
-                    // frame boxes for the same reason — the allocation passes
-                    // straight through.
-                    head: fresh.then_some(head),
+                    // The record's invariant half, split out only for a frame that
+                    // carries one — which most are not. Boxed because a `StrokeHead`
+                    // is several times the rest of the frame.
+                    head: fresh.then(|| {
+                        Box::new(StrokeHead {
+                            layer: rec.layer,
+                            brush: rec.brush,
+                            seed: rec.seed,
+                            translation: rec.translation,
+                        })
+                    }),
                     from: from as u32,
                     points,
-                    start,
+                    // Per frame rather than in the head: a curve *parameter* names a
+                    // different place as the path grows, and it refines until the
+                    // entry spans freeze (§17.5).
+                    start: rec.start,
                 })
             }
         }
@@ -295,14 +282,14 @@ impl PresenceTx {
     ///
     /// A frame goes out when something changed, when a gesture is in flight (its path
     /// just grew), or every [`HEARTBEAT`] regardless, so a silent peer still proves it
-    /// is here. `ordinal` and `source` are the session's gesture in flight, as
+    /// is here. `ordinal` and `live` are the session's gesture in flight, as
     /// [`GestureTx::encode`] takes them.
     pub(crate) fn publish(
         &mut self,
         now: f64,
         active_layer: LayerId,
         ordinal: u64,
-        source: Option<GestureSource>,
+        live: Option<(LiveGesture, usize)>,
     ) -> Option<PeerFrame> {
         // Repairs any receiver that missed a delta and primes any that arrived
         // mid-stroke, without either having to ask — which is what keeps the wire
@@ -316,7 +303,7 @@ impl PresenceTx {
             .as_ref()
             .is_none_or(|p| !p.matches(active_layer, self.cursor, &self.name))
             // A live gesture's path grows every move, so its frame always differs.
-            || source.is_some()
+            || live.is_some()
             // ...and one that has just ended still owes the frame that clears it.
             || self.gesture.in_flight();
         if !changed && now - self.sent_at < HEARTBEAT {
@@ -331,7 +318,7 @@ impl PresenceTx {
 
         // Everything below this line commits to sending, which is the only point at
         // which the watermarks may move: they record what the receiver has been told.
-        let gesture = self.gesture.encode(ordinal, source, resync);
+        let gesture = self.gesture.encode(ordinal, live, resync);
         if resync {
             self.gesture.stamp_resync(now);
         }
@@ -1104,17 +1091,18 @@ mod tests {
         let path: Vec<ControlPoint> = (0..12)
             .map(|i| ControlPoint::at(Vec2::new(f32::from(i as u16) * 4.0, 0.0)))
             .collect();
-        let head = StrokeHead {
-            layer,
-            brush: stark_model::document::BrushParams::default(),
-            seed: 7,
-            translation: stark_model::geom::IVec2::ZERO,
-        };
-        let stroke = |n: usize, frozen: usize| GestureSource::Stroke {
-            head: Box::new(head.clone()),
-            path: path[..n].to_vec(),
-            frozen,
-            start: 0.25,
+        let stroke = |n: usize, frozen: usize| {
+            (
+                LiveGesture::Stroke(StrokeRecord {
+                    layer,
+                    brush: stark_model::document::BrushParams::default(),
+                    path: path[..n].to_vec(),
+                    seed: 7,
+                    start: 0.25,
+                    translation: stark_model::geom::IVec2::ZERO,
+                }),
+                frozen,
+            )
         };
 
         // The gesture's first frame lands, and the receiver is exact.

@@ -216,6 +216,24 @@ impl Session {
     pub fn hover_held(&self) -> bool {
         matches!(self.hand, Hand::Hovering(_))
     }
+
+    /// The mark to fold when the hand holds no gesture (§18.1.10) — the record the
+    /// press it predicts would commit, so the fold cannot tell it from a real one.
+    ///
+    /// `None` with a selection tool in hand: that drags a shape rather than paint, and
+    /// [`hover_to`](Self::hover_to) refuses the report for the same reason. An
+    /// unpaintable active layer needs no test here — the stroke renderer refuses it as
+    /// a commit would.
+    pub(super) fn hover_probe(
+        &self,
+        seed: u64,
+        translation: stark_model::geom::IVec2,
+    ) -> Option<StrokeRecord> {
+        let Hand::Hovering(h) = &self.hand else {
+            return None;
+        };
+        (!self.tool.is_selection()).then(|| h.record(self, seed, translation))
+    }
 }
 
 #[cfg(test)]

@@ -29,7 +29,8 @@
 //! - [`peer`] — presence: per-client state every client reads and only its owner
 //!   writes, held outside the timeline (§17.4). The selection is the one piece of
 //!   per-client state replay does need, so it lives in [`document::DocState`]
-//!   keyed by [`ActorId`](stark_model::document::ActorId) instead (§17.3).
+//!   keyed by [`ActorId`](stark_model::document::ActorId) instead (§17.3). What
+//!   either side has in *flight* is named once, in `gesture`.
 //! - [`gpu`] — the tile pool, the stroke renderer, compositing and the media
 //!   pass (§6).
 //! - [`path`] — pointer samples fitted to a cubic B-spline (`spline`), then
@@ -71,6 +72,7 @@ pub mod document;
 pub(crate) mod engine;
 pub(crate) mod error;
 pub mod filters;
+pub(crate) mod gesture;
 pub(crate) mod gpu;
 pub mod guides;
 pub(crate) mod image;

@@ -1333,7 +1333,7 @@ impl Command {
             // may be paint (§6.8). The clause each of these ends on is the
             // app's least guessable rule, and it is stated where it is true —
             // a fill leaves the tool armed, so only the selecting case is
-            // claimed here (`Session::end_shape`).
+            // claimed here (`Session::end_gesture`).
             Command::SelectRect => {
                 "Drag out a rectangular region \u{2014} selecting it hands the brush straight back"
             }

@@ -1136,7 +1136,7 @@ impl TestStroke {
     ///
     /// Two samples is the test because it is the one the frontend can make: what the
     /// engine actually refuses is a *fit* that painted nothing
-    /// (`Session::end_stroke`), and `GestureCommand::End` answers nothing back. So a
+    /// (`Session::end_gesture`), and `GestureCommand::End` answers nothing back. So a
     /// hand that moved less than the fitter's tolerance is the one case left where
     /// this says yes and the document holds no stroke — narrower than the tap it
     /// replaces by every gesture that is a single point, and not closable from here.

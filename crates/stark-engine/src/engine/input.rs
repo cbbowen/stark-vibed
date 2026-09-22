@@ -9,7 +9,7 @@ use super::Engine;
 use super::live::Held;
 use crate::command::{DocCommand, Edit, GestureCommand, PeerCommand, ViewCommand};
 use crate::document::Step;
-use crate::peer::LiveGesture;
+use crate::gesture::LiveGesture;
 use stark_model::document::{ActionId, ActionKind, GuideId, LayerId, TransformMap};
 
 /// Longest name that will be recorded, in `char`s — the wire's bound, reached for
@@ -534,10 +534,7 @@ impl Engine {
                 self.mark_live_stale();
             }
             ViewCommand::SetBrush { brush, color } => {
-                // Held here for the reason `PeerFrame::sanitized` holds a peer's: a
-                // committed stroke's brush is held by `ActionKind::sanitized`, and a
-                // live one is drawn by the same renderer without ever becoming an
-                // action. `preview == committed` needs both doors (§6.2).
+                // Sanitized behind the door, not here — see `Session::set_brush`.
                 self.session.set_brush(brush);
                 self.session.set_color(color);
                 self.mark_live_stale();
