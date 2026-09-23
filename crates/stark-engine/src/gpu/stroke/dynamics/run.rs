@@ -220,7 +220,7 @@ impl StrokeRenderer {
         // The bleed cadence's firings for the whole range (§6.2), computed once and
         // sliced per piece: the chunker must measure every piece **with its windows**,
         // since a window can reach back a quantum before the segment it fires after —
-        // for a piece's first segment, substrate no segment box covers
+        // for a piece's first segment, onto canvas no segment box covers
         // ([`chunk_segments`]).
         let (fires, bleed_capped) = bleed_fires(dynamics.bleed, segments);
         // The third budget, reported like the other two: past
