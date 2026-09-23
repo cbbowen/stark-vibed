@@ -23,10 +23,11 @@ use crate::input::TOUCH_SLOP;
 /// (§18.1.9).
 ///
 /// Set from the range it has to cover rather than by taste: the view's whole zoom
-/// range is about ten doublings (`ViewTransform::MIN_ZOOM`..`MAX_ZOOM`), so at this
-/// rate a sweep of roughly one screen width takes the canvas from as far out as it
-/// goes to as far in — reachable in one gesture, without a short drag overshooting
-/// the picture.
+/// range is about ten doublings
+/// ([`ViewTransform::MIN_ZOOM`]..[`ViewTransform::MAX_ZOOM`]), so at this rate a sweep
+/// of roughly one screen width takes the canvas from as far out as it goes to as far
+/// in — reachable in one gesture, without a short drag overshooting the picture.
+/// `tests::the_drag_rate_crosses_the_zoom_range_in_about_a_screen` is the claim.
 pub const ZOOM_DRAG_DOUBLE: f32 = 180.0;
 
 /// What one notch of the wheel multiplies the zoom by.
@@ -428,6 +429,26 @@ pub(crate) fn tap_of(strayed: f32, held: f64, most: usize) -> Option<usize> {
 mod tests {
     use super::*;
     use stark_engine::Extent2;
+
+    /// **The rate is derived, not chosen**, so it has to be checked against what it is
+    /// derived from: one screen width of scrubby drag crosses the view's whole zoom
+    /// range, and does not overshoot it by more than a doubling.
+    ///
+    /// Asked of [`ViewTransform`]'s own bounds, which is what makes this a check rather
+    /// than a second copy of the arithmetic that set the constant.
+    #[test]
+    fn the_drag_rate_crosses_the_zoom_range_in_about_a_screen() {
+        let doublings = (ViewTransform::MAX_ZOOM / ViewTransform::MIN_ZOOM).log2();
+        let sweep = doublings * ZOOM_DRAG_DOUBLE;
+        // "About a screen": between half and twice the width of an ordinary one, which
+        // is as tight as a claim with the word *roughly* in it can honestly be.
+        let screen = 1920.0;
+        assert!(
+            (screen * 0.5..=screen * 2.0).contains(&sweep),
+            "{sweep} px to cross {doublings} doublings is not about one {screen} px \
+             screen"
+        );
+    }
 
     /// Two fingers `span` apart along x, landing at time zero and pinching an unturned view.
     fn pair(span: f32) -> Touch {

@@ -161,20 +161,34 @@ impl ViewTransform {
         self.linear() * (canvas - self.center) + self.half()
     }
 
+    /// The canvas-space corners of the viewport, in the order top-left, top-right,
+    /// bottom-right, bottom-left **of the screen**.
+    ///
+    /// The region itself rather than a bound: under rotation the viewport is a turned
+    /// rectangle, and chrome that draws where the window falls on the canvas — a
+    /// navigator's marker — wants the four points, not the box around them.
+    ///
+    /// Taken through the view's own screen→canvas map, so the zoom, the turn and the
+    /// mirror are all in it and there is nowhere for a second spelling of it to drift.
+    pub fn visible_corners(self) -> [Vec2; 4] {
+        let half = self.half();
+        [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)]
+            .map(|(sx, sy)| self.center + self.canvas_delta(half * Vec2::new(sx, sy)))
+    }
+
     /// The canvas-space **bounding box** of everything the viewport shows.
     ///
     /// A bound rather than the region itself, because under rotation the region is a
-    /// turned rectangle and every caller wants a rect. It therefore covers a little
-    /// more than is really on screen at an angle, which is the safe direction.
+    /// turned rectangle and every caller here wants a rect. It therefore covers a
+    /// little more than is really on screen at an angle, which is the safe direction —
+    /// [`visible_corners`](Self::visible_corners) is the region it bounds.
     pub fn visible_bounds(self) -> (Vec2, Vec2) {
-        let half = self.half();
-        let (a, b) = (
-            self.canvas_delta(half),
-            self.canvas_delta(Vec2::new(half.x, -half.y)),
-        );
-        // The four corners are ±a and ±b, so the bound is the componentwise larger.
-        let extent = a.abs().max(b.abs());
-        (self.center - extent, self.center + extent)
+        let corners = self.visible_corners();
+        corners
+            .into_iter()
+            .fold((corners[0], corners[0]), |(lo, hi), c| {
+                (lo.min(c), hi.max(c))
+            })
     }
 
     /// Half the viewport, in screen px — the centre of the substrate.
@@ -367,8 +381,16 @@ impl ViewTransform {
         self.commit(next);
     }
 
-    const MIN_ZOOM: f32 = 0.05;
-    const MAX_ZOOM: f32 = 64.0;
+    /// How far out the canvas can be pushed, in screen px per canvas px — the floor
+    /// every mutator here clamps to.
+    ///
+    /// `pub` because a frontend's navigation rates are set from the range rather than
+    /// by taste (`stark_ui::nav`), and a figure derived from a number it cannot read is
+    /// a figure that stops being derived the moment either moves.
+    pub const MIN_ZOOM: f32 = 0.05;
+    /// How far in the canvas can be pushed — [`MIN_ZOOM`](Self::MIN_ZOOM)'s ceiling,
+    /// `pub` for its reason.
+    pub const MAX_ZOOM: f32 = 64.0;
 
     /// The tiles a render of `view` can show — the **view-AABB cull** (§6.3).
     ///
@@ -735,6 +757,33 @@ mod tests {
                     "turn {turn}: {p:?}"
                 );
             }
+        }
+    }
+
+    /// The four corners are the window's own, mapped back — which is what a
+    /// navigator's marker draws, and why it must not spell the inverse out again.
+    #[test]
+    fn the_visible_corners_are_the_windows_own() {
+        let v = ViewTransform {
+            center: Vec2::new(10.0, -20.0),
+            zoom: 2.0,
+            rotation: 0.6,
+            flip_h: true,
+            viewport: Extent2::new(400, 300),
+        };
+        let (w, h) = (400.0, 300.0);
+        let screen = [
+            Vec2::new(0.0, 0.0),
+            Vec2::new(w, 0.0),
+            Vec2::new(w, h),
+            Vec2::new(0.0, h),
+        ];
+        for (corner, at) in v.visible_corners().into_iter().zip(screen) {
+            let want = v.screen_to_canvas(at);
+            assert!(
+                (corner - want).length() < 1e-3,
+                "corner for {at:?} is {corner:?}, should be {want:?}"
+            );
         }
     }
 

@@ -329,11 +329,13 @@ fn thumb_view(size: f32) -> ViewTransform {
 
 /// The canvas-space rect `view` shows, as (half-width, half-height) about the
 /// origin — both stroke layouts are placed from it.
+///
+/// Off the view's own bound rather than the zoom and the viewport again: these
+/// thumbnails are upright, where the two agree, and one of the two is the view's to
+/// answer.
 fn half_extent(view: &ViewTransform) -> Vec2 {
-    Vec2::new(
-        view.viewport.width as f32 / view.zoom * 0.5,
-        view.viewport.height as f32 / view.zoom * 0.5,
-    )
+    let (min, max) = view.visible_bounds();
+    (max - min) * 0.5
 }
 
 /// The test stroke: an S-curve **across** the thumbnail with a pressure bell and

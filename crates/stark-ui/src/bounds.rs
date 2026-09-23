@@ -216,19 +216,17 @@ impl Overview {
 /// which in canvas space is a rotated one, and these are its corners mapped back into
 /// the picture.
 ///
-/// Taken through the view's own screen→canvas mapping ([`ViewTransform::canvas_delta`])
-/// rather than an inverse worked out here: the zoom, the turn and the mirror are all in
-/// it, and a second spelling of that map would put the marker somewhere the pointer does
-/// not agree with. Both frontends had one until this was the only one.
+/// Asked of the view ([`ViewTransform::visible_corners`]) rather than rebuilt here: the
+/// zoom, the turn and the mirror are all in that map, and a second spelling of it would
+/// put the marker somewhere the pointer does not agree with. Both frontends had one,
+/// then this module had the third; the view has the only one.
 ///
 /// **Not clamped**: the rect is placed where it truly falls and the box clips it, so
 /// panning off the piece shows the marker sliding out of frame rather than sticking to
 /// an edge and claiming you are still on the painting.
 pub fn marker(over: Overview, view: ViewTransform) -> [(f32, f32); 4] {
     let span = over.span();
-    let half = Vec2::new(view.viewport.width as f32, view.viewport.height as f32) * 0.5;
-    [(-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)].map(|(sx, sy)| {
-        let corner = view.center + view.canvas_delta(half * Vec2::new(sx, sy));
+    view.visible_corners().map(|corner| {
         let f = (corner - over.min) / span;
         (f.x, f.y)
     })
