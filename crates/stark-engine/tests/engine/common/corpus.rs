@@ -295,7 +295,7 @@ fn at(pts: &[(f32, f32)]) -> Vec<InputSample> {
 /// renders for as long as they had existed.
 ///
 /// So the placement is computed from the data instead of being a constant somebody has
-/// to keep true, and `every_case_leaves_a_mark` in the battery is the backstop that
+/// to keep true, and the battery's `check_leaves_a_mark` is the backstop that
 /// makes a silently-empty case a failure rather than a pass.
 fn centred(pts: &[[f32; 2]]) -> Vec<InputSample> {
     let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);

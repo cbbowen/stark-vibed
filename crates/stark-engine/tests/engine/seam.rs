@@ -626,7 +626,7 @@ fn every_tile_writer_is_translation_invariant() {
     // against to prove it drew anything at all. Without it a case whose command was
     // declined (a wrong layer id, a refused region) compares blank against blank and
     // passes having measured nothing, which is how five tests in this suite came to
-    // be comparing paper with paper (see `corpus`'s `every_case_leaves_a_mark`).
+    // be comparing paper with paper (see the corpus battery's `check_leaves_a_mark`).
     let blank = render_shifted_op(Vec2::ZERO, |_, _| {});
 
     for (name, op) in cases {

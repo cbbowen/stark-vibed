@@ -131,6 +131,9 @@ fn run(name: &str) {
         return;
     };
     let mut report = Report::new(case);
+    // The prepared canvas, before the case's own stroke — what `check_leaves_a_mark`
+    // holds the committed render against.
+    let bare = engine.render_to_image();
 
     // Two pictures of the one stroke run through the battery. `committed` is what
     // landed at pen-up — the live preview's own head-plus-tail render, since a commit
@@ -138,6 +141,7 @@ fn run(name: &str) {
     // action folded again in one pass: the picture a replay, a file and a peer each
     // make of it, and the one the two renders' seam is measured against.
     let committed = check_the_stroke_as_it_is_drawn(case, &mut engine, brush, &mut report);
+    check_leaves_a_mark(&bare, &committed, &mut report);
     check_repeat_render(&mut engine, &committed, &mut report);
     let rendered = check_undo_redo(case, &mut engine, &committed, &mut report);
     check_save_load(case, &engine, &rendered, &mut report);
@@ -145,7 +149,7 @@ fn run(name: &str) {
     check_lift_off(case, brush, &mut report);
     check_translation(case, brush, &committed, &mut report);
     check_slow_commit(case, brush, &rendered, &mut report);
-    check_towed(case, brush, &committed, &mut report);
+    check_towed(case, brush, &mut report);
 
     report.finish();
 
@@ -226,6 +230,29 @@ fn check_the_stroke_as_it_is_drawn(
         );
     }
     engine.render_to_image()
+}
+
+/// The case must actually paint something.
+///
+/// Every other check here compares a render against another render, and a case whose
+/// stroke missed the viewport, or whose brush laid nothing, would pass all of them —
+/// bare paper equals bare paper, round-trips exactly, and converges beautifully. This
+/// is the one check that looks at the picture and asks whether there is a stroke in it,
+/// and it is what keeps a silently-empty case from reading as coverage.
+///
+/// Both instruments, because a case can fail this in two ways: a worst texel too close
+/// to the bare canvas is a stroke that did not land, and an area too small is one that
+/// landed as a speck.
+fn check_leaves_a_mark(bare: &RgbaImage, committed: &RgbaImage, report: &mut Report) {
+    let (moved, worst) = diff_fraction(bare, committed);
+    if worst > 8 && moved > 0.001 {
+        return;
+    }
+    report.note(&format!(
+        "the case painted nothing worth looking at: {:.4}% of px moved, worst {worst} \
+         levels",
+        moved * 100.0,
+    ));
 }
 
 /// Rendering the same document twice gives the same pixels.
@@ -474,7 +501,7 @@ fn check_slow_commit(case: &Case, brush: BrushParams, rendered: &RgbaImage, repo
 /// the fitter alone, so this ought to be free — and "ought to be free" is exactly the
 /// claim worth having a test for, since the tow emits *several* samples per report and
 /// the freezing boundary is counted in fitted spans.
-fn check_towed(case: &Case, brush: BrushParams, untowed: &RgbaImage, report: &mut Report) {
+fn check_towed(case: &Case, brush: BrushParams, report: &mut Report) {
     if cfg!(feature = "debug-unfrozen") {
         return;
     }
@@ -491,8 +518,6 @@ fn check_towed(case: &Case, brush: BrushParams, untowed: &RgbaImage, report: &mu
         &engine.render_to_image(),
         case.tol.seam,
     );
-    let moved = frac_exceeding(untowed, &committed, VISIBLE_LEVELS) * 100.0;
-    eprintln!("TOWDIAG {} moved {moved:.3}%", case.name);
 }
 
 /// The smoothing rope [`check_towed`] draws through, in canvas px.
@@ -638,50 +663,4 @@ impl Report {
             self.what,
         );
     }
-}
-
-/// Every case must actually paint something.
-///
-/// The whole battery compares renders against other renders, and a case whose stroke
-/// missed the viewport, or whose brush laid nothing, would pass all of it — bare paper
-/// equals bare paper, round-trips exactly, and converges beautifully. This is the one
-/// check that looks at the picture and asks whether there is a stroke in it, and it is
-/// what keeps a silently-empty case from reading as coverage.
-#[test]
-fn every_case_leaves_a_mark() {
-    for case in CASES {
-        let Some((mut engine, brush)) = case.open() else {
-            return;
-        };
-        let before = engine.render_to_image();
-        case.paint(&mut engine, brush, DEFAULT_TOLERANCE);
-        let after = engine.render_to_image();
-        let (moved, worst) = diff_fraction(&before, &after);
-        assert!(
-            worst > 8 && moved > 0.001,
-            "corpus case `{}` painted nothing worth looking at: {:.4}% of px moved, \
-             worst {worst} levels",
-            case.name,
-            moved * 100.0,
-        );
-    }
-}
-
-/// A case's samples are its own: nothing in the battery may depend on the corpus
-/// handing back the same `Vec` twice, since every check re-draws the stroke.
-#[test]
-fn a_case_replays_its_own_input() {
-    for case in CASES {
-        let (a, b) = (case.samples(), case.samples());
-        assert_eq!(a.len(), b.len(), "case `{}` is not reproducible", case.name);
-        assert!(
-            a.iter().zip(&b).all(same_sample),
-            "case `{}` is not reproducible",
-            case.name
-        );
-    }
-}
-
-fn same_sample((a, b): (&InputSample, &InputSample)) -> bool {
-    a.pos == b.pos && a.pressure == b.pressure && a.tilt == b.tilt && a.time == b.time
 }

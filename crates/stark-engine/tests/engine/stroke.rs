@@ -13,7 +13,7 @@
 //! `C_STROKE` around `x = 1310`, against a viewport showing the 256 px about the
 //! origin. They had been comparing **blank paper against blank paper** for as long as
 //! they had existed, and every one of them passed. The corpus centres its strokes from
-//! the data and `every_case_leaves_a_mark` makes an empty case a failure.
+//! the data and the battery's `check_leaves_a_mark` makes an empty case a failure.
 
 #![expect(
     clippy::disallowed_types,

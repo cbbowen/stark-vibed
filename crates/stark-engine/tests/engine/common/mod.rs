@@ -1322,7 +1322,7 @@ pub fn is_uniform(img: &RgbaImage) -> bool {
 /// is **not** blessed under the flag, since the adapter it would come from is the one
 /// the flag distrusts; there, only the first of the two holds.
 ///
-/// The weakest form of `corpus::every_case_leaves_a_mark` — weakest because there is
+/// The weakest form of the corpus battery's `check_leaves_a_mark` — weakest because there is
 /// no before-render to difference against, so a case that paints over an undercoat is
 /// covered by the corpus battery and not by this — and here for that check's own
 /// reason: the tests whose whole assertion is this call reported `ok` under the flag
