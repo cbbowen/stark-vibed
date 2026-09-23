@@ -684,10 +684,9 @@ fn stroke_spans_multiple_tiles_via_cow() {
 ///
 /// Run for **both** render paths. The stamp loop is the case that matters: before it
 /// carried its reservoir across the freeze boundary it re-rendered the whole stroke
-/// every move, and its cost climbed from 0.8 ms to 13 ms over 1200 samples, with the
-/// composite behind it going 6.7 ms → 131 ms because the readback waits on all that
-/// queued work. A brush people actually paint with is a smear brush, so that was the
-/// responsiveness users felt.
+/// every move, and its cost climbed from 0.8 ms to 13 ms over 1200 samples. A brush
+/// people actually paint with is a smear brush, so that was the responsiveness users
+/// felt.
 ///
 /// The path is a travelling sine, long enough that the stroke keeps reaching tiles it
 /// has not reached before. It replaced a spiral, which was the wrong shape to measure
@@ -699,37 +698,40 @@ fn stroke_spans_multiple_tiles_via_cow() {
 /// measure. It still catches the regression it exists for: a stroke re-rendered whole
 /// would climb from ~150 segments a move to several thousand.
 ///
-/// # The view is one tile, and that is the measurement
+/// # A frame the caller keeps, and a median rather than a mean
 ///
-/// The readback renders, copies out and blocking-maps the **whole viewport**, so what
-/// it costs is a property of the view and not of the move — and a viewport wide enough
-/// to hold the stroke puts that whole term inside a per-move number and calls it stroke
-/// work. Against a 1280×800 view this measured 1.6 ms early and 3.4 ms late while
-/// `stroke.range` and `stroke.swept` stood at 0.24 ms and 0.21 ms from the first move
-/// to the last. Little of it is *compositing*: the same frame into a target the caller
-/// keeps costs ~0.2 ms. The rest is the copy, and — until the probe kept its target —
-/// the viewport-sized attachments every call allocated and destroyed, which cost
-/// whatever the state the stroke had left the GPU allocator in made of them
-/// (`Engine::render_to_image`).
+/// A move is a sample *plus a frame*: `GestureCommand::To` only pushes the fitter, and
+/// the fold and the stroke render it marks stale are paid once a frame
+/// (`engine::input`). So the loop renders, and then drains — `render` queues, and
+/// without the wait a path that submitted ten times the GPU work would look identical.
 ///
-/// So the viewport is [`common::SIZE`](crate::common::SIZE), about one tile, while
-/// the stroke still runs ±590 px across it: the frame is a real frame with paint in
-/// it, its cost is the same on the first move as on the nine-hundredth, and what is
-/// left in the number is the fit, the fold, the stroke render and the GPU time
-/// behind it. The readback stays, for the reason it was added — `process` only
-/// queues, and the blocking map waits on everything the move submitted — and it is
-/// ~0.18 ms of the ~0.47 ms a swept move measures.
+/// What it must **not** do is read the frame back. A readback prices the *picture*: it
+/// copies out and blocking-maps the whole viewport, and the export target and pass-A
+/// attachments it allocates per call cost whatever state the stroke has left the GPU
+/// allocator in. That is a term that grows with stroke length while no per-move work
+/// grows — the reading mistaken first for a compositing cliff and then for a real
+/// regression. [`common::kept_target`](crate::common::kept_target) is the path a
+/// frontend actually draws on, and after the first frame it allocates nothing.
+///
+/// Each window's number is its **median** per-move millisecond, not its mean, and the
+/// caller takes the best of three whole strokes. A wall clock on a shared box measures
+/// scheduler stalls as well as work, and a window whose moves are individually dearer
+/// collects more of that tail — so a mean ratio reports contention as growth, which is
+/// the flake this test was. Its mean-and-readback form read 1.35 and 1.51 with this
+/// box's 32 cores busy beside it, against a bound of 1.6; with half of them busy the
+/// medians below hold to 1.12.
 ///
 /// **Answers `None` where there is no GPU**, rather than a pair — and the difference
 /// is the whole reason this does not build its own device. It used to, and returned
-/// `(1.0, 1.0)` when the build failed: the caller's `late < early * 2.0` then read
-/// `1.0 < 2.0` and the test reported `ok` having measured nothing, on a machine with
+/// `(1.0, 1.0)` when the build failed: the caller's ratio bound then compared
+/// `1.0` against itself and the test reported `ok` having measured nothing, on a machine with
 /// no adapter at all. Going through [`crate::common::engine_or_skip_sized`] is what puts it
 /// back under `STARK_ALLOW_NO_GPU` with every other test — a missing GPU is a
 /// *failure* unless the skip was asked for (CLAUDE.md), and this was the one place
 /// that had quietly opted out.
 fn measure_per_move_growth(b: BrushParams) -> Option<(f64, f64)> {
     let mut engine = crate::common::engine_or_skip_sized(crate::common::SIZE)?;
+    let target = kept_target(&engine, crate::common::SIZE);
     engine.process(ViewCommand::set_brush(b));
     let n = 900usize;
     let path: Vec<Vec2> = (0..n)
@@ -740,29 +742,33 @@ fn measure_per_move_growth(b: BrushParams) -> Option<(f64, f64)> {
         .collect();
     let mut it = path.iter();
     Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(*it.next().unwrap()));
-    let (mut early, mut late) = (0.0f64, 0.0f64);
-    let (mut ne, mut nl) = (0u32, 0u32);
+    let (mut early, mut late) = (Vec::new(), Vec::new());
     for (i, &p) in it.enumerate() {
         let at = std::time::Instant::now();
         engine.process(GestureCommand::To {
             sample: InputSample::at(p),
         });
-        // The readback is what makes this a measurement of the *work*, not just of
-        // encoding it: `process` only queues, so without waiting here a path that
-        // queued ten times the GPU work would look identical. It is also the whole
-        // reason the viewport is one tile — see this function's note.
-        let _ = engine.render_to_image();
+        // A sample only pushes the fitter; the fold and the stroke render it marks
+        // stale are a *frame*'s work (`engine::input`), so the frame is part of the
+        // move — and `render` queues, so the drain is what makes this a measurement
+        // of the work rather than of encoding it.
+        engine.render(&target);
+        drain(&engine);
         let ms = at.elapsed().as_secs_f64() * 1000.0;
         // Skip the middle: the first stretch also pays for warm-up.
         if i < n / 4 {
-            early += ms;
-            ne += 1;
+            early.push(ms);
         } else if i > n * 3 / 4 {
-            late += ms;
-            nl += 1;
+            late.push(ms);
         }
     }
-    Some((early / ne as f64, late / nl as f64))
+    Some((median(&mut early), median(&mut late)))
+}
+
+/// The middle sample of `xs`, which is sorted in place to find it.
+fn median(xs: &mut [f64]) -> f64 {
+    xs.sort_unstable_by(f64::total_cmp);
+    xs[xs.len() / 2]
 }
 
 #[test]
@@ -771,20 +777,25 @@ fn per_move_cost_does_not_grow_with_stroke_length() {
         ("swept", brush(RED, 14.0)),
         ("stamp loop", crate::common::corpus::smear_brush(14.0)),
     ] {
-        let Some((early, late)) = measure_per_move_growth(b) else {
-            return;
-        };
-        // Still loose, because this is a wall-clock measurement on a shared machine —
-        // but 1.6 rather than the 2.0 it was, because the viewport no longer spends
-        // most of the budget on a readback that grows with the view (see above). Five
-        // consecutive solo runs measured 0.82–1.08x swept and 1.04–1.11x on the loop,
-        // and the pure CPU rows behind them — `stroke.range`, `stroke.swept`,
-        // `stroke.dynamics`, which carry no readback at all — agree at 1.04–1.12x. The
-        // loop's few per cent is `LoopCarry`'s per-tile maps, which every capturing
-        // render still rebuilds entry by entry (`dynamics::run`); the swept path's
-        // equivalent is shared rather than copied (`accum::ParcelTiles`).
+        // Best of three whole strokes, window by window: a repeat that lost the CPU is
+        // noise about this box rather than about the stroke. The frame-cost guard beside
+        // this one takes the same form
+        // ([`a_thin_stroke_costs_what_a_flat_field_costs`](composite.rs)).
+        let (mut early, mut late) = (f64::INFINITY, f64::INFINITY);
+        for _ in 0..3 {
+            let Some((e, l)) = measure_per_move_growth(b) else {
+                return;
+            };
+            early = early.min(e);
+            late = late.min(l);
+        }
+        // 1.4 against a measured 1.03–1.13: eight solo runs on a quiet box read
+        // 1.05–1.10 swept and 1.12–1.13 on the loop, and three with half this box's
+        // cores busy beside them read 1.04–1.12 and 1.08–1.12. The residual few per
+        // cent is real — the fitter re-solves its unfrozen prefix on every sample
+        // (`input.fit`) — so this is not a bound that wants to reach 1.0.
         assert!(
-            late < early * 1.6,
+            late < early * 1.4,
             "{what}: per-move cost grew with stroke length: \
              {early:.2} ms early vs {late:.2} ms late"
         );

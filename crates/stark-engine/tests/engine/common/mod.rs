@@ -222,6 +222,50 @@ pub fn engine_or_skip_with(id: ColorSpaceId) -> Option<Engine> {
     build(SIZE, id)
 }
 
+/// A `size` render target in the format [`Engine::target_format`] reports, for
+/// [`Engine::render`] — the path a frontend draws on, whose attachments the engine
+/// keeps (§11).
+///
+/// **For anything that times a frame.** `Probe::render_to_image` allocates a
+/// viewport-sized export target per call, and that allocation costs whatever state the
+/// work before it left the GPU allocator in — a per-*picture* term that lands inside a
+/// per-frame or per-move number and reads as growth (`composite.rs`, `stroke.rs`). A
+/// target the caller holds across frames allocates nothing after the first.
+///
+/// The returned view keeps its texture alive, so callers need bind only the view.
+pub fn kept_target(engine: &Engine, size: Extent2) -> wgpu::TextureView {
+    engine
+        .gpu()
+        .device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("kept frame target"),
+            size: wgpu::Extent3d {
+                width: size.width,
+                height: size.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: engine.target_format(),
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// Block until the device has executed everything submitted so far.
+///
+/// [`Engine::render`] and [`Engine::process`] only *queue*, so a wall clock around
+/// either measures command encoding until this has run.
+pub fn drain(engine: &Engine) {
+    engine
+        .gpu()
+        .device
+        .poll(wgpu::PollType::wait_indefinitely())
+        .expect("the device drains");
+}
+
 /// A headless engine lit by the real studio HDR: image-based lighting from an
 /// actually-decoded environment map rather than the procedural one (§6.3).
 ///

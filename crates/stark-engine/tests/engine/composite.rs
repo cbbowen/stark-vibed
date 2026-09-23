@@ -478,31 +478,13 @@ fn a_thin_stroke_costs_what_a_flat_field_costs() {
     fn frame_ms(lay: impl FnOnce(&mut Engine)) -> Option<f64> {
         let mut engine = engine_or_skip_sized(VIEW)?;
         lay(&mut engine);
-        // Cloned off the engine so the render below can borrow it mutably.
-        let device = engine.gpu().device.clone();
-        let target = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("frame cost target"),
-            size: wgpu::Extent3d {
-                width: VIEW.width,
-                height: VIEW.height,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: engine.target_format(),
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-            view_formats: &[],
-        });
-        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = kept_target(&engine, VIEW);
         let mut batch = || {
             let at = std::time::Instant::now();
             for _ in 0..PER_BATCH {
                 engine.render(&view);
             }
-            device
-                .poll(wgpu::PollType::wait_indefinitely())
-                .expect("the device drains");
+            drain(&engine);
             at.elapsed().as_secs_f64() * 1e3 / PER_BATCH as f64
         };
         // One batch thrown away — the first render of a document sizes the
