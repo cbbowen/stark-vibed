@@ -10,8 +10,9 @@
 //!
 //! - [`path`] — the least-squares cubic B-spline fit, the adaptive flattener, the
 //!   arc-length map and the input tolerance they are all priced in (§6.2).
-//! - [`spline`] — the B-spline basis underneath: the knot view, the solve, and the
-//!   only place nalgebra is named.
+//! - `spline` — the B-spline basis underneath: the knot view, the solve, and the only
+//!   place nalgebra is named. Crate-private, because nothing above it asks a question
+//!   in terms of a knot.
 //! - [`assist`] — drag-and-hold shape assist: what a held gesture is recognized as,
 //!   how the rest of the drag steers it, and the path it realizes back into (§6.9).
 //! - [`tow`] — the towed tip: stroke smoothing as a rope the pointer drags (§6.12).
@@ -30,7 +31,7 @@ pub mod assist;
 pub mod detmath;
 mod input;
 pub mod path;
-pub mod spline;
+pub(crate) mod spline;
 pub mod tow;
 
 pub use input::{COORD_LIMIT, InputSample};

@@ -77,7 +77,7 @@ pub(crate) fn acos_approx(v: f32) -> f32 {
 }
 
 /// `atan2(y, x)` in radians, within 1.5 ulp of the true angle: fdlibm's `atan2f` (Sun,
-/// via FreeBSD), which reduces to one quotient and [`atan_nonneg`].
+/// via FreeBSD), which reduces to one quotient and `atan_nonneg`.
 ///
 /// Signed zeros and the axes are exact — `atan2(±0, x > 0)` is `±0`, `atan2(±0, x < 0)`
 /// is `±π`, and a zero `x` gives `±π/2` — so a caller asking for "no turn" gets exactly

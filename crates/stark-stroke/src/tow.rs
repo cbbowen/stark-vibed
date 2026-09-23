@@ -110,7 +110,7 @@ impl Tow {
     ///
     /// Callers gate construction on `rope > 0` — a rope of zero is no tow, and the
     /// session feeds the fitter directly. A rope that is merely *small* needs no gate
-    /// of its own: [`bend_reach`] takes it to one emission a report, which is that
+    /// of its own: `bend_reach` takes it to one emission a report, which is that
     /// same rate.
     ///
     /// # Panics

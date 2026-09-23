@@ -13,7 +13,7 @@
 //!
 //! Three pieces, one per file:
 //!
-//! - **Recognition** ([`recognize`](mod@recognize)) — which shape, if any, the raw
+//! - **Recognition** (`recognize.rs`) — which shape, if any, the raw
 //!   pointer trace is. It declines freely, and deterministically: a false positive (a
 //!   considered stroke silently replaced) costs far more than a miss. A line that lands
 //!   near an axis of a perspective guide the artist has up is turned onto it (§20.6).

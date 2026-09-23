@@ -108,7 +108,7 @@ impl AssistShape {
     /// *fewer* control points than the stroke it replaces, because the pen channels
     /// ride the same polygon as the geometry and a pressure profile needs somewhere to
     /// live. Geometry decides the floor and the pen decides nothing else — the same
-    /// split [`SplineIndex::fit_into`] draws.
+    /// split `SplineIndex::fit_into` draws.
     ///
     /// The geometry of a **line** is placed in closed form: any collinear control polygon
     /// draws exactly that line. An **ellipse** is *fitted*, because a clamped B-spline's

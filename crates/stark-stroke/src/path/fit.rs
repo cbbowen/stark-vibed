@@ -293,7 +293,7 @@ impl PathFitter {
     /// wrong unit for it — the same hand movement covers 64× as many of them zoomed in
     /// as zoomed out, and a pen digitizer resolves far finer than a mouse at either —
     /// so the caller that owns the view transform states it, and the fit's two prices
-    /// ([`KNOT_COST`], [`KNOT_SPACING`]) are denominated in it.
+    /// (`KNOT_COST`, `KNOT_SPACING`) are denominated in it.
     pub fn with_tolerance(tolerance: InputTolerance) -> Self {
         Self {
             pts: Vec::new(),
@@ -323,7 +323,7 @@ impl PathFitter {
     /// **The curve extends; the stroke does not.** Where on the extended curve
     /// the stroke itself begins is recorded — the arc of the first pushed
     /// sample, resolved to a curve parameter by the same map the solve places
-    /// samples with ([`Self::start_on`]) — and it lands in the record as
+    /// samples with (`start_on`) — and it lands in the record as
     /// [`StrokeRecord::start`](stark_model::document::StrokeRecord::start),
     /// where the one flattening funnel begins the deposit. The press is then an
     /// *interior* sample: the curve is pinned to the run-up's first report and
@@ -586,7 +586,7 @@ impl PathFitter {
     }
 
     /// How many leading control points of [`path`](Self::path) are final — the
-    /// public face of [`frozen`](Self::frozen).
+    /// public face of the private `frozen`.
     ///
     /// This is what lets a live gesture be published incrementally
     /// (§17.5): a frozen control point never moves again, so a peer that
