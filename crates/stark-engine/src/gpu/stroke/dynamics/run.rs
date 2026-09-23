@@ -21,7 +21,7 @@ use super::super::segments::{BleedFire, Segment};
 use super::super::swept::{SweepPass, segment_instance, tile_xform, xform_group};
 use super::super::{Complaint, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
 use super::bleed::bleed_fires;
-use super::plan::{LoopDispatch, SLOT, SlotKind, cell_scratch_size, dispatch_over, dynamics_plan};
+use super::plan::{LoopDispatch, SLOT, SlotKind, cell_scratch_size, dynamics_plan};
 use super::region::{
     LOOP_USAGE, Piece, REGION_WRITES, RegionBox, RegionChannels, RegionRun, composite_tiles,
     region_selection, slice_region,
@@ -35,6 +35,9 @@ use stark_shaders::mirror::stamp_common::SWEEP_VERTS;
 /// for smeared paint, and small enough that the per-stamp reservoir update is
 /// nearly free.
 const BRUSH_RES: u32 = 64;
+/// The label on the loop's compute pass, which the ceiling lane's render pass cuts in
+/// two and which resumes under the same name after it.
+const LOOP_PASS: &str = "stark dynamics stamp loop";
 // Resolution of the per-segment **swept prefix** of the reservoir
 // (`dynamics.wesl::bake`), and the workgroup width of the scan that builds it —
 // generated from the shader, which is the side that decides it (§6.10). A mismatch
@@ -838,7 +841,7 @@ impl<'a> DynamicsRun<'a> {
         needs: Needs,
     ) -> PieceBindings {
         let r = self.region.r;
-        let kit = &r.dynamics;
+        let kit = &r.dynamics.wet;
         let device = &r.ctx.device;
 
         let params = wgpu::BindingResource::Buffer(wgpu::BufferBinding {
@@ -887,7 +890,7 @@ impl<'a> DynamicsRun<'a> {
         };
 
         let snapshot = needs.snapshot.then(|| {
-            kit.snapshot_bgl
+            kit.snapshot
                 .group(device, "stark dynamics snapshot bg", |s| match s {
                     b::REGION_COLOR => view(&region.channels.color.view),
                     b::REGION_AUX => view(&region.channels.aux.view),
@@ -903,7 +906,7 @@ impl<'a> DynamicsRun<'a> {
         // color — read `i`, write `1 - i` — or the tool's two halves would drift apart.
         let exchange = needs.exchange.then(|| {
             std::array::from_fn(|i| {
-                kit.exchange_bgl
+                kit.exchange
                     .group(device, "stark dynamics exchange bg", |s| match s {
                         b::REGION_COLOR => view(&region.channels.color.view),
                         b::REGION_AUX => view(&region.channels.aux.view),
@@ -911,7 +914,7 @@ impl<'a> DynamicsRun<'a> {
                         b::UNDER_COLOR_W => view(&under.color.view),
                         b::UNDER_AUX_W => view(&under.aux.view),
                         b::UNDER_RESID_W => opt(under.resid_view(), "snapshot"),
-                        b::SAMP => samp(&kit.exchange_sampler),
+                        b::SAMP => samp(&kit.sampler),
                         b::DEPTH_TEX => view(&self.depth),
                         b::BRUSH_SRC_COLOR => view(&self.brush[i].color.view),
                         b::BRUSH_SRC_AUX => view(&self.brush[i].aux.view),
@@ -927,9 +930,9 @@ impl<'a> DynamicsRun<'a> {
         // result, so it never touches the ping-pong.
         let bake = needs.bake.then(|| {
             std::array::from_fn(|i| {
-                kit.bake_bgl
+                kit.bake
                     .group(device, "stark dynamics bake bg", |s| match s {
-                        b::SAMP => samp(&kit.exchange_sampler),
+                        b::SAMP => samp(&kit.sampler),
                         b::BRUSH_SRC_COLOR => view(&self.brush[i].color.view),
                         b::BRUSH_SRC_AUX => view(&self.brush[i].aux.view),
                         b::BRUSH_SRC_RESID => opt(self.brush[i].resid_view(), "reservoir"),
@@ -942,50 +945,47 @@ impl<'a> DynamicsRun<'a> {
         });
         // The mobility pass, on a piece that has one to run.
         let bleed_weight = bleed.map(|w| {
-            kit.bleed_weight_bgl
+            kit.bleed_weight
                 .group(device, "stark dynamics bleed weight bg", |sl| match sl {
                     b::BLEED_W_W => view(w),
                     other => common(other).expect("bleed_weight reads no other binding"),
                 })
         });
         let deposit = needs.deposit.then(|| {
-            kit.deposit_bgl
-                .group(device, "stark dynamics deposit bg", |s| {
-                    common(s).expect("deposit reads no other binding")
-                })
+            kit.deposit.group(device, "stark dynamics deposit bg", |s| {
+                common(s).expect("deposit reads no other binding")
+            })
         });
         // The pen-up, which reads the reservoir only through its own `bake` — so unlike
         // `exchange` it needs no bind group per ping-pong half; the bake's does that.
         let settle = needs.settle.then(|| {
-            kit.settle_bgl
-                .group(device, "stark dynamics settle bg", |s| {
-                    common(s).expect("settle reads no other binding")
-                })
+            kit.settle.group(device, "stark dynamics settle bg", |s| {
+                common(s).expect("settle reads no other binding")
+            })
         });
         // The coarse pair's groups (§6.2), only for a piece whose plan hoists at all.
         // The hoist reads the same baked prefixes the exact deposit's front half did;
         // the coarse deposit swaps those two bindings for the cell means and keeps
         // everything else the exact one binds.
-        let coarse =
-            cells.map(|cl| {
-                let hoist =
-                    kit.hoist_bgl
-                        .group(device, "stark dynamics cell hoist bg", |s| match s {
-                            b::CELL_TOOL_W => view(&cl.tool),
-                            b::CELL_LAT_W => view(&cl.lat),
-                            b::CELL_RES_W => opt(cl.res.as_ref(), "cell"),
-                            other => common(other).expect("cell hoist reads no other binding"),
-                        });
-                let deposit =
-                    kit.deposit_coarse_bgl
-                        .group(device, "stark dynamics deposit coarse bg", |s| match s {
-                            b::CELL_TOOL => view(&cl.tool),
-                            b::CELL_LAT => view(&cl.lat),
-                            b::CELL_RES => opt(cl.res.as_ref(), "cell"),
-                            other => common(other).expect("deposit_coarse reads no other binding"),
-                        });
-                CoarseBindings { hoist, deposit }
-            });
+        let coarse = cells.map(|cl| {
+            let hoist = kit
+                .hoist
+                .group(device, "stark dynamics cell hoist bg", |s| match s {
+                    b::CELL_TOOL_W => view(&cl.tool),
+                    b::CELL_LAT_W => view(&cl.lat),
+                    b::CELL_RES_W => opt(cl.res.as_ref(), "cell"),
+                    other => common(other).expect("cell hoist reads no other binding"),
+                });
+            let deposit =
+                kit.deposit_coarse
+                    .group(device, "stark dynamics deposit coarse bg", |s| match s {
+                        b::CELL_TOOL => view(&cl.tool),
+                        b::CELL_LAT => view(&cl.lat),
+                        b::CELL_RES => opt(cl.res.as_ref(), "cell"),
+                        other => common(other).expect("deposit_coarse reads no other binding"),
+                    });
+            CoarseBindings { hoist, deposit }
+        });
         PieceBindings {
             snapshot,
             exchange,
@@ -1016,35 +1016,19 @@ impl<'a> DynamicsRun<'a> {
         bind: &PieceBindings,
         levels: Option<&LevelsPass>,
     ) {
-        let kit = &self.region.r.dynamics;
-        // The kernels themselves, for the grid each declares: every count below is
-        // `EntryPoint::groups` over an extent in texels, never a host division (§6.10).
-        let dy = stark_shaders::dynamics(self.region.r.color_space.resid());
+        // Off the renderer rather than through `self`, so the pass below may borrow
+        // the run's encoder for as long as it is recording.
+        let r = self.region.r;
+        let kit = &r.dynamics.wet;
         let mut cur = self.cur;
-        let prefix_bg = &self.region.prefix_bg;
         // Which of the piece's segments the next painting slot is: the plan emits
         // one such slot per segment, in order, with the firings and the settle
         // between them.
         let mut seg: u32 = 0;
-        // The mobility pass covers the snapshot square, where every other dispatch
-        // covers its own slot's rect — see the note at its `set_pipeline` below.
-        let square = dy.bleed_weight.groups((dsize, dsize));
         // The reservoir half of `exchange`, which the extent half is laid beside on x:
         // [`BRUSH_RES`]² whatever the segment does.
-        let reservoir = dy.exchange.groups((BRUSH_RES, BRUSH_RES));
-        let bake_groups = dy.bake.groups((BAKE_RES, BAKE_RES));
-        let mut cpass =
-            self.region
-                .scope
-                .encoder()
-                .begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("stark dynamics stamp loop"),
-                    timestamp_writes: None,
-                });
-        // The prefix-τ rides at group 1 for `bake`, `deposit` and `settle`. Re-bound
-        // after every pipeline switch: changing to a pipeline whose group-0 layout
-        // differs invalidates the groups above it, and every consumer is reached only
-        // across such a switch.
+        let reservoir = kit.exchange.groups((BRUSH_RES, BRUSH_RES));
+        let mut pass = self.region.loop_pass(LOOP_PASS);
         for (i, d) in plan.iter().enumerate() {
             // Asked of `UniformSlots`, like the swept path's `xform_offset`, so the
             // stride the slots were *written* at and the stride they are *bound* at
@@ -1054,38 +1038,25 @@ impl<'a> DynamicsRun<'a> {
             match d.kind {
                 // The tool plays no part in the lateral flux, so `cur` — the reservoir
                 // ping-pong — stays exactly where the previous segment left it. The
-                // standalone snapshot pipeline rather than the exchange's tail,
-                // because there is no exchange dispatch to ride in.
+                // standalone snapshot kernel rather than the exchange's tail, because
+                // there is no exchange dispatch to ride in.
                 SlotKind::Bleed => {
-                    cpass.set_pipeline(&kit.snapshot_pipeline);
-                    cpass.set_bind_group(0, bind.snapshot(), &[off]);
-                    dispatch_over(&mut cpass, dy.snapshot.groups(d.extent));
+                    kit.snapshot
+                        .dispatch(&mut pass, bind.snapshot(), off, d.extent);
                     // The pair's mobility, once per texel, for the ladder to read back
                     // (§6.2). Over the **whole snapshot square** rather than the
                     // firing's rect: the ladder clamps a tap into the scratch's extent,
                     // so every texel it can reach has to have been written this firing.
-                    cpass.set_pipeline(&kit.bleed_weight_pipeline);
-                    cpass.set_bind_group(
-                        0,
-                        bind.bleed_weight
-                            .as_ref()
-                            .expect("a firing's piece allocated a bleed scratch"),
-                        &[off],
-                    );
-                    cpass.set_bind_group(1, prefix_bg, &[]);
-                    dispatch_over(&mut cpass, square);
-                    cpass.set_pipeline(&kit.deposit_pipeline);
-                    cpass.set_bind_group(0, bind.deposit(), &[off]);
-                    cpass.set_bind_group(1, prefix_bg, &[]);
-                    dispatch_over(&mut cpass, dy.deposit.groups(d.extent));
+                    kit.bleed_weight
+                        .dispatch(&mut pass, bind.bleed_weight(), off, (dsize, dsize));
+                    kit.deposit
+                        .dispatch(&mut pass, bind.deposit(), off, d.extent);
                 }
                 SlotKind::Segment => {
                     // Bake this segment's swept reservoir prefix first — it folds in the
                     // tip's current orientation as well as the reservoir state.
-                    cpass.set_pipeline(&kit.bake_pipeline);
-                    cpass.set_bind_group(0, bind.bake(cur), &[off]);
-                    cpass.set_bind_group(1, prefix_bg, &[]);
-                    dispatch_over(&mut cpass, bake_groups);
+                    kit.bake
+                        .dispatch(&mut pass, bind.bake(cur), off, (BAKE_RES, BAKE_RES));
                     // Then the tool's own side of this segment's transfer, off the
                     // region as the segment found it. Reads `cur` and writes the other
                     // half, so the next segment's bake sees a tool that has travelled
@@ -1096,35 +1067,28 @@ impl<'a> DynamicsRun<'a> {
                     // would buy no ordering. Hence the widened x — reservoir groups
                     // first, extent groups after — and a y tall enough for the taller
                     // of the two (`dynamics.wesl::exchange`).
-                    cpass.set_pipeline(&kit.exchange_pipeline);
-                    cpass.set_bind_group(0, bind.exchange(cur), &[off]);
-                    let tail = dy.exchange.groups(d.extent);
-                    dispatch_over(&mut cpass, (reservoir.0 + tail.0, reservoir.1.max(tail.1)));
+                    let tail = kit.exchange.groups(d.extent);
+                    kit.exchange.dispatch_groups(
+                        &mut pass,
+                        bind.exchange(cur),
+                        off,
+                        (reservoir.0 + tail.0, reservoir.1.max(tail.1)),
+                    );
                     // The canvas's half: exact per texel, or — where the tip's
                     // shoulder allows (`extent_cell`) — hoisted once per cell and
                     // applied over the same texel grid. The hoist reads the bake this
                     // segment just wrote and nothing the exchange writes, so the extra
                     // serialized dispatch lands only on the wide tips that are
                     // texel-bound rather than dispatch-bound.
-                    match d
-                        .cells
-                        .map(|cl| (cl, bind.coarse.as_ref().expect("a coarse slot binds cells")))
-                    {
+                    match d.cells.map(|cl| (cl, bind.coarse())) {
                         Some((cl, cb)) => {
-                            cpass.set_pipeline(&kit.hoist_pipeline);
-                            cpass.set_bind_group(0, &cb.hoist, &[off]);
-                            cpass.set_bind_group(1, prefix_bg, &[]);
-                            dispatch_over(&mut cpass, dy.cell_hoist.groups(cl));
-                            cpass.set_pipeline(&kit.deposit_coarse_pipeline);
-                            cpass.set_bind_group(0, &cb.deposit, &[off]);
-                            dispatch_over(&mut cpass, dy.deposit_coarse.groups(d.extent));
+                            kit.hoist.dispatch(&mut pass, &cb.hoist, off, cl);
+                            kit.deposit_coarse
+                                .dispatch(&mut pass, &cb.deposit, off, d.extent);
                         }
-                        None => {
-                            cpass.set_pipeline(&kit.deposit_pipeline);
-                            cpass.set_bind_group(0, bind.deposit(), &[off]);
-                            cpass.set_bind_group(1, prefix_bg, &[]);
-                            dispatch_over(&mut cpass, dy.deposit.groups(d.extent));
-                        }
+                        None => kit
+                            .deposit
+                            .dispatch(&mut pass, bind.deposit(), off, d.extent),
                     }
                     // The ceiling lane (§6.2): this segment's sums drawn over the
                     // region *after* its deposit, so the deposit read the lane as
@@ -1134,7 +1098,7 @@ impl<'a> DynamicsRun<'a> {
                     // loop makes without a snapshot — so the compute pass ends
                     // around it and resumes after.
                     if let Some(l) = levels {
-                        drop(cpass);
+                        drop(pass);
                         {
                             let mut rpass = self.region.scope.encoder().begin_render_pass(
                                 &wgpu::RenderPassDescriptor {
@@ -1143,19 +1107,14 @@ impl<'a> DynamicsRun<'a> {
                                     ..Default::default()
                                 },
                             );
-                            rpass.set_pipeline(self.region.r.swept.pipeline(SweepPass::Levels));
+                            rpass.set_pipeline(r.swept.pipeline(SweepPass::Levels));
                             rpass.set_bind_group(0, &l.xform, &[0]);
                             rpass.set_bind_group(1, &l.prefix, &[]);
                             rpass.set_bind_group(2, &l.noise, &[]);
                             rpass.set_vertex_buffer(0, l.instances.slice(..));
                             rpass.draw(0..SWEEP_VERTS, seg..seg + 1);
                         }
-                        cpass = self.region.scope.encoder().begin_compute_pass(
-                            &wgpu::ComputePassDescriptor {
-                                label: Some("stark dynamics stamp loop"),
-                                timestamp_writes: None,
-                            },
-                        );
+                        pass = self.region.loop_pass(LOOP_PASS);
                     }
                     seg += 1;
                     cur = 1 - cur;
@@ -1167,17 +1126,11 @@ impl<'a> DynamicsRun<'a> {
                 // stopped in the middle of. The tool is not written back, so `cur` is
                 // left alone here too.
                 SlotKind::Settle => {
-                    cpass.set_pipeline(&kit.snapshot_pipeline);
-                    cpass.set_bind_group(0, bind.snapshot(), &[off]);
-                    dispatch_over(&mut cpass, dy.snapshot.groups(d.extent));
-                    cpass.set_pipeline(&kit.bake_pipeline);
-                    cpass.set_bind_group(0, bind.bake(cur), &[off]);
-                    cpass.set_bind_group(1, prefix_bg, &[]);
-                    dispatch_over(&mut cpass, bake_groups);
-                    cpass.set_pipeline(&kit.settle_pipeline);
-                    cpass.set_bind_group(0, bind.settle(), &[off]);
-                    cpass.set_bind_group(1, prefix_bg, &[]);
-                    dispatch_over(&mut cpass, dy.settle.groups(d.extent));
+                    kit.snapshot
+                        .dispatch(&mut pass, bind.snapshot(), off, d.extent);
+                    kit.bake
+                        .dispatch(&mut pass, bind.bake(cur), off, (BAKE_RES, BAKE_RES));
+                    kit.settle.dispatch(&mut pass, bind.settle(), off, d.extent);
                 }
                 // The liquify field's slots are `liquify.rs`'s to record (§6.13):
                 // a wet plan never holds one.
@@ -1395,6 +1348,16 @@ impl PieceBindings {
         self.deposit
             .as_ref()
             .expect("a firing or an exact segment asked for a deposit group")
+    }
+
+    fn bleed_weight(&self) -> &wgpu::BindGroup {
+        self.bleed_weight
+            .as_ref()
+            .expect("a firing's piece allocated a bleed scratch")
+    }
+
+    fn coarse(&self) -> &CoarseBindings {
+        self.coarse.as_ref().expect("a coarse slot binds cells")
     }
 
     fn settle(&self) -> &wgpu::BindGroup {

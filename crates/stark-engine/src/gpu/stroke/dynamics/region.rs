@@ -29,6 +29,7 @@ use stark_model::geom::{TileCoord, Vec2};
 use super::super::region::{RegionRect, cover};
 use super::super::segments::{BleedFire, Segment};
 use super::super::{ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
+use super::kit::{LoopPass, Prefix};
 use super::plan::{LoopDispatch, PlanCtx, SLOT, STAMP_STRIDE};
 use crate::gpu::channels::{TILE_AUX_FORMAT, Targets};
 use crate::gpu::composite::view_uniform;
@@ -220,6 +221,23 @@ impl<'a> RegionRun<'a> {
         })
     }
 
+    /// Begin a compute pass on this run's encoder, carrying the prefix volume at the
+    /// group its own declaration names — so every [`Kernel`](super::kit::Kernel) that
+    /// reads one binds it and no dispatch site states which do (§6.10).
+    pub(super) fn loop_pass(&mut self, label: &'static str) -> LoopPass<'_> {
+        let Self {
+            r,
+            scope,
+            prefix_bg,
+            ..
+        } = self;
+        let prefix = Prefix {
+            bgl: &r.dynamics.prefix_bgl,
+            group: prefix_bg,
+        };
+        LoopPass::open(scope.encoder(), label, prefix)
+    }
+
     /// What a plan for a piece at `region_origin` is built against.
     pub(super) fn plan_ctx(&self, region_origin: Vec2) -> PlanCtx<'_> {
         PlanCtx {
@@ -299,7 +317,7 @@ pub(super) fn composite_tiles(
     rect: RegionBox,
     targets: Targets<'_>,
 ) {
-    let kit = &r.dynamics;
+    let kit = &r.dynamics.region;
     let device = &r.ctx.device;
     let RegionBox {
         origin: region_origin,
@@ -451,7 +469,7 @@ pub(super) fn slice_region(
         aux,
         resid_tex,
     } = from;
-    let kit = &r.dynamics;
+    let kit = &r.dynamics.region;
     let device = &r.ctx.device;
 
     // The one channel that changes representation, narrowed once over the whole
