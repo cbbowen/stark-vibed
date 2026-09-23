@@ -21,13 +21,13 @@ use super::super::segments::{BleedFire, Segment};
 use super::super::swept::{SweepPass, segment_instance, tile_xform, xform_group};
 use super::super::{Complaint, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
 use super::bleed::bleed_fires;
-use super::plan::{LoopDispatch, SLOT, WetStep, cell_scratch_size, dynamics_plan};
+use super::plan::{LoopDispatch, WetStep, cell_scratch_size, dynamics_plan};
 use super::region::{
     LOOP_USAGE, Piece, REGION_WRITES, RegionBox, RegionChannels, RegionRun, composite_tiles,
     region_selection, slice_region,
 };
 use super::trio::{Life, Trio};
-use crate::gpu::scratch::{BufKey, Kept, Key, LeasedTex, SubmitScope};
+use crate::gpu::scratch::{BufKey, Kept, Key, LeasedSlots, LeasedTex, SubmitScope};
 use stark_shaders::mirror::stamp::SegmentInstance;
 use stark_shaders::mirror::stamp_common::SWEEP_VERTS;
 /// Resolution (texels per side) of the stamp loop's tool reservoir
@@ -50,10 +50,10 @@ use stark_shaders::mirror::dynamics::binding as b;
 // The storage-texture *formats*, taken from the same declarations the indices come
 // from (§6.10): a slot names its own format, so the host asks rather than repeats.
 use stark_shaders::mirror::dynamics::decl as d;
+use stark_shaders::mirror::dynamics_common::Stamp;
 use stark_shaders::mirror::dynamics_common::binding as sb;
 use stark_shaders::mirror::dynamics_common::decl as sd;
 
-use crate::gpu::uniforms::UniformSlots;
 use stark_model::document::BrushDynamics;
 
 /// The mint-budget tile's pool key (`LoopCarry::fresh`): copy usages only — no pass
@@ -580,7 +580,7 @@ impl<'a> DynamicsRun<'a> {
         // the flush that submits the commands naming them. The bind groups outlive the
         // block because the loop below is recorded against them, and a `BindGroup`
         // holds its own references to every view in it.
-        let (plan, bind, levels_pass) = {
+        let (plan, stamps, bind, levels_pass) = {
             crate::timing::span!("stroke.plan");
             let ctx = self.region.plan_ctx(region_origin);
             let plan = dynamics_plan(&ctx, segments, fires, settle);
@@ -599,11 +599,11 @@ impl<'a> DynamicsRun<'a> {
                 .iter()
                 .any(|d| matches!(d.step, WetStep::Bleed))
                 .then(|| self.bleed_scratch(plan.dsize));
-            let stamp_buf = self.region.upload(&plan.slots);
+            let stamps = self.region.upload(&plan.slots);
             let bind = self.bind_piece(
                 &region,
                 &under,
-                &stamp_buf,
+                &stamps,
                 cells.as_ref(),
                 bleed.as_ref(),
                 Needs::of(&plan.slots),
@@ -633,7 +633,7 @@ impl<'a> DynamicsRun<'a> {
                     instances: buf,
                 }
             });
-            (plan, bind, levels_pass)
+            (plan, stamps, bind, levels_pass)
         };
 
         {
@@ -642,7 +642,13 @@ impl<'a> DynamicsRun<'a> {
             // where a per-segment cost lands, and where a change to the dispatch
             // count shows up before it shows up in a total.
             crate::timing::span!("stroke.loop");
-            self.record_loop(&plan.slots, plan.dsize, &bind, levels_pass.as_ref());
+            self.record_loop(
+                &plan.slots,
+                plan.dsize,
+                &stamps,
+                &bind,
+                levels_pass.as_ref(),
+            );
         }
         // Extract the budget's new totals for the carry (§6.2): a fresh lease
         // per touched tile, cut exactly as the write-back cuts paint — the
@@ -825,7 +831,7 @@ impl<'a> DynamicsRun<'a> {
     /// order. What a group supplies is only the **resources**, and that is one function
     /// of the slot for all of them — see `res` below.
     ///
-    /// `ST` binds a single slot-sized window of `stamp_buf` whose dynamic offset
+    /// `ST` binds a single slot-sized window of `stamps` whose dynamic offset
     /// selects the dispatch, so all of these are built once per piece and the loop
     /// varies only the offset. Only the groups `needs` names are built: a group is a
     /// WebGPU object per piece per pointer move.
@@ -833,7 +839,7 @@ impl<'a> DynamicsRun<'a> {
         &'p self,
         region: &'p Region,
         under: &'p Trio,
-        stamp_buf: &'p wgpu::Buffer,
+        stamps: &'p LeasedSlots<Stamp>,
         cells: Option<&'p Cells>,
         bleed: Option<&'p wgpu::TextureView>,
         needs: Needs,
@@ -842,11 +848,7 @@ impl<'a> DynamicsRun<'a> {
         let kit = &r.dynamics.wet;
         let device = &r.ctx.device;
 
-        let params = wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-            buffer: stamp_buf,
-            offset: 0,
-            size: wgpu::BufferSize::new(SLOT as u64),
-        });
+        let params = stamps.window();
         let view = |v: &'p wgpu::TextureView| wgpu::BindingResource::TextureView(v);
         let samp = |s: &'p wgpu::Sampler| wgpu::BindingResource::Sampler(s);
         // A residual view is `Some` exactly when the color space has one, and `res` is
@@ -1000,6 +1002,7 @@ impl<'a> DynamicsRun<'a> {
         &mut self,
         plan: &[LoopDispatch<WetStep>],
         dsize: u32,
+        stamps: &LeasedSlots<Stamp>,
         bind: &PieceBindings,
         levels: Option<&LevelsPass>,
     ) {
@@ -1013,11 +1016,10 @@ impl<'a> DynamicsRun<'a> {
         let reservoir = kit.exchange.groups((BRUSH_RES, BRUSH_RES));
         let mut pass = self.region.loop_pass(LOOP_PASS);
         for (i, d) in plan.iter().enumerate() {
-            // Asked of `UniformSlots`, like the swept path's `xform_offset`, so the
-            // stride the slots were *written* at and the stride they are *bound* at
-            // are one expression rather than two that happen to agree.
-            let off =
-                UniformSlots::<stark_shaders::mirror::dynamics_common::Stamp>::offset(i as u32);
+            // Asked of the lease the slots were staged into, so the stride they were
+            // *written* at and the stride they are *bound* at are one expression rather
+            // than two that happen to agree.
+            let off = stamps.offset(i);
             match d.step {
                 // The tool plays no part in the lateral flux, so `cur` — the reservoir
                 // ping-pong — stays exactly where the previous segment left it. The

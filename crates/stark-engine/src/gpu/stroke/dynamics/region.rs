@@ -4,8 +4,8 @@
 //!
 //! [`RegionRun`] is everything a wet run and a liquify draw hold in common — the
 //! renderer, the scene, the record, the flatten budget, the stroke constants, the
-//! submit scope, the dirty set, the plan's staging bytes and the group-1 prefix — plus
-//! the piece prologue and the epilogue that read them. Each path embeds one and adds
+//! submit scope, the dirty set and the group-1 prefix — plus the piece prologue and the
+//! epilogue that read them. Each path embeds one and adds
 //! only what is its own: the reservoir ping-pong and the carried lanes on one side
 //! ([`run`](super::run)), the displacement field and its run on the other
 //! ([`liquify`](super::liquify)).
@@ -30,16 +30,17 @@ use super::super::region::{RegionRect, cover};
 use super::super::segments::{BleedFire, Segment};
 use super::super::{ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
 use super::kit::{LoopPass, Prefix};
-use super::plan::{LoopDispatch, PlanCtx, SLOT, STAMP_STRIDE};
+use super::plan::{LoopDispatch, PlanCtx};
 use crate::gpu::channels::{TILE_AUX_FORMAT, Targets};
 use crate::gpu::composite::view_uniform;
 use crate::gpu::desc;
-use crate::gpu::scratch::{BufKey, Key, LeasedTex, SubmitScope};
+use crate::gpu::scratch::{BufKey, Key, LeasedSlots, LeasedTex, SubmitScope};
 use crate::gpu::tile::{AllocSource, TileMap};
 // The region composite runs `composite.wesl`, so it draws that shader's own
 // per-instance record (§6.10) rather than a second `#[repr(C)]` copy of it declared
 // here under a different name.
 use stark_shaders::mirror::composite::Instance as TileInstance;
+use stark_shaders::mirror::dynamics_common::Stamp;
 use stark_shaders::mirror::dynamics_common::decl as sd;
 use stark_shaders::mirror::view::binding as vb;
 
@@ -144,10 +145,6 @@ pub(super) struct RegionRun<'a> {
     /// The pieces partition the range's segments, so this ends up the set a second
     /// walk over the whole stroke would have built — for none of the cost.
     dirty: BTreeSet<TileCoord>,
-    /// [`upload`](Self::upload)'s staging bytes, kept across pieces: a full plan is
-    /// `MAX_STAMPS × STAMP_STRIDE`, so a fresh `vec!` per piece was that allocation per
-    /// pointer move.
-    stamps: Vec<u8>,
     /// The prefix volume at group 1 of every kernel that reads a tip — the swept
     /// prefix-τ for the wet loop, the coverage prefix for the liquify composition
     /// (§6.13). A function of the brush alone, so bound once for the whole run.
@@ -178,7 +175,6 @@ impl<'a> RegionRun<'a> {
             consts: range.consts,
             scope: r.scratch.scope(&r.ctx, label),
             dirty: BTreeSet::new(),
-            stamps: Vec::new(),
             prefix_bg,
         }
     }
@@ -249,29 +245,22 @@ impl<'a> RegionRun<'a> {
         }
     }
 
-    /// The plan's uniform slots, one [`STAMP_STRIDE`]-aligned window each — dynamic
-    /// uniform offsets being how a uniform varies across dispatches within one pass.
+    /// The plan's uniforms, one dynamic-offset slot each — slots being how a uniform
+    /// varies across the dispatches of one pass ([`crate::gpu::uniforms`]).
     ///
     /// Leased on the *piece*, like the region it works on: nothing past this piece's
     /// own submission reads it, so holding it for the whole run would make a long
     /// stroke's peak cost scale with the number of pieces. The scope returns it to the
     /// pool behind the piece's own submit ([`SubmitScope::flush`]), so the next piece's
     /// plan is written into the buffer this one used.
-    pub(super) fn upload<K>(&mut self, plan: &[LoopDispatch<K>]) -> wgpu::Buffer {
-        let Self { scope, stamps, .. } = self;
-        stamps.clear();
-        stamps.resize(plan.len() * STAMP_STRIDE as usize, 0);
-        for (i, d) in plan.iter().enumerate() {
-            let at = i * STAMP_STRIDE as usize;
-            stamps[at..at + SLOT].copy_from_slice(bytemuck::bytes_of(&d.slot));
-        }
-        let buf = scope.take_piece_buffer(BufKey {
-            size: stamps.len() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            label: "stark dynamics stamps",
-        });
-        scope.write_lease(&buf, stamps);
-        buf
+    ///
+    /// # Panics
+    /// On an empty plan, which no piece has: a wet piece holds at least one segment,
+    /// and a liquify plan always ends with its resample.
+    pub(super) fn upload<K>(&mut self, plan: &[LoopDispatch<K>]) -> LeasedSlots<Stamp> {
+        self.scope
+            .piece_slots("stark dynamics stamps", plan.iter().map(|d| &d.slot))
+            .expect("a piece dispatches at least one slot")
     }
 
     /// Close the run: submit what is still recorded, release everything behind that

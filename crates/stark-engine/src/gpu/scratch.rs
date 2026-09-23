@@ -200,9 +200,10 @@ pub(crate) struct LeasedTex {
 /// Uniforms staged into a buffer a scope leased, laid out by [`Slot`]: bound through
 /// [`window`](Self::window), each draw selecting its own by [`offset`](Self::offset).
 ///
-/// What [`SubmitScope::run_uniform`], [`piece_uniform`](SubmitScope::piece_uniform)
-/// and [`run_slots`](SubmitScope::run_slots) hand back. Never empty: staging nothing
-/// is `None` at `run_slots`.
+/// What [`SubmitScope::run_uniform`], [`piece_uniform`](SubmitScope::piece_uniform),
+/// [`run_slots`](SubmitScope::run_slots) and
+/// [`piece_slots`](SubmitScope::piece_slots) hand back. Never empty: staging nothing
+/// is `None` at either of the last two.
 pub(crate) struct LeasedSlots<T> {
     buf: wgpu::Buffer,
     len: u32,
@@ -311,6 +312,7 @@ impl ScratchPool {
             piece_held: Vec::new(),
             piece_open: false,
             since_flush: 0,
+            staging: Vec::new(),
             #[cfg(debug_assertions)]
             _open: open::Open::new(),
         }
@@ -511,6 +513,10 @@ pub(crate) struct SubmitScope {
     /// Tiles recorded since the last submit, against [`FLUSH_TILES`] — the cadence
     /// [`tile_done`](Self::tile_done) counts and nothing else uses.
     since_flush: usize,
+    /// [`run_slots`](Self::run_slots)/[`piece_slots`](Self::piece_slots) staging,
+    /// kept across the scope's lifetime: a dynamics piece stages a whole plan, so a
+    /// fresh `Vec` per call was that allocation per pointer move.
+    staging: Vec<u8>,
     #[cfg(debug_assertions)]
     _open: open::Open,
 }
@@ -689,19 +695,42 @@ impl SubmitScope {
     ///
     /// `None` for none: no draw will bind it, and staging opens the piece, so an
     /// operation that records nothing would otherwise submit for nothing.
-    pub(crate) fn run_slots<T: bytemuck::Pod>(
+    pub(crate) fn run_slots<'a, T: bytemuck::Pod>(
         &mut self,
         label: &'static str,
-        uniforms: &[T],
+        uniforms: impl IntoIterator<Item = &'a T, IntoIter: ExactSizeIterator>,
     ) -> Option<LeasedSlots<T>> {
-        if uniforms.is_empty() {
+        self.slots(label, uniforms, Self::take_run_buffer)
+    }
+
+    /// [`run_slots`](Self::run_slots) for the piece being recorded, released at its own
+    /// submit like everything else the piece takes — a dynamics plan, whose slots
+    /// nothing past that piece's dispatches reads.
+    pub(crate) fn piece_slots<'a, T: bytemuck::Pod>(
+        &mut self,
+        label: &'static str,
+        uniforms: impl IntoIterator<Item = &'a T, IntoIter: ExactSizeIterator>,
+    ) -> Option<LeasedSlots<T>> {
+        self.slots(label, uniforms, Self::take_piece_buffer)
+    }
+
+    /// The two above, over the lease tier `take` checks out of.
+    fn slots<'a, T: bytemuck::Pod>(
+        &mut self,
+        label: &'static str,
+        uniforms: impl IntoIterator<Item = &'a T, IntoIter: ExactSizeIterator>,
+        take: fn(&mut Self, BufKey) -> wgpu::Buffer,
+    ) -> Option<LeasedSlots<T>> {
+        let uniforms = uniforms.into_iter();
+        let len = u32::try_from(uniforms.len()).expect("an operation's draws are capped");
+        if len == 0 {
             return None;
         }
-        let len = u32::try_from(uniforms.len()).expect("an operation's draws are capped");
-        let mut staged = Vec::new();
+        let mut staged = std::mem::take(&mut self.staging);
         stage_slots(uniforms, &mut staged);
-        let buf = self.take_run_buffer(BufKey::uniform(staged.len() as u64, label));
+        let buf = take(self, BufKey::uniform(staged.len() as u64, label));
         self.write_lease(&buf, &staged);
+        self.staging = staged;
         Some(LeasedSlots::new(buf, len))
     }
 

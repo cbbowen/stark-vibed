@@ -25,20 +25,6 @@ use crate::gpu::substrate::TexelsPerPx;
 use stark_shaders::mirror::dynamics::CELL_BORDER;
 use stark_shaders::mirror::dynamics_common::{Stamp, TILE_WG};
 
-/// One slot's window into the stamp buffer, and the `min_binding_size` its layout
-/// declares — both of which have to be `Stamp`'s own size, so they are taken from it
-/// rather than written down.
-pub(super) const SLOT: usize = std::mem::size_of::<Stamp>();
-
-/// Stride between those windows: the padded size a dynamic offset must be a multiple
-/// of, derived from the type rather than written down here.
-///
-/// [`SLOT`] is what a slot *holds* and this is what it *occupies*. Hard-coding the
-/// quantum would let a `Stamp` that outgrew it write over the next slot instead of
-/// widening them. `swept::XFORM_STRIDE` is the same law for the sweep's own per-tile
-/// uniform.
-pub(super) const STAMP_STRIDE: u64 = crate::gpu::uniforms::UniformSlots::<Stamp>::STRIDE;
-
 /// One slot of the sequential swept-exchange loop (§6.2), and the dispatches it
 /// stands for — `K` being the step vocabulary of the path it is planned for,
 /// [`WetStep`] or [`WarpStep`].

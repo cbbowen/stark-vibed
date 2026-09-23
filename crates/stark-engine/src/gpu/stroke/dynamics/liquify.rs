@@ -48,7 +48,6 @@ use crate::document::liquify::LiquifyRun;
 use crate::gpu::desc;
 use crate::gpu::scratch::{Key, LeasedTex};
 use crate::gpu::tile::{AllocSource, FIELD_FORMAT, TileMap};
-use crate::gpu::uniforms::UniformSlots;
 use stark_shaders::mirror::dynamics_common::binding as sb;
 use stark_shaders::mirror::liquify::binding as lb;
 use stark_shaders::mirror::liquify::decl as ld;
@@ -449,7 +448,7 @@ impl<'a> LiquifyDraw<'a> {
         );
 
         // ---- The plan, the scratch it sizes, and the groups that name it.
-        let (plan, bind) = {
+        let (plan, stamps, bind) = {
             crate::timing::span!("stroke.plan");
             let ctx = self.region.plan_ctx(region_origin);
             let plan = liquify_plan(&ctx, segments, [margin as i32, margin as i32], (w, h));
@@ -463,12 +462,8 @@ impl<'a> LiquifyDraw<'a> {
                     label: "stark liquify under field",
                 })
                 .view;
-            let stamp_buf = self.region.upload(&plan.slots);
-            let params = wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: &stamp_buf,
-                offset: 0,
-                size: wgpu::BufferSize::new(super::plan::SLOT as u64),
-            });
+            let stamps = self.region.upload(&plan.slots);
+            let params = stamps.window();
             fn view(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
                 wgpu::BindingResource::TextureView(v)
             }
@@ -506,6 +501,7 @@ impl<'a> LiquifyDraw<'a> {
                 });
             (
                 plan,
+                stamps,
                 Bindings {
                     snapshot,
                     warp,
@@ -520,8 +516,7 @@ impl<'a> LiquifyDraw<'a> {
             crate::timing::span!("stroke.loop");
             let mut pass = self.region.loop_pass("stark liquify field");
             for (i, dsp) in plan.slots.iter().enumerate() {
-                let off =
-                    UniformSlots::<stark_shaders::mirror::dynamics_common::Stamp>::offset(i as u32);
+                let off = stamps.offset(i);
                 match dsp.step {
                     WarpStep::Warp => {
                         // The snapshot covers the whole square, since the gather pulls

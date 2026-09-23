@@ -115,16 +115,13 @@ pub(crate) struct UniformSlots<T> {
     /// `None` for the consumers that keep no group: a bind group answers to a layout,
     /// and several of these are bound as part of a larger group somebody else builds.
     group: Option<wgpu::BindGroup>,
-    /// The frame's slots laid out at [`Self::STRIDE`], kept so [`Self::write`] is
+    /// The frame's slots laid out at [`Slot::STRIDE`], kept so [`Self::write`] is
     /// one `write_buffer` and no allocation after the first.
     staging: Vec<u8>,
     _uniform: std::marker::PhantomData<T>,
 }
 
 impl<T: bytemuck::Pod> UniformSlots<T> {
-    /// [`Slot::STRIDE`].
-    pub(crate) const STRIDE: u64 = Slot::<T>::STRIDE;
-
     pub(crate) fn new(device: &wgpu::Device, label: &'static str, count: usize) -> Self {
         Self {
             buf: Self::alloc(device, label, count),
@@ -202,7 +199,7 @@ impl<T: bytemuck::Pod> UniformSlots<T> {
     fn alloc(device: &wgpu::Device, label: &'static str, count: usize) -> wgpu::Buffer {
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some(label),
-            size: Self::STRIDE * count.max(1) as u64,
+            size: Slot::<T>::STRIDE * count.max(1) as u64,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
