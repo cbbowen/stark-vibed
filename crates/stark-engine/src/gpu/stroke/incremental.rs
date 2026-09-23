@@ -12,7 +12,6 @@
 //! [`safe_frozen`] holds such a span back until its answer can no longer change,
 //! which is what makes `preview == committed` hold here (§1.3).
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use stark_model::document::StrokeRecord;
@@ -128,13 +127,27 @@ pub(super) struct LoopCarry {
     /// forward as clones of the same lease and the live tail re-renders from the
     /// same frozen totals every pointer move
     /// ([`ParcelTile::accum`](super::accum::ParcelTile)).
-    pub(super) fresh: BTreeMap<TileCoord, Arc<Kept>>,
+    pub(super) fresh: LoopTiles,
     /// The ceiling lane over the same tiles (§6.2): the gated mass and moment sums
     /// a pen-driven opacity claims coverage with, drawn into the region per
     /// segment and cut per tile exactly as `fresh` is. Empty unless the pen drives
     /// the ceiling.
-    pub(super) levels: BTreeMap<TileCoord, Arc<Kept>>,
+    pub(super) levels: LoopTiles,
 }
+
+/// One carried lane's tiles, **persistent** rather than a `BTreeMap` —
+/// [`ParcelTiles`](super::accum::ParcelTiles)'s argument, and the same fix.
+///
+/// The entries cannot be pruned: a stroke can cross back over any tile it has touched,
+/// and a piece resuming from a dropped lease would seed its region from the *head's own
+/// output* instead of the frozen totals. So a capturing render shares what the pieces
+/// before it accumulated and replaces only the tiles it drew, where cloning a
+/// `BTreeMap` walked every tile of the stroke so far on every pointer move.
+///
+/// Nothing iterates it, so the hash map's order costs no determinism (§12.6): both
+/// lanes are seeded and extracted by `get`/`insert` at a coordinate the piece named,
+/// and what a render writes back is decided by the tiles its own sweeps cover.
+pub(super) type LoopTiles = rpds::HashTrieMap<TileCoord, Arc<Kept>>;
 
 /// The loop's tool reservoir (§6.2): what paint the tip is carrying, and where on
 /// the tip it sits. Remembered at a span boundary, the rest of the stroke can be

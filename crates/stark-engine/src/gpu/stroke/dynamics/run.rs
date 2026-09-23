@@ -8,14 +8,12 @@
 //! The half that owns GPU state: what it is *asked* to record comes from
 //! [`plan`](super::plan), what it records *with* from [`kit`](super::kit).
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::gpu::desc;
 use crate::gpu::tile::TileMap;
-use stark_model::geom::TileCoord;
 
-use super::super::incremental::{Carried, LoopCarry, Reservoir};
+use super::super::incremental::{Carried, LoopCarry, LoopTiles, Reservoir};
 use super::super::region::chunk_segments;
 use super::super::segments::{BleedFire, Segment};
 use super::super::swept::{SweepPass, segment_instance, tile_xform, xform_group};
@@ -27,7 +25,7 @@ use super::region::{
     region_selection, slice_region,
 };
 use super::trio::{Life, Trio};
-use crate::gpu::scratch::{BufKey, Kept, Key, LeasedSlots, LeasedTex, SubmitScope};
+use crate::gpu::scratch::{BufKey, Key, LeasedSlots, LeasedTex, SubmitScope};
 use stark_shaders::mirror::stamp::SegmentInstance;
 use stark_shaders::mirror::stamp_common::SWEEP_VERTS;
 /// Resolution (texels per side) of the stamp loop's tool reservoir
@@ -94,13 +92,13 @@ const fn levels_key() -> Key {
 /// copying each carried block in and [`extract`](Self::extract)s a fresh lease back
 /// out, so the tiles it does not touch ride forward as clones of the same lease.
 struct CarriedLanes {
-    tiles: BTreeMap<TileCoord, Arc<Kept>>,
+    tiles: LoopTiles,
     /// The pool key every tile here is cut with; its extent is every copy's.
     key: Key,
 }
 
 impl CarriedLanes {
-    fn new(key: Key, tiles: BTreeMap<TileCoord, Arc<Kept>>) -> Self {
+    fn new(key: Key, tiles: LoopTiles) -> Self {
         Self { tiles, key }
     }
 
@@ -139,9 +137,10 @@ impl CarriedLanes {
             // submit. Dropping it would return the texture to the free list while
             // pending commands read it. Consecutive pieces share the tiles around
             // their cut, so this is the ordinary case, not a corner.
-            if let Some(displaced) = self.tiles.insert(*coord, Arc::new(kept)) {
-                scope.hold(displaced);
+            if let Some(displaced) = self.tiles.get(coord) {
+                scope.hold(Arc::clone(displaced));
             }
+            self.tiles.insert_mut(*coord, Arc::new(kept));
         }
     }
 }
@@ -392,11 +391,12 @@ impl<'a> DynamicsRun<'a> {
         // over the region — the brush bound exactly as the fast path binds it, so the
         // lane's sums are the fast path's.
         let leveled = consts.ceiling_lane;
-        let levels: BTreeMap<TileCoord, Arc<Kept>> = prior
+        // Cloned, which for a persistent map is a refcount: the run replaces only the
+        // tiles its own pieces draw, and the rest ride forward shared with the carry
+        // this range resumed from.
+        let levels = prior
             .map(ToolState::looped)
-            .map_or_else(BTreeMap::new, |t| {
-                t.levels.iter().map(|(c, k)| (*c, Arc::clone(k))).collect()
-            });
+            .map_or_else(LoopTiles::new, |t| t.levels.clone());
         let lane = leveled.then(|| {
             let (prefix, noise) = super::super::swept::sweep_brush_groups(
                 r,
@@ -408,7 +408,7 @@ impl<'a> DynamicsRun<'a> {
             );
             LaneBinds { prefix, noise }
         });
-        let fresh: BTreeMap<TileCoord, Arc<Kept>> = if let Some(t) = prior.map(ToolState::looped) {
+        let fresh = if let Some(t) = prior.map(ToolState::looped) {
             // Resume: the tip arrives at this range carrying exactly what it carried
             // when the previous range stopped.
             scope.encoder().copy_texture_to_texture(
@@ -428,7 +428,7 @@ impl<'a> DynamicsRun<'a> {
                     RESERVOIR_EXTENT,
                 );
             }
-            t.fresh.iter().map(|(c, k)| (*c, Arc::clone(k))).collect()
+            t.fresh.clone()
         } else {
             // Init: latent = the brush's own color, per-unit opacity = exactly 1
             // (minted paint is opaque per unit, §6.2); the carried amount starts
@@ -481,7 +481,7 @@ impl<'a> DynamicsRun<'a> {
                     ][..brush[0].targets().count()],
                     ..Default::default()
                 });
-            BTreeMap::new()
+            LoopTiles::new()
         };
         // Each at the format its own `bake_*_w` declaration names (§6.10).
         let mut bake = |at: stark_shaders::Binding, label: &'static str| {
