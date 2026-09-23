@@ -53,13 +53,6 @@ fn soft(color: [f32; 3], radius: f32) -> BrushParams {
 const UNDER: &[Vec2] = &[Vec2::new(-120.0, 0.0), Vec2::new(120.0, 0.0)];
 const OVER: &[Vec2] = &[Vec2::new(-20.0, 0.0), Vec2::new(20.0, 0.0)];
 
-fn max_diff(a: [u8; 4], b: [u8; 4]) -> u32 {
-    (0..4)
-        .map(|i| (a[i] as i32 - b[i] as i32).unsigned_abs())
-        .max()
-        .unwrap_or(0)
-}
-
 /// Where the upper layer is **invisible on bare canvas**, it must leave the layer
 /// below it untouched.
 ///
@@ -93,15 +86,15 @@ fn an_invisible_layer_does_not_repaint_the_one_below() {
     let stacked = under.render_to_image();
 
     let mut checked = 0u32;
-    let mut worst = 0u32;
+    let mut worst = 0u8;
     for y in 0..bare.height {
         for x in 0..bare.width {
             // "Invisible": the blue stroke on its own is the untouched canvas here.
-            if max_diff(top_alone.pixel(x, y), bare.pixel(x, y)) > 1 {
+            if texel_delta(top_alone.pixel(x, y), bare.pixel(x, y)) > 1 {
                 continue;
             }
             checked += 1;
-            worst = worst.max(max_diff(stacked.pixel(x, y), under_alone.pixel(x, y)));
+            worst = worst.max(texel_delta(stacked.pixel(x, y), under_alone.pixel(x, y)));
         }
     }
     // Sanity: the band actually exists, so a bug that made the stroke vanish

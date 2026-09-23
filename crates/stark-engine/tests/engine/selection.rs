@@ -336,17 +336,21 @@ fn undo_and_redo_step_through_the_selection() {
     );
     engine.process(DocCommand::Undo); // the selection itself
     assert!(!engine.observe().has_selection);
-    assert!(
-        images_match(&bare, &engine.render_to_image(), 1),
-        "undoing back past the selection returns the empty canvas"
+    assert_images(
+        &bare,
+        &engine.render_to_image(),
+        1,
+        "undoing back past the selection returns the empty canvas",
     );
 
     engine.process(DocCommand::Redo); // the selection
     engine.process(DocCommand::Redo); // the stroke
     assert!(engine.observe().has_selection);
-    assert!(
-        images_match(&masked, &engine.render_to_image(), 1),
-        "redoing through a selection must reproduce the same pixels"
+    assert_images(
+        &masked,
+        &engine.render_to_image(),
+        1,
+        "redoing through a selection must reproduce the same pixels",
     );
 }
 
@@ -379,9 +383,11 @@ fn selection_survives_save_and_load() {
     };
     loaded.load_bytes(&bytes).expect("load");
     let after = loaded.render_to_image();
-    assert!(
-        images_match(&before, &after, 2),
-        "the log carries the selection *op*, so a reload replays the same mask"
+    assert_images(
+        &before,
+        &after,
+        2,
+        "the log carries the selection *op*, so a reload replays the same mask",
     );
     assert!(
         loaded.observe().has_selection,
@@ -611,9 +617,11 @@ fn the_outline_is_drawn_on_the_boundary_only() {
     select(&mut engine, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
     let outlined = engine.render_to_image();
 
-    assert!(
-        !images_match(&bare, &outlined, 8),
-        "an active selection must be visible on screen"
+    assert_images_differ(
+        &bare,
+        &outlined,
+        8,
+        "an active selection must be visible on screen",
     );
 
     // Differences must hug the rectangle's edges: sample a band across the right
@@ -906,9 +914,11 @@ fn dimming_is_an_undo_step_that_keeps_the_selection() {
     assert!(obs.has_selection, "dimming must not deselect");
     // The outline is drawn off the mask's own level, not its opacity, so the ants
     // stay exactly where they were.
-    assert!(
-        images_match(&before, &engine.render_to_image(), 0),
-        "dimming the mask moved pixels — it should move one number"
+    assert_images(
+        &before,
+        &engine.render_to_image(),
+        0,
+        "dimming the mask moved pixels — it should move one number",
     );
 
     engine.process(DocCommand::Undo);

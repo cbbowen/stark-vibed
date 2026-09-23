@@ -86,8 +86,10 @@ fn a_liquify_stroke_at_zero_strength_leaves_the_canvas_byte_identical() {
         &[Vec2::new(-60.0, 0.0), Vec2::new(60.0, 10.0)],
     );
     let after = engine.render_to_image();
-    assert!(
-        images_match(&before, &after, 0),
+    assert_images(
+        &before,
+        &after,
+        0,
         "a zero-strength drag re-stored the canvas",
     );
 }
@@ -126,8 +128,10 @@ fn a_drag_through_a_uniform_fill_is_the_identity() {
         ],
     );
     let after = engine.render_to_image();
-    assert!(
-        images_match(&before, &after, 0),
+    assert_images(
+        &before,
+        &after,
+        0,
         "a drag through a uniform fill moved paint it could not distinguish",
     );
 }
@@ -195,10 +199,7 @@ fn a_liquify_stroke_on_bare_canvas_shows_nothing() {
         &[Vec2::new(-80.0, -20.0), Vec2::new(80.0, 20.0)],
     );
     let after = engine.render_to_image();
-    assert!(
-        images_match(&before, &after, 0),
-        "a drag over bare canvas left a mark",
-    );
+    assert_images(&before, &after, 0, "a drag over bare canvas left a mark");
 }
 
 /// How many px wide the band's leading edge is along `y`, between `x0` and `x1`:

@@ -23,7 +23,7 @@
 use crate::common::palette::{COOL, PALE, WARM};
 use crate::common::*;
 use stark_engine::command::{DocCommand, Edit, PeerCommand};
-use stark_engine::{Engine, LayerInfo, RgbaImage};
+use stark_engine::{Engine, LayerInfo};
 use stark_model::Srgb;
 use stark_model::document::{BlendMode, LayerId, MatteRegion, Parcel, Place};
 use stark_model::geom::Vec2;
@@ -44,12 +44,6 @@ fn info(engine: &Engine, id: LayerId) -> LayerInfo {
         .into_iter()
         .find(|l| l.id == id)
         .expect("layer is in the document")
-}
-
-/// Assert two renders are the *same image*, byte for byte.
-fn assert_identical(a: &RgbaImage, b: &RgbaImage, what: &str) {
-    let (frac, worst) = diff_fraction(a, b);
-    assert_eq!((frac, worst), (0.0, 0), "{what}");
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +279,12 @@ fn grouping_plain_layers_changes_nothing() {
     });
     let grouped = engine.render_to_image();
 
-    assert_identical(&ungrouped, &grouped, "grouping plain layers must be free");
+    assert_images(
+        &ungrouped,
+        &grouped,
+        0,
+        "grouping plain layers must be free",
+    );
 }
 
 /// Carrying and releasing again is the identity — the structural round trip, byte
@@ -314,7 +313,7 @@ fn carry_then_release_returns_the_same_picture() {
     });
     let after = engine.render_to_image();
 
-    assert_identical(&before, &after, "carry then release is the identity");
+    assert_images(&before, &after, 0, "carry then release is the identity");
 }
 
 /// Duplicating a group copies the **whole subtree** — one copy per carried layer,
@@ -363,9 +362,10 @@ fn duplicating_a_group_copies_the_whole_subtree() {
     // Hiding the copy hides everything it carries, so what is left is the document
     // as it stood — the copy is the only difference, byte for byte.
     engine.process(DocCommand::SetLayerVisible(base_copy, false));
-    assert_identical(
+    assert_images(
         &before,
         &engine.render_to_image(),
+        0,
         "a hidden copy of a group leaves the original picture",
     );
 }
@@ -429,7 +429,7 @@ fn hiding_a_group_hides_what_it_carries() {
 
     engine.process(DocCommand::SetLayerVisible(ROOT, false));
     let hidden = engine.render_to_image();
-    assert_identical(&bare, &hidden, "the carried layer went with its base");
+    assert_images(&bare, &hidden, 0, "the carried layer went with its base");
 }
 
 // ---------------------------------------------------------------------------
@@ -452,9 +452,10 @@ fn clipping_over_an_empty_backdrop_shows_nothing() {
     engine.process(DocCommand::SetLayerClip(top, true));
     let clipped = engine.render_to_image();
 
-    assert_identical(
+    assert_images(
         &bare,
         &clipped,
+        0,
         "clipped to paint that is not there, so nothing shows",
     );
 }
@@ -528,9 +529,10 @@ fn a_clipped_layer_adds_no_coverage_where_the_backdrop_is_empty() {
     engine.process(DocCommand::SetLayerClip(top, true));
     let clipped = engine.render_to_image();
 
-    assert_identical(
+    assert_images(
         &base_only,
         &clipped,
+        0,
         "a clipped layer must not paint where its backdrop is empty \u{2014} \
          not even faintly, and not in the height field",
     );

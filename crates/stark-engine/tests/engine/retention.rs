@@ -13,7 +13,7 @@
 //! write files missing their early strokes, with the in-memory picture still showing
 //! the whole painting.
 
-use crate::common::{Probe, brush, engine_or_skip, stroke_with};
+use crate::common::{Probe, assert_images, brush, engine_or_skip, stroke_with};
 use stark_engine::command::{DocCommand, ViewCommand};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::geom::Vec2;
@@ -31,11 +31,6 @@ fn paint_a_session(engine: &mut Engine, strokes: usize) {
 
 fn pixels(engine: &mut Engine) -> RgbaImage {
     engine.render_to_image()
-}
-
-/// Every byte of two images, so "the same picture" means the same picture.
-fn identical(a: &RgbaImage, b: &RgbaImage) -> bool {
-    a.width == b.width && a.height == b.height && a.pixels == b.pixels
 }
 
 /// **The document survives what the undo stack does not.**
@@ -70,8 +65,10 @@ fn folding_history_does_not_change_the_saved_document() {
     reopened.load_bytes(&bytes).expect("load");
     let after = pixels(&mut reopened);
 
-    assert!(
-        identical(&before, &after),
+    assert_images(
+        &before,
+        &after,
+        0,
         "a folded session saved a different painting than it was showing",
     );
 }
@@ -93,8 +90,10 @@ fn folding_history_does_not_change_what_a_peer_is_sent() {
     engine.start_collaboration(stark_model::document::ActorId(7));
     let after = pixels(&mut engine);
 
-    assert!(
-        identical(&before, &after),
+    assert_images(
+        &before,
+        &after,
+        0,
         "re-materializing the shared log produced a different painting",
     );
 }
@@ -131,8 +130,10 @@ fn undo_reaches_the_fold_and_stops() {
     // Asking anyway is a no-op rather than a panic or a silent corruption.
     let at_floor = pixels(&mut engine);
     engine.process(DocCommand::Undo);
-    assert!(
-        identical(&at_floor, &pixels(&mut engine)),
+    assert_images(
+        &at_floor,
+        &pixels(&mut engine),
+        0,
         "an undo past the fold changed the document",
     );
 }

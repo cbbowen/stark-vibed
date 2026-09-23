@@ -73,37 +73,13 @@ fn run() -> [Vec2; 2] {
 /// pixels were touched* — which is the difference between the flow tests and the size
 /// test below, and why they use different measures.
 fn ink(before: &stark_engine::RgbaImage, after: &stark_engine::RgbaImage) -> f64 {
-    before
-        .pixels
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .zip(after.pixels.as_chunks::<4>().0)
-        .map(|(a, b)| {
-            a.iter()
-                .zip(b)
-                .map(|(x, y)| (*x as i32 - *y as i32).abs())
-                .max()
-                .unwrap_or(0) as f64
-        })
-        .sum()
+    texel_deltas(before, after).map(f64::from).sum()
 }
 
 /// Pixels the stroke moved by more than a hair — the mark's **extent**, which is what
 /// a size mapping changes.
 fn covered(before: &stark_engine::RgbaImage, after: &stark_engine::RgbaImage) -> u64 {
-    before
-        .pixels
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .zip(after.pixels.as_chunks::<4>().0)
-        .filter(|(a, b)| {
-            a.iter()
-                .zip(b.iter())
-                .any(|(x, y)| (*x as i32 - *y as i32).abs() > 8)
-        })
-        .count() as u64
+    texel_deltas(before, after).filter(|&d| d > 8).count() as u64
 }
 
 /// Draw `b` twice at two pen states, undoing between, and return the two marks'

@@ -176,10 +176,7 @@ fn filling_the_selection_needs_one_and_is_otherwise_refused() {
         op: FillOp::of_selection(Srgb::new(RED)),
     }));
     let after = engine.render_to_image();
-    assert!(
-        images_match(&before, &after, 0),
-        "an unbounded fill changed the document"
-    );
+    assert_images(&before, &after, 0, "an unbounded fill changed the document");
 
     // With a selection in force it is exactly the selection that gets filled —
     // the selection bar's button.
@@ -409,9 +406,11 @@ fn the_drag_previews_the_paint_it_will_commit() {
     let committed = engine.render_to_image();
     // `preview == committed`, the same invariant a stroke holds: the preview runs
     // the very call the commit does, over the same base.
-    assert!(
-        images_match(&previewed, &committed, 1),
-        "the fill preview and the committed fill disagree"
+    assert_images(
+        &previewed,
+        &committed,
+        1,
+        "the fill preview and the committed fill disagree",
     );
 }
 
@@ -441,9 +440,11 @@ fn the_preview_does_not_accumulate_as_the_drag_grows() {
         });
     }
     let fiftieth = engine.render_to_image();
-    assert!(
-        images_match(&first, &fiftieth, 1),
-        "the fill preview accumulated across pointer moves"
+    assert_images(
+        &first,
+        &fiftieth,
+        1,
+        "the fill preview accumulated across pointer moves",
     );
 }
 
@@ -472,9 +473,11 @@ fn undo_restores_exactly_what_the_fill_covered() {
 
     engine.process(DocCommand::Undo);
     let after = engine.render_to_image();
-    assert!(
-        images_match(&before, &after, 1),
-        "undoing a fill did not restore the paint under it"
+    assert_images(
+        &before,
+        &after,
+        1,
+        "undoing a fill did not restore the paint under it",
     );
 }
 
@@ -549,9 +552,11 @@ fn a_fill_survives_save_and_load() {
     let bytes = engine.save_bytes().expect("save");
     engine.load_bytes(&bytes).expect("load");
     let after = engine.render_to_image();
-    assert!(
-        images_match(&before, &after, 2),
-        "a fill did not replay identically from the log"
+    assert_images(
+        &before,
+        &after,
+        2,
+        "a fill did not replay identically from the log",
     );
 }
 
@@ -757,9 +762,11 @@ fn the_gradient_preview_matches_the_commit() {
     engine.process(ViewCommand::Preview(None));
     engine.process(DocCommand::Set(Edit::Fill { layer, op }));
     let committed = engine.render_to_image();
-    assert!(
-        images_match(&previewed, &committed, 0),
-        "gradient-fill preview vs commit must be bit-identical"
+    assert_images(
+        &previewed,
+        &committed,
+        0,
+        "gradient-fill preview vs commit must be bit-identical",
     );
 }
 
@@ -803,9 +810,11 @@ fn the_gradient_preview_does_not_accumulate() {
         op: op(40.0),
     })));
     let last = engine.render_to_image();
-    assert!(
-        images_match(&first, &last, 0),
-        "re-previewing the same axis must render the same frame"
+    assert_images(
+        &first,
+        &last,
+        0,
+        "re-previewing the same axis must render the same frame",
     );
 }
 
@@ -895,8 +904,10 @@ fn a_gradient_fill_survives_save_and_load() {
     let bytes = engine.save_bytes().expect("save");
     engine.load_bytes(&bytes).expect("load");
     let after = engine.render_to_image();
-    assert!(
-        images_match(&before, &after, 2),
-        "a gradient fill did not replay identically from the log"
+    assert_images(
+        &before,
+        &after,
+        2,
+        "a gradient fill did not replay identically from the log",
     );
 }

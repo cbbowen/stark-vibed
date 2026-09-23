@@ -332,9 +332,11 @@ fn export_omits_the_selection_outline() {
             .expect("with selection"),
     )
     .expect("the readback completes");
-    assert!(
-        images_match(&clean, &selected, 2),
-        "the selection outline leaked into the export"
+    assert_images(
+        &clean,
+        &selected,
+        2,
+        "the selection outline leaked into the export",
     );
 
     // It is still on screen, though — the outline is chrome, not a deletion.
@@ -701,12 +703,16 @@ fn export_is_rgba_whatever_the_target_format_is() {
     .expect("the readback completes");
 
     assert_eq!((a.width, a.height), (b.width, b.height));
-    assert!(
-        images_match(&a, &b, 2),
-        "a BGRA target exported different colors than an RGBA one — the readback \
+    assert_images(
+        &a,
+        &b,
+        2,
+        format_args!(
+            "a BGRA target exported different colors than an RGBA one — the readback \
          is not normalizing channel order. Centre texel: {:?} vs {:?}",
-        a.pixel(a.width / 2, a.height / 2),
-        b.pixel(b.width / 2, b.height / 2),
+            a.pixel(a.width / 2, a.height / 2),
+            b.pixel(b.width / 2, b.height / 2)
+        ),
     );
     // And the paint really is warm in both, so this is not two identically-wrong
     // images agreeing with each other.
@@ -816,13 +822,17 @@ fn committed_renders_omit_the_in_flight_stroke() {
             .expect("committed"),
     )
     .expect("the readback completes");
-    assert!(
-        !images_match(&bare, &live, 2),
-        "the stroke in hand must show in a live render"
+    assert_images_differ(
+        &bare,
+        &live,
+        2,
+        "the stroke in hand must show in a live render",
     );
-    assert!(
-        images_match(&bare, &committed, 2),
-        "a committed render must not see the stroke in hand"
+    assert_images(
+        &bare,
+        &committed,
+        2,
+        "a committed render must not see the stroke in hand",
     );
 
     // And on release the two agree again: the difference is only ever "in flight",
@@ -840,9 +850,11 @@ fn committed_renders_omit_the_in_flight_stroke() {
             .expect("after"),
     )
     .expect("the readback completes");
-    assert!(
-        images_match(&live, &after, 6),
-        "the committed stroke should look like the one that was previewed"
+    assert_images(
+        &live,
+        &after,
+        6,
+        "the committed stroke should look like the one that was previewed",
     );
 }
 

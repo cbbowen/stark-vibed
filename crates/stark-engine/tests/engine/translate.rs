@@ -12,7 +12,6 @@
 
 use crate::common::palette::{GREEN_SOFT, RED};
 use crate::common::*;
-use stark_engine::RgbaImage;
 use stark_engine::command::{DocCommand, Edit, ViewCommand};
 use stark_model::document::{SelectionMode, SelectionOp, SelectionShape, TransformMap};
 use stark_model::geom::{Affine2, IVec2, Vec2};
@@ -47,39 +46,6 @@ fn translate_active(engine: &mut stark_engine::Engine, to: IVec2) {
     engine.process(DocCommand::Set(Edit::Translate { layer, to }));
 }
 
-fn assert_identical(a: &RgbaImage, b: &RgbaImage, what: &str) {
-    assert_within(a, b, 0, what);
-}
-
-/// The two images agree within `levels` per channel — 0 is byte-exact.
-fn assert_within(a: &RgbaImage, b: &RgbaImage, levels: u8, what: &str) {
-    let (frac, worst) = diff_fraction(a, b);
-    if worst <= levels {
-        return;
-    }
-    let mut sites = Vec::new();
-    'scan: for y in 0..a.height {
-        for x in 0..a.width {
-            let i = ((y * a.width + x) * 4) as usize;
-            if a.pixels[i..i + 4] != b.pixels[i..i + 4] {
-                sites.push(format!(
-                    "({x},{y}) {:?} -> {:?}",
-                    &a.pixels[i..i + 4],
-                    &b.pixels[i..i + 4]
-                ));
-                if sites.len() >= 8 {
-                    break 'scan;
-                }
-            }
-        }
-    }
-    panic!(
-        "{what}: images differ past {levels} levels (worst channel delta {worst}, {:.4}% of pixels)\nfirst sites: {}",
-        frac * 100.0,
-        sites.join("; ")
-    );
-}
-
 // --- The field composites as the baked move (§14.12) ------------------------
 
 /// **The core claim**: a layer whose frame is set to `D` renders bit-for-bit as
@@ -106,9 +72,10 @@ fn a_translated_layer_renders_as_the_baked_move() {
         map: TransformMap::Affine(Affine2::from_translation(d.as_vec2())),
     }));
 
-    assert_identical(
+    assert_images(
         &a.render_to_image(),
         &b.render_to_image(),
+        0,
         "field vs baked move",
     );
 }
@@ -154,9 +121,10 @@ fn a_translation_previews_as_its_commit() {
     engine.process(ViewCommand::Preview(Some(Edit::Translate { layer, to })));
     let previewed = engine.render_to_image();
     engine.process(DocCommand::Set(Edit::Translate { layer, to }));
-    assert_identical(
+    assert_images(
         &previewed,
         &engine.render_to_image(),
+        0,
         "preview == committed",
     );
 }
@@ -172,10 +140,10 @@ fn undo_restores_a_translation() {
     let base = engine.render_to_image();
     translate_active(&mut engine, IVec2::new(120, 120));
     engine.process(DocCommand::Undo);
-    assert_identical(&base, &engine.render_to_image(), "undo of a translate");
+    assert_images(&base, &engine.render_to_image(), 0, "undo of a translate");
     engine.process(DocCommand::Redo);
     translate_active(&mut engine, IVec2::ZERO);
-    assert_identical(&base, &engine.render_to_image(), "moved back by hand");
+    assert_images(&base, &engine.render_to_image(), 0, "moved back by hand");
 }
 
 // --- Painting in a frame (§14.12's `frame` offset) --------------------------
@@ -208,7 +176,7 @@ fn painting_on_a_translated_layer_lands_under_the_hand() {
     let line = [Vec2::new(-80.0, 0.0), Vec2::new(80.0, 0.0)];
     paint(&mut a, GREEN_SOFT, 12.0, &line);
     paint(&mut b, GREEN_SOFT, 12.0, &line);
-    assert_within(
+    assert_images(
         &a.render_to_image(),
         &b.render_to_image(),
         FRAME_SOLVE_LEVELS,
@@ -240,7 +208,7 @@ fn a_selection_gates_a_framed_stroke_where_the_hand_sees_it() {
             &[Vec2::new(-80.0, 0.0), Vec2::new(80.0, 0.0)],
         );
     }
-    assert_within(
+    assert_images(
         &a.render_to_image(),
         &b.render_to_image(),
         FRAME_SOLVE_LEVELS,
@@ -288,7 +256,7 @@ fn a_float_leaves_the_picture_unchanged() {
         "an unframed source cuts at zero"
     );
 
-    assert_within(&base, &engine.render_to_image(), 1, "the float's picture");
+    assert_images(&base, &engine.render_to_image(), 1, "the float's picture");
 }
 
 /// The float from a **translated** source: the same picture-preservation claim,
@@ -326,7 +294,7 @@ fn a_float_from_a_translated_source_leaves_the_picture_unchanged() {
         IVec2::new(37, -13),
         "the child stands at the frame the cut was made in",
     );
-    assert_within(
+    assert_images(
         &base,
         &engine.render_to_image(),
         1,
@@ -382,7 +350,7 @@ fn a_perspective_in_a_frame_lands_under_the_hand() {
             map: map.clone(),
         }));
     }
-    assert_within(
+    assert_images(
         &a.render_to_image(),
         &b.render_to_image(),
         FRAME_SOLVE_LEVELS,
@@ -469,7 +437,7 @@ fn a_float_dragged_and_merged_back_is_the_baked_move() {
     // the same picture, and a tip whose falloff is narrower puts a steeper gradient
     // under that resampling — a third of a percent of pixels land one level further
     // apart. Still a band about *rounding*, not about the two paths disagreeing.
-    assert_within(
+    assert_images(
         &a.render_to_image(),
         &b.render_to_image(),
         3,
@@ -504,5 +472,5 @@ fn undo_restores_a_float_and_its_selection() {
             .count(),
         0
     );
-    assert_identical(&selected, &engine.render_to_image(), "undo of a float");
+    assert_images(&selected, &engine.render_to_image(), 0, "undo of a float");
 }

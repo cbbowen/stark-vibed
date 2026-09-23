@@ -7,6 +7,7 @@ pub mod palette;
 
 use stark_engine::command::Tool;
 use stark_model::Srgb;
+use std::fmt;
 use std::fs;
 use std::io::{BufReader, BufWriter};
 use std::path::{Path, PathBuf};
@@ -561,6 +562,39 @@ pub fn painted(img: &RgbaImage, canvas: Vec2) -> bool {
     leads(texel(img, canvas), Lead::Red, MARGIN_FLAT)
 }
 
+/// The worst per-channel difference between two texels.
+pub fn texel_delta(a: [u8; 4], b: [u8; 4]) -> u8 {
+    a.iter()
+        .zip(b)
+        .map(|(&x, y)| x.abs_diff(y))
+        .max()
+        .unwrap_or(0)
+}
+
+/// [`texel_delta`] at every texel of two renders of the same size.
+///
+/// **The suite's one diff kernel.** The same four lines were written out ten times —
+/// in this module three times, and again in the composite, tooth and modulation
+/// suites — every copy agreeing on the statistic and differing only in what it did
+/// with it afterwards: a fraction, a worst, a hit set, a per-texel ink measure. They
+/// are all this iterator plus a fold.
+///
+/// Panics on a size mismatch, which is not a question any caller wants answered
+/// texel by texel.
+pub fn texel_deltas<'a>(a: &'a RgbaImage, b: &'a RgbaImage) -> impl Iterator<Item = u8> + 'a {
+    assert_eq!(
+        (a.width, a.height),
+        (b.width, b.height),
+        "image size mismatch"
+    );
+    a.pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.pixels.as_chunks::<4>().0)
+        .map(|(&pa, &pb)| texel_delta(pa, pb))
+}
+
 /// The fraction of pixels that differ **at all**, and the worst per-channel
 /// difference anywhere — in that order.
 ///
@@ -568,69 +602,89 @@ pub fn painted(img: &RgbaImage, canvas: Vec2) -> bool {
 /// separates a contiguous seam from a speck, the worst says how far the seam went.
 /// [`frac_exceeding`] is the same fraction taken above a threshold.
 pub fn diff_fraction(a: &RgbaImage, b: &RgbaImage) -> (f64, u8) {
-    assert_eq!(
-        (a.width, a.height),
-        (b.width, b.height),
-        "image size mismatch"
-    );
     let mut bad = 0u64;
     let mut worst = 0u8;
-    for (pa, pb) in a
-        .pixels
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .zip(b.pixels.as_chunks::<4>().0)
-    {
-        let d = pa
-            .iter()
-            .zip(pb)
-            .map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs() as u8)
-            .max()
-            .unwrap_or(0);
+    for d in texel_deltas(a, b) {
         worst = worst.max(d);
-        if d > 0 {
-            bad += 1;
-        }
+        bad += u64::from(d > 0);
     }
-    let total = (a.width * a.height) as f64;
-    (bad as f64 / total, worst)
+    (bad as f64 / (a.width * a.height) as f64, worst)
 }
 
 /// Fraction of pixels whose maximum per-channel difference *exceeds* `tol`. Unlike the
 /// per-pixel worst, this distinguishes a contiguous seam (a band of many significantly-
 /// different pixels) from a handful of isolated precision specks.
 pub fn frac_exceeding(a: &RgbaImage, b: &RgbaImage, tol: u8) -> f64 {
-    assert_eq!(
-        (a.width, a.height),
-        (b.width, b.height),
-        "image size mismatch"
-    );
-    let mut bad = 0u64;
-    for (pa, pb) in a
-        .pixels
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .zip(b.pixels.as_chunks::<4>().0)
-    {
-        let d = pa
-            .iter()
-            .zip(pb)
-            .map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs())
-            .max()
-            .unwrap_or(0);
-        if d > tol as u32 {
-            bad += 1;
-        }
-    }
+    let bad = texel_deltas(a, b).filter(|&d| d > tol).count();
     bad as f64 / (a.width * a.height) as f64
 }
 
 /// True if `a` and `b` match within `tol` per channel for every pixel.
+///
+/// For a *question* about two renders. A test making the claim wants
+/// [`assert_images`], whose failure says how far apart they are and where.
 pub fn images_match(a: &RgbaImage, b: &RgbaImage, tol: u8) -> bool {
-    let (_, worst) = diff_fraction(a, b);
-    worst <= tol
+    texel_deltas(a, b).all(|d| d <= tol)
+}
+
+/// The first few texels more than `tol` apart, as `(x,y) before -> after [delta]`.
+fn differing_sites(a: &RgbaImage, b: &RgbaImage, tol: u8) -> Vec<String> {
+    texel_deltas(a, b)
+        .enumerate()
+        .filter(|&(_, d)| d > tol)
+        .take(8)
+        .map(|(i, d)| {
+            let j = i * 4;
+            format!(
+                "({},{}) {:?} -> {:?} [{d}]",
+                i as u32 % a.width,
+                i as u32 / a.width,
+                &a.pixels[j..j + 4],
+                &b.pixels[j..j + 4]
+            )
+        })
+        .collect()
+}
+
+/// Assert every texel of `a` and `b` is within `tol` per channel. `tol` of 0 is
+/// byte-exact.
+///
+/// **The suite's one image assertion.** `assert!(images_match(..))` reports that two
+/// renders differ and nothing else, so every investigation of one began by finding
+/// out whether the drift was a seam, a speck or the whole frame. This says so: the
+/// worst channel delta, the share of the frame past `tol`, and the first few sites.
+///
+/// `what` takes a literal or a `format_args!`, so a caller naming a case in the
+/// message does not have to allocate one.
+#[track_caller]
+pub fn assert_images(a: &RgbaImage, b: &RgbaImage, tol: u8, what: impl fmt::Display) {
+    let mut worst = 0u8;
+    let mut over = 0u64;
+    for d in texel_deltas(a, b) {
+        worst = worst.max(d);
+        over += u64::from(d > tol);
+    }
+    if worst <= tol {
+        return;
+    }
+    panic!(
+        "{what}: images differ by {worst} > tol {tol}, over {:.4}% of the frame\n\
+         first sites: {}",
+        over as f64 / (a.width * a.height) as f64 * 100.0,
+        differing_sites(a, b, tol).join("; ")
+    );
+}
+
+/// Assert `a` and `b` are more than `tol` apart **somewhere** — [`assert_images`]'s
+/// negative, for a test whose claim is that something reached the canvas.
+#[track_caller]
+pub fn assert_images_differ(a: &RgbaImage, b: &RgbaImage, tol: u8, what: impl fmt::Display) {
+    let worst = texel_deltas(a, b).max().unwrap_or(0);
+    assert!(
+        worst > tol,
+        "{what}: the two renders agree to within {tol} (worst channel delta {worst}), \
+         so nothing reached the canvas"
+    );
 }
 
 /// True if every texel of `img` is the same RGBA value — a render with no picture in
@@ -729,28 +783,14 @@ pub fn assert_golden(name: &str, img: &RgbaImage, tol: u8) {
     // ~3% density over the stroke. Legitimate numeric drift is a *decaying tail over
     // a region*; an artifact is a *bump at high magnitude*. Only the maximum tells
     // them apart, so only the maximum is read, and `tol` is the whole bound.
-    let mut worst = (0u32, 0usize);
-    for (i, (a, b)) in img
-        .pixels
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .zip(golden.pixels.as_chunks::<4>().0)
+    let (d, i) = texel_deltas(img, &golden)
         .enumerate()
-    {
-        let d = a
-            .iter()
-            .zip(b)
-            .map(|(x, y)| (*x as i32 - *y as i32).unsigned_abs())
-            .max()
-            .unwrap_or(0);
-        if d > worst.0 {
-            worst = (d, i);
-        }
-    }
-    let (d, i) = worst;
+        .fold(
+            (0u8, 0usize),
+            |worst, (i, d)| if d > worst.0 { (d, i) } else { worst },
+        );
     let tol = if env_flag(GOLDEN_EXACT) { 0 } else { tol };
-    if d > u32::from(tol) {
+    if d > tol {
         let actual = path.with_extension("actual.png");
         write_png(&actual, img);
         panic!(

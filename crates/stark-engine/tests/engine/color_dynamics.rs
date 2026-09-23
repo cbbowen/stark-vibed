@@ -121,10 +121,7 @@ fn zero_amplitude_is_bit_identical_to_off() {
     stroke_with(&mut b, jb, &S_CURVE);
 
     let (ia, ib) = (a.render_to_image(), b.render_to_image());
-    assert!(
-        images_match(&ia, &ib, 0),
-        "amplitude-0 dynamics changed the deposit"
-    );
+    assert_images(&ia, &ib, 0, "amplitude-0 dynamics changed the deposit");
 }
 
 /// The jitter is a pure function of the stroke record: two engines replaying the
@@ -142,7 +139,7 @@ fn jitter_is_deterministic_and_effective() {
     paint(&mut plain, TEAL, 42.0, &S_CURVE);
 
     let (ia, ib) = (a.render_to_image(), b.render_to_image());
-    assert!(images_match(&ia, &ib, 0), "jitter not deterministic");
+    assert_images(&ia, &ib, 0, "jitter not deterministic");
     let ip = plain.render_to_image();
     assert!(
         frac_exceeding(&ia, &ip, 10) > 0.01,
@@ -164,10 +161,7 @@ fn jitter_survives_save_load() {
     let bytes = a.save_bytes().expect("save");
     b.load_bytes(&bytes).expect("load");
     let (ia, ib) = (a.render_to_image(), b.render_to_image());
-    assert!(
-        images_match(&ia, &ib, 0),
-        "jittered stroke not replay-lossless"
-    );
+    assert_images(&ia, &ib, 0, "jittered stroke not replay-lossless");
 }
 
 /// The sequential exchange loop (a brush that also lifts/deposits canvas paint —
@@ -190,7 +184,7 @@ fn jitter_applies_in_dynamics_loop() {
     stroke_with(&mut plain, pb, &S_CURVE);
 
     let (ia, ib) = (a.render_to_image(), b.render_to_image());
-    assert!(images_match(&ia, &ib, 0), "loop jitter not deterministic");
+    assert_images(&ia, &ib, 0, "loop jitter not deterministic");
     let ip = plain.render_to_image();
     assert!(
         frac_exceeding(&ia, &ip, 10) > 0.01,
@@ -234,10 +228,14 @@ fn jittered_live_preview_matches_commit() {
     replay_with(&mut replayed, jb, &S_CURVE);
 
     let (il, ir) = (live.render_to_image(), replayed.render_to_image());
-    assert!(
-        images_match(&il, &ir, SEAM_LEVELS),
-        "live jitter != committed jitter: worst {} levels",
-        diff_fraction(&il, &ir).1
+    assert_images(
+        &il,
+        &ir,
+        SEAM_LEVELS,
+        format_args!(
+            "live jitter != committed jitter: worst {} levels",
+            diff_fraction(&il, &ir).1
+        ),
     );
 }
 
@@ -265,7 +263,7 @@ fn each_stroke_lays_its_own_field() {
         b.render_to_image(),
         again.render_to_image(),
     );
-    assert!(images_match(&ia, &ic, 0), "one seed laid two patterns");
+    assert_images(&ia, &ic, 0, "one seed laid two patterns");
     assert!(
         frac_exceeding(&ia, &ib, 10) > 0.01,
         "two seeds laid one pattern"

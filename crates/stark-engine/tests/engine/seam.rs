@@ -641,9 +641,11 @@ fn every_tile_writer_is_translation_invariant() {
     for (name, op) in cases {
         let corner = render_shifted_op(Vec2::ZERO, *op);
         let interior = render_shifted_op(Vec2::new(128.0, 128.0), *op);
-        assert!(
-            !images_match(&corner, &blank, 8),
-            "{name}: left no mark, so the comparison below is blank against blank"
+        assert_images_differ(
+            &corner,
+            &blank,
+            8,
+            format_args!("{name}: left no mark, so the comparison below is blank against blank"),
         );
         // The corpus's kind of bound rather than this file's older one: these passes
         // write a texel from its own canvas position with no filtering across the

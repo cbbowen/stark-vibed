@@ -101,9 +101,11 @@ fn a_capped_shape_paints_and_survives_save_load() {
     loaded.load_bytes(&bytes).expect("load");
     let after = loaded.render_to_image();
 
-    assert!(
-        images_match(&before, &after, 0),
-        "capped-shape stroke must round-trip via the bundled canonical asset"
+    assert_images(
+        &before,
+        &after,
+        0,
+        "capped-shape stroke must round-trip via the bundled canonical asset",
     );
 }
 
@@ -272,9 +274,13 @@ fn a_brush_shape_arriving_mid_stroke_is_drawn_by_its_commit() {
 
     let committed = engine.render_to_image();
     let rendered = whole_render(&mut engine);
-    assert!(
-        images_match(&committed, &rendered, SEAM_LEVELS),
-        "the commit is not the stroke rendered whole: worst {} levels",
-        diff_fraction(&committed, &rendered).1
+    assert_images(
+        &committed,
+        &rendered,
+        SEAM_LEVELS,
+        format_args!(
+            "the commit is not the stroke rendered whole: worst {} levels",
+            diff_fraction(&committed, &rendered).1
+        ),
     );
 }

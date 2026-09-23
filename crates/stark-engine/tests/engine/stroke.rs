@@ -117,9 +117,11 @@ fn tinting_the_live_tail_does_not_change_what_commits() {
     // commit ordinarily *takes* the preview's tiles (`PreparedStroke`, §6.2), and
     // this is the one render it must not take — it is a render of a different
     // record — so the commit has to have drawn the stroke itself.
-    assert!(
-        !images_match(&preview, &committed, 8),
-        "tint had no visible effect on the preview"
+    assert_images_differ(
+        &preview,
+        &committed,
+        8,
+        "tint had no visible effect on the preview",
     );
     assert_eq!(
         engine.strokes_reused(),
@@ -422,9 +424,11 @@ fn a_click_paints_nothing_and_commits_nothing() {
             rope: 0.0,
         });
         engine.process(GestureCommand::End);
-        assert!(
-            images_match(&before, &engine.render_to_image(), 0),
-            "a click changed the canvas"
+        assert_images(
+            &before,
+            &engine.render_to_image(),
+            0,
+            "a click changed the canvas",
         );
         assert_eq!(
             engine.observe().doc_revision,
@@ -500,9 +504,11 @@ fn a_stroke_commits_the_tiles_it_previewed() {
         "the commit rendered the stroke again instead of taking the preview's tiles"
     );
     let committed = live.render_to_image();
-    assert!(
-        images_match(&preview, &committed, 0),
-        "what landed is not, to the bit, what was previewed"
+    assert_images(
+        &preview,
+        &committed,
+        0,
+        "what landed is not, to the bit, what was previewed",
     );
 
     replayed.process(ViewCommand::set_brush(brush(RED, 14.0)));
@@ -514,11 +520,15 @@ fn a_stroke_commits_the_tiles_it_previewed() {
         "a replay folds no preview, so there is nothing for its commit to take"
     );
     let fresh = replayed.render_to_image();
-    assert!(
-        images_match(&committed, &fresh, 4),
-        "the previewed render and a whole render of the same stroke disagree by \
+    assert_images(
+        &committed,
+        &fresh,
+        4,
+        format_args!(
+            "the previewed render and a whole render of the same stroke disagree by \
          more than the seam bound: worst {} levels",
-        diff_fraction(&committed, &fresh).1
+            diff_fraction(&committed, &fresh).1
+        ),
     );
 }
 
@@ -548,11 +558,15 @@ fn a_stroke_committed_without_fast_commit_is_the_replay() {
     let samples: Vec<InputSample> = long_wave().into_iter().map(InputSample::at).collect();
     replayed.replay_stroke(&samples);
 
-    assert!(
-        images_match(&committed, &replayed.render_to_image(), 0),
-        "fast commit is off and the stroke still did not land the replay's pixels: \
+    assert_images(
+        &committed,
+        &replayed.render_to_image(),
+        0,
+        format_args!(
+            "fast commit is off and the stroke still did not land the replay's pixels: \
          worst {} levels",
-        diff_fraction(&committed, &replayed.render_to_image()).1
+            diff_fraction(&committed, &replayed.render_to_image()).1
+        ),
     );
 }
 
@@ -569,23 +583,29 @@ fn a_live_stroke_grown_past_the_cap_is_neither_drawn_nor_logged() {
     let blank = engine.render_to_image();
     let before = engine.scrub_range();
     draw_long_stroke(&mut engine);
-    assert!(
-        !images_match(&blank, &engine.render_to_image(), 0),
-        "the preview should show the stroke so far"
+    assert_images_differ(
+        &blank,
+        &engine.render_to_image(),
+        0,
+        "the preview should show the stroke so far",
     );
 
     // One report 10⁶ px away puts the record's reach past the cap.
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::splat(1.0e6)),
     });
-    assert!(
-        images_match(&blank, &engine.render_to_image(), 0),
-        "the preview kept paint the commit refuses"
+    assert_images(
+        &blank,
+        &engine.render_to_image(),
+        0,
+        "the preview kept paint the commit refuses",
     );
     engine.process(GestureCommand::End);
-    assert!(
-        images_match(&blank, &engine.render_to_image(), 0),
-        "the commit landed paint the record's replay refuses"
+    assert_images(
+        &blank,
+        &engine.render_to_image(),
+        0,
+        "the commit landed paint the record's replay refuses",
     );
     // Refused, not logged: logging it would spend an undo step that changes nothing
     // and hand every peer the record to refuse again (§12.1).

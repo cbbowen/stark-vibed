@@ -107,21 +107,9 @@ fn rough_engine() -> Option<stark_engine::Engine> {
 fn mark(before: &stark_engine::RgbaImage, after: &stark_engine::RgbaImage) -> (Vec<bool>, f64) {
     let mut hit = Vec::with_capacity(before.pixels.len() / 4);
     let mut ink = 0.0;
-    for (a, b) in before
-        .pixels
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .zip(after.pixels.as_chunks::<4>().0)
-    {
-        let d = a
-            .iter()
-            .zip(b)
-            .map(|(x, y)| (*x as i32 - *y as i32).abs())
-            .max()
-            .unwrap_or(0);
+    for d in texel_deltas(before, after) {
         hit.push(d > 12);
-        ink += d as f64;
+        ink += f64::from(d);
     }
     (hit, ink)
 }
@@ -237,20 +225,7 @@ fn one_run(engine: &mut stark_engine::Engine, b: BrushParams, way: f32) -> Vec<f
     stroke_with(engine, b, &path);
     let after = engine.render_to_image();
     engine.process(DocCommand::Undo);
-    before
-        .pixels
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .zip(after.pixels.as_chunks::<4>().0)
-        .map(|(p, q)| {
-            p.iter()
-                .zip(q)
-                .map(|(x, y)| (*x as i32 - *y as i32).abs())
-                .max()
-                .unwrap_or(0) as f64
-        })
-        .collect()
+    texel_deltas(&before, &after).map(f64::from).collect()
 }
 
 /// How far apart two marks are, as a share of the ink in them: `Σ|a−b| / Σ(a+b)/2`.
@@ -696,20 +671,8 @@ fn a_toothed_transfer_delivers_the_whole_glob() {
 fn far_share(before: &stark_engine::RgbaImage, after: &stark_engine::RgbaImage) -> (f64, f64) {
     let w = before.width as usize;
     let (mut far, mut all) = (0.0, 0.0);
-    for (i, (a, b)) in before
-        .pixels
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .zip(after.pixels.as_chunks::<4>().0)
-        .enumerate()
-    {
-        let d = a
-            .iter()
-            .zip(b)
-            .map(|(x, y)| (*x as i32 - *y as i32).abs())
-            .max()
-            .unwrap_or(0) as f64;
+    for (i, d) in texel_deltas(before, after).enumerate() {
+        let d = f64::from(d);
         all += d;
         if i % w > w * 2 / 3 {
             far += d;

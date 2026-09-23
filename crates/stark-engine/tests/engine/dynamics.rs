@@ -240,8 +240,10 @@ fn a_wet_brush_at_flow_zero_is_the_identity() {
         &[Vec2::new(-60.0, 0.0), Vec2::new(60.0, 0.0)],
     );
     let after = engine.render_to_image();
-    assert!(
-        images_match(&before, &after, 0),
+    assert_images(
+        &before,
+        &after,
+        0,
         "a wet stroke at flow 0 rewrote the picture",
     );
 }
@@ -321,9 +323,11 @@ fn smear_over_empty_canvas_adds_nothing() {
         &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
     );
     let after = engine.render_to_image();
-    assert!(
-        images_match(&blank, &after, 2),
-        "a pure smear over empty canvas must add no paint or height"
+    assert_images(
+        &blank,
+        &after,
+        2,
+        "a pure smear over empty canvas must add no paint or height",
     );
 }
 
@@ -516,9 +520,11 @@ fn dynamics_stroke_is_deterministic() {
     let (Some(a), Some(b)) = (render(), render()) else {
         return;
     };
-    assert!(
-        images_match(&a, &b, 0),
-        "the same dynamics script must render bit-identically"
+    assert_images(
+        &a,
+        &b,
+        0,
+        "the same dynamics script must render bit-identically",
     );
 }
 
@@ -1695,9 +1701,11 @@ fn a_dense_bleed_scribble_over_flat_paint_is_a_no_op() {
         .load_bytes(&doc.to_bytes().expect("encode"))
         .expect("load + replay");
     let after = replayed.render_to_image();
-    assert!(
-        images_match(&before, &after, 2),
-        "a dense bleed-only scribble over flat paint must leave it flat"
+    assert_images(
+        &before,
+        &after,
+        2,
+        "a dense bleed-only scribble over flat paint must leave it flat",
     );
 }
 
@@ -2156,12 +2164,16 @@ fn a_bleeding_strokes_preview_is_its_commit() {
     let committed = engine.render_to_image();
     let rendered = whole_render(&mut engine);
 
-    assert!(
-        images_match(&committed, &rendered, 2),
-        "the bleeding stroke's preview differs from the stroke rendered whole — a \
+    assert_images(
+        &committed,
+        &rendered,
+        2,
+        format_args!(
+            "the bleeding stroke's preview differs from the stroke rendered whole — a \
          firing's window is being clipped at a range or piece boundary the \
          accounting missed: worst {} levels",
-        diff_fraction(&committed, &rendered).1,
+            diff_fraction(&committed, &rendered).1
+        ),
     );
 }
 

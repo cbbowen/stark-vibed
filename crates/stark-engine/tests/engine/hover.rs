@@ -64,10 +64,7 @@ fn the_mark_appears_and_commits_nothing() {
 
     hover_ab(&mut engine);
     let during = engine.render_to_image();
-    assert!(
-        !images_match(&before, &during, 0),
-        "the hover folded no mark at all"
-    );
+    assert_images_differ(&before, &during, 0, "the hover folded no mark at all");
     let obs = engine.observe();
     assert!(!obs.is_stroking, "a hover is not a stroke in flight");
     assert!(!obs.can_undo, "a hover left something to undo");
@@ -78,9 +75,11 @@ fn the_mark_appears_and_commits_nothing() {
 
     engine.process(ViewCommand::PreviewHover(None));
     let after = engine.render_to_image();
-    assert!(
-        images_match(&before, &after, 0),
-        "dropping the mark did not restore the canvas exactly"
+    assert_images(
+        &before,
+        &after,
+        0,
+        "dropping the mark did not restore the canvas exactly",
     );
 }
 
@@ -210,9 +209,11 @@ fn the_mark_is_what_committing_the_prediction_would_land() {
     });
     engine.process(GestureCommand::End);
     let committed = engine.render_to_image();
-    assert!(
-        images_match(&hovered, &committed, 0),
-        "the probe is not the commit's own pixels"
+    assert_images(
+        &hovered,
+        &committed,
+        0,
+        "the probe is not the commit's own pixels",
     );
 }
 
@@ -265,18 +266,24 @@ fn the_mark_never_reaches_a_live_export() {
     let export_before = export_live(&mut engine);
 
     hover_ab(&mut engine);
-    assert!(
-        !images_match(&screen_before, &engine.render_to_image(), 0),
-        "the hover folded no mark, so the export check below is vacuous"
+    assert_images_differ(
+        &screen_before,
+        &engine.render_to_image(),
+        0,
+        "the hover folded no mark, so the export check below is vacuous",
     );
     let exported = export_live(&mut engine);
-    assert!(
-        images_match(&export_before, &exported, 0),
-        "the hover mark reached an export"
+    assert_images(
+        &export_before,
+        &exported,
+        0,
+        "the hover mark reached an export",
     );
-    assert!(
-        images_match(&screen_before, &engine.render_to_image(), 0),
-        "the export left the screen still showing the mark it excluded"
+    assert_images(
+        &screen_before,
+        &engine.render_to_image(),
+        0,
+        "the export left the screen still showing the mark it excluded",
     );
 }
 
@@ -292,14 +299,18 @@ fn a_selection_tool_folds_no_mark() {
     engine.process(ViewCommand::SetTool(Tool::SelectRect));
     let before = engine.render_to_image();
     hover_ab(&mut engine);
-    assert!(
-        images_match(&before, &engine.render_to_image(), 0),
-        "a marquee tool folded a brush mark"
+    assert_images(
+        &before,
+        &engine.render_to_image(),
+        0,
+        "a marquee tool folded a brush mark",
     );
     engine.process(ViewCommand::SetTool(Tool::Brush));
-    assert!(
-        images_match(&before, &engine.render_to_image(), 0),
-        "a window fed under the marquee resurfaced on the switch back"
+    assert_images(
+        &before,
+        &engine.render_to_image(),
+        0,
+        "a window fed under the marquee resurfaced on the switch back",
     );
 }
 
@@ -324,9 +335,11 @@ fn an_unpaintable_layer_refuses_the_mark() {
     engine.process(PeerCommand::SetActiveLayer(matte));
     let before = engine.render_to_image();
     hover_ab(&mut engine);
-    assert!(
-        images_match(&before, &engine.render_to_image(), 0),
-        "a matte took the hover mark though it takes no stroke"
+    assert_images(
+        &before,
+        &engine.render_to_image(),
+        0,
+        "a matte took the hover mark though it takes no stroke",
     );
 }
 
@@ -583,9 +596,11 @@ fn the_run_up_is_evidence_never_paint() {
 
     #[cfg(not(feature = "debug-unfrozen"))]
     {
-        assert!(
-            images_match(&live, &committed, 0),
-            "a run-up stroke's preview is not the commit's own pixels"
+        assert_images(
+            &live,
+            &committed,
+            0,
+            "a run-up stroke's preview is not the commit's own pixels",
         );
         assert!(
             red_dominant(committed.pixel(committed.width / 2 + 20, committed.height / 2)),
@@ -624,9 +639,11 @@ fn a_click_after_a_watched_approach_commits_nothing() {
     });
     engine.process(GestureCommand::End);
 
-    assert!(
-        images_match(&before, &engine.render_to_image(), 0),
-        "a hovered click left paint"
+    assert_images(
+        &before,
+        &engine.render_to_image(),
+        0,
+        "a hovered click left paint",
     );
     let obs = engine.observe();
     assert!(!obs.can_undo, "a hovered click left something to undo");

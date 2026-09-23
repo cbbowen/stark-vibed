@@ -150,8 +150,10 @@ fn undoing_a_placement_takes_the_layer_with_it() {
         layers_before,
         "one undo takes the whole placement back",
     );
-    assert!(
-        images_match(&before, &engine.render_to_image(), 0),
+    assert_images(
+        &before,
+        &engine.render_to_image(),
+        0,
         "…and leaves the canvas byte-identical to what it was",
     );
 }
@@ -241,8 +243,10 @@ fn a_placement_whose_picture_is_missing_leaves_an_empty_layer() {
         layers_before + 1,
         "the layer the action minted is there",
     );
-    assert!(
-        images_match(&before, &engine.render_to_image(), 0),
+    assert_images(
+        &before,
+        &engine.render_to_image(),
+        0,
         "…and nothing was painted onto it",
     );
 }
@@ -290,8 +294,10 @@ fn a_placement_onto_a_held_id_is_refused() {
         engine.observe().layers.len(),
         "the clashing placement added a layer",
     );
-    assert!(
-        images_match(&engine.render_to_image(), &loaded.render_to_image(), 0),
+    assert_images(
+        &engine.render_to_image(),
+        &loaded.render_to_image(),
+        0,
         "the clashing placement changed the picture",
     );
 }
@@ -323,8 +329,10 @@ fn a_placed_image_survives_a_save_and_reload() {
     let mut loaded = engine_or_skip_blue().expect("adapter available (original built)");
     loaded.load_bytes(&bytes).expect("deserialize + replay");
 
-    assert!(
-        images_match(&before, &loaded.render_to_image(), 0),
+    assert_images(
+        &before,
+        &loaded.render_to_image(),
+        0,
         "a reloaded placement must reproduce identical pixels",
     );
     // …and the layer came back as a layer, name and all, rather than as pixels merged
@@ -345,8 +353,10 @@ fn a_placed_image_survives_a_save_and_reload() {
     };
     loaded.process(DocCommand::Undo);
     loaded.process(DocCommand::Undo);
-    assert!(
-        images_match(&bare, &loaded.render_to_image(), 0),
+    assert_images(
+        &bare,
+        &loaded.render_to_image(),
+        0,
         "undo after load takes the placement back with the stroke",
     );
 }

@@ -61,7 +61,7 @@
 //! CLAUDE.md names twice. The `.config/nextest.toml` window is what it runs behind:
 //! ~5 s is a real adapter's number, and CI renders on lavapipe.
 
-use crate::common::{Probe, engine_or_skip, images_match};
+use crate::common::{Probe, assert_images, engine_or_skip};
 use stark_engine::command::{DocCommand, Edit, InputCommand, PeerCommand};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::document::{
@@ -538,25 +538,33 @@ fn a_pair_that_claims_to_commute_does() {
             commuting += 1;
             let ab = ordered(&mut engine, &file, a, b);
             let ba = ordered(&mut engine, &file, b, a);
-            assert!(
-                images_match(&ab, &ba, 0),
-                "{a_name} and {b_name} are declared to commute, and do not.\n\
+            assert_images(
+                &ab,
+                &ba,
+                0,
+                format_args!(
+                    "{a_name} and {b_name} are declared to commute, and do not.\n\
                  {a_name} footprint: {:?}\n{b_name} footprint: {:?}",
-                compute_footprint(a),
-                compute_footprint(b),
+                    compute_footprint(a),
+                    compute_footprint(b)
+                ),
             );
             // …and the half the fast path actually rests on, in both directions,
             // since either of the pair may be the one undone
             // ([`spliced_and_canonical`]).
             for (x_name, x, y_name, y) in [(a_name, a, b_name, b), (b_name, b, a_name, a)] {
                 let (spliced, canonical) = spliced_and_canonical(&mut engine, &file, x, y);
-                assert!(
-                    images_match(&spliced, &canonical, 0),
-                    "undoing {x_name} past {y_name} — declared to commute — does not \
+                assert_images(
+                    &spliced,
+                    &canonical,
+                    0,
+                    format_args!(
+                        "undoing {x_name} past {y_name} — declared to commute — does not \
                      match a canonical replay of the same log.\n\
                      {x_name} footprint: {:?}\n{y_name} footprint: {:?}",
-                    compute_footprint(x),
-                    compute_footprint(y),
+                        compute_footprint(x),
+                        compute_footprint(y)
+                    ),
                 );
             }
             last = Some((a_name, b_name, a, b, ab));
@@ -579,9 +587,13 @@ fn a_pair_that_claims_to_commute_does() {
     // dirty engine rather than between two materializations of a log.
     let (a_name, b_name, a, b, ab) = last.expect("a commuting pair was checked");
     let mut fresh = engine_or_skip().expect("the device this run already built an engine on");
-    assert!(
-        images_match(&ab, &ordered(&mut fresh, &file, a, b), 0),
-        "{a_name} then {b_name} renders differently on the re-joined engine than on a \
-         fresh one — this test's engine reuse is unsound, and every result above with it",
+    assert_images(
+        &ab,
+        &ordered(&mut fresh, &file, a, b),
+        0,
+        format_args!(
+            "{a_name} then {b_name} renders differently on the re-joined engine than on a \
+         fresh one — this test's engine reuse is unsound, and every result above with it"
+        ),
     );
 }

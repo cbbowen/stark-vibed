@@ -12,7 +12,6 @@
 
 use crate::common::palette::{GREEN_SOFT, RED};
 use crate::common::*;
-use stark_engine::RgbaImage;
 use stark_engine::command::{DocCommand, Edit};
 #[cfg(feature = "mixbox")]
 use stark_model::ColorSpaceId;
@@ -57,36 +56,6 @@ fn transform_map(engine: &mut stark_engine::Engine, map: TransformMap) {
     engine.process(DocCommand::Set(Edit::Transform { layer, map }));
 }
 
-fn assert_identical(a: &RgbaImage, b: &RgbaImage, what: &str) {
-    let (frac, worst) = diff_fraction(a, b);
-    if worst == 0 {
-        return;
-    }
-    // Where: the first few differing pixels, to say whether a failure is at the
-    // paint, the selection outline, or somewhere structural like a tile seam.
-    let mut sites = Vec::new();
-    'scan: for y in 0..a.height {
-        for x in 0..a.width {
-            let i = ((y * a.width + x) * 4) as usize;
-            if a.pixels[i..i + 4] != b.pixels[i..i + 4] {
-                sites.push(format!(
-                    "({x},{y}) {:?} -> {:?}",
-                    &a.pixels[i..i + 4],
-                    &b.pixels[i..i + 4]
-                ));
-                if sites.len() >= 8 {
-                    break 'scan;
-                }
-            }
-        }
-    }
-    panic!(
-        "{what}: images differ (worst channel delta {worst}, {:.4}% of pixels differ)\nfirst sites: {}",
-        frac * 100.0,
-        sites.join("; ")
-    );
-}
-
 // --- The exactness invariants (§16.4) ---------------------------
 
 #[test]
@@ -104,7 +73,7 @@ fn identity_transform_is_a_noop() {
     let before = engine.render_to_image();
     transform(&mut engine, Affine2::IDENTITY);
     let after = engine.render_to_image();
-    assert_identical(&before, &after, "identity transform");
+    assert_images(&before, &after, 0, "identity transform");
 }
 
 /// The strong form of the law test: at a *feathered* edge the cut takes `h·m`,
@@ -243,7 +212,7 @@ fn translate_there_and_back_is_identity() {
         Affine2::from_translation(Vec2::new(-300.0, 0.0)),
     );
     let back = engine.render_to_image();
-    assert_identical(&before, &back, "translate there and back");
+    assert_images(&before, &back, 0, "translate there and back");
 }
 
 /// A horizontal flip about the canvas origin (a half-integer-free axis on the
@@ -269,7 +238,7 @@ fn flip_twice_is_identity() {
     );
     transform(&mut engine, flip);
     let back = engine.render_to_image();
-    assert_identical(&before, &back, "flip twice");
+    assert_images(&before, &back, 0, "flip twice");
 }
 
 // --- Behaviour: the cut, the carry, rejection, history --------------------------
@@ -373,7 +342,7 @@ fn degenerate_affine_is_refused_without_a_history_step() {
         Affine2::from_translation(Vec2::new(f32::NAN, 0.0)),
     );
     let after = engine.render_to_image();
-    assert_identical(&before, &after, "degenerate transform");
+    assert_images(&before, &after, 0, "degenerate transform");
     assert_eq!(
         engine.observe().can_undo,
         undo_before,
@@ -391,7 +360,7 @@ fn oversized_transform_is_refused_whole() {
     // Usable affine, but the destination would need more tiles than the cap.
     transform(&mut engine, Affine2::from_scale(Vec2::splat(1e4)));
     let after = engine.render_to_image();
-    assert_identical(&before, &after, "oversized transform");
+    assert_images(&before, &after, 0, "oversized transform");
 }
 
 #[test]
@@ -422,7 +391,7 @@ fn transform_on_a_matte_layer_is_refused() {
         map: TransformMap::Affine(Affine2::from_translation(Vec2::new(50.0, 0.0))),
     }));
     let after = engine.render_to_image();
-    assert_identical(&before, &after, "transform aimed at a matte");
+    assert_images(&before, &after, 0, "transform aimed at a matte");
 }
 
 #[test]
@@ -444,7 +413,7 @@ fn undo_restores_the_untransformed_painting() {
     );
     engine.process(DocCommand::Undo);
     let after = engine.render_to_image();
-    assert_identical(&before, &after, "undo of a transform");
+    assert_images(&before, &after, 0, "undo of a transform");
 }
 
 /// A transform is six floats in the log: saving and reloading must replay to the
@@ -474,7 +443,7 @@ fn save_load_reproduces_a_transform() {
     };
     reloaded.load_bytes(&bytes).expect("load");
     let after = reloaded.render_to_image();
-    assert_identical(&before, &after, "save/load of a transform");
+    assert_images(&before, &after, 0, "save/load of a transform");
 }
 
 /// The preview is the commit, before the commit: previewing an `Edit::Transform`
@@ -506,7 +475,7 @@ fn preview_matches_the_commit() {
     engine.process(ViewCommand::Preview(None));
     engine.process(DocCommand::Set(Edit::Transform { layer, map }));
     let committed = engine.render_to_image();
-    assert_identical(&previewed, &committed, "transform preview vs commit");
+    assert_images(&previewed, &committed, 0, "transform preview vs commit");
 }
 
 /// The selection hull tracks the ops that build the mask and the transforms that
@@ -576,7 +545,7 @@ fn perspective_identity_is_a_noop() {
     let before = engine.render_to_image();
     transform_map(&mut engine, perspective(rect_corners(GATE.0, GATE.1)));
     let after = engine.render_to_image();
-    assert_identical(&before, &after, "identity perspective");
+    assert_images(&before, &after, 0, "identity perspective");
 }
 
 /// The warp's twin — the deviation-form subdivision makes every lattice point
@@ -597,7 +566,7 @@ fn warp_identity_is_a_noop() {
     let before = engine.render_to_image();
     transform_map(&mut engine, TransformMap::Warp(warp_identity()));
     let after = engine.render_to_image();
-    assert_identical(&before, &after, "identity warp");
+    assert_images(&before, &after, 0, "identity warp");
 }
 
 /// A genuine perspective (the far edge pinched): the paint leaves its source
@@ -719,7 +688,7 @@ fn degenerate_gated_maps_are_refused_without_a_history_step() {
     folded.points[5] = folded.points[6] + Vec2::new(60.0, 0.0);
     transform_map(&mut engine, TransformMap::Warp(folded));
     let after = engine.render_to_image();
-    assert_identical(&before, &after, "degenerate perspective/warp");
+    assert_images(&before, &after, 0, "degenerate perspective/warp");
     assert_eq!(
         engine.observe().can_undo,
         undo_before,
@@ -791,7 +760,7 @@ fn undo_restores_an_unwarped_painting() {
     transform_map(&mut engine, TransformMap::Warp(map));
     engine.process(DocCommand::Undo);
     let after = engine.render_to_image();
-    assert_identical(&before, &after, "undo of a warp");
+    assert_images(&before, &after, 0, "undo of a warp");
 }
 
 /// Both new actions are a few floats in the log: saving and reloading must
@@ -829,7 +798,7 @@ fn save_load_reproduces_perspective_and_warp() {
     };
     reloaded.load_bytes(&bytes).expect("load");
     let after = reloaded.render_to_image();
-    assert_identical(&before, &after, "save/load of a perspective + warp");
+    assert_images(&before, &after, 0, "save/load of a perspective + warp");
 }
 
 /// `preview == committed`, extended to the gated families: the preview runs the
@@ -860,7 +829,7 @@ fn gated_preview_matches_the_commit() {
     engine.process(ViewCommand::Preview(None));
     engine.process(DocCommand::Set(Edit::Transform { layer, map }));
     let committed = engine.render_to_image();
-    assert_identical(&previewed, &committed, "gated preview vs commit");
+    assert_images(&previewed, &committed, 0, "gated preview vs commit");
 }
 
 /// The one golden: genuinely resampled output — a rotation about the blob's

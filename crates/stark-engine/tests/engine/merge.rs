@@ -133,16 +133,6 @@ fn merged(engine: &mut Engine, id: LayerId) -> (RgbaImage, RgbaImage, LayerId) {
     (before, engine.render_to_image(), dest)
 }
 
-/// The law, as an assertion: `tol` least-significant bits, and no more.
-fn unchanged(before: &RgbaImage, after: &RgbaImage, tol: u8, what: &str) {
-    let (frac, worst) = diff_fraction(before, after);
-    assert!(
-        worst <= tol,
-        "{what}: a merge moved a pixel by {worst} (over {:.2}% of the canvas)",
-        frac * 100.0,
-    );
-}
-
 // ---------------------------------------------------------------------------
 // The plain case, and the one that has to be exact to the byte.
 // ---------------------------------------------------------------------------
@@ -166,7 +156,7 @@ fn merging_two_plain_layers_leaves_the_picture_alone() {
 
     let (before, after, dest) = merged(&mut engine, top);
     assert_eq!(dest, ROOT, "down from the second row is the first");
-    unchanged(&before, &after, 1, "two plain layers");
+    assert_images(&before, &after, 1, "two plain layers");
 
     // …and the paint really did move: one layer now carries both strokes.
     assert_eq!(
@@ -224,7 +214,7 @@ fn the_upper_layer_stays_on_top() {
 
     let (before, after, _) = merged(&mut engine, top);
     let (b, a) = (center(&before), center(&after));
-    unchanged(&before, &after, 1, "crossing strokes");
+    assert_images(&before, &after, 1, "crossing strokes");
     assert!(
         a[2] as i32 > a[0] as i32 + 30,
         "the cool stroke must still be the one on top at the crossing: {a:?}",
@@ -258,7 +248,7 @@ fn a_faded_layer_folds_its_opacity_into_the_merge() {
     engine.process(DocCommand::Set(Edit::LayerOpacity(top, 0.45)));
 
     let (before, after, dest) = merged(&mut engine, top);
-    unchanged(&before, &after, 1, "a faded source");
+    assert_images(&before, &after, 1, "a faded source");
     assert_eq!(
         info(&engine, dest)
             .expect("the destination survives")
@@ -286,7 +276,7 @@ fn two_faded_layers_merge_without_a_shift() {
         let (b, a, _) = merged(&mut engine, top);
         (b, a)
     };
-    unchanged(&before, &after, 2, "two faded layers");
+    assert_images(&before, &after, 2, "two faded layers");
 }
 
 /// A translucent brush — paint whose per-unit opacity is well under 1 — merged onto
@@ -302,7 +292,7 @@ fn translucent_paint_merges_onto_opaque_paint() {
     paint_pale(&mut engine, 44.0, V_STROKE);
 
     let (before, after, _) = merged(&mut engine, top);
-    unchanged(&before, &after, 1, "a translucent glaze");
+    assert_images(&before, &after, 1, "a translucent glaze");
 }
 
 // ---------------------------------------------------------------------------
@@ -326,7 +316,7 @@ fn a_clipped_layer_merges_into_its_backdrop() {
     engine.process(DocCommand::SetLayerClip(top, true));
 
     let (before, after, _) = merged(&mut engine, top);
-    unchanged(&before, &after, 1, "a clipped layer");
+    assert_images(&before, &after, 1, "a clipped layer");
     // The clip really was doing something: above the horizontal stroke there is no
     // backdrop, so neither render shows the cool paint there.
     let above = |img: &RgbaImage| img.pixel(img.width / 2, img.height / 2 - 50);
@@ -362,7 +352,7 @@ fn the_bottom_of_a_group_merges_into_its_base() {
 
     let (before, after, dest) = merged(&mut engine, carried);
     assert_eq!(dest, ROOT);
-    unchanged(&before, &after, 1, "the base of a group");
+    assert_images(&before, &after, 1, "the base of a group");
     assert_eq!(
         info(&engine, ROOT).expect("the base survives").blend,
         BlendMode::Multiply,
@@ -388,7 +378,7 @@ fn a_clipped_group_member_merges_into_its_base() {
     engine.process(DocCommand::SetLayerClip(carried, true));
 
     let (before, after, _) = merged(&mut engine, carried);
-    unchanged(&before, &after, 1, "a clipped group member");
+    assert_images(&before, &after, 1, "a clipped group member");
 }
 
 // ---------------------------------------------------------------------------
@@ -605,7 +595,7 @@ fn siblings_sharing_a_mode_merge() {
 
         let (before, after, dest) = merged(&mut engine, upper);
         assert_eq!(dest, lower);
-        unchanged(&before, &after, 3, &format!("{mode:?} siblings"));
+        assert_images(&before, &after, 3, format_args!("{mode:?} siblings"));
         assert_eq!(
             info(&engine, lower).expect("the survivor").blend,
             mode,
@@ -642,7 +632,7 @@ fn any_mode_merges_into_its_carrier() {
 
         let (before, after, dest) = merged(&mut engine, carried);
         assert_eq!(dest, base);
-        unchanged(&before, &after, 3, &format!("{mode:?} into a carrier"));
+        assert_images(&before, &after, 3, format_args!("{mode:?} into a carrier"));
         assert_eq!(
             info(&engine, base).expect("the survivor").blend,
             BlendMode::Multiply,
@@ -675,7 +665,7 @@ fn a_faded_carrier_keeps_its_own_opacity() {
     engine.process(DocCommand::Set(Edit::LayerOpacity(base, 0.45)));
 
     let (before, after, _) = merged(&mut engine, carried);
-    unchanged(&before, &after, 2, "a faded carrier");
+    assert_images(&before, &after, 2, "a faded carrier");
     assert_eq!(
         info(&engine, base).expect("the survivor").opacity,
         0.45,
@@ -704,7 +694,7 @@ fn a_clipped_member_merges_into_a_faded_carrier() {
     engine.process(DocCommand::Set(Edit::LayerOpacity(base, 0.6)));
 
     let (before, after, _) = merged(&mut engine, carried);
-    unchanged(&before, &after, 2, "a clipped member under a faded base");
+    assert_images(&before, &after, 2, "a clipped member under a faded base");
 }
 
 // ---------------------------------------------------------------------------
@@ -760,7 +750,7 @@ fn merging_a_filter_into_its_carrier_leaves_the_picture_alone() {
         dest, ROOT,
         "a carried filter merges into its carrier's base"
     );
-    unchanged(&before, &after, 1, "a filter merged into its carrier");
+    assert_images(&before, &after, 1, "a filter merged into its carrier");
     assert_eq!(
         engine.observe().layers.len(),
         1,
@@ -781,7 +771,7 @@ fn merging_a_filter_at_the_foot_of_the_root_leaves_the_picture_alone() {
 
     let (before, after, dest) = merged(&mut engine, filter);
     assert_eq!(dest, ROOT);
-    unchanged(&before, &after, 1, "a filter above the foot of the root");
+    assert_images(&before, &after, 1, "a filter above the foot of the root");
 }
 
 /// **The destination keeps its own params, and the filter's strength is baked.**
@@ -806,7 +796,7 @@ fn a_filter_merge_keeps_the_destinations_params_and_bakes_its_strength() {
     engine.process(DocCommand::Set(Edit::LayerBlend(base, BlendMode::Multiply)));
 
     let (before, after, dest) = merged(&mut engine, filter);
-    unchanged(
+    assert_images(
         &before,
         &after,
         2,
@@ -848,7 +838,7 @@ fn merging_a_neutral_filter_is_exact() {
     };
     let before_rev = rev(&engine);
     let (before, after, _) = merged(&mut engine, filter);
-    unchanged(&before, &after, 0, "a neutral filter");
+    assert_images(&before, &after, 0, "a neutral filter");
     assert_eq!(
         rev(&engine),
         before_rev,
@@ -911,7 +901,7 @@ fn a_filter_merges_in_a_pigment_document() {
     let filter = add_filter(&mut engine, Some(ROOT), GREY);
 
     let (before, after, _) = merged(&mut engine, filter);
-    unchanged(&before, &after, 2, "a filter merged in pigment");
+    assert_images(&before, &after, 2, "a filter merged in pigment");
 }
 
 // ---------------------------------------------------------------------------
@@ -1036,8 +1026,10 @@ fn a_merge_is_exact_at_texel_centres_and_drifts_off_them() {
     let before = shot(&mut engine);
     // …and the half-texel view really did resample: it is a different picture from the
     // on-grid one, which is what makes the comparison below about the grid.
-    assert!(
-        !images_match(&before[0], &before[1], 8),
+    assert_images_differ(
+        &before[0],
+        &before[1],
+        8,
         "the half-texel pan rendered the same pixels as the on-grid view, so nothing \
          here is being sampled off a texel centre",
     );

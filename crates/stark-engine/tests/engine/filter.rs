@@ -271,10 +271,14 @@ fn a_neutral_filter_changes_no_pixel() {
     let before = engine.render_to_image();
     add_filter(&mut engine, None, NEUTRAL);
     let after = engine.render_to_image();
-    assert!(
-        images_match(&before, &after, 0),
-        "a neutral filter is not the identity: {:?}",
-        diff_fraction(&before, &after),
+    assert_images(
+        &before,
+        &after,
+        0,
+        format_args!(
+            "a neutral filter is not the identity: {:?}",
+            diff_fraction(&before, &after)
+        ),
     );
 }
 
@@ -286,21 +290,27 @@ fn a_hidden_or_faded_filter_changes_no_pixel() {
     let Some(mut engine) = painted() else { return };
     let before = engine.render_to_image();
     let id = add_filter(&mut engine, None, GREY);
-    assert!(
-        !images_match(&before, &engine.render_to_image(), 0),
+    assert_images_differ(
+        &before,
+        &engine.render_to_image(),
+        0,
         "the filter has to be doing something for this test to mean anything",
     );
 
     engine.process(DocCommand::SetLayerVisible(id, false));
-    assert!(
-        images_match(&before, &engine.render_to_image(), 0),
+    assert_images(
+        &before,
+        &engine.render_to_image(),
+        0,
         "a hidden filter still changed the picture",
     );
 
     engine.process(DocCommand::SetLayerVisible(id, true));
     engine.process(DocCommand::Set(Edit::LayerOpacity(id, 0.0)));
-    assert!(
-        images_match(&before, &engine.render_to_image(), 0),
+    assert_images(
+        &before,
+        &engine.render_to_image(),
+        0,
         "a filter at zero strength still changed the picture",
     );
 }
@@ -376,8 +386,10 @@ fn a_filter_with_nothing_beneath_it_changes_no_pixel() {
         carrier: None,
         at: Place::Bottom,
     });
-    assert!(
-        images_match(&before, &engine.render_to_image(), 0),
+    assert_images(
+        &before,
+        &engine.render_to_image(),
+        0,
         "a filter under everything still changed the picture",
     );
 
@@ -392,8 +404,10 @@ fn a_filter_with_nothing_beneath_it_changes_no_pixel() {
     let hidden = engine.render_to_image();
     engine.process(DocCommand::SetLayerVisible(paint_layer, true));
     let shown = engine.render_to_image();
-    assert!(
-        !images_match(&hidden, &shown, 0),
+    assert_images_differ(
+        &hidden,
+        &shown,
+        0,
         "hiding the only painted layer has to change the picture",
     );
     // What matters: with the paint hidden, the grade must not spring onto the
@@ -402,8 +416,10 @@ fn a_filter_with_nothing_beneath_it_changes_no_pixel() {
     engine.process(DocCommand::SetLayerVisible(paint_layer, false));
     let with_filter = engine.render_to_image();
     engine.process(DocCommand::RemoveLayer(id));
-    assert!(
-        images_match(&with_filter, &engine.render_to_image(), 0),
+    assert_images(
+        &with_filter,
+        &engine.render_to_image(),
+        0,
         "a filter above nothing but a hidden layer still changed the picture",
     );
 }
@@ -455,8 +471,10 @@ fn a_filter_refuses_carried_layers() {
     );
 
     // The declined gestures changed nothing on screen either.
-    assert!(
-        images_match(&before, &engine.render_to_image(), 0),
+    assert_images(
+        &before,
+        &engine.render_to_image(),
+        0,
         "a refused carry still changed the picture",
     );
 }
@@ -526,8 +544,10 @@ fn a_filter_can_be_selected_but_takes_no_paint() {
 
     let before = engine.render_to_image();
     paint(&mut engine, [0.1, 0.1, 0.9], 30.0, STROKE);
-    assert!(
-        images_match(&before, &engine.render_to_image(), 0),
+    assert_images(
+        &before,
+        &engine.render_to_image(),
+        0,
         "a stroke aimed at a filter layer laid paint",
     );
 }
@@ -541,16 +561,20 @@ fn a_filter_undoes() {
     let id = add_filter(&mut engine, None, NEUTRAL);
     engine.process(DocCommand::Set(Edit::Filter(id, GREY)));
     let grey = engine.render_to_image();
-    assert!(!images_match(&plain, &grey, 0), "the filter did nothing");
+    assert_images_differ(&plain, &grey, 0, "the filter did nothing");
 
     engine.process(DocCommand::Undo);
-    assert!(
-        images_match(&plain, &engine.render_to_image(), 0),
+    assert_images(
+        &plain,
+        &engine.render_to_image(),
+        0,
         "undoing the adjustment left it applied",
     );
     engine.process(DocCommand::Redo);
-    assert!(
-        images_match(&grey, &engine.render_to_image(), 0),
+    assert_images(
+        &grey,
+        &engine.render_to_image(),
+        0,
         "redo did not put the adjustment back",
     );
 
@@ -602,8 +626,10 @@ fn dragging_a_filter_previews_without_logging() {
         steps + 1,
         "the whole drag should cost exactly one action",
     );
-    assert!(
-        images_match(&previewed, &engine.render_to_image(), 0),
+    assert_images(
+        &previewed,
+        &engine.render_to_image(),
+        0,
         "the commit rendered something other than what the preview showed",
     );
 }
@@ -621,8 +647,10 @@ fn chromatic_aberration_parts_the_spectrum_both_ways() {
     let before = engine.render_to_image();
     add_filter(&mut engine, None, FRINGE);
     let after = engine.render_to_image();
-    assert!(
-        !images_match(&before, &after, 0),
+    assert_images_differ(
+        &before,
+        &after,
+        0,
         "the dispersion has to change the picture for this test to mean anything",
     );
 
@@ -655,8 +683,10 @@ fn chromatic_aberration_is_the_identity_deep_inside_flat_paint() {
         }),
     );
     let after = engine.render_to_image();
-    assert!(
-        !images_match(&before, &after, 0),
+    assert_images_differ(
+        &before,
+        &after,
+        0,
         "the dispersion has to change the picture somewhere (the stroke's ends)",
     );
 
@@ -688,8 +718,10 @@ fn chromatic_aberration_parts_the_spectrum_in_pigment_too() {
     let before = engine.render_to_image();
     add_filter(&mut engine, None, FRINGE);
     let after = engine.render_to_image();
-    assert!(
-        !images_match(&before, &after, 0),
+    assert_images_differ(
+        &before,
+        &after,
+        0,
         "the dispersion has to change the pigment picture too",
     );
     let (lo, hi) = separation_swing(&before, &after);
@@ -719,8 +751,10 @@ fn clipping_a_point_filter_changes_nothing() {
     let bare = engine.render_to_image();
     let id = add_filter(&mut engine, None, GREY);
     let open = engine.render_to_image();
-    assert!(
-        !images_match(&bare, &open, 0),
+    assert_images_differ(
+        &bare,
+        &open,
+        0,
         "the filter has to be doing something for this test to mean anything",
     );
 
@@ -734,8 +768,10 @@ fn clipping_a_point_filter_changes_nothing() {
             .is_some_and(|l| l.clip),
         "state refused the clip, so the render below proves nothing",
     );
-    assert!(
-        images_match(&open, &engine.render_to_image(), 0),
+    assert_images(
+        &open,
+        &engine.render_to_image(),
+        0,
         "clipping a point filter changed the picture",
     );
 }
@@ -819,8 +855,10 @@ fn a_clipped_gather_stays_inside_the_paint() {
         "a clipped filter wrote {leaked} texels of bare canvas: coverage came out \
          other than it went in",
     );
-    assert!(
-        !images_match(&bare, &shut, 0),
+    assert_images_differ(
+        &bare,
+        &shut,
+        0,
         "the clipped filter changed nothing at all, so it is not the clip under test",
     );
 }
@@ -892,8 +930,10 @@ fn a_filter_survives_save_and_load() {
 
     let mut loaded = engine_or_skip().expect("adapter available (original built)");
     loaded.load_bytes(&bytes).expect("deserialize + replay");
-    assert!(
-        images_match(&before, &loaded.render_to_image(), 0),
+    assert_images(
+        &before,
+        &loaded.render_to_image(),
+        0,
         "save \u{2192} load must reproduce the filtered picture identically",
     );
     // …and the settings come back as settings, not merely as the same pixels —
@@ -966,10 +1006,14 @@ fn a_black_to_white_gradient_map_is_the_lightness_preserving_greyscale() {
         Filter::GradientMap(Some(ramp(&[(0.0, [0.0; 3]), (1.0, [1.0; 3])]))),
     )));
     let mapped = engine.render_to_image();
-    assert!(
-        images_match(&desaturated, &mapped, 1),
-        "the black\u{2192}white map should be the saturation-0 greyscale: {:?}",
-        diff_fraction(&desaturated, &mapped),
+    assert_images(
+        &desaturated,
+        &mapped,
+        1,
+        format_args!(
+            "the black\u{2192}white map should be the saturation-0 greyscale: {:?}",
+            diff_fraction(&desaturated, &mapped)
+        ),
     );
 }
 
@@ -1022,8 +1066,10 @@ fn a_rampless_gradient_map_changes_no_pixel() {
     let Some(mut engine) = painted() else { return };
     let before = engine.render_to_image();
     let id = add_filter(&mut engine, None, Filter::GradientMap(None));
-    assert!(
-        images_match(&before, &engine.render_to_image(), 0),
+    assert_images(
+        &before,
+        &engine.render_to_image(),
+        0,
         "a gradient map with no ramp is not the identity",
     );
 
@@ -1036,13 +1082,17 @@ fn a_rampless_gradient_map_changes_no_pixel() {
             (1.0, [1.0, 0.9, 0.4]),
         ]))),
     )));
-    assert!(
-        !images_match(&before, &engine.render_to_image(), 0),
+    assert_images_differ(
+        &before,
+        &engine.render_to_image(),
+        0,
         "the ramp has to grade the picture for the second half to mean anything",
     );
     engine.process(DocCommand::Set(Edit::Filter(id, Filter::GradientMap(None))));
-    assert!(
-        images_match(&before, &engine.render_to_image(), 0),
+    assert_images(
+        &before,
+        &engine.render_to_image(),
+        0,
         "putting the ramp back to none did not restore the picture",
     );
 }
@@ -1158,10 +1208,14 @@ fn a_focal_blur_is_the_identity_on_a_uniform_field() {
     let before = engine.render_to_image();
     add_filter(&mut engine, None, BLUR);
     let after = engine.render_to_image();
-    assert!(
-        images_match(&before, &after, 1),
-        "a blurred uniform field moved by more than rounding: {:?}",
-        diff_fraction(&before, &after),
+    assert_images(
+        &before,
+        &after,
+        1,
+        format_args!(
+            "a blurred uniform field moved by more than rounding: {:?}",
+            diff_fraction(&before, &after)
+        ),
     );
 }
 
@@ -1203,10 +1257,14 @@ fn each_aperture_spreads_the_light_differently() {
 
     for (i, (a, one)) in shots.iter().enumerate() {
         for (b, other) in &shots[i + 1..] {
-            assert!(
-                !images_match(one, other, 1),
-                "{a:?} and {b:?} render the same picture: one of the two shapes \
-                 never reached `make_kernel`",
+            assert_images_differ(
+                one,
+                other,
+                1,
+                format_args!(
+                    "{a:?} and {b:?} render the same picture: one of the two shapes \
+                 never reached `make_kernel`"
+                ),
             );
         }
     }
@@ -1303,8 +1361,10 @@ fn a_neutral_focal_blur_changes_no_pixel() {
     let Some(mut engine) = painted() else { return };
     let before = engine.render_to_image();
     add_filter(&mut engine, None, Filter::FocalBlur(FocalBlur::NEUTRAL));
-    assert!(
-        images_match(&before, &engine.render_to_image(), 0),
+    assert_images(
+        &before,
+        &engine.render_to_image(),
+        0,
         "a radius-0 focal blur is not the identity",
     );
 }
@@ -1346,8 +1406,10 @@ fn a_clipped_focal_blur_stays_inside_the_paint() {
         "a clipped blur wrote {leaked} texels of bare canvas: coverage came out \
          other than it went in",
     );
-    assert!(
-        !images_match(&bare, &shut, 0),
+    assert_images_differ(
+        &bare,
+        &shut,
+        0,
         "the clipped blur changed nothing at all, so it is not the clip under test",
     );
 }
@@ -1454,13 +1516,17 @@ fn a_focal_blur_survives_an_extreme_zoom() {
         }),
     );
     let blurred = engine.render_to_image();
-    assert!(
-        !images_match(&sharp, &blurred, 0),
+    assert_images_differ(
+        &sharp,
+        &blurred,
+        0,
         "a 2048-texel blur at 64x should still change the picture",
     );
     engine.process(DocCommand::RemoveLayer(id));
-    assert!(
-        images_match(&sharp, &engine.render_to_image(), 0),
+    assert_images(
+        &sharp,
+        &engine.render_to_image(),
+        0,
         "removing the blur should restore the zoomed picture exactly",
     );
 }
@@ -1479,8 +1545,10 @@ fn a_focal_blur_works_in_a_pigment_document() {
     let before = engine.render_to_image();
     add_filter(&mut engine, None, BLUR);
     let after = engine.render_to_image();
-    assert!(
-        !images_match(&before, &after, 0),
+    assert_images_differ(
+        &before,
+        &after,
+        0,
         "the blur has to change the pigment picture",
     );
     assert!(

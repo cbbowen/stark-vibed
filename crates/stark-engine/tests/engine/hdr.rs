@@ -272,8 +272,10 @@ fn an_export_from_an_hdr_session_is_the_sdr_export() {
     };
     let a = shot(&mut sdr);
     let b = shot(&mut hdr);
-    assert!(
-        images_match(&a, &b, 0),
-        "an export from the HDR engine differs from the SDR engine's"
+    assert_images(
+        &a,
+        &b,
+        0,
+        "an export from the HDR engine differs from the SDR engine's",
     );
 }

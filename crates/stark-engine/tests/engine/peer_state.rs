@@ -11,7 +11,10 @@
 //! `stark-engine`, which is the point of putting them there.
 
 use crate::common::palette::{GREEN_SOFT, RED};
-use crate::common::{Lead, MARGIN_FLAT, Probe, engine_or_skip, images_match, leads, paint, rgb};
+use crate::common::{
+    Lead, MARGIN_FLAT, Probe, assert_images, assert_images_differ, engine_or_skip, leads, paint,
+    rgb,
+};
 use stark_engine::command::Tool;
 use stark_engine::command::{
     DocCommand, Edit, GestureCommand, InputSample, PeerCommand, ViewCommand,
@@ -194,15 +197,17 @@ fn peers_hold_independent_selections_and_still_converge() {
     sync(&mut a, &mut b);
 
     let img_a = snap(&mut a);
-    assert!(images_match(&img_a, &snap(&mut b), 0), "peers diverged");
+    assert_images(&img_a, &snap(&mut b), 0, "peers diverged");
 
     // A late joiner replays the whole log — both peers' masks and the strokes they
     // gated — and lands on the same pixels.
     c.join_collaboration(&a.document_file(), ActorId(3))
         .expect("join a session this build can render");
-    assert!(
-        images_match(&img_a, &snap(&mut c), 0),
-        "a late joiner must reconstruct every actor's mask from the log"
+    assert_images(
+        &img_a,
+        &snap(&mut c),
+        0,
+        "a late joiner must reconstruct every actor's mask from the log",
     );
 }
 
@@ -403,9 +408,11 @@ fn a_peers_live_stroke_previews_and_the_commit_matches_it() {
     sync(&mut a, &mut b);
     let committed = snap(&mut b);
     assert!(is_painted(&committed, Vec2::new(0.0, 0.0)));
-    assert!(
-        images_match(&committed, &snap(&mut a), 0),
-        "the commit must land the same pixels on both peers"
+    assert_images(
+        &committed,
+        &snap(&mut a),
+        0,
+        "the commit must land the same pixels on both peers",
     );
 }
 
@@ -979,7 +986,7 @@ fn a_held_drag_is_refolded_over_a_peers_edit() {
     assert_eq!(a.observe().layers.len(), 3);
     assert_eq!(opacity_of(&b, faded), Some(0.0), "the commit reached B");
     let img = snap(&mut a);
-    assert!(images_match(&img, &snap(&mut b), 0), "the peers converge");
+    assert_images(&img, &snap(&mut b), 0, "the peers converge");
     assert!(is_green(&img, Vec2::ZERO));
 }
 
@@ -1051,7 +1058,7 @@ fn a_peers_stroke_on_their_new_substrate_shows_under_a_held_drag() {
     );
     assert_eq!(opacity_of(&b, faded), Some(0.0), "the commit reached B");
     let img = snap(&mut a);
-    assert!(images_match(&img, &snap(&mut b), 0), "the peers converge");
+    assert_images(&img, &snap(&mut b), 0, "the peers converge");
 }
 
 /// A collaborator's selection outline is off by default and drawn only when this
@@ -1095,23 +1102,29 @@ fn peer_selection_outlines_are_opt_in() {
 
     a.process(ViewCommand::SetShowPeerSelections(true));
     let shown = snap(&mut a);
-    assert!(
-        !images_match(&hidden, &shown, 0),
-        "turning the setting on should draw B's outline"
+    assert_images_differ(
+        &hidden,
+        &shown,
+        0,
+        "turning the setting on should draw B's outline",
     );
 
     a.process(ViewCommand::SetShowPeerSelections(false));
-    assert!(
-        images_match(&hidden, &snap(&mut a), 0),
-        "turning it back off should restore exactly the canvas without it"
+    assert_images(
+        &hidden,
+        &snap(&mut a),
+        0,
+        "turning it back off should restore exactly the canvas without it",
     );
 
     // And it reaches only the peers' outlines: A's own is drawn regardless.
     select_left(&mut a);
     let mine = snap(&mut a);
-    assert!(
-        !images_match(&mine, &hidden, 0),
-        "this client's own selection outline is not gated by the setting"
+    assert_images_differ(
+        &mine,
+        &hidden,
+        0,
+        "this client's own selection outline is not gated by the setting",
     );
 }
 

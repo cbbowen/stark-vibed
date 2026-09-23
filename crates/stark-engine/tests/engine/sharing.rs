@@ -44,10 +44,7 @@ fn a_shared_engine_renders_the_donor_s_pixels() {
     diagonal(&mut shared);
     let a = donor.render_to_image();
     let b = shared.render_to_image();
-    assert!(
-        images_match(&a, &b, 0),
-        "shared machinery must not change a pixel"
-    );
+    assert_images(&a, &b, 0, "shared machinery must not change a pixel");
 }
 
 /// The documents are isolated: painting on the sharing engine leaves the donor's
@@ -63,9 +60,11 @@ fn painting_on_a_shared_engine_leaves_the_donor_alone() {
     shared.process(DocCommand::Undo);
     diagonal(&mut shared);
     let after = donor.render_to_image();
-    assert!(
-        images_match(&before, &after, 0),
-        "a preview stroke reached the donor's document"
+    assert_images(
+        &before,
+        &after,
+        0,
+        "a preview stroke reached the donor's document",
     );
 }
 

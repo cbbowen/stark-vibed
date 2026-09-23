@@ -25,9 +25,11 @@ fn rendering_is_deterministic() {
 
     let ia = a.render_to_image();
     let ib = b.render_to_image();
-    assert!(
-        images_match(&ia, &ib, 0),
-        "two identical scripts must render bit-equal images"
+    assert_images(
+        &ia,
+        &ib,
+        0,
+        "two identical scripts must render bit-equal images",
     );
 }
 
@@ -43,9 +45,11 @@ fn undo_redo_roundtrip_is_lossless() {
     engine.process(DocCommand::Redo);
     let after = engine.render_to_image();
 
-    assert!(
-        images_match(&before, &after, 0),
-        "undo then redo must reproduce identical pixels"
+    assert_images(
+        &before,
+        &after,
+        0,
+        "undo then redo must reproduce identical pixels",
     );
 }
 
@@ -68,9 +72,11 @@ fn undo_matches_shorter_history() {
     paint(&mut one, RED, 28.0, STROKE_A);
     let only_a = one.render_to_image();
 
-    assert!(
-        images_match(&undone, &only_a, 0),
-        "undoing the last stroke must equal never having committed it"
+    assert_images(
+        &undone,
+        &only_a,
+        0,
+        "undoing the last stroke must equal never having committed it",
     );
 }
 
@@ -130,9 +136,11 @@ fn scrubbing_back_and_forward_is_lossless() {
     engine.process(DocCommand::Seek(3));
     let after = engine.render_to_image();
 
-    assert!(
-        images_match(&before, &after, 0),
-        "a scrub to the start and back must reproduce identical pixels"
+    assert_images(
+        &before,
+        &after,
+        0,
+        "a scrub to the start and back must reproduce identical pixels",
     );
 }
 
@@ -154,9 +162,11 @@ fn a_bulk_scrub_lands_where_repeated_undo_lands() {
     }
 
     assert_eq!(bulk.scrub_range(), stepwise.scrub_range());
-    assert!(
-        images_match(&bulk.render_to_image(), &stepwise.render_to_image(), 0),
-        "one seek of two steps must equal two undos"
+    assert_images(
+        &bulk.render_to_image(),
+        &stepwise.render_to_image(),
+        0,
+        "one seek of two steps must equal two undos",
     );
 }
 
@@ -174,9 +184,11 @@ fn scrubbing_forward_matches_a_history_that_only_ever_got_that_far() {
     };
     paint(&mut only_a, RED, 26.0, STROKE_A);
 
-    assert!(
-        images_match(&scrubbed.render_to_image(), &only_a.render_to_image(), 0),
-        "standing at step 1 must equal a document that only ever had step 1"
+    assert_images(
+        &scrubbed.render_to_image(),
+        &only_a.render_to_image(),
+        0,
+        "standing at step 1 must equal a document that only ever had step 1",
     );
 }
 
@@ -322,8 +334,10 @@ fn a_stroke_record_reaching_past_the_cap_is_refused_whole() {
         tiles_of(&engine),
         "a refused stroke wrote tiles"
     );
-    assert!(
-        images_match(&before, &replayed.render_to_image(), 0),
-        "a refused stroke changed the picture"
+    assert_images(
+        &before,
+        &replayed.render_to_image(),
+        0,
+        "a refused stroke changed the picture",
     );
 }

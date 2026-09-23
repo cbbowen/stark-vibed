@@ -141,15 +141,22 @@ fn duplicating_a_layer_copies_it_above_itself() {
     assert_eq!(name_of(&engine, copy), Some("Sky".to_string()));
 
     engine.process(DocCommand::SetLayerVisible(copy, false));
-    assert!(
-        images_match(&before, &engine.render_to_image(), 0),
-        "the copy holds exactly what the source holds"
+    assert_images(
+        &before,
+        &engine.render_to_image(),
+        0,
+        "the copy holds exactly what the source holds",
     );
 
     engine.process(DocCommand::Undo);
     engine.process(DocCommand::Undo);
     assert_eq!(engine.observe().layers.len(), 2, "undo takes the copy back");
-    assert!(images_match(&before, &engine.render_to_image(), 0));
+    assert_images(
+        &before,
+        &engine.render_to_image(),
+        0,
+        "undo of a duplicate leaves the picture it started from",
+    );
 }
 
 /// The copy shares its source's tiles (copy-on-write, §5.2) — which must be
@@ -374,7 +381,12 @@ fn setting_a_value_to_the_one_it_already_holds_is_not_an_edit() {
     );
     // …and the document is where it was, which is what makes the claim above about
     // the log rather than about a refusal to apply.
-    assert!(images_match(&picture, &engine.render_to_image(), 0));
+    assert_images(
+        &picture,
+        &engine.render_to_image(),
+        0,
+        "a setter that changed nothing left the picture alone",
+    );
 
     // The rule is not "never log": a real change still does.
     engine.process(DocCommand::SetLayerVisible(top(&engine), true));
@@ -403,8 +415,10 @@ fn a_commit_supersedes_a_drag_it_knows_nothing_about() {
     engine.process(ViewCommand::Preview(Some(Edit::LayerOpacity(ROOT, 0.0))));
     // An unrelated commit lands mid-drag.
     engine.process(DocCommand::RemoveLayer(top(&engine)));
-    assert!(
-        images_match(&without_top, &engine.render_to_image(), 2),
+    assert_images(
+        &without_top,
+        &engine.render_to_image(),
+        2,
         "the drag preview outlived the commit and is still fading the root layer",
     );
     assert_eq!(
@@ -486,9 +500,11 @@ fn dragging_layer_opacity_previews_without_logging() {
     // about the drag has been logged into.
     engine.process(DocCommand::Undo);
     engine.process(DocCommand::Redo);
-    assert!(
-        images_match(&opaque, &engine.render_to_image(), 2),
-        "a history step during a drag should drop the preview and log nothing of it"
+    assert_images(
+        &opaque,
+        &engine.render_to_image(),
+        2,
+        "a history step during a drag should drop the preview and log nothing of it",
     );
 
     // Release: one commit, which supersedes the preview it matches.
@@ -500,14 +516,18 @@ fn dragging_layer_opacity_previews_without_logging() {
     }
     let dragging = engine.render_to_image();
     engine.process(DocCommand::Set(Edit::LayerOpacity(top(&engine), 0.0)));
-    assert!(
-        images_match(&dragging, &engine.render_to_image(), 2),
-        "the committed opacity should match what the drag previewed"
+    assert_images(
+        &dragging,
+        &engine.render_to_image(),
+        2,
+        "the committed opacity should match what the drag previewed",
     );
     engine.process(DocCommand::Undo);
-    assert!(
-        images_match(&opaque, &engine.render_to_image(), 2),
-        "one undo should take back the whole drag"
+    assert_images(
+        &opaque,
+        &engine.render_to_image(),
+        2,
+        "one undo should take back the whole drag",
     );
 }
 
@@ -531,9 +551,11 @@ fn an_opacity_drag_that_ends_where_it_started_logs_nothing() {
         ))));
     }
     engine.process(DocCommand::Set(Edit::LayerOpacity(top(&engine), 1.0)));
-    assert!(
-        images_match(&opaque, &engine.render_to_image(), 2),
-        "the settled drag should leave the document as it found it, preview and all"
+    assert_images(
+        &opaque,
+        &engine.render_to_image(),
+        2,
+        "the settled drag should leave the document as it found it, preview and all",
     );
 
     engine.process(DocCommand::Undo);
@@ -565,10 +587,7 @@ fn dragging_a_blend_parameter_previews_without_logging() {
         ))));
     }
     let dragging = engine.render_to_image();
-    assert!(
-        !images_match(&rest, &dragging, 2),
-        "the preview should reach the canvas"
-    );
+    assert_images_differ(&rest, &dragging, 2, "the preview should reach the canvas");
     // `observe` reports the previewed mode, so the track agrees with the canvas.
     assert_eq!(
         blend_of(&engine, top(&engine)),
@@ -580,14 +599,18 @@ fn dragging_a_blend_parameter_previews_without_logging() {
         top(&engine),
         BlendMode::Drago { k: 4.0 },
     )));
-    assert!(
-        images_match(&dragging, &engine.render_to_image(), 2),
-        "the committed bend should match what the drag previewed"
+    assert_images(
+        &dragging,
+        &engine.render_to_image(),
+        2,
+        "the committed bend should match what the drag previewed",
     );
     engine.process(DocCommand::Undo);
-    assert!(
-        images_match(&rest, &engine.render_to_image(), 2),
-        "one undo should take back the whole drag"
+    assert_images(
+        &rest,
+        &engine.render_to_image(),
+        2,
+        "one undo should take back the whole drag",
     );
 
     // …and a drag that travels out and comes back is not an edit at all.
@@ -598,9 +621,11 @@ fn dragging_a_blend_parameter_previews_without_logging() {
         ))));
     }
     engine.process(DocCommand::Set(Edit::LayerBlend(top(&engine), RADIANCE)));
-    assert!(
-        images_match(&rest, &engine.render_to_image(), 2),
-        "the settled drag should leave the document as it found it, preview and all"
+    assert_images(
+        &rest,
+        &engine.render_to_image(),
+        2,
+        "the settled drag should leave the document as it found it, preview and all",
     );
     engine.process(DocCommand::Undo);
     assert_eq!(
@@ -624,9 +649,11 @@ fn layer_state_survives_save_load() {
     loaded.load_bytes(&bytes).expect("load");
     let after = loaded.render_to_image();
 
-    assert!(
-        images_match(&before, &after, 0),
-        "layer ordering + opacity must round-trip through save/load"
+    assert_images(
+        &before,
+        &after,
+        0,
+        "layer ordering + opacity must round-trip through save/load",
     );
     assert_eq!(loaded.observe().layers.len(), 2);
 }
@@ -791,9 +818,11 @@ fn a_layers_own_picture_ignores_its_surroundings() {
         ("clipped", DocCommand::SetLayerClip(top, true)),
     ] {
         engine.process(command);
-        assert!(
-            images_match(&alone, &render_only(&mut engine, Some(top)), 0),
-            "a {label} layer must render the same paint on its own"
+        assert_images(
+            &alone,
+            &render_only(&mut engine, Some(top)),
+            0,
+            format_args!("a {label} layer must render the same paint on its own"),
         );
     }
 

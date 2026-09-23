@@ -160,9 +160,11 @@ fn the_view_never_reaches_the_document() {
         "nothing entered the history"
     );
     let turned = shot(&mut engine);
-    assert!(
-        images_match(&upright, &turned, 0),
-        "an export must show the piece, not the easel"
+    assert_images(
+        &upright,
+        &turned,
+        0,
+        "an export must show the piece, not the easel",
     );
 }
 
@@ -469,14 +471,18 @@ fn every_preview_leaves_the_committed_document_alone() {
             before,
             "dropping {sent} reached the committed document"
         );
-        assert!(
-            images_match(&resting, &engine.render_to_image(), 0),
-            "dropping {sent} did not restore the canvas"
+        assert_images(
+            &resting,
+            &engine.render_to_image(),
+            0,
+            format_args!("dropping {sent} did not restore the canvas"),
         );
     }
-    assert!(
-        images_match(&exported, &export(&mut engine), 0),
-        "a preview rendered into the committed tiles"
+    assert_images(
+        &exported,
+        &export(&mut engine),
+        0,
+        "a preview rendered into the committed tiles",
     );
 }
 

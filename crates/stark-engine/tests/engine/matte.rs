@@ -268,9 +268,11 @@ fn a_matte_can_be_selected_but_takes_no_paint() {
         &[Vec2::new(-30.0, 40.0), Vec2::new(30.0, 40.0)],
     );
     let after = engine.render_to_image();
-    assert!(
-        images_match(&before, &after, 1),
-        "a stroke on a matte must change nothing"
+    assert_images(
+        &before,
+        &after,
+        1,
+        "a stroke on a matte must change nothing",
     );
 
     // Selecting a paint layer again resumes painting, so nothing is stuck.
@@ -281,9 +283,11 @@ fn a_matte_can_be_selected_but_takes_no_paint() {
         30.0,
         &[Vec2::new(-30.0, 40.0), Vec2::new(30.0, 40.0)],
     );
-    assert!(
-        !images_match(&before, &engine.render_to_image(), 1),
-        "selecting a paint layer again must resume painting"
+    assert_images_differ(
+        &before,
+        &engine.render_to_image(),
+        1,
+        "selecting a paint layer again must resume painting",
     );
 }
 
@@ -308,9 +312,11 @@ fn dragging_a_frame_previews_without_logging() {
         ))));
     }
     let dragging = engine.render_to_image();
-    assert!(
-        !images_match(&framed, &dragging, 4),
-        "the preview should move the frame on screen"
+    assert_images_differ(
+        &framed,
+        &dragging,
+        4,
+        "the preview should move the frame on screen",
     );
     // `observe` reports the previewed rect, which is what keeps the handles under
     // the pointer instead of a frame behind on the committed value.
@@ -334,15 +340,19 @@ fn dragging_a_frame_previews_without_logging() {
         Vec2::new(35.0, 35.0),
     )));
     let committed = engine.render_to_image();
-    assert!(
-        images_match(&dragging, &committed, 2),
-        "the committed rect should match what the drag previewed"
+    assert_images(
+        &dragging,
+        &committed,
+        2,
+        "the committed rect should match what the drag previewed",
     );
     engine.process(DocCommand::Undo);
     let back = engine.render_to_image();
-    assert!(
-        images_match(&framed, &back, 2),
-        "one undo should take back the whole drag"
+    assert_images(
+        &framed,
+        &back,
+        2,
+        "one undo should take back the whole drag",
     );
 }
 
@@ -368,9 +378,11 @@ fn dragging_the_canvas_color_previews_without_logging() {
         )))));
     }
     let dragging = engine.render_to_image();
-    assert!(
-        !images_match(&painted, &dragging, 4),
-        "the preview should recolor the canvas on screen"
+    assert_images_differ(
+        &painted,
+        &dragging,
+        4,
+        "the preview should recolor the canvas on screen",
     );
     // `observe` reports the previewed color, so the panel's swatch agrees with the
     // canvas it controls instead of trailing a commit behind it.
@@ -380,9 +392,11 @@ fn dragging_the_canvas_color_previews_without_logging() {
     // preview with it — landing on the untouched document, because nothing about
     // the drag has been logged.
     engine.process(DocCommand::Undo);
-    assert!(
-        images_match(&blank, &engine.render_to_image(), 2),
-        "undo during a drag should take back the stroke and drop the preview"
+    assert_images(
+        &blank,
+        &engine.render_to_image(),
+        2,
+        "undo during a drag should take back the stroke and drop the preview",
     );
     engine.process(DocCommand::Redo);
 
@@ -391,9 +405,11 @@ fn dragging_the_canvas_color_previews_without_logging() {
         0.1, 0.1, 0.1,
     ]))));
     let committed = engine.render_to_image();
-    assert!(
-        images_match(&dragging, &committed, 2),
-        "the committed color should match what the drag previewed"
+    assert_images(
+        &dragging,
+        &committed,
+        2,
+        "the committed color should match what the drag previewed",
     );
     engine.process(DocCommand::Undo);
     assert_eq!(
@@ -401,9 +417,11 @@ fn dragging_the_canvas_color_previews_without_logging() {
         substrate,
         "one undo should take back the whole drag"
     );
-    assert!(
-        images_match(&painted, &engine.render_to_image(), 2),
-        "and restore the image it started from"
+    assert_images(
+        &painted,
+        &engine.render_to_image(),
+        2,
+        "and restore the image it started from",
     );
 }
 
@@ -447,9 +465,11 @@ fn picking_a_frame_color_previews_without_logging() {
     // logged, so undo-then-redo lands back on the black frame.
     engine.process(DocCommand::Undo);
     engine.process(DocCommand::Redo);
-    assert!(
-        images_match(&black, &engine.render_to_image(), 2),
-        "nothing about the pick should have been logged by it"
+    assert_images(
+        &black,
+        &engine.render_to_image(),
+        2,
+        "nothing about the pick should have been logged by it",
     );
 
     // Settling commits exactly one action, which supersedes the preview it matches.
@@ -463,14 +483,18 @@ fn picking_a_frame_color_previews_without_logging() {
         matte_id,
         Parcel::Solid(Srgb::new([0.9, 0.9, 0.9])),
     )));
-    assert!(
-        images_match(&picking, &engine.render_to_image(), 2),
-        "the committed color should match what the pick previewed"
+    assert_images(
+        &picking,
+        &engine.render_to_image(),
+        2,
+        "the committed color should match what the pick previewed",
     );
     engine.process(DocCommand::Undo);
-    assert!(
-        images_match(&black, &engine.render_to_image(), 2),
-        "one undo should take back the whole pick"
+    assert_images(
+        &black,
+        &engine.render_to_image(),
+        2,
+        "one undo should take back the whole pick",
     );
 }
 
@@ -498,9 +522,11 @@ fn a_frame_color_pick_that_changes_nothing_logs_nothing() {
         matte_id,
         Parcel::Solid(Srgb::new(BLACK)),
     )));
-    assert!(
-        images_match(&black, &engine.render_to_image(), 2),
-        "the settled pick should leave the document as it found it, preview and all"
+    assert_images(
+        &black,
+        &engine.render_to_image(),
+        2,
+        "the settled pick should leave the document as it found it, preview and all",
     );
 
     // Nothing was logged, so one undo reaches past it to the frame itself.
@@ -525,9 +551,11 @@ fn matte_undoes() {
 
     engine.process(DocCommand::Undo);
     let undone = engine.render_to_image();
-    assert!(
-        images_match(&before, &undone, 2),
-        "undoing a matte should restore the un-framed image"
+    assert_images(
+        &before,
+        &undone,
+        2,
+        "undoing a matte should restore the un-framed image",
     );
 
     engine.process(DocCommand::Redo);
@@ -651,23 +679,29 @@ fn a_gradient_matte_survives_undo_and_reload() {
         }),
     )));
     let graded = engine.render_to_image();
-    assert!(
-        !images_match(&black, &graded, 4),
-        "the gradient paint should change the frame"
+    assert_images_differ(
+        &black,
+        &graded,
+        4,
+        "the gradient paint should change the frame",
     );
 
     engine.process(DocCommand::Undo);
-    assert!(
-        images_match(&black, &engine.render_to_image(), 1),
-        "undo should restore the solid paint exactly"
+    assert_images(
+        &black,
+        &engine.render_to_image(),
+        1,
+        "undo should restore the solid paint exactly",
     );
     engine.process(DocCommand::Redo);
 
     let bytes = engine.save_bytes().expect("save");
     engine.load_bytes(&bytes).expect("load");
-    assert!(
-        images_match(&graded, &engine.render_to_image(), 2),
-        "a gradient matte did not replay identically from the log"
+    assert_images(
+        &graded,
+        &engine.render_to_image(),
+        2,
+        "a gradient matte did not replay identically from the log",
     );
 }
 
@@ -746,9 +780,11 @@ fn a_translated_matte_is_the_frame_made_at_the_shifted_rect() {
         paint: Parcel::Solid(Srgb::new(BLACK)),
     });
     let made = b.observe().layers.last().expect("matte").id;
-    assert!(
-        images_match(&a.render_to_image(), &b.render_to_image(), 0),
-        "a moved frame and a frame made where it moved to are the same picture"
+    assert_images(
+        &a.render_to_image(),
+        &b.render_to_image(),
+        0,
+        "a moved frame and a frame made where it moved to are the same picture",
     );
     let plan = |e: &Engine, id| {
         let p = e
@@ -801,9 +837,11 @@ fn a_translated_gradient_matte_carries_its_axis() {
             axis: axis.translated(D.as_vec2()),
         }),
     });
-    assert!(
-        images_match(&a.render_to_image(), &b.render_to_image(), 0),
-        "the axis moves with the frame"
+    assert_images(
+        &a.render_to_image(),
+        &b.render_to_image(),
+        0,
+        "the axis moves with the frame",
     );
 }
 
@@ -843,9 +881,11 @@ fn a_translated_gradient_backing_carries_its_wash() {
         to: D,
     }));
     b.process(backing(axis.translated(D.as_vec2())));
-    assert!(
-        images_match(&a.render_to_image(), &b.render_to_image(), 0),
-        "a graded backing's wash rides the move"
+    assert_images(
+        &a.render_to_image(),
+        &b.render_to_image(),
+        0,
+        "a graded backing's wash rides the move",
     );
 }
 
@@ -899,17 +939,21 @@ fn a_translated_mattes_rect_is_read_and_written_on_the_canvas() {
         Some((min + d, max + d)),
         "the commit lands at the canvas corners the drag showed"
     );
-    assert!(
-        images_match(&dragging, &engine.render_to_image(), 2),
-        "preview == committed through the frame conversion"
+    assert_images(
+        &dragging,
+        &engine.render_to_image(),
+        2,
+        "preview == committed through the frame conversion",
     );
 
     // Undo walks back through both property writes to the untranslated frame.
     engine.process(DocCommand::Undo);
     engine.process(DocCommand::Undo);
-    assert!(
-        images_match(&framed, &engine.render_to_image(), 2),
-        "undo restores the rect, then the move"
+    assert_images(
+        &framed,
+        &engine.render_to_image(),
+        2,
+        "undo restores the rect, then the move",
     );
 }
 

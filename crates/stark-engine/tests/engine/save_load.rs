@@ -56,9 +56,11 @@ fn save_load_roundtrip_is_lossless() {
     loaded.load_bytes(&bytes).expect("deserialize + replay");
     let after = loaded.render_to_image();
 
-    assert!(
-        images_match(&before, &after, 0),
-        "save → load must reproduce identical pixels"
+    assert_images(
+        &before,
+        &after,
+        0,
+        "save → load must reproduce identical pixels",
     );
     // The full undo timeline is available after loading (undo-after-load).
     assert!(loaded.observe().can_undo);
@@ -164,9 +166,11 @@ fn undo_after_load_drops_last_stroke() {
     loaded.process(DocCommand::Undo);
     let undone = loaded.render_to_image();
 
-    assert!(
-        images_match(&undone, &only_a, 0),
-        "undo after load must drop the last stroke exactly"
+    assert_images(
+        &undone,
+        &only_a,
+        0,
+        "undo after load must drop the last stroke exactly",
     );
 }
 
@@ -185,9 +189,11 @@ fn timelapse_yields_one_frame_per_action() {
         .expect("timelapse");
 
     assert_eq!(frames.len(), file.actions.len(), "one frame per action");
-    assert!(
-        images_match(frames.last().unwrap(), &final_image, 0),
-        "last timelapse frame must equal the fully-replayed image"
+    assert_images(
+        frames.last().unwrap(),
+        &final_image,
+        0,
+        "last timelapse frame must equal the fully-replayed image",
     );
     // A timelapse ends with the file loaded, and a loaded file is unedited.
     assert!(
@@ -222,9 +228,11 @@ fn a_timelapse_replays_in_the_documents_color_space() {
     // Mixbox picture.
     let mut loaded = engine_or_skip_blue().expect("adapter available");
     loaded.load_document(&file).expect("load");
-    assert!(
-        images_match(&loaded.render_to_image(), &expected, 0),
-        "loading already matches the document's color space"
+    assert_images(
+        &loaded.render_to_image(),
+        &expected,
+        0,
+        "loading already matches the document's color space",
     );
 
     let mut lapsing = engine_or_skip_blue().expect("adapter available");
@@ -232,9 +240,11 @@ fn a_timelapse_replays_in_the_documents_color_space() {
     lapsing
         .replay_timelapse(&file, |frame| frames.push(frame))
         .expect("timelapse");
-    assert!(
-        images_match(frames.last().expect("frames"), &expected, 0),
-        "and so must a timelapse — same file, same preamble, same pixels"
+    assert_images(
+        frames.last().expect("frames"),
+        &expected,
+        0,
+        "and so must a timelapse — same file, same preamble, same pixels",
     );
 }
 
@@ -270,9 +280,11 @@ fn brush_assets_survive_save_load() {
     loaded.load_bytes(&bytes).expect("load");
     let after = loaded.render_to_image();
 
-    assert!(
-        images_match(&before, &after, 0),
-        "image-brush stroke must round-trip through save/load via bundled assets"
+    assert_images(
+        &before,
+        &after,
+        0,
+        "image-brush stroke must round-trip through save/load via bundled assets",
     );
 }
 
@@ -516,9 +528,11 @@ fn a_lean_file_replays_identically_once_its_content_is_resolved() {
         .load_document(&file)
         .expect("the bill was settled above");
 
-    assert!(
-        images_match(&loaded.render_to_image(), &expected, 0),
-        "a resolved lean file must replay to the same pixels as the fat one"
+    assert_images(
+        &loaded.render_to_image(),
+        &expected,
+        0,
+        "a resolved lean file must replay to the same pixels as the fat one",
     );
 }
 
@@ -542,11 +556,12 @@ fn a_complete_file_owes_nothing() {
     fresh
         .load_document(&file)
         .expect("a complete file owes nothing");
-    assert!(images_match(
+    assert_images(
         &fresh.render_to_image(),
         &engine.render_to_image(),
-        0
-    ));
+        0,
+        "a complete file reloads as the document it was written from",
+    );
 }
 
 /// **A lean file whose bill was never settled is refused, and the open document is
@@ -597,9 +612,11 @@ fn an_unsettled_lean_file_is_refused_and_changes_nothing() {
         }
         other => panic!("expected MissingContent, got {other}"),
     }
-    assert!(
-        images_match(&opener.render_to_image(), &before, 0),
-        "a refused load must leave the document that was open untouched"
+    assert_images(
+        &opener.render_to_image(),
+        &before,
+        0,
+        "a refused load must leave the document that was open untouched",
     );
 }
 

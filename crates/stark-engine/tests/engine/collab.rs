@@ -5,7 +5,9 @@
 
 use crate::common::collab::{pair, snap, sync, sync_into};
 use crate::common::palette::{BLUE_VIVID, GREEN_SOFT, RED_VIVID};
-use crate::common::{Probe, engine_or_skip, images_match, paint, whole_render};
+use crate::common::{
+    Probe, assert_images, assert_images_differ, engine_or_skip, paint, whole_render,
+};
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_model::document::ActorId;
 use stark_model::geom::Vec2;
@@ -41,19 +43,13 @@ fn concurrent_strokes_converge() {
 
     let img_a = snap(&mut a);
     let img_b = snap(&mut b);
-    assert!(
-        images_match(&img_a, &img_b, 0),
-        "peers diverged after cross-merge"
-    );
+    assert_images(&img_a, &img_b, 0, "peers diverged after cross-merge");
 
     // A late joiner catching up from the full shared log sees the same canvas.
     c.join_collaboration(&a.document_file(), ActorId(3))
         .expect("join a session this build can render");
     let img_c = snap(&mut c);
-    assert!(
-        images_match(&img_a, &img_c, 0),
-        "late joiner diverged from the session"
-    );
+    assert_images(&img_a, &img_c, 0, "late joiner diverged from the session");
 }
 
 /// Undo in a shared session is a logged action targeting *my* stroke, skipping
@@ -86,10 +82,12 @@ fn shared_undo_skips_peer_actions() {
     sync(&mut a, &mut b);
     let img_a = snap(&mut a);
     let img_b = snap(&mut b);
-    assert!(images_match(&img_a, &img_b, 0), "peers diverged after undo");
-    assert!(
-        images_match(&img_a, &only_b, 0),
-        "undo of A's stroke should leave exactly B's stroke"
+    assert_images(&img_a, &img_b, 0, "peers diverged after undo");
+    assert_images(
+        &img_a,
+        &only_b,
+        0,
+        "undo of A's stroke should leave exactly B's stroke",
     );
 
     // Redo brings A's stroke back on both peers — at the *top* of the stack
@@ -101,19 +99,18 @@ fn shared_undo_skips_peer_actions() {
     sync(&mut a, &mut b);
     let img_a = snap(&mut a);
     let img_b = snap(&mut b);
-    assert!(images_match(&img_a, &img_b, 0), "peers diverged after redo");
-    assert!(
-        !images_match(&img_a, &only_b, 0),
-        "redo should bring A's stroke back"
-    );
+    assert_images(&img_a, &img_b, 0, "peers diverged after redo");
+    assert_images_differ(&img_a, &only_b, 0, "redo should bring A's stroke back");
     let Some(mut c) = engine_or_skip() else {
         return;
     };
     c.join_collaboration(&a.document_file(), ActorId(3))
         .expect("join a session this build can render");
-    assert!(
-        images_match(&img_a, &snap(&mut c), 0),
-        "redo-at-top diverged from a late joiner's canonical materialization"
+    assert_images(
+        &img_a,
+        &snap(&mut c),
+        0,
+        "redo-at-top diverged from a late joiner's canonical materialization",
     );
 
     // A fresh edit clears the redo stack, like solo editing.
@@ -146,14 +143,14 @@ fn shared_undo_redo_chain() {
     let two = snap(&mut a);
 
     a.process(DocCommand::Undo);
-    assert!(images_match(&snap(&mut a), &one, 0), "first undo");
+    assert_images(&snap(&mut a), &one, 0, "first undo");
     a.process(DocCommand::Undo);
-    assert!(images_match(&snap(&mut a), &blank, 0), "second undo");
+    assert_images(&snap(&mut a), &blank, 0, "second undo");
     assert!(!a.observe().can_undo, "nothing left to undo");
     a.process(DocCommand::Redo);
-    assert!(images_match(&snap(&mut a), &one, 0), "first redo");
+    assert_images(&snap(&mut a), &one, 0, "first redo");
     a.process(DocCommand::Redo);
-    assert!(images_match(&snap(&mut a), &two, 0), "second redo");
+    assert_images(&snap(&mut a), &two, 0, "second redo");
     assert!(!a.observe().can_redo, "nothing left to redo");
 }
 
@@ -175,9 +172,11 @@ fn host_can_undo_pre_share_strokes() {
     a.start_collaboration(ActorId(7));
     assert!(a.observe().can_undo, "pre-share stroke should be undoable");
     a.process(DocCommand::Undo);
-    assert!(
-        images_match(&snap(&mut a), &blank, 0),
-        "undo should remove the pre-share stroke"
+    assert_images(
+        &snap(&mut a),
+        &blank,
+        0,
+        "undo should remove the pre-share stroke",
     );
 }
 
@@ -207,9 +206,11 @@ fn shared_save_solo_load_roundtrip() {
 
     let bytes = a.save_bytes().expect("save shared doc");
     solo.load_bytes(&bytes).expect("load shared doc");
-    assert!(
-        images_match(&snap(&mut solo), &expected, 0),
-        "solo load of a shared log should reproduce the session's canvas"
+    assert_images(
+        &snap(&mut solo),
+        &expected,
+        0,
+        "solo load of a shared log should reproduce the session's canvas",
     );
     // The undone stroke was flattened away; the surviving one is undoable.
     assert!(solo.observe().can_undo);
@@ -222,9 +223,11 @@ fn shared_save_solo_load_roundtrip() {
         };
         snap(&mut fresh)
     };
-    assert!(
-        images_match(&after_undo, &blank, 0),
-        "undo after load should reach the blank canvas"
+    assert_images(
+        &after_undo,
+        &blank,
+        0,
+        "undo after load should reach the blank canvas",
     );
 }
 
@@ -252,10 +255,7 @@ fn merge_is_idempotent() {
             "duplicate must be rejected"
         );
     }
-    assert!(
-        images_match(&snap(&mut b), &img, 0),
-        "duplicate merge changed pixels"
-    );
+    assert_images(&snap(&mut b), &img, 0, "duplicate merge changed pixels");
 }
 
 /// A shared document has no single playhead to scrub (§18.2.4).
@@ -284,7 +284,7 @@ fn a_shared_timeline_reports_no_scrub_range() {
     // And a seek there is inert rather than destructive.
     let before = snap(&mut a);
     a.process(DocCommand::Seek(0));
-    assert!(images_match(&before, &snap(&mut a), 0));
+    assert_images(&before, &snap(&mut a), 0, "a seek to where we already are");
 }
 
 /// **Leaving the session hands the history back** (§18.2.4).
@@ -331,10 +331,7 @@ fn leaving_a_session_hands_the_history_back() {
     let shared_log = a.document_file().actions.len();
     let shared = snap(&mut a);
     a.end_collaboration();
-    assert!(
-        images_match(&shared, &snap(&mut a), 0),
-        "leaving repainted the canvas"
-    );
+    assert_images(&shared, &snap(&mut a), 0, "leaving repainted the canvas");
 
     let (at, total) = a.scrub_range().expect("the history is this client's again");
     assert_eq!(at, total, "the playhead stands where the session left it");
@@ -354,14 +351,18 @@ fn leaving_a_session_hands_the_history_back() {
     // `apply`, where a live commit took its preview's own tiles (§6.2).
     let reference = whole_render(&mut a);
     a.process(DocCommand::Seek(0));
-    assert!(
-        !images_match(&reference, &snap(&mut a), 0),
-        "a seek to the empty canvas changed nothing"
+    assert_images_differ(
+        &reference,
+        &snap(&mut a),
+        0,
+        "a seek to the empty canvas changed nothing",
     );
     a.process(DocCommand::Seek(total));
-    assert!(
-        images_match(&reference, &snap(&mut a), 0),
-        "the round trip through the peer's stroke did not come back"
+    assert_images(
+        &reference,
+        &snap(&mut a),
+        0,
+        "the round trip through the peer's stroke did not come back",
     );
 }
 

@@ -10,7 +10,7 @@
 
 use crate::common::collab::{pair, pair_sized, snap, sync, sync_into};
 use crate::common::palette::{BLUE_VIVID, GREEN_SOFT, RED_VIVID};
-use crate::common::{Probe, engine_or_skip, engine_or_skip_sized, images_match, paint};
+use crate::common::{Probe, assert_images, engine_or_skip, engine_or_skip_sized, paint};
 use stark_engine::Extent2;
 use stark_engine::command::DocCommand;
 use stark_engine::{Engine, RgbaImage};
@@ -98,13 +98,15 @@ fn undo_and_redo_splice_past_disjoint_peer_strokes() {
     }
     let img_a = snap(&mut a);
     let img_b = snap(&mut b);
-    assert!(images_match(&img_a, &img_b, 0), "peers diverged after undo");
+    assert_images(&img_a, &img_b, 0, "peers diverged after undo");
     let Some(canon) = canonical_snap(&mut a, WIDE) else {
         return;
     };
-    assert!(
-        images_match(&img_a, &canon, 0),
-        "spliced undo diverged from canonical materialization"
+    assert_images(
+        &img_a,
+        &canon,
+        0,
+        "spliced undo diverged from canonical materialization",
     );
 
     // Redo materializes the revived stroke at the *top* of the stack
@@ -120,14 +122,8 @@ fn undo_and_redo_splice_past_disjoint_peer_strokes() {
         assert_eq!(stats.replayed, before.replayed, "{name} replayed on redo");
     }
     let img_a = snap(&mut a);
-    assert!(
-        images_match(&img_a, &snap(&mut b), 0),
-        "peers diverged after redo"
-    );
-    assert!(
-        images_match(&img_a, &both, 0),
-        "redo should restore both strokes"
-    );
+    assert_images(&img_a, &snap(&mut b), 0, "peers diverged after redo");
+    assert_images(&img_a, &both, 0, "redo should restore both strokes");
 }
 
 /// A peer's stroke arriving *behind* newer local strokes (smaller Lamport
@@ -160,13 +156,15 @@ fn late_arrival_replays_only_the_tail() {
 
     sync_into(&mut a, &mut b);
     let img_a = snap(&mut a);
-    assert!(images_match(&img_a, &snap(&mut b), 0), "peers diverged");
+    assert_images(&img_a, &snap(&mut b), 0, "peers diverged");
     let Some(canon) = canonical_snap(&mut a, WIDE) else {
         return;
     };
-    assert!(
-        images_match(&img_a, &canon, 0),
-        "rewound insert diverged from canonical materialization"
+    assert_images(
+        &img_a,
+        &canon,
+        0,
+        "rewound insert diverged from canonical materialization",
     );
 }
 
@@ -209,13 +207,15 @@ fn undo_splices_past_another_layers_stroke() {
         assert_eq!(stats.fast_removes, 1, "{name} missed the undo fast path");
     }
     let img_a = snap(&mut a);
-    assert!(images_match(&img_a, &snap(&mut b), 0), "peers diverged");
+    assert_images(&img_a, &snap(&mut b), 0, "peers diverged");
     let Some(canon) = canonical_snap(&mut a, crate::common::SIZE) else {
         return;
     };
-    assert!(
-        images_match(&img_a, &canon, 0),
-        "spliced undo diverged from canonical materialization"
+    assert_images(
+        &img_a,
+        &canon,
+        0,
+        "spliced undo diverged from canonical materialization",
     );
 }
 
@@ -251,7 +251,7 @@ fn undo_splices_past_a_rename() {
         );
     }
     let img_a = snap(&mut a);
-    assert!(images_match(&img_a, &snap(&mut b), 0), "peers diverged");
+    assert_images(&img_a, &snap(&mut b), 0, "peers diverged");
 }
 
 /// **A stroke does not commute with the substrate it was painted on**, so an undo
@@ -321,12 +321,14 @@ fn undo_of_a_substrate_does_not_splice_past_the_strokes_it_toothed() {
     assert!(stats.rebuilds >= 1, "the strokes should have re-rendered");
 
     let img_a = snap(&mut a);
-    assert!(images_match(&img_a, &snap(&mut b), 0), "peers diverged");
+    assert_images(&img_a, &snap(&mut b), 0, "peers diverged");
     let Some(canon) = canonical_snap(&mut a, crate::common::SIZE) else {
         return;
     };
-    assert!(
-        images_match(&img_a, &canon, 0),
+    assert_images(
+        &img_a,
+        &canon,
+        0,
         "the spliced state kept a tooth the log no longer names",
     );
 }
@@ -366,16 +368,20 @@ fn overlapping_strokes_fall_back_to_replay() {
         assert!(stats.rebuilds >= 1, "{name} should have rebuilt");
     }
     let img_a = snap(&mut a);
-    assert!(
-        images_match(&img_a, &snap(&mut b), 0),
-        "peers diverged after conflicted undo"
+    assert_images(
+        &img_a,
+        &snap(&mut b),
+        0,
+        "peers diverged after conflicted undo",
     );
     let Some(canon) = canonical_snap(&mut a, crate::common::SIZE) else {
         return;
     };
-    assert!(
-        images_match(&img_a, &canon, 0),
-        "fallback diverged from canonical materialization"
+    assert_images(
+        &img_a,
+        &canon,
+        0,
+        "fallback diverged from canonical materialization",
     );
 }
 
@@ -439,16 +445,22 @@ fn a_liquify_stroke_commutes_exactly_with_paint_beyond_its_reach() {
             );
         }
         let img_a = snap(&mut a);
-        assert!(
-            images_match(&img_a, &snap(&mut b), 0),
-            "peers diverged (peer painted at {peer_at:?})"
+        assert_images(
+            &img_a,
+            &snap(&mut b),
+            0,
+            format_args!("peers diverged (peer painted at {peer_at:?})"),
         );
         let Some(canon) = canonical_snap(&mut a, REACH_WIDE) else {
             return;
         };
-        assert!(
-            images_match(&img_a, &canon, 0),
-            "the undo diverged from canonical materialization (peer painted at {peer_at:?})"
+        assert_images(
+            &img_a,
+            &canon,
+            0,
+            format_args!(
+                "the undo diverged from canonical materialization (peer painted at {peer_at:?})"
+            ),
         );
     }
 }
