@@ -6,7 +6,9 @@
 //! nothing about when one fires.
 //!
 //! Nothing here touches the GPU — float arithmetic over a radius and a span, so the
-//! whole calibration is testable without an adapter.
+//! whole calibration is testable without an adapter. Its logarithm and its exponential
+//! are [`detmath`](crate::detmath)'s: the rate reaches the shader in a plan, which makes
+//! it a post-record value owing §12.1 the same bit-agreement as every other one.
 
 use super::super::budget::TAU_PER_PASS;
 /// The segment vocabulary the cadence is written in: what it reads (a `Segment`'s
@@ -168,7 +170,7 @@ pub(super) fn bleed_stencil(bleed: f32, radius: f32, span: f32) -> (f32, f32) {
     let blend = (sigma2 / (2.0 * stencil_moment(reach as i32))).min(BLEED_BLEND_CEILING);
     // The window's exposure at the centreline, in τ: `span / (2 · radius)` of a pass.
     let e_nom = TAU_PER_PASS * span / (2.0 * radius);
-    (reach, (1.0 - blend).ln() / e_nom)
+    (reach, crate::detmath::ln(1.0 - blend) / e_nom)
 }
 
 /// The domain guard on [`bleed_stencil`]'s solve, not a tuning knob: `ln(1 − w)` is
@@ -323,7 +325,7 @@ mod tests {
     fn delivered(bleed: f32, radius: f32, span: f32) -> f32 {
         let (reach, lambda) = bleed_stencil(bleed, radius, span);
         let e_nom = TAU_PER_PASS * span / (2.0 * radius);
-        let w = 1.0 - (lambda * e_nom).exp();
+        let w = 1.0 - crate::detmath::exp(lambda * e_nom);
         2.0 * w * stencil_moment(reach as i32) / (radius * span)
     }
 
@@ -402,7 +404,7 @@ mod tests {
             "the reach is not at its cap"
         );
         let e_nom = TAU_PER_PASS * span / (2.0 * radius);
-        let w = 1.0 - (lambda * e_nom).exp();
+        let w = 1.0 - crate::detmath::exp(lambda * e_nom);
         assert!(
             (w - BLEED_BLEND).abs() < 0.05,
             "full crank blends {w}, not the {BLEED_BLEND} it aims for",
@@ -418,7 +420,7 @@ mod tests {
         for (radius, span) in cases() {
             let (reach, lambda) = bleed_stencil(1.0, radius, span);
             let e_nom = TAU_PER_PASS * span / (2.0 * radius);
-            let w = 1.0 - (lambda * e_nom).exp();
+            let w = 1.0 - crate::detmath::exp(lambda * e_nom);
             assert!(
                 w < BLEED_BLEND_CEILING - 1e-3,
                 "radius {radius}, span {span}: full crank needs a blend of {w} at \
