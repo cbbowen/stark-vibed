@@ -124,10 +124,12 @@ jobs:
         run: cargo nextest run --workspace --exclude stark-wgpui-frontend --profile ci
 
       # nextest cannot run doctests — there is no libtest protocol for them — so
-      # they are a second command. It executes nothing today: `stark-engine`'s
-      # three doc examples are all ```ignore blocks. Kept so that the first real
-      # doctest anybody writes is *run* rather than collected by nobody, which is
-      # the failure mode `STARK_ALLOW_NO_GPU` is left unset above to avoid.
+      # they are a second command. `stark-engine`'s three examples are one
+      # `no_run` (compiled, since running it would only prove a process can
+      # install a global subscriber once) and two ```text (neither is a program).
+      # None of the three was collected while they were ```ignore, which claims a
+      # block is Rust we are choosing not to run — the same failure mode
+      # `STARK_ALLOW_NO_GPU` is left unset above to avoid.
       - name: Doctests
         env:
           WGPU_BACKEND: vulkan
