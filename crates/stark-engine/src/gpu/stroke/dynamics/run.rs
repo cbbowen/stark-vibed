@@ -822,10 +822,8 @@ impl<'a> DynamicsRun<'a> {
     ///
     /// Each is built from the very entries its layout was ([`desc::Bindings`]), so a
     /// group and its layout cannot disagree about which bindings are present or in what
-    /// order. Each arm below therefore supplies only the **resources**: given a slot,
-    /// which view or buffer goes in it. A slot this build does not declare is never
-    /// asked for — a group takes its whole residual tail or none of it, because the
-    /// shader's `@if(resid)` says so.
+    /// order. What a group supplies is only the **resources**, and that is one function
+    /// of the slot for all of them — see `res` below.
     ///
     /// `ST` binds a single slot-sized window of `stamp_buf` whose dynamic offset
     /// selects the dispatch, so all of these are built once per piece and the loop
@@ -851,79 +849,94 @@ impl<'a> DynamicsRun<'a> {
         });
         let view = |v: &'p wgpu::TextureView| wgpu::BindingResource::TextureView(v);
         let samp = |s: &'p wgpu::Sampler| wgpu::BindingResource::Sampler(s);
-        // A residual view is `Some` exactly when the color space has one, and the
-        // resolvers below are only ever asked for a residual slot in that case — the
-        // shader's own `@if(resid)` gate, which is in the layout. So this states that
-        // gate rather than guarding a case the host can reach.
+        // A residual view is `Some` exactly when the color space has one, and `res` is
+        // only ever asked for a residual slot in that case — the shader's own
+        // `@if(resid)` gate, which is in the layout. So this states that gate rather
+        // than guarding a case the host can reach.
         let opt = |v: Option<&'p wgpu::TextureView>, what: &'static str| {
             wgpu::BindingResource::TextureView(
                 v.unwrap_or_else(|| panic!("a residual build must have a {what} residual")),
             )
         };
-        // The slots the two paint-laying entry points share, plus the ones every arm
-        // reads. Returns `None` for anything outside that common set, so each arm's
-        // `match` states only what makes it different from its neighbours.
-        let common = |s: u32| -> Option<wgpu::BindingResource<'p>> {
-            Some(match s {
+        // The two scratches a piece takes only when its plan asks for one. The groups
+        // whose layouts declare their slots are built on that same condition, and no
+        // other group declares one, so a resolver reached for one of them has it.
+        let cell = || cells.expect("only a hoisting piece builds a group with a cell slot");
+        let mobility = || bleed.expect("only a firing's piece builds the mobility group");
+
+        // **One resolver for the whole loop.** Every `@binding` the two modules declare
+        // at group 0 has an index of its own, so which resource fills a slot is a
+        // function of the slot — plus `phase`, the reservoir half being read, since the
+        // ping-pong's `brush_src_*` is that half and its `brush_dst_*` the other. Each
+        // group is then its kernel's layout applied to this, which is why none of them
+        // says which bindings it has: the layout already does (§6.10).
+        let res = |s: u32, phase: usize| -> wgpu::BindingResource<'p> {
+            match s {
                 sb::ST => params.clone(),
-                b::BAKE_LOAD => view(&self.bake_load),
-                b::BAKE_LATM => view(&self.bake_latm),
-                b::BAKE_RLM => opt(self.bake_rlm.as_ref(), "bake"),
-                b::UNDER_COLOR => view(&under.color.view),
-                b::UNDER_AUX => view(&under.aux.view),
-                b::UNDER_RESID => opt(under.resid_view(), "snapshot"),
+                sb::SEL_MASK => view(&region.sel_mask),
                 sb::REGION_COLOR_W => view(&region.channels.color.view),
                 sb::REGION_AUX_W => view(&region.channels.aux.view),
                 sb::REGION_RESID_W => opt(region.channels.resid_view(), "region"),
-                sb::SEL_MASK => view(&region.sel_mask),
-                b::SUBSTRATE_TEX => view(&self.region.scene.substrate.view),
+                b::REGION_COLOR => view(&region.channels.color.view),
+                b::REGION_AUX => view(&region.channels.aux.view),
+                b::REGION_RESID => opt(region.channels.resid_view(), "region"),
+                b::UNDER_COLOR => view(&under.color.view),
+                b::UNDER_AUX => view(&under.aux.view),
+                b::UNDER_RESID => opt(under.resid_view(), "snapshot"),
+                b::UNDER_COLOR_W => view(&under.color.view),
+                b::UNDER_AUX_W => view(&under.aux.view),
+                b::UNDER_RESID_W => opt(under.resid_view(), "snapshot"),
+                b::BAKE_LOAD => view(&self.bake_load),
+                b::BAKE_LATM => view(&self.bake_latm),
+                b::BAKE_RLM => opt(self.bake_rlm.as_ref(), "bake"),
+                b::BAKE_LOAD_W => view(&self.bake_load),
+                b::BAKE_LATM_W => view(&self.bake_latm),
+                b::BAKE_RLM_W => opt(self.bake_rlm.as_ref(), "bake"),
+                // The reservoir ping-pong: read `phase`, write the other half. The
+                // residual turns on the same phase as the color, or the tool's two
+                // halves would drift apart.
+                b::BRUSH_SRC_COLOR => view(&self.brush[phase].color.view),
+                b::BRUSH_SRC_AUX => view(&self.brush[phase].aux.view),
+                b::BRUSH_SRC_RESID => opt(self.brush[phase].resid_view(), "reservoir"),
+                b::BRUSH_DST_COLOR_W => view(&self.brush[1 - phase].color.view),
+                b::BRUSH_DST_AUX_W => view(&self.brush[1 - phase].aux.view),
+                b::BRUSH_DST_RESID_W => opt(self.brush[1 - phase].resid_view(), "reservoir"),
+                b::CELL_TOOL => view(&cell().tool),
+                b::CELL_LAT => view(&cell().lat),
+                b::CELL_RES => opt(cell().res.as_ref(), "cell"),
+                b::CELL_TOOL_W => view(&cell().tool),
+                b::CELL_LAT_W => view(&cell().lat),
+                b::CELL_RES_W => opt(cell().res.as_ref(), "cell"),
                 // The real scratch on a piece that fires, the kit's 1×1 otherwise — a
-                // painting segment carries `lambda_bleed = 0` and never reads it.
+                // painting segment carries `lambda_bleed = 0` and never reads it. The
+                // mobility pass writes it, so its own slot takes no stand-in.
                 b::BLEED_W => view(bleed.unwrap_or(&kit.bleed_placeholder)),
-                // The ceiling lane (§6.2), by the same argument: a stroke whose
-                // ceiling the pen does not drive carries `ceiling_lane = 0`.
+                b::BLEED_W_W => view(mobility()),
+                // The ceiling lane (§6.2), by the stand-in argument again: a stroke
+                // whose ceiling the pen does not drive carries `ceiling_lane = 0`.
                 b::REGION_LEVELS => view(region.levels.as_ref().unwrap_or(&kit.levels_placeholder)),
+                b::SUBSTRATE_TEX => view(&self.region.scene.substrate.view),
+                b::DEPTH_TEX => view(&self.depth),
+                b::SAMP => samp(&kit.sampler),
                 b::DYN_NOISE_TEX => view(self.noise.view()),
                 b::DYN_NOISE_SAMP => samp(&r.tips.noise_sampler),
-                _ => return None,
-            })
+                other => unreachable!("the stamp loop declares no group-0 binding {other}"),
+            }
         };
+        // The phase a group that never names the reservoir is built at: either, since
+        // its layout declares no `brush_*` slot for `res` to be asked about.
+        const EITHER: usize = 0;
 
         let snapshot = needs.snapshot.then(|| {
             kit.snapshot
-                .group(device, "stark dynamics snapshot bg", |s| match s {
-                    b::REGION_COLOR => view(&region.channels.color.view),
-                    b::REGION_AUX => view(&region.channels.aux.view),
-                    b::REGION_RESID => opt(region.channels.resid_view(), "region"),
-                    b::UNDER_COLOR_W => view(&under.color.view),
-                    b::UNDER_AUX_W => view(&under.aux.view),
-                    b::UNDER_RESID_W => opt(under.resid_view(), "snapshot"),
-                    other => common(other).expect("snapshot reads no other binding"),
-                })
+                .group(device, "stark dynamics snapshot bg", |s| res(s, EITHER))
         });
         // `exchange` comes in two flavours for the reservoir ping-pong: each reads one
-        // half and writes the other. The residual ping-pongs on the same phase as the
-        // color — read `i`, write `1 - i` — or the tool's two halves would drift apart.
+        // half and writes the other.
         let exchange = needs.exchange.then(|| {
             std::array::from_fn(|i| {
                 kit.exchange
-                    .group(device, "stark dynamics exchange bg", |s| match s {
-                        b::REGION_COLOR => view(&region.channels.color.view),
-                        b::REGION_AUX => view(&region.channels.aux.view),
-                        b::REGION_RESID => opt(region.channels.resid_view(), "region"),
-                        b::UNDER_COLOR_W => view(&under.color.view),
-                        b::UNDER_AUX_W => view(&under.aux.view),
-                        b::UNDER_RESID_W => opt(under.resid_view(), "snapshot"),
-                        b::SAMP => samp(&kit.sampler),
-                        b::DEPTH_TEX => view(&self.depth),
-                        b::BRUSH_SRC_COLOR => view(&self.brush[i].color.view),
-                        b::BRUSH_SRC_AUX => view(&self.brush[i].aux.view),
-                        b::BRUSH_SRC_RESID => opt(self.brush[i].resid_view(), "reservoir"),
-                        b::BRUSH_DST_COLOR_W => view(&self.brush[1 - i].color.view),
-                        b::BRUSH_DST_AUX_W => view(&self.brush[1 - i].aux.view),
-                        b::BRUSH_DST_RESID_W => opt(self.brush[1 - i].resid_view(), "reservoir"),
-                        other => common(other).expect("exchange reads no other binding"),
-                    })
+                    .group(device, "stark dynamics exchange bg", |s| res(s, i))
             })
         });
         // One bake bind group per reservoir phase; the deposit reads only the baked
@@ -931,60 +944,34 @@ impl<'a> DynamicsRun<'a> {
         let bake = needs.bake.then(|| {
             std::array::from_fn(|i| {
                 kit.bake
-                    .group(device, "stark dynamics bake bg", |s| match s {
-                        b::SAMP => samp(&kit.sampler),
-                        b::BRUSH_SRC_COLOR => view(&self.brush[i].color.view),
-                        b::BRUSH_SRC_AUX => view(&self.brush[i].aux.view),
-                        b::BRUSH_SRC_RESID => opt(self.brush[i].resid_view(), "reservoir"),
-                        b::BAKE_LOAD_W => view(&self.bake_load),
-                        b::BAKE_LATM_W => view(&self.bake_latm),
-                        b::BAKE_RLM_W => opt(self.bake_rlm.as_ref(), "bake"),
-                        other => common(other).expect("bake reads no other binding"),
-                    })
+                    .group(device, "stark dynamics bake bg", |s| res(s, i))
             })
         });
         // The mobility pass, on a piece that has one to run.
-        let bleed_weight = bleed.map(|w| {
+        let bleed_weight = bleed.map(|_| {
             kit.bleed_weight
-                .group(device, "stark dynamics bleed weight bg", |sl| match sl {
-                    b::BLEED_W_W => view(w),
-                    other => common(other).expect("bleed_weight reads no other binding"),
-                })
+                .group(device, "stark dynamics bleed weight bg", |s| res(s, EITHER))
         });
         let deposit = needs.deposit.then(|| {
-            kit.deposit.group(device, "stark dynamics deposit bg", |s| {
-                common(s).expect("deposit reads no other binding")
-            })
+            kit.deposit
+                .group(device, "stark dynamics deposit bg", |s| res(s, EITHER))
         });
         // The pen-up, which reads the reservoir only through its own `bake` — so unlike
         // `exchange` it needs no bind group per ping-pong half; the bake's does that.
         let settle = needs.settle.then(|| {
-            kit.settle.group(device, "stark dynamics settle bg", |s| {
-                common(s).expect("settle reads no other binding")
-            })
+            kit.settle
+                .group(device, "stark dynamics settle bg", |s| res(s, EITHER))
         });
         // The coarse pair's groups (§6.2), only for a piece whose plan hoists at all.
-        // The hoist reads the same baked prefixes the exact deposit's front half did;
-        // the coarse deposit swaps those two bindings for the cell means and keeps
-        // everything else the exact one binds.
-        let coarse = cells.map(|cl| {
-            let hoist = kit
+        let coarse = cells.map(|_| CoarseBindings {
+            hoist: kit
                 .hoist
-                .group(device, "stark dynamics cell hoist bg", |s| match s {
-                    b::CELL_TOOL_W => view(&cl.tool),
-                    b::CELL_LAT_W => view(&cl.lat),
-                    b::CELL_RES_W => opt(cl.res.as_ref(), "cell"),
-                    other => common(other).expect("cell hoist reads no other binding"),
-                });
-            let deposit =
-                kit.deposit_coarse
-                    .group(device, "stark dynamics deposit coarse bg", |s| match s {
-                        b::CELL_TOOL => view(&cl.tool),
-                        b::CELL_LAT => view(&cl.lat),
-                        b::CELL_RES => opt(cl.res.as_ref(), "cell"),
-                        other => common(other).expect("deposit_coarse reads no other binding"),
-                    });
-            CoarseBindings { hoist, deposit }
+                .group(device, "stark dynamics cell hoist bg", |s| res(s, EITHER)),
+            deposit: kit
+                .deposit_coarse
+                .group(device, "stark dynamics deposit coarse bg", |s| {
+                    res(s, EITHER)
+                }),
         });
         PieceBindings {
             snapshot,
