@@ -195,24 +195,7 @@ fn golden_lift_end_regression() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let brush = BrushParams {
-        size: 80.0,
-        shape: BrushShape::Round { hardness: 0.95 },
-        // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
-        drain: 0.4,
-        // Black, as `BrushParams::default()` always painted here — the blessed
-        // pixels are of a black smear.
-        effect: BrushEffect::wet_with(
-            [0.0; 3],
-            BrushDynamics {
-                add: 1.0,
-                lift: 0.95,
-                deposit: 0.95,
-                ..BrushDynamics::default()
-            },
-        ),
-        ..BrushParams::default()
-    };
+    let brush = drained_smear();
     for (i, x) in [-200.0, -300.0, -400.0].into_iter().enumerate() {
         stroke_with(
             &mut engine,
@@ -269,7 +252,6 @@ fn golden_heavy_smear_regression() {
     );
     let img = engine.render_to_image();
     assert_golden("heavy_smear_regression", &img, 6);
-    engine.process(DocCommand::Undo);
 }
 
 #[test]
@@ -277,35 +259,10 @@ fn golden_drained_brush_length_independent() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let brush = BrushParams {
-        size: 80.0,
-        shape: BrushShape::Round { hardness: 0.95 },
-        // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
-        drain: 0.4,
-        // Black, as `BrushParams::default()` always painted here — the blessed
-        // pixels are of a black smear.
-        effect: BrushEffect::wet_with(
-            [0.0; 3],
-            BrushDynamics {
-                add: 1.0,
-                lift: 0.95,
-                deposit: 0.95,
-                ..BrushDynamics::default()
-            },
-        ),
-        ..BrushParams::default()
-    };
-    // These should all be visually indistiguishable because the brush runs out of paint before the end of the stroke (which is also off the edge of the image).
-    for (i, x) in [200.0, 300.0, 400.0, 500.0, 600.0].into_iter().enumerate() {
-        stroke_with(
-            &mut engine,
-            brush,
-            &[
-                Vec2::new(-400.0, 0.0),
-                Vec2::new(0.0, 0.0),
-                Vec2::new(x, 0.0),
-            ],
-        );
+    // All five should be visually indistinguishable: the brush runs out of paint
+    // before the end of the stroke, which is also off the edge of the image.
+    for (i, run) in drained_runs().into_iter().enumerate() {
+        stroke_with(&mut engine, drained_smear(), &run);
         let img = engine.render_to_image();
         assert_golden(&format!("drained_brush_length_independent_{i}"), &img, 6);
         engine.process(DocCommand::Undo);

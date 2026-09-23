@@ -1092,35 +1092,11 @@ fn a_carried_stroke_is_independent_of_how_the_path_was_cut() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let brush = BrushParams {
-        size: 80.0,
-        shape: BrushShape::Round { hardness: 0.95 },
-        // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
-        drain: 0.4,
-        // Black, as `BrushParams::default()` always painted here.
-        effect: BrushEffect::wet_with(
-            [0.0; 3],
-            BrushDynamics {
-                add: 1.0,
-                lift: 0.95,
-                deposit: 0.95,
-                ..BrushDynamics::default()
-            },
-        ),
-        ..BrushParams::default()
-    };
-    let renders: Vec<stark_engine::RgbaImage> = [200.0f32, 300.0, 400.0, 500.0, 600.0]
+    let brush = drained_smear();
+    let renders: Vec<stark_engine::RgbaImage> = drained_runs()
         .into_iter()
-        .map(|x| {
-            stroke_with(
-                &mut engine,
-                brush,
-                &[
-                    Vec2::new(-400.0, 0.0),
-                    Vec2::new(0.0, 0.0),
-                    Vec2::new(x, 0.0),
-                ],
-            );
+        .map(|run| {
+            stroke_with(&mut engine, brush, &run);
             let img = engine.render_to_image();
             engine.process(DocCommand::Undo);
             img
@@ -1936,23 +1912,7 @@ fn a_drained_smear_leaves_no_ring_at_the_lift_end() {
         width: 1600,
         height: 256,
     };
-    let brush = BrushParams {
-        size: 80.0,
-        shape: BrushShape::Round { hardness: 0.95 },
-        // 0.4 per radius = 0.005 per canvas px at this tip: 200px to bone dry.
-        drain: 0.4,
-        // Black, as `BrushParams::default()` always painted here.
-        effect: BrushEffect::wet_with(
-            [0.0; 3],
-            BrushDynamics {
-                add: 1.0,
-                lift: 0.95,
-                deposit: 0.95,
-                ..BrushDynamics::default()
-            },
-        ),
-        ..BrushParams::default()
-    };
+    let brush = drained_smear();
     // Two regimes: the fifteen-radius stroke (the brush bone dry for
     // most of the trail — the wick-removal measurement's constructed case), and the
     // original golden's own 5.4-radius stroke (the brush

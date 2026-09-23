@@ -425,6 +425,49 @@ pub fn paint(engine: &mut Engine, color: [f32; 3], radius: f32, points: &[Vec2])
     stroke_with(engine, brush(color, radius), points);
 }
 
+/// The **drained black smear** (§6.2): a wide wet tip that runs dry 200 canvas px in
+/// — `drain` 0.4 per radius on an 80 px tip — so everything laid past that arrived
+/// through the reservoir rather than off the brush.
+///
+/// Black because `BrushParams::default()` always painted here, and the goldens of it
+/// are blessed on a black smear. Four tests are about what its reservoir does, and
+/// each carried the literal.
+pub fn drained_smear() -> BrushParams {
+    BrushParams {
+        size: 80.0,
+        shape: BrushShape::Round { hardness: 0.95 },
+        drain: 0.4,
+        effect: stark_model::document::BrushEffect::wet_with(
+            [0.0; 3],
+            stark_model::document::BrushDynamics {
+                add: 1.0,
+                lift: 0.95,
+                deposit: 0.95,
+                ..Default::default()
+            },
+        ),
+        ..BrushParams::default()
+    }
+}
+
+/// The five runs [`drained_smear`] is asked over: one visible stretch of stroke with
+/// five different tails, collinear, so the geometry *in view* is identical in all
+/// five and all that differs is where the flattener's bisection put the segment
+/// boundaries.
+///
+/// `golden::golden_drained_brush_length_independent` blesses the five pictures and
+/// `dynamics::a_carried_stroke_is_independent_of_how_the_path_was_cut` measures how
+/// far apart they are — two claims about one scene, so the scene is stated once.
+pub fn drained_runs() -> [[Vec2; 3]; 5] {
+    [200.0f32, 300.0, 400.0, 500.0, 600.0].map(|x| {
+        [
+            Vec2::new(-400.0, 0.0),
+            Vec2::new(0.0, 0.0),
+            Vec2::new(x, 0.0),
+        ]
+    })
+}
+
 /// A compact red blob centred at `c` — two crossing strokes, so it has height
 /// variation for the lighting to bite on and a seam would show in it.
 pub fn blob(engine: &mut Engine, c: Vec2) {
