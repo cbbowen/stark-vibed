@@ -40,8 +40,9 @@ pub(super) const SLOT: usize = std::mem::size_of::<Stamp>();
 pub(super) const STAMP_STRIDE: u64 = crate::gpu::uniforms::UniformSlots::<Stamp>::STRIDE;
 
 /// One slot of the sequential swept-exchange loop (§6.2), and the dispatches it
-/// stands for.
-pub(super) struct LoopDispatch {
+/// stands for — `K` being the step vocabulary of the path it is planned for,
+/// [`WetStep`] or [`WarpStep`].
+pub(super) struct LoopDispatch<K> {
     pub(super) slot: Stamp,
     /// The slot's extent work in **region texels** — what the `deposit` covers, and
     /// the `snapshot` that rides in `exchange`'s grid. Over the slot's own coverage box
@@ -49,24 +50,31 @@ pub(super) struct LoopDispatch {
     /// texels its extent can reach rather than the ~10·r² a diagonal one might need.
     ///
     /// Texels, not workgroups: each dispatch divides by **its own** kernel's declared
-    /// `@workgroup_size` ([`EntryPoint::groups`](stark_shaders::EntryPoint::groups),
-    /// §6.10), so no host expression states a grid a shader already declares.
+    /// `@workgroup_size` ([`Kernel::dispatch`](super::kit::Kernel::dispatch), §6.10),
+    /// so no host expression states a grid a shader already declares.
     pub(super) extent: (u32, u32),
-    /// The cells `cell_hoist` must cover when this slot takes the **coarse deposit**
-    /// (§6.2) — `Some` exactly when [`extent_cell`] beat 1 for this segment's tip,
-    /// which only a painting segment's can. `None` is the exact per-texel `deposit`;
-    /// bleed and settle slots are always `None`, so the lateral flux and the pen-up
-    /// never see a cell at all.
-    pub(super) cells: Option<(u32, u32)>,
-    pub(super) kind: SlotKind,
+    pub(super) step: K,
 }
 
-/// Which of the loop's dispatch shapes a slot takes (§6.2). Each is a different
+/// What one slot of a **wet** plan asks the loop for (§6.2). Each is a different
 /// sequence over the same uniform, and only one touches the tool: the reservoir
-/// ping-pong advances on a [`Segment`](SlotKind::Segment) and on nothing else.
-pub(super) enum SlotKind {
+/// ping-pong advances on a [`Segment`](WetStep::Segment) and on nothing else.
+#[derive(Clone, Copy)]
+pub(super) enum WetStep {
     /// A stretch of painting: `bake` → `exchange` (+ `snapshot`) → `deposit`.
-    Segment,
+    Segment {
+        /// This segment's index among the piece's, which is also its instance in the
+        /// ceiling lane's buffer ([`segment_instance`](super::super::swept)) — taken
+        /// off the walk that emits the slot rather than counted a second time while
+        /// recording.
+        index: u32,
+        /// The cells `cell_hoist` must cover when this slot takes the **coarse
+        /// deposit** (§6.2) — `Some` exactly when [`extent_cell`] beat 1 for this
+        /// segment's tip. `None` is the exact per-texel `deposit`, and the two steps
+        /// below carry no cell at all, so the lateral flux and the pen-up never see
+        /// one.
+        cells: Option<(u32, u32)>,
+    },
     /// A dedicated **bleed slot**: a quad whose sweep is one firing of the bleed
     /// cadence's travel window, with every vertical rate and the source zeroed.
     /// `snapshot` + `deposit` alone — the tool plays no part, so the reservoir
@@ -76,16 +84,21 @@ pub(super) enum SlotKind {
     /// its last slot — the transfer the tip was still in the middle of when the
     /// stroke stopped (`dynamics.wesl::settle`).
     Settle,
-    /// One segment of a liquify stroke (§6.13): `snapshot_field` (over the whole
-    /// square — the gather pulls from upstream of any one texel's own reach) →
-    /// `warp`, composing the segment's step into the run's field. Nothing of the
-    /// picture and nothing of the tool.
+}
+
+/// What one slot of a **liquify** plan asks of the field (§6.13).
+#[derive(Clone, Copy)]
+pub(super) enum WarpStep {
+    /// One segment of a liquify stroke: `snapshot_field` (over the whole square — the
+    /// gather pulls from upstream of any one texel's own reach) → `warp`, composing
+    /// the segment's step into the run's field. Nothing of the picture and nothing of
+    /// the tool.
     Warp,
-    /// The one resample of a liquify piece (§6.13): `warp_apply` over the whole
-    /// region, the base composite through the composed field into the region's
-    /// channels. Always the last slot of a [`liquify_plan`], and the only slot whose
-    /// rect is the region rather than a sweep's box.
-    WarpApply,
+    /// The one resample of a liquify piece: `warp_apply` over the whole region, the
+    /// base composite through the composed field into the region's channels. Always
+    /// the last slot of a [`liquify_plan`], and the only slot whose rect is the region
+    /// rather than a sweep's box.
+    Apply,
 }
 
 /// The [`Stamp`] lanes every slot in a plan fills the same way, resolved once, so
@@ -571,7 +584,9 @@ fn cell_geometry(
 /// The rects are measured over this list and the slots built by zipping the two, so
 /// the two passes cannot disagree about which rect belongs to which slot.
 enum SlotSource<'a> {
-    Segment(&'a Segment),
+    /// A segment and its index among the piece's, which the plan hands on as
+    /// [`WetStep::Segment::index`].
+    Segment(usize, &'a Segment),
     Bleed(&'a BleedFire),
     /// The pen-up, which is the last segment read a different way — a standing tip
     /// rather than a stretch of travel.
@@ -582,7 +597,7 @@ impl SlotSource<'_> {
     /// The canvas box this slot's dispatch has to cover.
     fn bounds(&self) -> (Vec2, Vec2) {
         match self {
-            SlotSource::Segment(s) => coverage_bounds(&s.sweep),
+            SlotSource::Segment(_, s) => coverage_bounds(&s.sweep),
             SlotSource::Bleed(f) => coverage_bounds(&f.window),
             // The tip's own extent rather than a swept box — a pen-up is a standing
             // tip, whose half-extent is the tip's `reach` (`Sweep::reach`). It cannot
@@ -612,8 +627,11 @@ fn rects_for(sources: &[SlotSource<'_>], region_origin: Vec2) -> Vec<Rect> {
 /// The plan's slots in dispatch order, and the snapshot square they fit. The square
 /// rides with the slots because it is derived from them ([`snapshot_square`]): there
 /// is no way to allocate a scratch for a plan other than the one that measured it.
-pub(super) struct DynamicsPlan {
-    pub(super) slots: Vec<LoopDispatch>,
+///
+/// Generic in the step vocabulary, so neither record loop can be handed the other's
+/// plan.
+pub(super) struct Plan<K> {
+    pub(super) slots: Vec<LoopDispatch<K>>,
     pub(super) dsize: u32,
 }
 
@@ -631,7 +649,7 @@ pub(super) fn dynamics_plan(
     segments: &[Segment],
     fires: &[BleedFire],
     settle: bool,
-) -> DynamicsPlan {
+) -> Plan<WetStep> {
     let &PlanCtx {
         rec,
         region_origin,
@@ -672,7 +690,7 @@ pub(super) fn dynamics_plan(
     let mut sources: Vec<SlotSource<'_>> = Vec::new();
     let mut pending = fires.iter().peekable();
     for (si, s) in segments.iter().enumerate() {
-        sources.push(SlotSource::Segment(s));
+        sources.push(SlotSource::Segment(si, s));
         // The bleed slots that fire at this segment's end (§6.2, `bleed_fires`).
         while let Some(fire) = pending.next_if(|f| f.after == si) {
             sources.push(SlotSource::Bleed(fire));
@@ -698,7 +716,7 @@ pub(super) fn dynamics_plan(
     for (src, rect) in sources.iter().zip(&rects) {
         let extent = (rect.w, rect.h);
         let dispatch = match src {
-            SlotSource::Segment(s) => {
+            SlotSource::Segment(si, s) => {
                 let (sw, paint) = (&s.sweep, &s.paint);
                 // The segment's swept exchange: the frame is (start, travel tangent at
                 // the start, curvature), over the segment's own coverage box.
@@ -717,8 +735,10 @@ pub(super) fn dynamics_plan(
                 let (cell_anchor, cells) = cell_geometry(cell, region_origin, rect, dsize);
                 LoopDispatch {
                     extent,
-                    cells,
-                    kind: SlotKind::Segment,
+                    step: WetStep::Segment {
+                        index: *si as u32,
+                        cells,
+                    },
                     slot: Slot {
                         start: p,
                         dir: sw.dir,
@@ -788,12 +808,11 @@ pub(super) fn dynamics_plan(
                 let (reach, lambda_bleed) = bleed_stencil(fire.bleed, w.radius, w.length);
                 LoopDispatch {
                     extent,
-                    // Bleed slots keep the exact deposit whatever the tip: the ladder's
-                    // flux pairs need both threads of a pair to read per-texel
-                    // exposures, and the firings are rare and small next to the
-                    // painting they cut.
-                    cells: None,
-                    kind: SlotKind::Bleed,
+                    // No cells: a bleed slot keeps the exact deposit whatever the tip,
+                    // since the ladder's flux pairs need both threads of a pair to read
+                    // per-texel exposures, and the firings are rare and small next to
+                    // the painting they cut.
+                    step: WetStep::Bleed,
                     // Everything a painting segment carries and this does not is
                     // `Slot::default`'s zero, which is what the slot *means*:
                     // λ_lift = 0 so the canvas keeps everything, λ_deposit = 0 so the
@@ -837,11 +856,11 @@ pub(super) fn dynamics_plan(
                 let tan = settle_tangent(rec, ctx.tol, segments);
                 LoopDispatch {
                     extent,
-                    // The settle is one dispatch at the end of a stroke — nothing to
-                    // amortize — and its p-norm handover is exactly the smooth structure
-                    // a cell would staircase, so it stays exact whatever the tip.
-                    cells: None,
-                    kind: SlotKind::Settle,
+                    // No cells either: the settle is one dispatch at the end of a
+                    // stroke — nothing to amortize — and its p-norm handover is exactly
+                    // the smooth structure a cell would staircase, so it stays exact
+                    // whatever the tip.
+                    step: WetStep::Settle,
                     slot: Slot {
                         start: p,
                         dir: tan,
@@ -881,7 +900,7 @@ pub(super) fn dynamics_plan(
         };
         plan.push(dispatch);
     }
-    DynamicsPlan { slots: plan, dsize }
+    Plan { slots: plan, dsize }
 }
 
 /// Build the liquify dispatch plan (§6.13): one warp slot per flattened segment,
@@ -901,7 +920,7 @@ pub(super) fn liquify_plan(
     segments: &[Segment],
     base_offset: [i32; 2],
     region: (u32, u32),
-) -> DynamicsPlan {
+) -> Plan<WarpStep> {
     let &PlanCtx {
         region_origin,
         consts,
@@ -914,7 +933,11 @@ pub(super) fn liquify_plan(
     // The same three-pass shape as [`dynamics_plan`], with one source kind: the
     // walk *is* the order, the rects are measured over it, and the slots zip to
     // them — so the rect that sizes the scratch is the rect that dispatches.
-    let sources: Vec<SlotSource<'_>> = segments.iter().map(SlotSource::Segment).collect();
+    let sources: Vec<SlotSource<'_>> = segments
+        .iter()
+        .enumerate()
+        .map(|(i, s)| SlotSource::Segment(i, s))
+        .collect();
     let rects = rects_for(&sources, region_origin);
     let dsize = snapshot_square(&rects);
     let mut plan = Vec::with_capacity(sources.len() + 1);
@@ -923,10 +946,7 @@ pub(super) fn liquify_plan(
         let p = sw.start - region_origin;
         plan.push(LoopDispatch {
             extent: (rect.w, rect.h),
-            // The field is gathered whole; a cell would staircase exactly the
-            // structure the effect exists to carry.
-            cells: None,
-            kind: SlotKind::Warp,
+            step: WarpStep::Warp,
             slot: Slot {
                 start: p,
                 dir: sw.dir,
@@ -960,15 +980,14 @@ pub(super) fn liquify_plan(
     // own origin.
     plan.push(LoopDispatch {
         extent: region,
-        cells: None,
-        kind: SlotKind::WarpApply,
+        step: WarpStep::Apply,
         slot: Slot {
             base_offset,
             ..common.slot()
         }
         .pack(),
     });
-    DynamicsPlan { slots: plan, dsize }
+    Plan { slots: plan, dsize }
 }
 
 /// The travel direction the pen-up settle measures `owed` and `received` along: the
@@ -1481,7 +1500,7 @@ mod tests {
         let mut sources = Vec::new();
         let mut pending = fires.iter().peekable();
         for (si, s) in segments.iter().enumerate() {
-            sources.push(SlotSource::Segment(s));
+            sources.push(SlotSource::Segment(si, s));
             while let Some(f) = pending.next_if(|f| f.after == si) {
                 sources.push(SlotSource::Bleed(f));
             }

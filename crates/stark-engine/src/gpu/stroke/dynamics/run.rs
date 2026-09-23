@@ -21,7 +21,7 @@ use super::super::segments::{BleedFire, Segment};
 use super::super::swept::{SweepPass, segment_instance, tile_xform, xform_group};
 use super::super::{Complaint, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
 use super::bleed::bleed_fires;
-use super::plan::{LoopDispatch, SLOT, SlotKind, cell_scratch_size, dynamics_plan};
+use super::plan::{LoopDispatch, SLOT, WetStep, cell_scratch_size, dynamics_plan};
 use super::region::{
     LOOP_USAGE, Piece, REGION_WRITES, RegionBox, RegionChannels, RegionRun, composite_tiles,
     region_selection, slice_region,
@@ -590,14 +590,14 @@ impl<'a> DynamicsRun<'a> {
             let cells = plan
                 .slots
                 .iter()
-                .any(|d| d.cells.is_some())
+                .any(|d| matches!(d.step, WetStep::Segment { cells: Some(_), .. }))
                 .then(|| self.cell_scratch(plan.dsize));
             // The bleed pair's mobility scratch (§6.2), only when some slot is a firing —
             // a brush that does not bleed allocates nothing and binds the 1×1 stand-in.
             let bleed = plan
                 .slots
                 .iter()
-                .any(|d| matches!(d.kind, SlotKind::Bleed))
+                .any(|d| matches!(d.step, WetStep::Bleed))
                 .then(|| self.bleed_scratch(plan.dsize));
             let stamp_buf = self.region.upload(&plan.slots);
             let bind = self.bind_piece(
@@ -1011,7 +1011,7 @@ impl<'a> DynamicsRun<'a> {
     /// in — which is what the next piece, or the next range, resumes from.
     fn record_loop(
         &mut self,
-        plan: &[LoopDispatch],
+        plan: &[LoopDispatch<WetStep>],
         dsize: u32,
         bind: &PieceBindings,
         levels: Option<&LevelsPass>,
@@ -1021,10 +1021,6 @@ impl<'a> DynamicsRun<'a> {
         let r = self.region.r;
         let kit = &r.dynamics.wet;
         let mut cur = self.cur;
-        // Which of the piece's segments the next painting slot is: the plan emits
-        // one such slot per segment, in order, with the firings and the settle
-        // between them.
-        let mut seg: u32 = 0;
         // The reservoir half of `exchange`, which the extent half is laid beside on x:
         // [`BRUSH_RES`]² whatever the segment does.
         let reservoir = kit.exchange.groups((BRUSH_RES, BRUSH_RES));
@@ -1035,12 +1031,12 @@ impl<'a> DynamicsRun<'a> {
             // are one expression rather than two that happen to agree.
             let off =
                 UniformSlots::<stark_shaders::mirror::dynamics_common::Stamp>::offset(i as u32);
-            match d.kind {
+            match d.step {
                 // The tool plays no part in the lateral flux, so `cur` — the reservoir
                 // ping-pong — stays exactly where the previous segment left it. The
                 // standalone snapshot kernel rather than the exchange's tail, because
                 // there is no exchange dispatch to ride in.
-                SlotKind::Bleed => {
+                WetStep::Bleed => {
                     kit.snapshot
                         .dispatch(&mut pass, bind.snapshot(), off, d.extent);
                     // The pair's mobility, once per texel, for the ladder to read back
@@ -1052,7 +1048,7 @@ impl<'a> DynamicsRun<'a> {
                     kit.deposit
                         .dispatch(&mut pass, bind.deposit(), off, d.extent);
                 }
-                SlotKind::Segment => {
+                WetStep::Segment { index, cells } => {
                     // Bake this segment's swept reservoir prefix first — it folds in the
                     // tip's current orientation as well as the reservoir state.
                     kit.bake
@@ -1080,7 +1076,7 @@ impl<'a> DynamicsRun<'a> {
                     // segment just wrote and nothing the exchange writes, so the extra
                     // serialized dispatch lands only on the wide tips that are
                     // texel-bound rather than dispatch-bound.
-                    match d.cells.map(|cl| (cl, bind.coarse())) {
+                    match cells.map(|cl| (cl, bind.coarse())) {
                         Some((cl, cb)) => {
                             kit.hoist.dispatch(&mut pass, &cb.hoist, off, cl);
                             kit.deposit_coarse
@@ -1112,11 +1108,10 @@ impl<'a> DynamicsRun<'a> {
                             rpass.set_bind_group(1, &l.prefix, &[]);
                             rpass.set_bind_group(2, &l.noise, &[]);
                             rpass.set_vertex_buffer(0, l.instances.slice(..));
-                            rpass.draw(0..SWEEP_VERTS, seg..seg + 1);
+                            rpass.draw(0..SWEEP_VERTS, index..index + 1);
                         }
                         pass = self.region.loop_pass(LOOP_PASS);
                     }
-                    seg += 1;
                     cur = 1 - cur;
                 }
                 // The pen-up: snapshot the final extent, bake the standing tip's
@@ -1125,17 +1120,12 @@ impl<'a> DynamicsRun<'a> {
                 // the settle's weighted integral), then settle the transfer the stroke
                 // stopped in the middle of. The tool is not written back, so `cur` is
                 // left alone here too.
-                SlotKind::Settle => {
+                WetStep::Settle => {
                     kit.snapshot
                         .dispatch(&mut pass, bind.snapshot(), off, d.extent);
                     kit.bake
                         .dispatch(&mut pass, bind.bake(cur), off, (BAKE_RES, BAKE_RES));
                     kit.settle.dispatch(&mut pass, bind.settle(), off, d.extent);
-                }
-                // The liquify field's slots are `liquify.rs`'s to record (§6.13):
-                // a wet plan never holds one.
-                SlotKind::Warp | SlotKind::WarpApply => {
-                    unreachable!("a liquify slot in a wet plan; the plan is the effect's (§6.2)")
                 }
             }
         }
@@ -1258,7 +1248,7 @@ struct Cells {
 }
 
 /// Which of a piece's bind groups its plan will bind — one flag per group
-/// [`DynamicsRun::record_loop`] reaches for, read off the slot kinds exactly as its
+/// [`DynamicsRun::record_loop`] reaches for, read off the plan's steps exactly as its
 /// arms consume them. `bleed_weight` and `coarse` are gated the same way, by the
 /// scratch they need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1279,27 +1269,25 @@ impl Needs {
         settle: false,
     };
 
-    fn of(plan: &[LoopDispatch]) -> Self {
+    fn of(plan: &[LoopDispatch<WetStep>]) -> Self {
         let mut n = Self::NONE;
         for d in plan {
-            match d.kind {
-                SlotKind::Segment => {
+            match d.step {
+                WetStep::Segment { cells, .. } => {
                     n.bake = true;
                     n.exchange = true;
                     // A coarse segment deposits through its own cell group.
-                    n.deposit |= d.cells.is_none();
+                    n.deposit |= cells.is_none();
                 }
-                SlotKind::Bleed => {
+                WetStep::Bleed => {
                     n.snapshot = true;
                     n.deposit = true;
                 }
-                SlotKind::Settle => {
+                WetStep::Settle => {
                     n.snapshot = true;
                     n.bake = true;
                     n.settle = true;
                 }
-                // A liquify slot never reaches the wet loop (§6.13).
-                SlotKind::Warp | SlotKind::WarpApply => {}
             }
         }
         n
@@ -1385,22 +1373,20 @@ const RESERVOIR_EXTENT: wgpu::Extent3d = wgpu::Extent3d {
 mod tests {
     use super::*;
 
-    fn slot(kind: SlotKind, cells: Option<(u32, u32)>) -> LoopDispatch {
-        LoopDispatch {
-            slot: bytemuck::Zeroable::zeroed(),
-            extent: (1, 1),
-            cells,
-            kind,
-        }
-    }
-
-    /// Each wet slot kind asks for exactly the groups its arm of
+    /// Each wet step asks for exactly the groups its arm of
     /// [`record_loop`](DynamicsRun::record_loop) binds — read the arms, then this.
     #[test]
-    fn each_wet_slot_kind_asks_for_the_groups_its_arm_binds() {
-        let of = |s: LoopDispatch| Needs::of(&[s]);
+    fn each_wet_step_asks_for_the_groups_its_arm_binds() {
+        let of = |step: WetStep| {
+            Needs::of(&[LoopDispatch {
+                slot: bytemuck::Zeroable::zeroed(),
+                extent: (1, 1),
+                step,
+            }])
+        };
+        let segment = |cells| WetStep::Segment { index: 0, cells };
         assert_eq!(
-            of(slot(SlotKind::Segment, None)),
+            of(segment(None)),
             Needs {
                 exchange: true,
                 bake: true,
@@ -1410,7 +1396,7 @@ mod tests {
         );
         // A coarse segment deposits through its cell group, not the exact one.
         assert_eq!(
-            of(slot(SlotKind::Segment, Some((1, 1)))),
+            of(segment(Some((1, 1)))),
             Needs {
                 exchange: true,
                 bake: true,
@@ -1418,7 +1404,7 @@ mod tests {
             }
         );
         assert_eq!(
-            of(slot(SlotKind::Bleed, None)),
+            of(WetStep::Bleed),
             Needs {
                 snapshot: true,
                 deposit: true,
@@ -1426,7 +1412,7 @@ mod tests {
             }
         );
         assert_eq!(
-            of(slot(SlotKind::Settle, None)),
+            of(WetStep::Settle),
             Needs {
                 snapshot: true,
                 bake: true,

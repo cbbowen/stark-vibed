@@ -257,7 +257,7 @@ impl<'a> RegionRun<'a> {
     /// stroke's peak cost scale with the number of pieces. The scope returns it to the
     /// pool behind the piece's own submit ([`SubmitScope::flush`]), so the next piece's
     /// plan is written into the buffer this one used.
-    pub(super) fn upload(&mut self, plan: &[LoopDispatch]) -> wgpu::Buffer {
+    pub(super) fn upload<K>(&mut self, plan: &[LoopDispatch<K>]) -> wgpu::Buffer {
         let Self { scope, stamps, .. } = self;
         stamps.clear();
         stamps.resize(plan.len() * STAMP_STRIDE as usize, 0);

@@ -38,7 +38,7 @@ use super::super::budget::{
 use super::super::region::{chunk_segments_within, sweep_tiles};
 use super::super::segments::Segment;
 use super::super::{Painted, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene};
-use super::plan::{SlotKind, liquify_plan};
+use super::plan::{WarpStep, liquify_plan};
 use super::region::{
     LOOP_USAGE, REGION_WRITES, RegionBox, RegionChannels, RegionRun, composite_tiles,
     region_selection, slice_region,
@@ -303,7 +303,7 @@ impl<'a> LiquifyDraw<'a> {
             h,
         } = piece.bbox();
         let r = self.region.r;
-        let kit = &r.dynamics;
+        let kernels = &r.dynamics.warp;
         let device = &r.ctx.device;
         let resid = r.color_space.has_resid();
 
@@ -472,7 +472,7 @@ impl<'a> LiquifyDraw<'a> {
             fn view(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
                 wgpu::BindingResource::TextureView(v)
             }
-            let snapshot = kit.warp.snapshot_field.group(
+            let snapshot = kernels.snapshot_field.group(
                 device,
                 "stark liquify snapshot field bg",
                 |s| match s {
@@ -482,8 +482,7 @@ impl<'a> LiquifyDraw<'a> {
                     other => unreachable!("snapshot_field reads no binding {other}"),
                 },
             );
-            let warp = kit
-                .warp
+            let warp = kernels
                 .warp
                 .group(device, "stark liquify warp bg", |s| match s {
                     sb::ST => params.clone(),
@@ -492,8 +491,7 @@ impl<'a> LiquifyDraw<'a> {
                     sb::SEL_MASK => view(&sel_mask),
                     other => unreachable!("warp reads no binding {other}"),
                 });
-            let apply = kit
-                .warp
+            let apply = kernels
                 .apply
                 .group(device, "stark liquify warp apply bg", |s| match s {
                     sb::ST => params.clone(),
@@ -520,13 +518,12 @@ impl<'a> LiquifyDraw<'a> {
         // composition; then the one resample.
         {
             crate::timing::span!("stroke.loop");
-            let kernels = &r.dynamics.warp;
             let mut pass = self.region.loop_pass("stark liquify field");
             for (i, dsp) in plan.slots.iter().enumerate() {
                 let off =
                     UniformSlots::<stark_shaders::mirror::dynamics_common::Stamp>::offset(i as u32);
-                match dsp.kind {
-                    SlotKind::Warp => {
+                match dsp.step {
+                    WarpStep::Warp => {
                         // The snapshot covers the whole square, since the gather pulls
                         // from upstream of any one texel.
                         let square = (plan.dsize, plan.dsize);
@@ -537,15 +534,10 @@ impl<'a> LiquifyDraw<'a> {
                             .warp
                             .dispatch(&mut pass, &bind.warp, off, dsp.extent);
                     }
-                    SlotKind::WarpApply => {
+                    WarpStep::Apply => {
                         kernels
                             .apply
                             .dispatch(&mut pass, &bind.apply, off, dsp.extent);
-                    }
-                    SlotKind::Segment | SlotKind::Bleed | SlotKind::Settle => {
-                        unreachable!(
-                            "a wet slot in a liquify plan; the plan is the effect's (§6.2)"
-                        )
                     }
                 }
             }
