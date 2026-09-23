@@ -1115,7 +1115,7 @@ struct Cells {
 }
 
 /// Which of a piece's bind groups its plan will bind — one flag per group
-/// [`DynamicsRun::record_loop`] reaches for, read off the plan's steps exactly as its
+/// [`record_loop`] reaches for, read off the plan's steps exactly as its
 /// arms consume them. `bleed_weight` and `coarse` are gated the same way, by the
 /// scratch they need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1233,7 +1233,7 @@ mod tests {
     use super::*;
 
     /// Each wet step asks for exactly the groups its arm of
-    /// [`record_loop`](DynamicsRun::record_loop) binds — read the arms, then this.
+    /// [`record_loop`] binds — read the arms, then this.
     #[test]
     fn each_wet_step_asks_for_the_groups_its_arm_binds() {
         let of = |step: WetStep| {
