@@ -96,6 +96,15 @@ slow-timeout = { period = "120s", terminate-after = 5 }
 filter = 'test(per_move_cost_does_not_grow_with_stroke_length)'
 threads-required = "num-test-threads"
 
+# Compares one document's milliseconds a frame against another's, so it flakes for the
+# same reason. It is the more robust of the two — best-of-three batches of 32 frames,
+# and a ratio rather than an absolute, which was 0.78–0.95 over six runs against a
+# bound of 3 — and it runs alone anyway, because a guard that flakes is a guard that
+# gets retried away. ~1 s.
+[[profile.default.overrides]]
+filter = 'test(a_thin_stroke_costs_what_a_flat_field_costs)'
+threads-required = "num-test-threads"
+
 [profile.default]
 # A GPU that stops answering should fail the test that was waiting on it, by name,
 # rather than the job's own timeout — which reports that something hung and nothing

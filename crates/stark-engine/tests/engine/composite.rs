@@ -419,3 +419,122 @@ fn a_kept_offscreen_survives_a_frame_with_more_merges_than_the_last() {
         "the second merge changed no pixel — this test is not exercising what it claims",
     );
 }
+/// A frame's cost must not follow how much **paint edge** is in view (§6.3).
+///
+/// Every pass that writes a texel does a fixed amount of work per texel, so a thin
+/// squiggle over a mostly-bare canvas has to cost what a flat field of paint over the
+/// same frame costs. A pass that broke that would not charge per edge texel but per
+/// *wave* — a fullscreen pass whose expensive path any lane takes charges all of
+/// them — so a thin stroke, clipping many waves partially where a flat field
+/// saturates them, is the shape that would pay. Injecting exactly that (a loop in
+/// `media_common`'s `finish`, gated on the relief normal being tilted) moves this
+/// ratio from 0.9 to 20 while leaving the flat control where it was.
+///
+/// **Measured through the path a frontend renders on**: [`Engine::render`] into a
+/// target kept across frames, pass A's attachments kept with it — which is what both
+/// frontends do ([`Offscreen`], their `targets` field).
+/// [`Probe::render_to_image`](stark_engine::testing::Probe) does not, and that is
+/// worth naming here, because it is what made this look like a compositing defect.
+/// It builds a fresh `Offscreen` and a fresh export target per call, and after a
+/// long, finely-sampled gesture that allocation alone measured **11 ms a frame
+/// against 0.08 ms of rendering** — a reading that tracks the shape of the stroke,
+/// survives undoing it, and belongs to the allocator rather than to any pass. The
+/// same document reached by save → load renders at 1.4 ms; so does the very engine
+/// that painted it, the moment its attachments are held.
+///
+/// Wall clock, so the form is doing work: frames are batched until the per-frame cost
+/// outweighs the drain's own overhead, the best batch is taken, and the claim is a
+/// **ratio**, since an absolute says nothing on another adapter. Read on an RTX 3090
+/// at 1280×800 — bare 0.064 ms, squiggle 0.081 ms, flat 0.087 ms, so the squiggle is
+/// the *cheaper* of the pair, six runs inside 0.78–0.95. The bound is 3x, where the
+/// report that prompted this read 8x.
+#[test]
+#[expect(
+    clippy::disallowed_types,
+    reason = "a native-only test binary, timing GPU work against a real adapter"
+)]
+fn a_thin_stroke_costs_what_a_flat_field_costs() {
+    use stark_engine::{Engine, Extent2};
+
+    // A real frame rather than the suite's one tile: the claim is about what a
+    // fullscreen pass does with a stroke in it.
+    const VIEW: Extent2 = Extent2 {
+        width: 1280,
+        height: 800,
+    };
+    // Enough frames under one drain that the drain's own microseconds do not set the
+    // number — ~2.5 ms of GPU a batch here.
+    const PER_BATCH: usize = 32;
+
+    // The travelling sine `stroke::per_move_cost` lays, at the width this view shows:
+    // ~6500 canvas px of stroke crossing the frame eleven times, on a 14 px tip.
+    let squiggle: Vec<Vec2> = (0..400)
+        .map(|i| {
+            let t = i as f32 / 400.0;
+            Vec2::new(t * 1180.0 - 590.0, (t * 34.0).sin() * 300.0)
+        })
+        .collect();
+
+    fn frame_ms(lay: impl FnOnce(&mut Engine)) -> Option<f64> {
+        let mut engine = engine_or_skip_sized(VIEW)?;
+        lay(&mut engine);
+        // Cloned off the engine so the render below can borrow it mutably.
+        let device = engine.gpu().device.clone();
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("frame cost target"),
+            size: wgpu::Extent3d {
+                width: VIEW.width,
+                height: VIEW.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: engine.target_format(),
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut batch = || {
+            let at = std::time::Instant::now();
+            for _ in 0..PER_BATCH {
+                engine.render(&view);
+            }
+            device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .expect("the device drains");
+            at.elapsed().as_secs_f64() * 1e3 / PER_BATCH as f64
+        };
+        // One batch thrown away — the first render of a document sizes the
+        // attachments and builds the draw list — then the best of three, a batch that
+        // lost the CPU being noise about this box rather than about the frame.
+        batch();
+        Some((0..3).map(|_| batch()).fold(f64::INFINITY, f64::min))
+    }
+
+    // A feather-0 fill over the whole frame is the control, and **without the
+    // squiggle under it**: height is additive (§6.1), so paint laid *over* the stroke
+    // keeps every gradient the stroke put there and would pay whatever the stroke
+    // pays. It draws the same order of tile quads, so what is left between the two is
+    // the edge.
+    let tip = brush(palette::RED, 14.0);
+    let Some(bare) = frame_ms(|_| {}) else {
+        return;
+    };
+    let Some(thin) = frame_ms(|e| stroke_with(e, tip, &squiggle)) else {
+        return;
+    };
+    let Some(flat) = frame_ms(|e| {
+        let half = Vec2::new(VIEW.width as f32, VIEW.height as f32) * 0.5;
+        fill_rect(e, -half, half, BLUE, 0.0, 1.0);
+    }) else {
+        return;
+    };
+
+    assert!(
+        thin <= flat * 3.0,
+        "a thin squiggle costs {thin:.4} ms a frame against {flat:.4} ms for a flat \
+         field over the same frame (bare canvas {bare:.4} ms) — a frame is answering \
+         to how much paint edge is in view (§6.3)",
+    );
+}
