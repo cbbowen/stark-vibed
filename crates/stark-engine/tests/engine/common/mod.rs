@@ -625,6 +625,59 @@ pub fn whole_render(engine: &mut Engine) -> RgbaImage {
 /// commit against a replay.
 pub const SEAM_LEVELS: u8 = 4;
 
+/// A reading of the committed document, to hold a later one against.
+///
+/// The `DocState` whole — cheap to clone, since it is persistent maps of tile
+/// handles (§5.1) — plus the two readings that are the *timeline's* rather than the
+/// document's.
+pub struct Committed {
+    doc: stark_engine::testing::DocState,
+    revision: u64,
+    log: Option<(usize, usize)>,
+}
+
+impl Committed {
+    pub fn of(engine: &Engine) -> Self {
+        Self {
+            doc: engine.document().clone(),
+            revision: engine.observe().doc_revision,
+            log: engine.scrub_range(),
+        }
+    }
+}
+
+/// Assert the committed document has not moved since `before`.
+///
+/// **What may differ is not listed here.** `testing::undeclared` is the audit's own
+/// enumeration of it (§12.6) — the one `Materialize::audit` runs on every fold of
+/// every debug build — asked with an empty `Footprint`, so *any* difference is
+/// undeclared and reported by name. A `Layer` or `DocState` field added later is
+/// covered by construction, where a hand-listed set of readings goes quietly stale
+/// and says nothing when it does.
+///
+/// The revision and the scrub range are read beside it because they are the
+/// timeline's: a preview that wrote the timeline's current state without committing
+/// would leave the document identical and the log moved.
+#[track_caller]
+pub fn assert_document_unchanged(engine: &Engine, before: &Committed, what: impl fmt::Display) {
+    let now = Committed::of(engine);
+    let loose = stark_engine::testing::undeclared(
+        &before.doc,
+        &now.doc,
+        &stark_model::document::Footprint::default(),
+    );
+    assert!(
+        loose.is_empty(),
+        "{what}: the committed document changed: {}",
+        loose.join(", ")
+    );
+    assert_eq!(
+        (before.revision, before.log),
+        (now.revision, now.log),
+        "{what}: the document is intact, but the timeline moved"
+    );
+}
+
 /// The coordinates of the tiles `layer` holds in the **committed** document.
 ///
 /// Empty where it holds none, which *is* the answer for bare canvas: a tile that was

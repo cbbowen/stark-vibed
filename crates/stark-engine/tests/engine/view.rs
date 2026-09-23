@@ -14,17 +14,15 @@ use stark_engine::command::Tool;
 use stark_engine::command::{
     DocCommand, Edit, GestureCommand, HoverReport, InputSample, ViewCommand,
 };
-use stark_engine::document::CanvasBounds;
 use stark_engine::path::DEFAULT_TOLERANCE;
-use stark_engine::testing::{Guide, Layer, PropValue};
 use stark_engine::{Background, Engine, ExportScale, Offscreen, Rendered, RgbaImage};
 use stark_model::Srgb;
+use stark_model::SubstrateScale;
 use stark_model::document::{
     BlendMode, ColorAdjust, FillOp, Filter, GuideId, LayerId, MatteRegion, Parcel,
-    PerspectiveGuide, Place, Prop, SelectionMode, SelectionOp, SelectionShape, TransformMap,
+    PerspectiveGuide, Place, SelectionMode, SelectionOp, SelectionShape, TransformMap,
 };
 use stark_model::geom::{Affine2, IVec2, Vec2};
-use stark_model::{SubstrateId, SubstrateScale};
 
 /// Channel dominance, with the margin `stroke.rs` justifies: over the blue substrate,
 /// this cleanly separates lit paint from lit substrate.
@@ -243,68 +241,6 @@ impl Seed {
     }
 }
 
-/// A layer's every committed property — read over [`Prop::ALL`], so a property added
-/// later is compared without being listed here — and its tiles, standing in as the
-/// tile map's revision: `with_tiles` mints a fresh one, so a transform or a fill that
-/// reached the timeline shows here as surely as an opacity would.
-#[derive(Debug, PartialEq)]
-struct LayerRow {
-    id: LayerId,
-    depth: usize,
-    props: Vec<Option<PropValue>>,
-    tiles: Option<u64>,
-}
-
-/// One reading of each thing a preview could reach if it leaked: the log's length,
-/// the extent, every layer, the guide roster, the substrate and this actor's
-/// selection. `doc_revision` alone would not do — it moves on a commit, and a
-/// preview that wrote the timeline's current state without committing would leave
-/// it still.
-#[derive(Debug, PartialEq)]
-struct Committed {
-    revision: u64,
-    log: Option<(usize, usize)>,
-    bounds: CanvasBounds,
-    layers: Vec<LayerRow>,
-    guides: Vec<Guide>,
-    substrate: (SubstrateId, SubstrateScale, Srgb),
-    selection: (f32, f32, usize, Option<(Vec2, Vec2)>),
-}
-
-impl Committed {
-    fn of(engine: &Engine) -> Self {
-        let doc = engine.document();
-        let mut layers = Vec::new();
-        doc.visit(&mut |l: &Layer, depth: usize| {
-            layers.push(LayerRow {
-                id: l.id,
-                depth,
-                props: Prop::ALL.iter().map(|p| l.prop(*p)).collect(),
-                tiles: l.content_revision(),
-            });
-        });
-        let selection = doc.selection_of(engine.actor());
-        Self {
-            revision: engine.observe().doc_revision,
-            log: engine.scrub_range(),
-            bounds: doc.bounds(),
-            layers,
-            guides: doc.guides().iter().cloned().collect(),
-            substrate: (
-                doc.substrate().id,
-                doc.substrate().scale,
-                doc.substrate_color(),
-            ),
-            selection: (
-                selection.opacity(),
-                selection.outside(),
-                selection.tile_count(),
-                selection.hull(),
-            ),
-        }
-    }
-}
-
 /// The table: every [`Edit`] carrying its in-flight sample, given the seeded document.
 ///
 /// A macro for `corpus.rs`'s `battery!` reason. One list expands to two things — the
@@ -453,21 +389,13 @@ fn every_preview_leaves_the_committed_document_alone() {
         let sent = format!("{some:?}");
         engine.process(some);
         let shown = engine.render_to_image();
-        assert_eq!(
-            Committed::of(&engine),
-            before,
-            "{sent} reached the committed document"
-        );
+        assert_document_unchanged(&engine, &before, format_args!("{sent}"));
         assert!(
             !moves_a_pixel || !images_match(&resting, &shown, 0),
             "{sent} showed nothing — the walk did not preview it"
         );
         engine.process(none);
-        assert_eq!(
-            Committed::of(&engine),
-            before,
-            "dropping {sent} reached the committed document"
-        );
+        assert_document_unchanged(&engine, &before, format_args!("dropping {sent}"));
         assert_images(
             &resting,
             &engine.render_to_image(),
