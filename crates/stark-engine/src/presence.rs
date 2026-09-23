@@ -26,7 +26,7 @@
 use crate::gesture::LiveGesture;
 use crate::path::frozen_spans_for;
 use crate::peer::{Identity, default_name};
-use stark_model::document::{LayerId, StrokeRecord};
+use stark_model::document::{ActorId, LayerId, StrokeRecord};
 use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
 use stark_model::peer::{GESTURE_RESYNC, GestureFrame, HEARTBEAT, PeerFrame, StrokeHead};
@@ -193,15 +193,29 @@ impl Published {
 /// session's own facts and arrive as arguments rather than as a second copy here.
 /// `Engine` holds both and is where they meet.
 pub(crate) struct PresenceTx {
-    /// This client's display name; empty until it is set, in which case peers fall
-    /// back to [`default_name`]. Private because it has an invariant `name_chosen`
-    /// carries — see [`Self::set_name`].
+    /// This client's display name.
+    ///
+    /// Empty only before any identity is adopted and anything typed — a solo client,
+    /// which publishes nothing. Past that it is always a name a peer can show, because
+    /// `None` on the wire means *unchanged* and so cannot be used to clear one.
+    ///
+    /// Private because it has an invariant `name_chosen` carries — see
+    /// [`Self::set_name`].
     name: String,
     /// Whether [`name`](Self::name) is one the *user* chose rather than the
     /// id-derived default. Sharing or joining a document mints this client a new
     /// actor id and wants to refresh that default, but must not overwrite a name
     /// somebody typed.
     name_chosen: bool,
+    /// When the name last rode a frame. Its own clock beside [`sent_at`](Self::sent_at):
+    /// a gesture publishes thirty times a second, so the frame heartbeat never fires
+    /// while one is in flight, and the name would never be repeated to a client that
+    /// joined during it.
+    name_sent_at: f64,
+    /// Who this client is, for the name [`default_name`] derives from it. The
+    /// [`Identity`]'s other half, kept because clearing the name has to write that
+    /// default *then*, not leave the wire to infer it.
+    actor: ActorId,
     /// Where this client's pointer is, canvas space; `None` when it is off the canvas.
     ///
     /// Sent to peers and read on *this* side too — a guide draws its rays through the
@@ -224,6 +238,8 @@ impl PresenceTx {
         Self {
             name: String::new(),
             name_chosen: false,
+            name_sent_at: f64::NEG_INFINITY,
+            actor: ActorId::SOLO,
             cursor: None,
             published: None,
             boot: 0,
@@ -241,13 +257,22 @@ impl PresenceTx {
 
     /// Set the display name the user chose. **Sticky**: hosting or joining mints this
     /// client a new actor id, and [`adopt_identity`](Self::adopt_identity) will not
-    /// overwrite a name set here. Setting it empty gives the choice back, and peers
-    /// resume showing the id-derived default.
+    /// overwrite a name set here.
+    ///
+    /// Setting it empty gives the choice back, and **writes the id-derived default
+    /// here and now** rather than leaving the field empty: an empty name is `None` on
+    /// the wire ([`PeerFrame::sanitized`](stark_model::peer::PeerFrame::sanitized)),
+    /// `None` means *unchanged*, and peers would go on showing the name that was just
+    /// cleared.
     pub(crate) fn set_name(&mut self, name: &str) {
         let name = name.trim();
         self.name_chosen = !name.is_empty();
         self.name.clear();
-        self.name.push_str(name);
+        if self.name_chosen {
+            self.name.push_str(name);
+        } else {
+            self.name.push_str(&default_name(self.actor));
+        }
     }
 
     /// Where this client's pointer is, or `None` when it is off the canvas.
@@ -268,11 +293,18 @@ impl PresenceTx {
     ///
     /// Records the run counter every published frame carries, and takes the id-derived
     /// name as a default — unless the user has chosen one, which stands.
+    ///
+    /// **The latch starts over**, because a new identity is a new audience: nobody who
+    /// will hear the next frame heard the last one. Left standing, a name chosen before
+    /// a re-share would read as already published and never go out again.
     pub(crate) fn adopt_identity(&mut self, identity: Identity) {
         self.boot = identity.boot;
+        self.actor = identity.actor;
         if !self.name_chosen {
             self.name = default_name(identity.actor);
         }
+        self.published = None;
+        self.name_sent_at = f64::NEG_INFINITY;
     }
 
     /// The frame to send, if anything a peer would care about has changed since the
@@ -313,17 +345,26 @@ impl PresenceTx {
             return None;
         }
 
-        // The name only rides a frame when it changed, or on a resync — a peer that
-        // already knows it does not need it thirty times a second.
-        let name = (self.published.as_ref().is_none_or(|p| p.name != self.name) || resync)
-            .then(|| self.name.clone())
-            .filter(|n| !n.is_empty());
+        // The name rides a frame when it changed, on a resync, and **once every
+        // [`HEARTBEAT`] regardless**. A peer that already knows it does not need it
+        // thirty times a second; a peer that started listening after the frame that
+        // carried it has no way to ask, and nothing else repairs that — the gesture
+        // resync would, but [`GESTURE_RESYNC`] is `None`. So the repair is time.
+        let name_due = resync
+            || now - self.name_sent_at >= HEARTBEAT
+            || self.published.as_ref().is_none_or(|p| p.name != self.name);
+        // An empty name is the pre-identity state alone, and rides no frame: `None` is
+        // what the receiver reads it as anyway, and `None` means *unchanged*.
+        let name = (name_due && !self.name.is_empty()).then(|| self.name.clone());
 
         // Everything below this line commits to sending, which is the only point at
         // which the watermarks may move: they record what the receiver has been told.
         let gesture = self.gesture.encode(ordinal, live, resync);
         if resync {
             self.gesture.stamp_resync(now);
+        }
+        if name.is_some() {
+            self.name_sent_at = now;
         }
         self.sent_at = now;
         self.seq += 1;
@@ -1010,6 +1051,91 @@ mod tests {
         assert!(bye.leaving);
         assert_eq!(bye.seq, 5, "the farewell follows in sequence");
         assert_eq!(bye.cursor, None);
+    }
+
+    /// **A name is repaired, not announced once.** A client that starts listening
+    /// after the frame that carried one has no way to ask for it, and nothing else
+    /// tells it: [`GESTURE_RESYNC`] is `None`, so the only repair the protocol has is
+    /// the heartbeat. Without it a late joiner shows the id-derived default for the
+    /// rest of the session.
+    #[test]
+    fn a_late_listener_learns_the_name_within_a_heartbeat() {
+        let actor = ActorId(1);
+        let mut tx = PresenceTx::new();
+        tx.adopt_identity(Identity::new(actor, 1));
+        tx.set_name("ada");
+
+        let first = tx.publish(0.0, LayerId::ROOT, 0, None).expect("a frame");
+        assert_eq!(first.name.as_deref(), Some("ada"), "the naming frame");
+
+        // A receiver that was not there for it. The sender knows nothing about its
+        // audience, so only time says the name again: the publish cadence, run out
+        // past one heartbeat.
+        const TICK: f64 = 0.033;
+        let mut late = Peers::new();
+        let mut now = 0.0;
+        for _ in 0..64 {
+            now += TICK;
+            if let Some(frame) = tx.publish(now, LayerId::ROOT, 0, None) {
+                late.merge(actor, frame, now);
+            }
+        }
+        assert!(now >= HEARTBEAT, "the run has to cross a heartbeat");
+        assert_eq!(
+            late.get(actor).expect("the peer arrived").name,
+            "ada",
+            "a listener that missed the naming frame must still learn the name",
+        );
+    }
+
+    /// Clearing the name gives the id-derived default back **to the peers**, not just
+    /// to this client: an empty name is `None` on the wire, `None` means *unchanged*,
+    /// and everyone would go on showing the name that was just cleared.
+    #[test]
+    fn a_cleared_name_reaches_the_receiver() {
+        let actor = ActorId(9);
+        let mut tx = PresenceTx::new();
+        tx.adopt_identity(Identity::new(actor, 1));
+        tx.set_name("ada");
+        let mut peers = Peers::new();
+        let named = tx.publish(0.0, LayerId::ROOT, 0, None).expect("a frame");
+        peers.merge(actor, named, 0.0);
+        assert_eq!(peers.get(actor).expect("peer").name, "ada");
+
+        tx.set_name("  ");
+        let cleared = tx
+            .publish(0.1, LayerId::ROOT, 0, None)
+            .expect("a cleared name is a change");
+        peers.merge(actor, cleared, 0.1);
+        assert_eq!(
+            peers.get(actor).expect("peer").name,
+            default_name(actor),
+            "peers must resume showing the id-derived default",
+        );
+    }
+
+    /// **Re-sharing is a new audience.** A name published in the last session was
+    /// heard by nobody who will hear this one's frames, so the latch starts over with
+    /// the identity — it did not, which left a chosen name unsent for the whole of
+    /// every session after the first.
+    #[test]
+    fn a_fresh_identity_republishes_the_name() {
+        let mut tx = PresenceTx::new();
+        tx.adopt_identity(Identity::new(ActorId(1), 1));
+        tx.set_name("ada");
+        let first = tx.publish(0.0, LayerId::ROOT, 0, None).expect("a frame");
+        assert_eq!(first.name.as_deref(), Some("ada"));
+
+        // Leaving and sharing again mints a fresh actor id; the chosen name stands.
+        tx.adopt_identity(Identity::new(ActorId(2), 2));
+        let rejoined = tx
+            .publish(0.1, LayerId::ROOT, 0, None)
+            .expect("a fresh identity is a change");
+        assert_eq!(
+            rejoined.name.as_deref(),
+            Some("ada"),
+            "the new session's peers have never been told it",
+        );
     }
 
     /// [`PresenceTx::adopt_identity`] takes the id-derived name as a default and leaves
