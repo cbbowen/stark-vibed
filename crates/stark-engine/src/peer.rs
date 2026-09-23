@@ -173,33 +173,34 @@ impl Peer {
 /// Distinguishing the two is what keeps a remote cursor move from costing a rebuild of
 /// the live fold — a `DocState` clone and a re-render of every stroke in flight —
 /// thirty times a second per peer, while someone is painting.
+///
+/// **A ladder, not two flags**: a canvas change is a roster change, which a pair of
+/// bools could only promise through a constructor every arm remembered to use.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
-pub(crate) struct PresenceChange {
-    /// Anything at all moved, so a cached projection of the roster is stale.
-    pub(crate) roster: bool,
-    /// The composited picture is stale and the live fold must be rebuilt. Implies
-    /// [`roster`](Self::roster).
-    pub(crate) canvas: bool,
+pub(crate) enum PresenceChange {
+    /// Nothing moved.
+    #[default]
+    None,
+    /// A cached projection of the roster is stale, but the picture is not.
+    Roster,
+    /// The composited picture is stale and the live fold must be rebuilt.
+    Canvas,
 }
 
 impl PresenceChange {
-    /// Nothing moved.
-    pub(crate) const NONE: Self = Self {
-        roster: false,
-        canvas: false,
-    };
-    /// The canvas moved — which is also a roster change.
-    pub(crate) const CANVAS: Self = Self {
-        roster: true,
-        canvas: true,
-    };
-
     /// A roster change that reached the canvas only if `canvas`.
-    fn roster(canvas: bool) -> Self {
-        Self {
-            roster: true,
-            canvas,
-        }
+    fn of(canvas: bool) -> Self {
+        if canvas { Self::Canvas } else { Self::Roster }
+    }
+
+    /// Whether the composited picture is stale, so a repaint is owed.
+    pub(crate) fn canvas(self) -> bool {
+        matches!(self, Self::Canvas)
+    }
+
+    /// Whether anything at all moved.
+    pub(crate) fn roster(self) -> bool {
+        !matches!(self, Self::None)
     }
 }
 
@@ -237,7 +238,7 @@ impl Peers {
     /// [`PeerFrame::sanitized`] is held — every arm below reads a filtered value.
     pub(crate) fn merge(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> PresenceChange {
         let change = self.merge_inner(actor, frame, now);
-        self.revision += u64::from(change.roster);
+        self.revision += u64::from(change.roster());
         change
     }
 
@@ -250,8 +251,8 @@ impl Peers {
             // A departure takes the peer's gesture — and its selection outline — off
             // the canvas with it.
             return match self.map.remove(&actor) {
-                Some(_) => PresenceChange::CANVAS,
-                None => PresenceChange::NONE,
+                Some(_) => PresenceChange::Canvas,
+                None => PresenceChange::None,
             };
         }
         match self.map.get_mut(&actor) {
@@ -259,7 +260,7 @@ impl Peers {
             // carries nothing a newer one has not already said. Ordered on
             // `(boot, seq)`, because `seq` alone cannot tell a client that restarted
             // from one whose frames arrived late.
-            Some(peer) if (frame.boot, frame.seq) <= (peer.boot, peer.seq) => PresenceChange::NONE,
+            Some(peer) if (frame.boot, frame.seq) <= (peer.boot, peer.seq) => PresenceChange::None,
             Some(peer) if frame.boot > peer.boot => {
                 // A new run of a client we already know — it reloaded. Its `seq` and
                 // its gesture ordinals both restart at zero, so nothing from the
@@ -267,9 +268,9 @@ impl Peers {
                 peer.rx.clear();
                 peer.boot = frame.boot;
                 peer.apply(frame, now);
-                PresenceChange::CANVAS
+                PresenceChange::Canvas
             }
-            Some(peer) => PresenceChange::roster(peer.apply(frame, now)),
+            Some(peer) => PresenceChange::of(peer.apply(frame, now)),
             None => {
                 // An arrival changes which actors' selections may be outlined, so the
                 // fold is stale whatever else the frame carries.
@@ -277,7 +278,7 @@ impl Peers {
                 peer.boot = frame.boot;
                 peer.apply(frame, now);
                 self.map.insert(actor, peer);
-                PresenceChange::CANVAS
+                PresenceChange::Canvas
             }
         }
     }
@@ -290,21 +291,21 @@ impl Peers {
     /// without changing the roster's size, so counting peers cannot substitute for the
     /// reported change.
     pub(crate) fn tick(&mut self, now: f64) -> PresenceChange {
-        let mut change = PresenceChange::NONE;
+        let mut change = PresenceChange::None;
         self.map.retain(|_, p| {
             let live = now - p.last_seen < PEER_TIMEOUT;
             if !live {
-                change = PresenceChange::CANVAS;
+                change = PresenceChange::Canvas;
             }
             live
         });
         for peer in self.map.values_mut() {
             if peer.is_gesturing() && now - peer.gesture_seen >= GESTURE_TIMEOUT {
                 peer.end_gesture();
-                change = PresenceChange::CANVAS;
+                change = PresenceChange::Canvas;
             }
         }
-        self.revision += u64::from(change.roster);
+        self.revision += u64::from(change.roster());
         change
     }
 
@@ -437,12 +438,12 @@ mod tests {
     fn a_stale_frame_is_dropped() {
         let mut peers = Peers::new();
         let a = ActorId(1);
-        assert!(peers.merge(a, frame(5, None), 0.0).roster);
+        assert!(peers.merge(a, frame(5, None), 0.0).roster());
         assert!(
-            !peers.merge(a, frame(4, None), 1.0).roster,
+            !peers.merge(a, frame(4, None), 1.0).roster(),
             "seq went backwards"
         );
-        assert!(peers.merge(a, frame(6, None), 2.0).roster);
+        assert!(peers.merge(a, frame(6, None), 2.0).roster());
     }
 
     /// A client that reloads keeps its `ActorId` but restarts `seq` at zero. Ordered on
@@ -464,7 +465,7 @@ mod tests {
 
         let mut old = frame(50, stroke(7, 4));
         old.boot = 3;
-        assert!(peers.merge(a, old, 0.0).roster);
+        assert!(peers.merge(a, old, 0.0).roster());
         assert_eq!(
             peers
                 .get(a)
@@ -480,7 +481,10 @@ mod tests {
         // hands out start over too — so the run counter has to lead the comparison.
         let mut fresh = frame(1, stroke(7, 2));
         fresh.boot = 4;
-        assert!(peers.merge(a, fresh, 0.1).canvas, "a new run must be heard");
+        assert!(
+            peers.merge(a, fresh, 0.1).canvas(),
+            "a new run must be heard"
+        );
         assert_eq!(
             peers
                 .get(a)
@@ -497,7 +501,7 @@ mod tests {
         // `seq` check existed for and must survive the change.
         let mut straggler = frame(51, None);
         straggler.boot = 3;
-        assert!(!peers.merge(a, straggler, 0.2).roster);
+        assert!(!peers.merge(a, straggler, 0.2).roster());
     }
 
     /// A cursor is chrome drawn over the artwork, not part of it. Saying so is what
@@ -507,13 +511,16 @@ mod tests {
         let mut peers = Peers::new();
         let a = ActorId(1);
         // The arrival itself is: it changes whose selection may be outlined.
-        assert!(peers.merge(a, frame(1, None), 0.0).canvas, "arrival");
+        assert!(peers.merge(a, frame(1, None), 0.0).canvas(), "arrival");
 
         let mut moved = frame(2, None);
         moved.cursor = Some(Vec2::new(4.0, 9.0));
         let change = peers.merge(a, moved, 0.1);
-        assert!(change.roster, "the roster projection is stale");
-        assert!(!change.canvas, "a cursor is not painted into the document");
+        assert!(change.roster(), "the roster projection is stale");
+        assert!(
+            !change.canvas(),
+            "a cursor is not painted into the document"
+        );
         assert_eq!(
             peers.get(a).expect("peer").cursor,
             Some(Vec2::new(4.0, 9.0))
@@ -522,7 +529,7 @@ mod tests {
         // A layer selection is likewise a fact about the peer, not about the picture.
         let mut relayered = frame(3, None);
         relayered.active_layer = LayerId::solo(7);
-        assert!(!peers.merge(a, relayered, 0.2).canvas);
+        assert!(!peers.merge(a, relayered, 0.2).canvas());
 
         // But a gesture is.
         let stroking = frame(
@@ -535,8 +542,11 @@ mod tests {
                 start: 0.0,
             }),
         );
-        assert!(peers.merge(a, stroking, 0.3).canvas, "a live stroke is");
-        assert!(peers.merge(a, frame(5, None), 0.4).canvas, "so is its end");
+        assert!(peers.merge(a, stroking, 0.3).canvas(), "a live stroke is");
+        assert!(
+            peers.merge(a, frame(5, None), 0.4).canvas(),
+            "so is its end"
+        );
     }
 
     /// The ordinal, not the stroke assembly, is what says "this is a different
@@ -582,7 +592,10 @@ mod tests {
             ),
             0.1,
         );
-        assert!(change.canvas, "taking the marquee down is a canvas change");
+        assert!(
+            change.canvas(),
+            "taking the marquee down is a canvas change"
+        );
         assert!(
             peers.get(a).expect("peer").gesture().is_none(),
             "a gesture that ended must not be left on the canvas by the frames of the \
@@ -663,7 +676,7 @@ mod tests {
             0.1,
         );
         assert!(
-            !change.canvas,
+            !change.canvas(),
             "nothing drawn changed, so nothing to repaint"
         );
         assert_eq!(
@@ -912,7 +925,7 @@ mod tests {
         peers.merge(a, frame(1, None), 0.0);
         let mut bye = frame(2, None);
         bye.leaving = true;
-        assert!(peers.merge(a, bye, 0.1).roster);
+        assert!(peers.merge(a, bye, 0.1).roster());
         assert!(peers.is_empty());
     }
 

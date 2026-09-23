@@ -260,7 +260,7 @@ impl Engine {
     /// that bit leaves a stale stroke on screen until something else forces a paint.
     pub fn take_presence(&mut self, now: f64) -> PresenceTick {
         self.now = now.max(self.now);
-        let repaint = self.peers.tick(self.now).canvas;
+        let repaint = self.peers.tick(self.now).canvas();
         if repaint {
             self.mark_live_stale();
         }
@@ -307,10 +307,10 @@ impl Engine {
             return false;
         }
         let change = self.peers.merge(actor, frame, now);
-        if change.canvas {
+        if change.canvas() {
             self.mark_live_stale();
         }
-        change.canvas
+        change.canvas()
     }
 
     /// Everyone else in the session, in ascending [`ActorId`] order (empty solo).
