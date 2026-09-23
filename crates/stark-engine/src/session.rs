@@ -370,7 +370,7 @@ impl Session {
 
     /// **What this client is dragging out, and how much of it is settled** — the one
     /// thing the session says about a gesture (§17.4). The wire reads it
-    /// ([`PresenceTx::publish`]), the preview fold reads it
+    /// (`PresenceTx::publish`), the preview fold reads it
     /// ([`live_view`](Self::live_view)), and the release commits it
     /// ([`end_gesture`](Self::end_gesture)), so none of the three can disagree about
     /// what is being drawn.

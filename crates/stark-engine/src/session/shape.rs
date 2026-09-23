@@ -206,13 +206,13 @@ impl Session {
     /// selection this gesture can be adding to. `translation` is the active layer's
     /// frame at the press (§14.12), read only by a gesture that resolves to a fill.
     ///
-    /// A non-finite `pos` starts **no drag**, matching
-    /// [`set_cursor`](Self::set_cursor)'s filter at the other door a canvas position
-    /// enters this session through. [`ShapeDrag::to_shape`]'s degeneracy tests do not
-    /// close the class behind it: for the reason [`SelectionShape::bounds`] gives, an
-    /// all-NaN drag passes them as a `Rect { min: NaN, max: NaN }` and an infinite
-    /// corner as an unbounded one. The press's other effects stand, the ordinal bump
-    /// included — it did abandon what was in flight.
+    /// A non-finite `pos` starts **no drag**, matching `PresenceTx::set_cursor`'s
+    /// filter at the other door a canvas position enters this client through.
+    /// [`ShapeDrag::to_shape`]'s degeneracy tests do not close the class behind it:
+    /// for the reason [`SelectionShape::bounds`] gives, an all-NaN drag passes them
+    /// as a `Rect { min: NaN, max: NaN }` and an infinite corner as an unbounded
+    /// one. The press's other effects stand, the ordinal bump included — it did
+    /// abandon what was in flight.
     pub fn start_selection(
         &mut self,
         tool: Tool,
