@@ -141,6 +141,19 @@ pub struct Engine {
     /// [`Engine::change_committed`] (see [`commit::Committed`]).
     timeline: commit::Committed,
     session: crate::session::Session,
+    /// How the canvas is being looked at (§6.4, §18.1.2) — pan, zoom, rotation and
+    /// the mirror. Per-client, never logged and never sent.
+    ///
+    /// The engine's rather than the session's because nothing about a *gesture*
+    /// depends on it: a stroke is fitted in canvas space, and the view is what the
+    /// renderer and the projection read.
+    view: ViewTransform,
+    /// Whether collaborators' selection outlines are drawn (§17.3).
+    ///
+    /// View state, so each client decides for itself and nothing about it is logged or
+    /// sent. Off by default: a second contour over the artwork is a cost paid on every
+    /// frame you look at it, for a fact that is occasionally useful.
+    show_peer_selections: bool,
     /// Everyone else in the session (§17.4). Empty when solo.
     peers: Peers,
     /// The presence clock: the newest instant a caller has handed in, in seconds on
@@ -334,7 +347,7 @@ impl Engine {
 
     /// The current pan/zoom view (for mapping pointer input to canvas space).
     pub fn view(&self) -> ViewTransform {
-        self.session.view
+        self.view
     }
 
     /// Import a brush-shape image (PNG bytes), returning its content id for use

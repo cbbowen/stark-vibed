@@ -24,8 +24,9 @@
 //!   [`document::Timeline`] that orders them (linear solo, replicated when
 //!   shared), and [`document::DocState`], a persistent map of copy-on-write
 //!   tiles (§5).
-//! - [`session`] — view state: tool, brush, view transform, the in-flight
-//!   gesture (§3), plus the half of it that is published to collaborators.
+//! - [`session`] — view state: the tool, the brush, what they are aimed at and the
+//!   in-flight gesture (§3). The pan/zoom ([`view`]) is the engine's own field, for
+//!   the reason `session`'s own doc gives.
 //! - [`peer`] — presence: per-client state every client reads and only its owner
 //!   writes, held outside the timeline (§17.4). The selection is the one piece of
 //!   per-client state replay does need, so it lives in [`document::DocState`]

@@ -340,15 +340,10 @@ fn an_unpaintable_layer_refuses_the_mark() {
 /// it needs no GPU, so this runs even where the render suites skip.
 #[test]
 fn a_pixel_staircase_holds_its_heading() {
-    use stark_engine::Extent2;
-    use stark_engine::ViewTransform;
     use stark_engine::testing::{GestureView, LiveGesture, Session};
     use stark_model::document::{ActorId, LayerId};
 
-    let mut session = Session::new(
-        ViewTransform::identity(Extent2::new(512, 512)),
-        LayerId::ROOT,
-    );
+    let mut session = Session::new(LayerId::ROOT);
     // A 1-in-4 staircase: the pixel grid's rendering of a line at atan(1/4).
     let true_heading = 0.25_f32.atan();
     let mut samples = Vec::new();
@@ -426,18 +421,11 @@ fn a_pixel_staircase_holds_its_heading() {
 /// Session-level and CPU-only, like the staircase test and for its reason.
 #[test]
 fn the_run_up_conditions_the_strokes_entry() {
-    use stark_engine::Extent2;
-    use stark_engine::ViewTransform;
     use stark_engine::path::{point_at, span_count, span_end};
     use stark_engine::testing::{LiveGesture, Session};
     use stark_model::document::LayerId;
 
-    let session = || {
-        Session::new(
-            ViewTransform::identity(Extent2::new(512, 512)),
-            LayerId::ROOT,
-        )
-    };
+    let session = || Session::new(LayerId::ROOT);
     let true_heading = 0.25_f32.atan();
 
     // The 1-in-4 staircase — the grid's rendering of the 14° line — from

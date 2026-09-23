@@ -206,7 +206,9 @@ impl Engine {
             timeline: super::commit::Committed::opening(origin(initial)),
             // An engine opens on its viewport, aimed at the root layer its timeline
             // was seeded with.
-            session: crate::session::Session::new(ViewTransform::identity(viewport), ROOT_LAYER),
+            session: crate::session::Session::new(ROOT_LAYER),
+            view: ViewTransform::identity(viewport),
+            show_peer_selections: false,
             peers: Peers::new(),
             now: 0.0,
             preview: Default::default(),

@@ -351,7 +351,7 @@ impl Engine {
             can_redo: self.timeline.can_redo(),
             is_stroking: self.session.is_stroking(),
             tool: self.session.tool(),
-            view: self.session.view,
+            view: self.view,
             bounds: doc.bounds(),
             doc_revision: self.doc_revision,
             edited: self.doc_revision != self.doc_origin,
@@ -366,7 +366,7 @@ impl Engine {
             shape_action: self.session.shape_action,
             selection_feather: self.session.selection_feather(),
             shape_opacity: self.session.shape_opacity(),
-            show_peer_selections: self.session.show_peer_selections,
+            show_peer_selections: self.show_peer_selections,
             history_budget: self.history_budget,
             fast_commit: self.fast_commit,
             guides: self.projected_guides(|| {

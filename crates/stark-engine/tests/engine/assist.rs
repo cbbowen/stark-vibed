@@ -15,8 +15,6 @@
 
 use glam::Quat;
 use stark_engine::Assisted;
-use stark_engine::Extent2;
-use stark_engine::ViewTransform;
 use stark_engine::command::InputSample;
 use stark_engine::command::Tool;
 use stark_engine::path::{
@@ -28,10 +26,7 @@ use stark_model::document::{ActorId, LayerId, PerspectiveGuide, Scaffold, Stroke
 use stark_model::geom::{Ellipse, Vec2};
 
 fn session() -> Session {
-    Session::new(
-        ViewTransform::identity(Extent2::new(512, 512)),
-        LayerId::ROOT,
-    )
+    Session::new(LayerId::ROOT)
 }
 
 /// What a session is offered when no guide is up — most of the tests here.

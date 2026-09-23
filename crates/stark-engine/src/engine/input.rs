@@ -545,27 +545,27 @@ impl Engine {
             // else entirely. Every arm here names a mutator rather than writing a view
             // field, so a command carrying a non-finite number is refused by
             // `ViewTransform` rather than stored.
-            ViewCommand::Pan { delta } => self.session.view.pan_by(delta),
-            ViewCommand::SetRotation(radians) => self.session.view.set_rotation(radians),
-            ViewCommand::MirrorH => self.session.view.mirror_screen_h(),
-            ViewCommand::CenterOn(point) => self.session.view.center_on(point),
+            ViewCommand::Pan { delta } => self.view.pan_by(delta),
+            ViewCommand::SetRotation(radians) => self.view.set_rotation(radians),
+            ViewCommand::MirrorH => self.view.mirror_screen_h(),
+            ViewCommand::CenterOn(point) => self.view.center_on(point),
             ViewCommand::ShowPiece(frame) => self.show_piece(frame),
             ViewCommand::Zoom { anchor, factor } => {
-                self.session.view.zoom_about(anchor, factor);
+                self.view.zoom_about(anchor, factor);
             }
             ViewCommand::Pinch {
                 anchor,
                 to,
                 scale,
                 turn,
-            } => self.session.view.pinch(anchor, to, scale, turn),
-            ViewCommand::Resize(viewport) => self.session.view.resize(viewport),
+            } => self.view.pinch(anchor, to, scale, turn),
+            ViewCommand::Resize(viewport) => self.view.resize(viewport),
             ViewCommand::SetShapeAction(action) => self.session.shape_action = action,
             ViewCommand::SetSelectionFeather(feather) => {
                 self.session.set_selection_feather(feather);
             }
             ViewCommand::SetShapeOpacity(opacity) => self.session.set_shape_opacity(opacity),
-            ViewCommand::SetShowPeerSelections(show) => self.session.show_peer_selections = show,
+            ViewCommand::SetShowPeerSelections(show) => self.show_peer_selections = show,
             ViewCommand::SetGuideVisible(id, visible) => {
                 // The eye is the one per-client thing about a guide (§20.5), so it
                 // moves the session and never the document. The bump is what a

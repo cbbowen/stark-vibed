@@ -155,11 +155,11 @@ const SHOW_PIECE_MARGIN: f32 = 0.04;
 
 impl Engine {
     /// Render the current canvas (preview if stroking, else committed) into
-    /// `target`, through the session's own pan/zoom (§6.4).
+    /// `target`, through this engine's own pan/zoom (§6.4).
     pub fn render(&mut self, target: &wgpu::TextureView) {
         self.render_view(
             target,
-            self.session.view,
+            self.view,
             None,
             Background::Substrate,
             Chrome::Shown,
@@ -350,7 +350,7 @@ impl Engine {
         // and dropped with this `Offscreen`.
         let (target, size) = self.render_offscreen(
             &mut Offscreen::default(),
-            self.session.view,
+            self.view,
             None,
             Background::Substrate,
             Chrome::Shown,
@@ -370,7 +370,7 @@ impl Engine {
             wgpu::TextureFormat::Rgba16Float,
             "render_to_floats reads a half-float screen, and this engine presents to {format:?}",
         );
-        let view = self.session.view;
+        let view = self.view;
         let size = view.viewport;
         let target = self.offscreen_target(
             "stark hdr probe target",
@@ -1033,7 +1033,7 @@ impl Engine {
             // Everything the viewport shows — a *bound* under rotation, which is the
             // safe direction: an export with nothing painted and no frame should not
             // crop tighter than what the artist is looking at.
-            self.session.view.visible_bounds()
+            self.view.visible_bounds()
         })
     }
 
@@ -1078,7 +1078,7 @@ impl Engine {
     /// no piece to show yet, and the honest answer to "show me it" is to stay put.
     pub(super) fn show_piece(&mut self, frame: Option<LayerId>) {
         if let Some((min, max)) = self.piece_rect(frame) {
-            self.session.view.show_rect(min, max, SHOW_PIECE_MARGIN);
+            self.view.show_rect(min, max, SHOW_PIECE_MARGIN);
         }
     }
 
@@ -1097,7 +1097,7 @@ impl Engine {
         if mine.is_active() {
             out.push((mine, None));
         }
-        if self.session.show_peer_selections {
+        if self.show_peer_selections {
             for peer in self.peers.iter() {
                 let theirs = doc.selection_of(peer.actor);
                 if theirs.is_active() {

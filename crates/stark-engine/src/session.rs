@@ -1,9 +1,12 @@
 //! Session: ephemeral, non-historized state (§3).
 //!
-//! The current tool/brush, the pan/zoom view, and the gesture being dragged out. None
-//! of it is undoable — switching tools or panning never creates a history step. The
+//! The current tool and brush, what they are aimed at, and the gesture being dragged
+//! out. None of it is undoable — switching tools never creates a history step. The
 //! session interprets pointer commands and, on [`end_gesture`](Session::end_gesture),
 //! hands the [`Engine`](crate::Engine) what the release commits.
+//!
+//! **The hand, not the eye**: the pan/zoom view is per-client state too, but nothing
+//! here reads it, so it is the engine's field and [`crate::view`]'s type.
 //!
 //! Three of its subjects have a file of their own: the shape gesture ([`shape`]),
 //! the hover mark ([`hover`]), and the half published to collaborators
@@ -24,7 +27,6 @@ use crate::path::{InputTolerance, PathFitter, frozen_spans_for};
 use crate::peer::Identity;
 use crate::presence::PresenceTx;
 use crate::tow::{Tow, TowString};
-use crate::view::ViewTransform;
 use stark_model::document::Scaffold;
 use stark_model::document::{ActorId, BrushParams, GuideId, LayerId, ShapeAction, StrokeRecord};
 use stark_model::geom::Vec2;
@@ -157,7 +159,6 @@ impl Assist {
 }
 
 pub struct Session {
-    pub view: ViewTransform,
     tool: Tool,
     brush: BrushParams,
     /// The **hand's** color, straight sRGB. Its own field rather than a reading of
@@ -187,12 +188,6 @@ pub struct Session {
     ///
     /// [`FillOp::opacity`]: stark_model::document::FillOp::opacity
     shape_opacity: f32,
-    /// Whether collaborators' selection outlines are drawn (§17.3).
-    ///
-    /// View state, so each client decides for itself and nothing about it is logged or
-    /// sent. Off by default: a second contour over the artwork is a cost paid on every
-    /// frame you look at it, for a fact that is occasionally useful.
-    pub show_peer_selections: bool,
     /// The drawing guides whose **eye this client has opened** (§20.5).
     ///
     /// The one per-client half of a guide: the guides themselves are document state
@@ -226,9 +221,8 @@ pub struct Session {
 }
 
 impl Session {
-    pub fn new(view: ViewTransform, active_layer: LayerId) -> Self {
+    pub fn new(active_layer: LayerId) -> Self {
         Self {
-            view,
             tool: Tool::Brush,
             brush: BrushParams::default(),
             color: [0.0, 0.0, 0.0],
@@ -236,7 +230,6 @@ impl Session {
             shape_action: ShapeAction::default(),
             selection_feather: 0.0,
             shape_opacity: 1.0,
-            show_peer_selections: false,
             visible_guides: std::collections::HashSet::new(),
             hand: Hand::Idle,
             gesture_ordinal: 0,

@@ -730,7 +730,6 @@ mod tests {
     use crate::path::DEFAULT_TOLERANCE;
     use crate::peer::{Peer, Peers};
     use crate::session::{Outline, Session};
-    use crate::view::{Extent2, ViewTransform};
     use stark_model::MAX_NAME;
     use stark_model::document::{ActorId, BrushParams, LayerId, ShapeAction};
     use stark_model::geom::Vec2;
@@ -776,8 +775,7 @@ mod tests {
     fn round_trip_survives_a_lossy_channel() {
         for seed in 0..64u64 {
             let mut rng = Lcg(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
-            let mut session =
-                Session::new(ViewTransform::identity(Extent2::new(64, 64)), LayerId::ROOT);
+            let mut session = Session::new(LayerId::ROOT);
             let mut peers = Peers::new();
             let actor = ActorId(1);
             let mut inflight: Vec<PeerFrame> = Vec::new();
@@ -997,8 +995,7 @@ mod tests {
     /// tick, and report what went out: one line per frame naming what it carries, and
     /// one hash over the whole run.
     fn published_gestures() -> (Vec<String>, String) {
-        let mut session =
-            Session::new(ViewTransform::identity(Extent2::new(64, 64)), LayerId::ROOT);
+        let mut session = Session::new(LayerId::ROOT);
         let mut now = 0.0;
         let mut shape = Vec::new();
         let mut payload = blake3::Hasher::new();
