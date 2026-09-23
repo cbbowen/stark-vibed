@@ -241,19 +241,20 @@ impl StrokeRenderer {
         let mut pieces = chunk_segments(segments, &fires).into_iter().peekable();
         while let Some(piece) = pieces.next() {
             let is_last = pieces.peek().is_none();
-            // This piece's firings, re-keyed to its slice: `after` indexes `segments`,
-            // and the piece's plan walks its own slice. The order — what
-            // `dynamics_plan` asserts — survives a slice-and-shift untouched.
-            let lo = fires.partition_point(|f| f.after < piece.start);
+            // This piece's firings: the range's, narrowed. `after` still indexes the
+            // range, so the piece's own first segment goes with them — the walk pairs
+            // them by `first + si` rather than by a shifted copy of the list
+            // (`slot_sources`).
+            let first = piece.start;
+            let lo = fires.partition_point(|f| f.after < first);
             let hi = fires.partition_point(|f| f.after < piece.end);
-            let piece_fires: Vec<BleedFire> = fires[lo..hi]
-                .iter()
-                .map(|f| BleedFire {
-                    after: f.after - piece.start,
-                    ..*f
-                })
-                .collect();
-            map = run.draw(&map, &segments[piece], &piece_fires, !capture && is_last);
+            map = run.draw(
+                &map,
+                &segments[piece],
+                first,
+                &fires[lo..hi],
+                !capture && is_last,
+            );
         }
         (map, run.finish(end_dist, capture))
     }
@@ -518,13 +519,15 @@ impl<'a> DynamicsRun<'a> {
     /// piece left it; the canvas side needs no carrying — it is in `base`, which for a
     /// later piece is what the earlier ones wrote back.
     ///
-    /// `fires` is this piece's slice of the range's bleed firings, `after` re-keyed to
-    /// `segments`; `settle` is set only for the piece that ends the stroke (see
+    /// `fires` is this piece's slice of the range's bleed firings and `first` the
+    /// piece's own first segment among the range's, which is what their `after` is
+    /// keyed to; `settle` is set only for the piece that ends the stroke (see
     /// `dynamics.wesl::settle`).
     fn draw(
         &mut self,
         base: &TileMap,
         segments: &[Segment],
+        first: usize,
         fires: &[BleedFire],
         settle: bool,
     ) -> TileMap {
@@ -583,7 +586,7 @@ impl<'a> DynamicsRun<'a> {
         let (plan, stamps, bind, levels_pass) = {
             crate::timing::span!("stroke.plan");
             let ctx = self.region.plan_ctx(region_origin);
-            let plan = dynamics_plan(&ctx, segments, fires, settle);
+            let plan = dynamics_plan(&ctx, segments, fires, first, settle);
             let under = self.snapshot_scratch(plan.dsize);
             // The cell scratch (§6.2), only when some slot actually takes the coarse
             // path — a small or hard tip allocates nothing and binds nothing.
