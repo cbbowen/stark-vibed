@@ -361,6 +361,16 @@ impl Layer {
         }
     }
 
+    /// Whether the compositor would draw anything at all for this layer — the two
+    /// halves above read together, recursed through what it carries.
+    ///
+    /// **The cull stated once**, asked of the document rather than of a viewport, so a
+    /// projection and the draw list cannot come to disagree about which layers are on
+    /// the screen (`engine::draw_list`, `LayerInfo::has_underlay`).
+    pub(crate) fn contributes(&self) -> bool {
+        self.is_shown() && (self.draws_content() || self.carries().iter().any(Layer::contributes))
+    }
+
     /// An empty paint layer, carrying nothing.
     pub fn new(id: LayerId) -> Self {
         Self {

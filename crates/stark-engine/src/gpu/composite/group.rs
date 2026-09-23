@@ -5,10 +5,15 @@
 //! decided by the document, and the only judgement it makes is [`CompositeGroup::stack`]'s:
 //! whether a group can tell itself apart from no group at all.
 
+use crate::colorspace::ColorSpace;
 use crate::document::CompositeParams;
 use crate::gpu::tile::TilePairHandle;
-use stark_model::document::{ChromaticAberration, ColorAdjust, Filter, FocalBlur};
+use stark_model::document::{
+    ChromaticAberration, ColorAdjust, Filter, FocalBlur, GradientAxis, GradientParcel, MatteRegion,
+    Parcel,
+};
 use stark_model::geom::Vec2;
+use stark_shaders::mirror::matte::{REGION_EVERYTHING, REGION_OUTSIDE};
 
 /// A matte layer's draw parameters (§15.4).
 // No `Debug`: the mirrored `Ramp` (§6.10) derives only what `bytemuck`
@@ -36,6 +41,78 @@ pub(crate) struct MatteDraw {
     /// which binds the shared zeroed ramp. Boxed so the rare gradient's 544 bytes of
     /// stop lanes do not ride every [`CompositeItem`].
     pub ramp: Option<Box<stark_shaders::mirror::matte::Ramp>>,
+}
+
+impl MatteDraw {
+    /// The draw for a matte layer's `region` and `paint`, placed by the layer's
+    /// `offset` (§15.4). Region, rect and gradient axis are all stated in the layer's
+    /// own frame (§14.12), and this is where the three of them land on the canvas.
+    ///
+    /// sRGB in the log, working-space channels on the GPU — the same conversion the
+    /// brush colour gets, so a matte means the same colour in an Oklab and a Mixbox
+    /// document. A gradient converts every stop that way and the shader interpolates
+    /// in the working space (§22.4).
+    ///
+    /// Comes out at **opacity 1**: the layer's own is a [`CompositeParams`] field that
+    /// [`CompositeGroup::leaf`] folds in, or not, and setting it here as well is how a
+    /// group's base gets faded twice (§14.7).
+    pub(crate) fn new(
+        region: &MatteRegion,
+        paint: &Parcel,
+        offset: Vec2,
+        cs: &dyn ColorSpace,
+    ) -> Self {
+        let rect = match region.translated(offset).rect() {
+            Some((min, max)) => [min.x, min.y, max.x, max.y],
+            // The whole plane: the shader never reads the rect (`flags` routes past
+            // it), so zeros rather than sentinels.
+            None => [0.0; 4],
+        };
+        let flags = match region {
+            MatteRegion::OutsideRect { .. } => REGION_OUTSIDE,
+            MatteRegion::Everything => REGION_EVERYTHING,
+        };
+        let (channels, resid, ramp) = match paint {
+            Parcel::Solid(color) => {
+                let l = cs.rgb_to_latent(*color);
+                (
+                    [l.lat[0], l.lat[1], l.lat[2], 1.0],
+                    [l.res[0], l.res[1], l.res[2], 0.0],
+                    None,
+                )
+            }
+            Parcel::Gradient(GradientParcel { gradient, axis }) => {
+                let mut ramp = stark_shaders::mirror::matte::Ramp::default();
+                let stops = gradient.stops();
+                ramp.p[0] = stops.len() as f32;
+                ramp.axis = match axis.translated(offset) {
+                    GradientAxis::Linear { from, to } => [from.x, from.y, to.x, to.y],
+                    GradientAxis::Radial { center, radius } => {
+                        ramp.p[1] = 1.0;
+                        [center.x, center.y, radius, 0.0]
+                    }
+                };
+                // Bounded by `Gradient`'s own invariant rather than by a check here: a
+                // ramp holds at most `gradient::MAX_STOPS`, the length `matte.wesl`
+                // declares `stop_c` at. Truncating instead would hide a broken
+                // invariant behind a wrong picture.
+                for (i, stop) in stops.iter().enumerate() {
+                    let l = cs.rgb_to_latent(stop.color);
+                    ramp.stop_c[i] = [l.lat[0], l.lat[1], l.lat[2], stop.t];
+                    ramp.stop_r[i] = [l.res[0], l.res[1], l.res[2], 0.0];
+                }
+                ([0.0; 4], [0.0; 4], Some(Box::new(ramp)))
+            }
+        };
+        Self {
+            rect,
+            flags,
+            channels,
+            resid,
+            opacity: 1.0,
+            ramp,
+        }
+    }
 }
 
 /// One item of compositing pass A, in bottom-to-top stack order.
@@ -348,7 +425,6 @@ impl CompositeGroup {
 mod tests {
     use super::*;
     use stark_model::document::BlendMode;
-    use stark_shaders::mirror::matte::REGION_OUTSIDE;
 
     /// A drawable with a known opacity and nothing else — a matte, because it is the
     /// one [`CompositeItem`] that is plain data. A tile would need a GPU to make one,

@@ -15,8 +15,10 @@
 //! - `commit` — the doors into the log, history navigation and retention (§5,
 //!   §12.4);
 //! - `observe` — the projection that comes back out ([`Engine::observe`]);
-//! - `render` — the compositor's draw list, the screen frame and export (§6.3,
-//!   §15.6);
+//! - `draw_list` — what a document draws, as a function of the document (§6.3,
+//!   §14.7);
+//! - `render` — the screen frame and export, and the memo the draw list is held in
+//!   (§6.3, §15.6);
 //! - `live` — the preview fold and its per-stroke cache (§17.6, §6.2);
 //! - `pick` — the eyedropper (§18.0.2);
 //! - `collab` — the action and presence channels of a shared session (§12, §17);
@@ -30,6 +32,7 @@
 mod build;
 mod collab;
 mod commit;
+mod draw_list;
 mod file;
 mod input;
 mod live;

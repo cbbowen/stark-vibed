@@ -429,7 +429,7 @@ fn layer_rows(shown: &DocState) -> Vec<LayerInfo> {
         }
         let cursor = &mut stack[depth];
         let has_underlay = cursor.filled;
-        cursor.filled = cursor.filled || contributes(l);
+        cursor.filled = cursor.filled || l.contributes();
         let merge_down = cursor
             .below
             .map(|d| (d, false))
@@ -497,9 +497,9 @@ fn layer_rows(shown: &DocState) -> Vec<LayerInfo> {
 /// `d` from deeper keeps them, descending to a new `d` starts a fresh one.
 struct Cursor<'a> {
     /// Whether this stack has anything drawable beneath the row being visited — "would
-    /// a filter here reach something" (§21.2), answered by the draw list's culls
-    /// (`render.rs`) rather than by row order: a hidden, transparent or empty sibling
-    /// fills nothing.
+    /// a filter here reach something" (§21.2), answered by
+    /// [`Layer::contributes`](crate::document::Layer::contributes) rather than by row
+    /// order: a hidden, transparent or empty sibling fills nothing.
     filled: bool,
     /// The row visited before this one **in this stack** — a layer's lower sibling,
     /// which is what it would merge down onto (§14.11).
@@ -507,13 +507,6 @@ struct Cursor<'a> {
     /// How far up this stack the row being visited sits, counting from the bottom —
     /// `LayerSite::index` without the search for it.
     index: usize,
-}
-
-/// Whether the compositor would draw anything at all for `l` — the same culls
-/// `render.rs` applies, asked of the document rather than of a viewport, so the answer
-/// does not change when the artist scrolls.
-fn contributes(l: &Layer) -> bool {
-    l.is_shown() && (l.draws_content() || l.carries().iter().any(contributes))
 }
 
 #[cfg(test)]

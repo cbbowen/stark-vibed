@@ -148,6 +148,10 @@ fn view_groups(p: &CompositorPipeline) -> ViewGroups<'_> {
 }
 
 pub(crate) use blend::blend_uniform;
+/// What a group is made of, for a test that asserts the *shape* a walk cut
+/// (`engine::draw_list`). The render path reads it through [`plan`] and never by name.
+#[cfg(test)]
+pub(crate) use group::GroupContent;
 pub(crate) use group::{CompositeGroup, CompositeItem, FilterDraw, MatteDraw};
 pub use media::MediaParams;
 pub(crate) use overlay::SelectionOutline;

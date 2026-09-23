@@ -3,8 +3,8 @@
 //!
 //! Both are **requests** rather than commands — they have to answer (§4) — and both
 //! go through the *same* draw list rendering does
-//! ([`Engine::composite_groups`]), so what they report is the paint the screen is
-//! drawing rather than a second opinion about it. Neither samples the media pass's
+//! ([`DrawList`](super::draw_list::DrawList)), so what they report is the paint the
+//! screen is drawing rather than a second opinion about it. Neither samples the media pass's
 //! output: that lights the paint, tonemaps it and encodes sRGB, so picking it up
 //! would load the brush with a color the palette never mixed.
 //!
@@ -14,6 +14,7 @@
 //! single buffer map, because the map is the latency.
 
 use super::Engine;
+use super::draw_list::DrawList;
 use crate::gpu::composite::{CompositeGroup, Patch};
 use crate::view::{Extent2, ViewTransform};
 use stark_model::document::LayerId;
@@ -302,10 +303,8 @@ impl Engine {
         // The *presented* document, so a sample agrees with what is on screen —
         // including a collaborator's stroke that has not committed yet, and the
         // substrate color mid-drag on the picker that sets it (§15.5).
-        let groups = {
-            let doc = self.presented();
-            self.pick_groups(doc, options.source, patch_cull(points, size))
-        };
+        let groups = DrawList::new(self.shared.color_space.as_ref(), patch_cull(points, size))
+            .pick(self.presented(), options.source);
         // Each patch is its own view of the same document, so the whole trace is one
         // upload and one submit rather than a round trip per sample.
         let views: Vec<ViewTransform> = points.iter().map(|&at| patch_view(at, size)).collect();
@@ -463,9 +462,9 @@ const LAYER_HIT_COVERAGE: f32 = 0.25;
 /// (§14.2), so coming back down the stack they are met first.
 ///
 /// A hidden layer — or one turned all the way down — takes its whole subtree with
-/// it, which the single-layer branch of `composite_groups` cannot do: it asks only
-/// about the layer named, which is right for "sample this layer" (§18.0.2) and wrong
-/// here, because the members of a hidden group are not on the screen to be pointed at.
+/// it, which [`DrawList::layer_alone`] cannot do: it asks only about the layer named,
+/// which is right for "sample this layer" (§18.0.2) and wrong here, because the
+/// members of a hidden group are not on the screen to be pointed at.
 fn shown_paint_layers(stack: &rpds::Vector<crate::document::Layer>, out: &mut Vec<LayerId>) {
     for layer in stack.iter().rev() {
         if !layer.is_shown() {
@@ -528,6 +527,7 @@ impl Engine {
             None => Vec::new(),
             Some(cull) => {
                 let doc = self.presented();
+                let walk = DrawList::new(self.shared.color_space.as_ref(), Some(cull));
                 let mut candidates = Vec::new();
                 shown_paint_layers(doc.root(), &mut candidates);
                 candidates
@@ -536,7 +536,7 @@ impl Engine {
                         // An empty list means the layer draws nothing in this tile
                         // — no tile there, hidden, or switched off — so it is out
                         // before it costs a pass.
-                        let groups = self.composite_groups(doc, Some(id), Some(cull));
+                        let groups = walk.layer_alone(doc, id);
                         (!groups.is_empty()).then_some((id, groups))
                     })
                     .collect()

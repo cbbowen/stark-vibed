@@ -1,5 +1,6 @@
-//! Presenting the canvas: the compositor's draw list, the screen frame, and export
-//! (§6.3, §15.6).
+//! Presenting the canvas: the screen frame and export (§6.3, §15.6). What is *in*
+//! a frame is the draw list's (`engine::draw_list`); this is where one is asked for,
+//! cached, and composited.
 //!
 //! **One path serves all three consumers**, which is what keeps them from
 //! disagreeing about what the document looks like. [`Engine::render_view`] takes a
@@ -9,18 +10,17 @@
 //! the same planned rect into a texture it then reads back.
 
 use super::Engine;
+use super::draw_list::DrawList;
 use crate::Result;
-use crate::document::{CompositeParams, DocState, Layer, LayerContent};
+use crate::document::DocState;
 use crate::error::{ExportError, Produces};
 use crate::gpu::composite::{
-    CompositeGroup, CompositeItem, CompositeScene, CompositorPipeline, FilterDraw, MatteDraw,
-    Offscreen, Output, SelectionOutline,
+    CompositeGroup, CompositeScene, CompositorPipeline, Offscreen, Output, SelectionOutline,
 };
 use crate::image::RgbaImage;
 use crate::view::{Extent2, ViewTransform};
-use stark_model::document::{GradientParcel, GuideScene, LayerId};
+use stark_model::document::{GuideScene, LayerId};
 use stark_model::geom::TileRect;
-use stark_shaders::mirror::matte::{REGION_EVERYTHING, REGION_OUTSIDE};
 use std::sync::Arc;
 
 /// What sits under the paint when rendering (§15.6).
@@ -210,8 +210,8 @@ impl Engine {
     /// so what is written is what was seen.
     ///
     /// `only` names a single layer to draw **alone**, its blend mode, clip and opacity
-    /// dropped — see [`composite_groups`](Self::composite_groups), which settles what
-    /// that means (§18.0.2). `None` is the document, which is every render but a layer
+    /// dropped — see [`DrawList::layer_alone`], which settles what that means
+    /// (§18.0.2). `None` is the document, which is every render but a layer
     /// thumbnail's (§14.6).
     ///
     /// Private, with [`Engine::export`] and [`Engine::render_into`] as the two
@@ -542,8 +542,8 @@ impl Engine {
     ///
     /// `only` names a layer to render **alone** — its own paint, with its blend mode,
     /// clip and opacity dropped, making the result an identity card for the layer
-    /// rather than a picture of its contribution
-    /// ([`composite_groups`](Self::composite_groups) settles what that means). The
+    /// rather than a picture of its contribution ([`DrawList::layer_alone`] settles
+    /// what that means). The
     /// layer panel's thumbnails are the consumer (§14.6); `None` renders the
     /// document. A layer that is hidden or fully transparent draws nothing at all, so
     /// a caller that would rather keep its last picture than show a blank one should
@@ -599,8 +599,8 @@ impl Engine {
         })
     }
 
-    /// [`composite_groups`](Self::composite_groups), **memoized**: the draw list for
-    /// `key`, built afresh or taken from [`Engine::draw_cache`] (C4).
+    /// [`DrawList`], **memoized**: the draw list for `key`, built afresh or taken from
+    /// [`Engine::draw_cache`] (C4).
     ///
     /// **Why the cache earns its place.** Building the list clones a
     /// `TilePairHandle` per visible tile, per layer, plus a `Vec` per layer, and the
@@ -616,384 +616,18 @@ impl Engine {
     /// holds the other. The list comes back as an `Arc` rather than a reference into
     /// the memo, so holding it does not hold a borrow of the engine.
     pub(super) fn draw_list(&self, key: DrawKey, doc: &DocState) -> Arc<[CompositeGroup]> {
+        let build = || {
+            let walk = DrawList::new(self.shared.color_space.as_ref(), key.visible);
+            match key.only {
+                Some(id) => walk.layer_alone(doc, id),
+                None => walk.document(doc),
+            }
+            .into()
+        };
         if key.only.is_some() {
-            return self.composite_groups(doc, key.only, key.visible).into();
+            return build();
         }
-        self.draw_cache.get_or_build(key, || {
-            self.composite_groups(doc, key.only, key.visible).into()
-        })
-    }
-
-    /// The compositor's draw list for `doc`, bottom-to-top: every visible layer's
-    /// tiles and mattes, each tagged with its layer opacity, cut into blend groups
-    /// (§18.0.4, §14.7).
-    ///
-    /// Consecutive layers that need no isolation share one `Run`, composing correctly
-    /// against each other under premultiplied "over" — so a document with no blend
-    /// modes, no clipping and no groups produces exactly one. Anything else becomes a
-    /// group of its own, its mode and its clip both being defined against *what is
-    /// underneath it*, which has to be composited in isolation first.
-    ///
-    /// A layer that **carries** others is a group, and composites as a `Stack`: its
-    /// own content at the bottom, then each carried layer merging into what is beneath
-    /// it *within the group* (§14.2), the whole then merging outward through the
-    /// base's blend mode, clip and opacity.
-    ///
-    /// Within a run this is an *ordered* item list rather than a flat tile list
-    /// because a matte has to composite at its own place in the stack — a frame over
-    /// the painting, a substrate under it (§15.4.4). The compositor re-batches
-    /// consecutive tiles into one instanced draw, so an all-paint document costs
-    /// nothing for it.
-    ///
-    /// `only` restricts the list to a single layer — the eyedropper's
-    /// sample-one-layer option (§18.0.2). It means that layer's *own* paint: what it
-    /// carries is left out, and its mode, clip and opacity go with it, since a sample
-    /// is of the paint that is there rather than of the part of it that survives its
-    /// surroundings. Sharing this with rendering is what makes a sample come off the
-    /// same stack the screen draws.
-    ///
-    /// `visible` is the view-AABB cull (§6.3): only tiles it names are built into the
-    /// draw list. `None` culls nothing — see [`ViewTransform::visible_tiles`].
-    pub(super) fn composite_groups(
-        &self,
-        doc: &DocState,
-        only: Option<LayerId>,
-        visible: Option<TileRect>,
-    ) -> Vec<CompositeGroup> {
-        if let Some(id) = only {
-            // Fully transparent is the one exception to dropping the opacity below: a
-            // layer turned all the way down contributes nothing to the document, so
-            // sampling it answers "nothing here" — the answer bare canvas gives —
-            // rather than reporting paint that is switched off. Hidden reads the same
-            // way, and for the reason it does everywhere else: a sample comes off the
-            // same stack the screen draws (§18.0.2).
-            let Some(layer) = doc.layer(id).filter(|l| l.is_shown()) else {
-                return Vec::new();
-            };
-            let items = self.layer_items(layer, visible);
-            return if items.is_empty() {
-                Vec::new()
-            } else {
-                // **All three composite params are dropped**, opacity included: a
-                // sample is of the paint that is there, not of the part of it that
-                // survives its surroundings, and opacity says how much of the layer
-                // the *document* shows. So "sample this layer" answers the same color
-                // at any setting.
-                //
-                // The color would survive either way — the pick divides by the
-                // coverage it sums, so opacity cancels (`mean_channels`). What this
-                // changes is where the pick answers **at all**: a faded layer's
-                // coverage scales towards `PICK_MIN_OPACITY`, where a thin glaze would
-                // report "nothing here".
-                vec![CompositeGroup::leaf(CompositeParams::IDENTITY, items)]
-            };
-        }
-        // The root stack has nothing under its first member, by definition — see
-        // `composite_stack`'s `under`.
-        self.composite_stack(doc.root().iter(), visible, false)
-    }
-
-    /// The draw list for an eyedropper source (§18.0.2): the whole document or one
-    /// layer through [`composite_groups`](Self::composite_groups), plus the two scoped
-    /// questions — a group's interior, and the document cut above a layer.
-    ///
-    /// Here rather than in `engine::pick` because every one of them is a restriction
-    /// of `composite_stack`'s walk, and keeping the restrictions beside the walk is
-    /// what keeps a sample coming off the same stack the screen draws.
-    pub(super) fn pick_groups(
-        &self,
-        doc: &DocState,
-        source: super::pick::PickSource,
-        visible: Option<TileRect>,
-    ) -> Vec<CompositeGroup> {
-        use super::pick::PickSource;
-        match source {
-            PickSource::Composite | PickSource::CompositeOverSubstrate => {
-                self.composite_groups(doc, None, visible)
-            }
-            PickSource::Layer(id) => self.composite_groups(doc, Some(id), visible),
-            PickSource::Group { layer, below } => self.group_interior(doc, layer, below, visible),
-            PickSource::Below(layer) => self.below_groups(doc, layer, visible),
-        }
-    }
-
-    /// The interior of the group that carries `layer`: the carrier's own content at
-    /// the bottom, then the members — all of them, or with `below` only those up to
-    /// and including `layer` (`PickSource::Group`).
-    ///
-    /// The carrier's outward params are dropped rather than applied — the same trade
-    /// `composite_groups` makes for one layer: they say how the group meets what is
-    /// beneath it, and beneath it is what this source excludes. The members keep
-    /// theirs, a sibling's mode against the base being part of what the group looks
-    /// like *inside*. A layer in the root stack reads the root as its group, which
-    /// makes this the whole document.
-    ///
-    /// A carrier that is hidden or turned all the way down answers nothing, on the
-    /// `Layer` source's rule. The layer itself is only the anchor: hidden or not, its
-    /// *group* is what is being asked about.
-    fn group_interior(
-        &self,
-        doc: &DocState,
-        layer: LayerId,
-        below: bool,
-        visible: Option<TileRect>,
-    ) -> Vec<CompositeGroup> {
-        let (base, members): (Option<&Layer>, &rpds::Vector<Layer>) = match doc.carrier_of(layer) {
-            Some(cid) => {
-                let Some(carrier) = doc.layer(cid).filter(|l| l.is_shown()) else {
-                    return Vec::new();
-                };
-                (Some(carrier), carrier.carries())
-            }
-            // `carrier_of` answers `None` for a root layer and for a layer that
-            // does not exist, and only the first has a group to sample.
-            None if doc.contains_layer(layer) => (None, doc.root()),
-            None => return Vec::new(),
-        };
-        // The anchor is in `members` by construction — `carrier_of` just said so.
-        let end = match members.iter().position(|l| l.id == layer) {
-            Some(at) if below => at + 1,
-            _ => members.len(),
-        };
-        let own = base.map_or_else(Vec::new, |b| self.layer_items(b, visible));
-        let mut groups = Vec::new();
-        if !own.is_empty() {
-            groups.push(CompositeGroup::leaf(CompositeParams::IDENTITY, own));
-        }
-        let under = !groups.is_empty();
-        groups.extend(self.composite_stack(members.iter().take(end), visible, under));
-        groups
-    }
-
-    /// The document with everything above `layer` switched off, bottom of the tree
-    /// up to and including the layer itself (`PickSource::Below`).
-    ///
-    /// The chain of carriers from the root down to the layer is the only part of
-    /// the tree that is *partially* included, so the walk follows exactly that
-    /// path: whole stacks beneath each ancestor, then the ancestor cut above the
-    /// next link ([`stack_below`](fn@Self::stack_below)).
-    fn below_groups(
-        &self,
-        doc: &DocState,
-        layer: LayerId,
-        visible: Option<TileRect>,
-    ) -> Vec<CompositeGroup> {
-        if !doc.contains_layer(layer) {
-            return Vec::new();
-        }
-        // Root-first: the last link is the layer itself.
-        let mut path = vec![layer];
-        let mut cur = layer;
-        while let Some(carrier) = doc.carrier_of(cur) {
-            path.push(carrier);
-            cur = carrier;
-        }
-        path.reverse();
-        self.stack_below(doc.root(), &path, visible, false)
-    }
-
-    /// One stack's worth of [`below_groups`](fn@Self::below_groups): everything
-    /// beneath `path[0]` whole, then `path[0]` itself — whole when it is the target,
-    /// cut above `path[1]` when it is an ancestor carrying the rest of the chain.
-    ///
-    /// The ancestor's own composite params are **kept**, unlike the one-layer and
-    /// group-interior sources: this source asks what the screen would show with the
-    /// upper layers hidden, and hiding a member does not lift the group's mode, clip
-    /// or opacity off what remains. A hidden ancestor takes the whole chain with it;
-    /// the layers beneath it still answer.
-    fn stack_below(
-        &self,
-        layers: &rpds::Vector<Layer>,
-        path: &[LayerId],
-        visible: Option<TileRect>,
-        under: bool,
-    ) -> Vec<CompositeGroup> {
-        let Some(&head) = path.first() else {
-            return Vec::new();
-        };
-        let Some(at) = layers.iter().position(|l| l.id == head) else {
-            return Vec::new();
-        };
-        if path.len() == 1 {
-            // The target itself: it and everything beneath it in this stack,
-            // whole — the ordinary walk, stopped early.
-            return self.composite_stack(layers.iter().take(at + 1), visible, under);
-        }
-        let mut groups = self.composite_stack(layers.iter().take(at), visible, under);
-        let ancestor = layers.get(at).expect("position() names an element");
-        if !ancestor.is_shown() {
-            return groups;
-        }
-        // `composite_stack`'s group branch, with the carried stack cut by the rest
-        // of the path. An ancestor is a carrier, and a filter never carries
-        // (§21.2), so the filter branch cannot arise here.
-        let own = self.layer_items(ancestor, visible);
-        let carried = self.stack_below(ancestor.carries(), &path[1..], visible, !own.is_empty());
-        let Some(group) = group_of(ancestor.composite, own, carried) else {
-            return groups;
-        };
-        // Through the same merge the draw list uses, so the two walks cannot come to
-        // disagree about the shape of what they build.
-        push_merging(&mut groups, group);
-        groups
-    }
-
-    /// One stack's worth of groups — the root's, or a layer's carried stack.
-    ///
-    /// `under` says whether something already composites beneath this stack's first
-    /// member: false for the document's own stack, and for a carried stack whether the
-    /// **base's own content** draws anything, since a group's members composite over
-    /// the base (§14.1).
-    ///
-    /// Only a **filter** asks (§21.2), which is why it is a `bool` rather than the
-    /// base's items: everything else in this walk is defined against what it is drawn
-    /// *into*, and a filter is the one thing defined against what has already been
-    /// drawn.
-    fn composite_stack<'a>(
-        &self,
-        layers: impl Iterator<Item = &'a Layer>,
-        visible: Option<TileRect>,
-        under: bool,
-    ) -> Vec<CompositeGroup> {
-        let mut groups: Vec<CompositeGroup> = Vec::new();
-        for layer in layers {
-            // Hiding a layer hides what it carries: the group is the layer
-            // (§14.3), so its visibility is the group's.
-            if !layer.is_shown() {
-                continue;
-            }
-            // A **filter layer** rewrites what is already composited beneath it *in
-            // its own stack* (§21.2) — the same set a clip reads, which is what makes
-            // "filter just this layer" the single gesture of carrying it onto that
-            // layer rather than a scoping mode of its own.
-            //
-            // Two ways it reaches nothing, and both drop it from the draw list rather
-            // than encoding a pass that provably cannot change a texel: **nothing is
-            // beneath it here** (the foot of a stack, or a stack whose lower members
-            // were all culled), or the filter is at its **neutral** setting, which is
-            // what a freshly added one holds (§21.3). The first is also where a
-            // **clip** would have nothing to say (§14.4.3), so the one place the two
-            // properties could disagree is a pass that is not encoded at all.
-            if let Some(f) = layer.filter() {
-                debug_assert!(
-                    layer.carries().is_empty(),
-                    "a filter never carries (§21.2) — the state refuses the arrangement",
-                );
-                if (under || !groups.is_empty()) && !f.is_neutral() {
-                    groups.push(CompositeGroup::filter(FilterDraw::new(f, layer.composite)));
-                }
-                continue;
-            }
-            let own = self.layer_items(layer, visible);
-            let carried = self.composite_stack(layer.carries().iter(), visible, !own.is_empty());
-            // An empty layer is dropped rather than given a group: for a blend mode or
-            // a clip that saves two render passes which provably compute the identity,
-            // which is what keeps a stack of empty glow layers free. A layer that
-            // carries something visible is not empty, whatever its own content.
-            let Some(group) = group_of(layer.composite, own, carried) else {
-                continue;
-            };
-            push_merging(&mut groups, group);
-        }
-        groups
-    }
-
-    /// What one layer's own content draws, without what it carries.
-    ///
-    /// Every item comes out at **opacity 1**, and that is not a stub: the layer's
-    /// opacity is a [`CompositeParams`] field, folded in — or not — by
-    /// [`CompositeGroup::leaf`], the one place that decision is made (§14.7). Tagging
-    /// items with it here as well is how a group's base gets faded twice.
-    ///
-    /// Paint is culled to `visible` (§6.3); a matte is not. A matte's rect can be the
-    /// *hole* in a frame, whose fill covers everything outside it (§15.4.4), so there
-    /// is no box to test it against — and there is at most one per layer.
-    fn layer_items(&self, layer: &Layer, visible: Option<TileRect>) -> Vec<CompositeItem> {
-        match &layer.content {
-            LayerContent::Paint(tiles) => {
-                // The layer's frame (§14.12): its tiles are keyed in it, the view
-                // rect is on the canvas, and this is the one place the two meet —
-                // the cull asks in the frame, the item answers on the canvas.
-                let d = layer.translation;
-                let offset = stark_model::geom::Vec2::new(d.x as f32, d.y as f32);
-                culled(tiles.map(), visible_in_frame(visible, d))
-                    .map(|(coord, handle)| CompositeItem::Tile {
-                        origin: coord.origin() + offset,
-                        handle: handle.clone(),
-                        opacity: 1.0,
-                    })
-                    .collect()
-            }
-            LayerContent::Matte { region, paint } => {
-                // The layer's frame again (§14.12): the rect and the gradient
-                // axis are stated in it, and this is where both land on the
-                // canvas.
-                let d = layer.translation;
-                let offset = stark_model::geom::Vec2::new(d.x as f32, d.y as f32);
-                let rect = match region.translated(offset).rect() {
-                    Some((min, max)) => [min.x, min.y, max.x, max.y],
-                    // The whole plane: the shader never reads the rect (`flags`
-                    // routes past it), so zeros rather than sentinels.
-                    None => [0.0; 4],
-                };
-                let flags = match region {
-                    stark_model::document::MatteRegion::OutsideRect { .. } => REGION_OUTSIDE,
-                    stark_model::document::MatteRegion::Everything => REGION_EVERYTHING,
-                };
-                // sRGB in the log, working-space channels on the GPU — the same
-                // conversion the brush color gets, so a matte means the same color in
-                // an Oklab and a Mixbox document. A gradient converts every stop the
-                // same way, and the shader interpolates in the working space (§22.4).
-                let (channels, resid, ramp) = match paint {
-                    stark_model::document::Parcel::Solid(color) => {
-                        let l = self.shared.color_space.rgb_to_latent(*color);
-                        (
-                            [l.lat[0], l.lat[1], l.lat[2], 1.0],
-                            [l.res[0], l.res[1], l.res[2], 0.0],
-                            None,
-                        )
-                    }
-                    stark_model::document::Parcel::Gradient(GradientParcel { gradient, axis }) => {
-                        let mut ramp = stark_shaders::mirror::matte::Ramp::default();
-                        let stops = gradient.stops();
-                        ramp.p[0] = stops.len() as f32;
-                        ramp.axis = match axis.translated(offset) {
-                            stark_model::document::GradientAxis::Linear { from, to } => {
-                                [from.x, from.y, to.x, to.y]
-                            }
-                            stark_model::document::GradientAxis::Radial { center, radius } => {
-                                ramp.p[1] = 1.0;
-                                [center.x, center.y, radius, 0.0]
-                            }
-                        };
-                        // Bounded by `Gradient`'s own invariant rather than by a check
-                        // here: a ramp holds at most `gradient::MAX_STOPS`, the length
-                        // `matte.wesl` declares `stop_c` at. Truncating instead would
-                        // hide a broken invariant behind a wrong picture.
-                        for (i, stop) in stops.iter().enumerate() {
-                            let l = self.shared.color_space.rgb_to_latent(stop.color);
-                            ramp.stop_c[i] = [l.lat[0], l.lat[1], l.lat[2], stop.t];
-                            ramp.stop_r[i] = [l.res[0], l.res[1], l.res[2], 0.0];
-                        }
-                        ([0.0; 4], [0.0; 4], Some(Box::new(ramp)))
-                    }
-                };
-                vec![CompositeItem::Matte(MatteDraw {
-                    rect,
-                    flags,
-                    channels,
-                    resid,
-                    opacity: 1.0,
-                    ramp,
-                })]
-            }
-            // A filter draws no items at all: it is a pass over what the *stack* has
-            // built, not content of its own, so `composite_stack` gives it a group
-            // rather than asking here. The eyedropper's sample-one-layer option reads
-            // that same nothing (§18.0.2), rather than the picture the filter happens
-            // to be sitting over.
-            LayerContent::Filter(_) => Vec::new(),
-        }
+        self.draw_cache.get_or_build(key, build)
     }
 
     /// A flat 2-D texture to render into off-screen: an export's target, or the HDR
@@ -1111,73 +745,6 @@ impl Engine {
     }
 }
 
-/// The view's tile rect, restated in a layer frame placed at `translation` on the
-/// canvas (§14.12): what is visible of a translated layer's **local** tiles.
-/// Rounded outward — a frame off the tile grid lands the rect astride tiles, and
-/// a cull may only ever keep too much. Saturating, so a frame at the integer
-/// horizon degrades to a wider rect rather than wrapping to the far side.
-fn visible_in_frame(
-    visible: Option<TileRect>,
-    translation: stark_model::geom::IVec2,
-) -> Option<TileRect> {
-    if translation == stark_model::geom::IVec2::ZERO {
-        return visible;
-    }
-    let rect = visible?;
-    let t = stark_model::geom::TILE_SIZE as i64;
-    // The rect moves by −frame: floor for the low edge, ceil for the high one.
-    // In `i64`, like `sources_in`'s spans: the frame is clamped at the funnel
-    // (`FRAME_LIMIT`), but a cull may not rest a wrap away from a value one
-    // unclamped writer could someday hand it.
-    let lo = |d: i32| (-(d as i64)).div_euclid(t);
-    let hi = |d: i32| (-(d as i64) + t - 1).div_euclid(t);
-    let edge = |base: i32, shift: i64| {
-        (base as i64 + shift).clamp(i32::MIN as i64, i32::MAX as i64) as i32
-    };
-    Some(TileRect {
-        min: (
-            edge(rect.min.0, lo(translation.x)),
-            edge(rect.min.1, lo(translation.y)),
-        ),
-        max: (
-            edge(rect.max.0, hi(translation.x)),
-            edge(rect.max.1, hi(translation.y)),
-        ),
-    })
-}
-
-/// The entries of `map` that `visible` admits, **walking whichever side is smaller**.
-///
-/// The cull is the same set either way — `TileRect::contains` and a probe of
-/// `TileRect::coords` agree by construction — so the only question is which walk to
-/// pay for, and the two differ by orders of magnitude in opposite directions. Scanning
-/// the layer and filtering is right when the viewport admits more tiles than the layer
-/// holds: every zoomed-out frame, which is the case the cull was written for (§6.3),
-/// where the visible count scales as 1/zoom². Probing costs one hash lookup per
-/// *visible* tile instead, which is what keeps a 1:1 view of a large painting off the
-/// whole trie.
-///
-/// `None` claims everything: the box could not be measured (a non-finite view, or one
-/// so far out that whole tiles leave the `i32` grid), and an optimization that cannot
-/// see its input must do nothing rather than guess — see [`ViewTransform::visible_tiles`].
-fn culled<V>(
-    map: &rpds::HashTrieMap<stark_model::geom::TileCoord, V>,
-    visible: Option<TileRect>,
-) -> Box<dyn Iterator<Item = (stark_model::geom::TileCoord, &V)> + '_> {
-    match visible {
-        Some(rect) if rect.count() < map.size() as u64 => Box::new(
-            rect.coords()
-                .filter_map(move |c| map.get(&c).map(|v| (c, v))),
-        ),
-        Some(rect) => Box::new(
-            map.iter()
-                .filter(move |(coord, _)| rect.contains(**coord))
-                .map(|(coord, v)| (*coord, v)),
-        ),
-        None => Box::new(map.iter().map(|(coord, v)| (*coord, v))),
-    }
-}
-
 /// What a built draw list is a function of — the whole of it, which is what makes
 /// caching one sound (§6.3, C4). See [`Memo`](super::Memo) for the rule this is one
 /// of three keys under.
@@ -1213,215 +780,4 @@ pub(super) struct DrawKey {
     content: Rendered,
     only: Option<LayerId>,
     visible: Option<TileRect>,
-}
-
-/// **Where a layer's composite params go** (§14.4.3, §14.7) — the one statement of
-/// the rule, and `None` for a layer that draws nothing at all.
-///
-/// - A **leaf** is the whole of what it draws, so its params are its run's.
-/// - A **group's base** is a *member* of the group, not the group. Its own content
-///   composites with `IDENTITY` and the layer's params are applied once, to the
-///   composited whole. Every one of the three would be wrong applied twice: a blend
-///   mode would combine the base with itself, a clip would clip the base to its own
-///   coverage, and an opacity would fade it to `a²`.
-///
-/// The empty case answers `None` rather than an empty group because **the cull can
-/// empty a layer that has paint**, so it fires for a document scrolled away from as
-/// well as one not yet painted on. That is sound on the identity above rather than on
-/// the two cases coinciding: `blend_common.wesl::merge` with a transparent source is
-/// `cb` exactly — `cs.a` is 0, so both source terms vanish and the aux sum adds
-/// nothing — for every mode and both clip states.
-///
-/// A function because two walks ask it: `composite_stack` builds the draw list, and
-/// `stack_below` builds the restriction of it a `PickSource::Below` sample comes off.
-fn group_of(
-    params: CompositeParams,
-    own: Vec<CompositeItem>,
-    carried: Vec<CompositeGroup>,
-) -> Option<CompositeGroup> {
-    if own.is_empty() && carried.is_empty() {
-        return None;
-    }
-    Some(if carried.is_empty() {
-        CompositeGroup::leaf(params, own)
-    } else {
-        let mut members = Vec::with_capacity(carried.len() + 1);
-        if !own.is_empty() {
-            members.push(CompositeGroup::leaf(CompositeParams::IDENTITY, own));
-        }
-        members.extend(carried);
-        CompositeGroup::stack(params, members)
-    })
-}
-
-/// Push `group`, merging it into the run below when neither side needs isolating —
-/// the fast path, and the reason an ordinary document is one group.
-///
-/// `as_direct_run_mut` is the test and the run in one, which is what makes this
-/// total: a group that answered "direct" while holding something other than a `Run`
-/// would otherwise be counted as merged and then silently dropped.
-fn push_merging(groups: &mut Vec<CompositeGroup>, mut group: CompositeGroup) {
-    let merged = match (
-        groups
-            .last_mut()
-            .and_then(CompositeGroup::as_direct_run_mut),
-        group.as_direct_run_mut(),
-    ) {
-        (Some(items), Some(more)) => {
-            items.append(more);
-            true
-        }
-        _ => false,
-    };
-    if !merged {
-        groups.push(group);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use stark_model::geom::TileCoord;
-
-    /// **The two walks are the same cull.** [`culled`] picks between scanning the
-    /// layer and probing the viewport purely on which is cheaper, so the answer must
-    /// not depend on that choice — a disagreement would drop paint from the picture at
-    /// exactly one zoom level. Driven over map/rect pairs that put the branch on both
-    /// sides of its own threshold, including the equality case where it flips.
-    #[test]
-    fn both_culling_walks_pick_the_same_tiles() {
-        let map: rpds::HashTrieMap<TileCoord, i32> = (0..40)
-            .map(|i| (TileCoord::new(i % 7, i / 7), i))
-            .collect::<Vec<_>>()
-            .into_iter()
-            .fold(rpds::HashTrieMap::new(), |m, (c, v)| m.insert(c, v));
-
-        let sorted = |mut v: Vec<(TileCoord, i32)>| {
-            v.sort_by_key(|(c, _)| (c.y, c.x));
-            v
-        };
-        // Both routes, asked directly, so the test does not depend on which one
-        // `culled` would have chosen for a given rect.
-        let by_scan = |rect: TileRect| {
-            sorted(
-                map.iter()
-                    .filter(|(c, _)| rect.contains(**c))
-                    .map(|(c, v)| (*c, *v))
-                    .collect(),
-            )
-        };
-        let by_probe = |rect: TileRect| {
-            sorted(
-                rect.coords()
-                    .filter_map(|c| map.get(&c).map(|v| (c, *v)))
-                    .collect(),
-            )
-        };
-
-        for rect in [
-            TileRect::ALL,
-            TileRect::EMPTY,
-            // Wholly inside the painted region, wholly outside, and straddling it —
-            // the three ways a viewport can sit over a painting.
-            TileRect {
-                min: (1, 1),
-                max: (3, 3),
-            },
-            TileRect {
-                min: (50, 50),
-                max: (60, 60),
-            },
-            TileRect {
-                min: (-4, 2),
-                max: (2, 9),
-            },
-            // A single tile, which is the probe branch at its most lopsided.
-            TileRect {
-                min: (3, 2),
-                max: (3, 2),
-            },
-        ] {
-            // The scan is the reference: it is defined for every rect, including
-            // [`TileRect::ALL`].
-            let want = by_scan(rect);
-            let got = sorted(culled(&map, Some(rect)).map(|(c, v)| (c, *v)).collect());
-            assert_eq!(got, want, "culled disagreed on {rect:?}");
-            // The probe is only asked where probing is *finite*, which is the size
-            // guard inside `culled` stated from the outside: `TileRect::ALL` counts
-            // 1.8e19 tiles, so walking its coords is not a slow test but a hung one.
-            if rect.count() <= 10_000 {
-                assert_eq!(want, by_probe(rect), "the walks disagree on {rect:?}");
-            }
-        }
-        // An unmeasurable box claims everything, which is the safe direction.
-        assert_eq!(culled(&map, None).count(), map.size());
-    }
-
-    /// **"An ordinary document is one `Run`"**, which `composite_groups` claims.
-    ///
-    /// It is the whole argument for cutting the draw list into groups at all: a
-    /// document that uses no blend modes, no clipping and no groups must reach the
-    /// compositor as one run, or the feature is a tax on everyone who does not use
-    /// it — a *performance* claim measured like a correctness one (C8).
-    ///
-    /// Asked of the grouping rule directly rather than through an `Engine`, so it
-    /// needs no GPU: what decides a run boundary is [`group_of`] plus [`push_merging`],
-    /// and both are functions of `CompositeParams`. Through those two rather than a
-    /// copy of them, which would pin a transcription of the rule instead.
-    #[test]
-    fn plain_layers_merge_into_one_run() {
-        use crate::document::CompositeParams;
-        use stark_model::document::BlendMode;
-
-        // A stand-in item; what is being tested is how many groups the merge
-        // leaves, not what is in them.
-        let items = || {
-            vec![CompositeItem::Matte(MatteDraw {
-                rect: [0.0; 4],
-                flags: REGION_EVERYTHING,
-                channels: [0.0; 4],
-                resid: [0.0; 4],
-                opacity: 1.0,
-                ramp: None,
-            })]
-        };
-        let plain = CompositeParams::IDENTITY;
-
-        // Six ordinary layers, through the very walk `composite_stack` runs.
-        let mut groups: Vec<CompositeGroup> = Vec::new();
-        for _ in 0..6 {
-            let g = group_of(plain, items(), Vec::new()).expect("a layer with an item draws");
-            push_merging(&mut groups, g);
-        }
-        assert_eq!(
-            groups.len(),
-            1,
-            "plain layers did not collapse into one run"
-        );
-
-        // And a layer that *does* need isolating breaks the run — otherwise the
-        // test above would pass on a rule that merged everything unconditionally,
-        // which would composite blend modes against the wrong backdrop.
-        let isolating = CompositeParams {
-            blend: BlendMode::Multiply,
-            ..plain
-        };
-        push_merging(
-            &mut groups,
-            group_of(isolating, items(), Vec::new()).expect("a layer with an item draws"),
-        );
-        assert_eq!(
-            groups.len(),
-            2,
-            "a blended layer merged into the run below instead of breaking it",
-        );
-    }
-
-    /// A layer that draws nothing produces no group at all — the empty-skip both
-    /// walks make, which is what lets a culled-away document cost nothing.
-    #[test]
-    fn a_layer_with_nothing_to_draw_makes_no_group() {
-        use crate::document::CompositeParams;
-        assert!(group_of(CompositeParams::IDENTITY, Vec::new(), Vec::new()).is_none());
-    }
 }
