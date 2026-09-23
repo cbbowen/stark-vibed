@@ -3,7 +3,7 @@
 //! rebuilt when its key moves ([`Memo`]), and the [`Revision`] a key's terms are.
 //!
 //! Nothing here names an engine type. The keys themselves live beside what they key
-//! (`engine::observe`, `engine::render`).
+//! (`engine::observe`, `engine::presenter`).
 
 use std::sync::Arc;
 
@@ -98,8 +98,8 @@ impl<T: PartialEq> PartialEq for Projected<T> {
 /// `RefCell` because [`Engine::observe`](crate::Engine::observe) takes `&self`: a
 /// projection is a *read*, and making it `&mut` to let it memoize would put a mutable
 /// borrow of the whole engine on the path every panel takes to draw itself. The draw
-/// list is held the same way for a second reason — see
-/// [`Engine::draw_list`](crate::Engine::draw_list).
+/// list is held the same way for a second reason — a frame reads it while the
+/// compositor beside it is borrowed mutably (`engine::presenter`).
 pub(crate) struct Memo<K, V> {
     slot: std::cell::RefCell<Option<(K, V)>>,
 }
@@ -163,7 +163,7 @@ impl Revision {
         self.0 = self.0.wrapping_add(1);
     }
 
-    /// The count as a bare number, for a key that keeps one (`render::DrawKey`).
+    /// The count as a bare number, for a key that keeps one (`presenter::DrawKey`).
     pub(crate) fn get(self) -> u64 {
         self.0
     }

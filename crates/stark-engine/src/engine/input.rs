@@ -6,6 +6,7 @@
 //! nothing about either.
 
 use super::Engine;
+use super::capture::Capture;
 use super::live::Held;
 use crate::command::{DocCommand, Edit, GestureCommand, PeerCommand, ViewCommand};
 use crate::document::Step;
@@ -37,17 +38,6 @@ fn normalize_name<T: From<String>>(name: Option<impl AsRef<str>>) -> Option<T> {
     let trimmed = name?;
     let capped: String = trimmed.as_ref().trim().chars().take(MAX_NAME).collect();
     (!capped.is_empty()).then(|| T::from(capped))
-}
-
-/// Whether a captured pointer report opens a stroke or continues one — see
-/// [`Engine::note_debug_sample`]. A named pair rather than a `bool`, because a
-/// bare `true` at the call site says nothing about which way round it is.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Capture {
-    /// The press: forget the last stroke's samples first.
-    Restart,
-    /// A move within the stroke in hand.
-    Continue,
 }
 
 impl Engine {
@@ -209,7 +199,7 @@ impl Engine {
                         let seed = self.authoring.clock;
                         self.session
                             .start_stroke(sample, seed, tolerance, rope, frame);
-                        self.note_debug_sample(Capture::Restart, sample);
+                        self.debug.note(Capture::Restart, sample);
                     }
                 }
                 self.mark_live_stale();
@@ -225,7 +215,7 @@ impl Engine {
                 // session's to know (`Session::gesture_to`), not this arm's to ask.
                 self.session.gesture_to(sample);
                 if self.session.is_stroking() {
-                    self.note_debug_sample(Capture::Continue, sample);
+                    self.debug.note(Capture::Continue, sample);
                 }
                 self.mark_live_stale();
             }
@@ -256,7 +246,7 @@ impl Engine {
                 // the gesture started (§18.0.4).
                 match self.session.end_gesture() {
                     Some(LiveGesture::Stroke(rec)) => {
-                        self.log_debug_samples();
+                        self.debug.dump();
                         self.commit_stroke(rec);
                     }
                     Some(LiveGesture::Selection(op)) => self.commit(ActionKind::Select(op)),
@@ -595,11 +585,11 @@ impl Engine {
                     }
                 }
             },
-            ViewCommand::SetMediaParams(params) => self.compositor_pipeline.set_media(params),
-            ViewCommand::SetOutput(output) => self.compositor_pipeline.set_output(output),
+            ViewCommand::SetMediaParams(params) => self.presenter.set_media(params),
+            ViewCommand::SetOutput(output) => self.presenter.set_output(output),
             ViewCommand::SetEnvironment(id) => self.set_environment(id),
-            ViewCommand::SetHistoryBudget(bytes) => self.history_budget = bytes,
-            ViewCommand::SetFastCommit(on) => self.fast_commit = on,
+            ViewCommand::SetHistoryBudget(bytes) => self.client.history_budget = bytes,
+            ViewCommand::SetFastCommit(on) => self.client.fast_commit = on,
         }
     }
 
@@ -660,23 +650,4 @@ impl Engine {
         self.mark_live_stale();
         committed
     }
-
-    /// Keep a raw pointer report of the stroke in hand, so a misfit seen in the app
-    /// can be dumped on release and replayed as a test
-    /// ([`log_debug_samples`](Self::log_debug_samples)).
-    ///
-    /// A diagnostic, so a shipping build carries neither the samples nor the field
-    /// that would hold them: `#[cfg]`, not a runtime `cfg!` around a `Vec` that exists
-    /// either way. Behind a *call* rather than an `#[cfg]` block at each site, so the
-    /// two sites cannot come to disagree about the gate.
-    #[cfg(feature = "debug-unfrozen")]
-    fn note_debug_sample(&mut self, capture: Capture, sample: crate::command::InputSample) {
-        if capture == Capture::Restart {
-            self.debug_samples.clear();
-        }
-        self.debug_samples.push(sample);
-    }
-
-    #[cfg(not(feature = "debug-unfrozen"))]
-    fn note_debug_sample(&mut self, _capture: Capture, _sample: crate::command::InputSample) {}
 }

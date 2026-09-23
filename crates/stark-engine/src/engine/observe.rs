@@ -30,8 +30,8 @@ pub type Guides = Projected<GuideInfo>;
 /// - `preview` is `Preview::epoch`, which advances whenever the stand-in document is
 ///   installed, replaced or dropped.
 ///
-/// The same two terms [`render::DrawKey`](super::render::DrawKey) keys the
-/// compositor's draw list on.
+/// The same two terms [`DrawKey`](super::presenter::DrawKey) keys the compositor's
+/// draw list on.
 ///
 /// **The live fold is absent because `shown` is not the fold.** A stroke in flight
 /// bumps `Preview::fold` and neither term here, so its samples reproject nothing.
@@ -367,8 +367,8 @@ impl Engine {
             selection_feather: self.session.selection_feather(),
             shape_opacity: self.session.shape_opacity(),
             show_peer_selections: self.show_peer_selections,
-            history_budget: self.history_budget,
-            fast_commit: self.fast_commit,
+            history_budget: self.client.history_budget,
+            fast_commit: self.client.fast_commit,
             guides: self.projected_guides(|| {
                 // Off `shown`, like the layer list and the substrate color: a
                 // guide's drag previews through `Edit::Guide`, and a panel
@@ -385,8 +385,8 @@ impl Engine {
                     })
                     .collect()
             }),
-            media: self.compositor_pipeline.media(),
-            output: self.compositor_pipeline.output(),
+            media: self.presenter.media(),
+            output: self.presenter.output(),
             environment: self.shared.environment.id(),
             color_space: self.shared.color_space.id(),
             substrate: doc.substrate().id,

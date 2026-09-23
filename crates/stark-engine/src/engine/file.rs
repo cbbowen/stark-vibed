@@ -515,7 +515,7 @@ impl Engine {
     /// compositor's attachments**: what a swap costs is one bind group, which is what
     /// the binding stamp beside the generation buys (`CompositorPipeline`).
     fn apply_substrate(&mut self) {
-        self.compositor_pipeline
+        self.presenter
             .set_substrate(self.shared.apply.substrates.current());
         self.preview.invalidate();
     }
@@ -573,7 +573,7 @@ impl Engine {
 
     /// Rebind the current environment in the media pass.
     fn apply_environment(&mut self) {
-        self.compositor_pipeline
+        self.presenter
             .set_environment(self.shared.environment.current());
     }
 
@@ -597,7 +597,7 @@ impl Engine {
         self.preview.clear();
         self.peers.clear();
         // Built over the closed document's tiles; the next frame builds its own.
-        self.draw_cache = Default::default();
+        self.presenter.forget_draws();
         // The baseline later edits are measured against, taken after the change above
         // moves the counter it copies. A load re-states it once its replay is done; a
         // join does not, because actions reaching a joiner over the wire *are* edits
@@ -634,7 +634,7 @@ impl Engine {
         self.shared.apply.pictures =
             pictures.keeping(|id| named.binary_search(&AssetNeed::Picture(id)).is_ok());
         self.shared.apply.pool.release_idle();
-        self.compositor = crate::gpu::composite::Compositor::new(&self.compositor_pipeline);
+        self.presenter.release_attachments();
     }
 
     /// Commit one already-built action onto the timeline (replays its GPU work).

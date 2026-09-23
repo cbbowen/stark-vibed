@@ -89,6 +89,32 @@ pub const DEFAULT_HISTORY_BUDGET: u64 = 2 << 30;
 /// everything but [`Engine::strokes_reused`].
 pub const DEFAULT_FAST_COMMIT: bool = true;
 
+/// What this client is willing to spend, as a frontend has set it — **never logged and
+/// never sent**, because both answer a question about the machine rather than about the
+/// drawing. A peer receives the same actions whatever they are.
+///
+/// One value because the two move together: they are set by two arms of
+/// [`ViewCommand`](crate::command::ViewCommand), projected by
+/// [`ObservableState`](super::ObservableState) side by side, and read by nothing else.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub(super) struct ClientSettings {
+    /// How much resident tile memory history retention may hold before undo depth is
+    /// given up (§5) — see [`DEFAULT_HISTORY_BUDGET`].
+    pub(super) history_budget: u64,
+    /// Whether a stroke's commit takes the tiles its live preview already drew (§6.2)
+    /// — see [`DEFAULT_FAST_COMMIT`].
+    pub(super) fast_commit: bool,
+}
+
+impl Default for ClientSettings {
+    fn default() -> Self {
+        Self {
+            history_budget: DEFAULT_HISTORY_BUDGET,
+            fast_commit: DEFAULT_FAST_COMMIT,
+        }
+    }
+}
+
 /// Undo steps the engine will not trim below, however tight memory is.
 ///
 /// **The guard against trimming for nothing.** Resident tiles are held by the
@@ -270,7 +296,7 @@ impl Engine {
     /// the last fold and the release, or the base did — and is dropped here rather than
     /// left for a later fold to find.
     ///
-    /// **This is the whole of what [`fast_commit`](Self::fast_commit) switches**: with
+    /// **This is the whole of what [`ClientSettings::fast_commit`] switches**: with
     /// nothing offered, the fold renders the stroke exactly as a replay does, which is
     /// what makes the switched-off path bit-for-bit rather than merely close
     /// (`DEFAULT_FAST_COMMIT`).
@@ -283,7 +309,7 @@ impl Engine {
         let offered = self
             .shared
             .apply
-            .offer(prepared.filter(|_| self.fast_commit));
+            .offer(prepared.filter(|_| self.client.fast_commit));
         // The unconditional door, and the one place a decline would cost paint rather
         // than an undo step: a `CommitStroke` that never reached the log is a stroke
         // the artist drew and the document does not have.
@@ -312,7 +338,7 @@ impl Engine {
     /// does: its document is re-materialized from the whole log (§12.2), so nothing
     /// there is foldable. Nothing about this call site has to know that.
     fn trim_history(&mut self) {
-        if self.shared.apply.pool.resident_bytes() <= self.history_budget {
+        if self.shared.apply.pool.resident_bytes() <= self.client.history_budget {
             return;
         }
         // How far back undo can currently travel. `None` is a timeline whose history is

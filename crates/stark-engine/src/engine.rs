@@ -17,19 +17,22 @@
 //! - `observe` — the projection that comes back out ([`Engine::observe`]);
 //! - `draw_list` — what a document draws, as a function of the document (§6.3,
 //!   §14.7);
-//! - `render` — the screen frame and export, and the memo the draw list is held in
-//!   (§6.3, §15.6);
+//! - `presenter` — the compositing state a frame is built through, and the memo the
+//!   draw list is held in (§6.3);
+//! - `render` — gathering a frame and handing it over, and export (§6.3, §15.6);
 //! - `live` — the preview fold and its per-stroke cache (§17.6, §6.2);
 //! - `pick` — the eyedropper (§18.0.2);
 //! - `collab` — the action and presence channels of a shared session (§12, §17);
 //! - `file` — saving, opening, replay, and the resources a replay is run against
 //!   (§8, §6.4, §6.6);
+//! - `capture` — the raw pointer reports a `debug-unfrozen` build keeps (§6.2);
 //! - `probe` — the suite's [`Probe`](crate::testing::Probe) reads (§9).
 //!
 //! The data structures the read side is built from — [`Projected`], `Memo` and the
 //! `Revision` that keys one — live at the crate root (`projection`).
 
 mod build;
+mod capture;
 mod collab;
 mod commit;
 mod draw_list;
@@ -38,6 +41,7 @@ mod input;
 mod live;
 mod observe;
 mod pick;
+mod presenter;
 mod probe;
 mod render;
 
@@ -55,7 +59,6 @@ use crate::colorspace::ColorSpace;
 use crate::command::InputCommand;
 use crate::document::{ApplyCtx, DocState};
 use crate::gpu::composite::ViewSettings;
-use crate::gpu::composite::{Compositor, CompositorPipeline};
 use crate::gpu::context::GpuContext;
 use crate::gpu::environment::EnvironmentId;
 use crate::gpu::registry::Registry;
@@ -65,7 +68,10 @@ use crate::peer::Peers;
 use crate::presence::PresenceTx;
 use crate::projection::{Memo, Revision};
 use crate::view::ViewTransform;
+use capture::DebugCapture;
+use commit::ClientSettings;
 use observe::{GuideKey, ShownKey};
+use presenter::Presenter;
 use stark_model::document::{Action, ActorId, LayerId, Scaffold};
 use stark_model::{AssetId, ColorSpaceId};
 
@@ -109,9 +115,9 @@ pub struct EngineShared {
     /// survive one (`GpuKeep`).
     scratch: ScratchPool,
     /// The compiled compositing passes — the ~19 shaders and ~30 pipelines that make
-    /// building an engine expensive. A sibling's [`CompositorPipeline`] is built over
-    /// these ([`CompositorPipeline::sharing`]), so it pays for its own view
-    /// settings and nothing else.
+    /// building an engine expensive. A sibling's [`Presenter`] is built over these
+    /// (`CompositorPipeline::sharing`), so it pays for its own view settings and
+    /// nothing else.
     passes: Arc<crate::gpu::composite::CompositorPasses>,
     /// The HDR lighting environment and its registered bytes (§6.3). A view setting,
     /// so it is the *store* that is shared and the current id that is seeded.
@@ -127,16 +133,9 @@ pub struct Engine {
     /// added to it is shared on every path rather than on the paths somebody
     /// remembered — see [`EngineShared`].
     shared: EngineShared,
-    /// Compositing state for the **substrate**: the attachments a screen frame is
-    /// built through, kept from frame to frame (`gpu::composite`). Anything drawn
-    /// beside the screen — an export, the navigator's miniature — gets a
-    /// [`Compositor`] of its own for the call, so it never resizes these.
-    compositor: Compositor,
-    /// The pipelines, layouts and view settings every `Compositor` shares. Beside the
-    /// one above rather than inside it because a second `Compositor` borrows it: the
-    /// view settings the media pass reads have one owner, so two consumers cannot
-    /// disagree about the canvas substrate or the lighting.
-    compositor_pipeline: CompositorPipeline,
+    /// How a frame is composited (§6.3) — see [`Presenter`], which also says why the
+    /// three it holds are apart from the rest of this struct.
+    presenter: Presenter,
     /// The substrate the action log starts from, and the size it is laid at — the
     /// initial condition [`origin`](Self::origin) builds the replay base on, as
     /// `CanvasMeta::color_space` is the other. Not itself a logged change.
@@ -181,24 +180,9 @@ pub struct Engine {
     /// says when a head has gone stale (§17.6). One field rather than four, since the
     /// slot cannot move without the epoch moving with it.
     preview: live::Preview,
-    /// How much resident tile memory history retention may hold before undo depth
-    /// is given up (§5) —
-    /// [`ViewCommand::SetHistoryBudget`](crate::command::ViewCommand::SetHistoryBudget),
-    /// defaulting to
-    /// [`DEFAULT_HISTORY_BUDGET`]. Per-client and never logged: how much history a
-    /// machine can afford is a fact about the machine.
-    history_budget: u64,
-    /// Whether a stroke's commit takes the tiles its live preview already drew
-    /// (§6.2) — [`ViewCommand::SetFastCommit`](crate::command::ViewCommand::SetFastCommit),
-    /// defaulting to
-    /// [`DEFAULT_FAST_COMMIT`]. Per-client and never logged: it changes what this
-    /// client spends at pointer-up, not the document — a peer receives the stroke as
-    /// an action either way.
-    fast_commit: bool,
-    /// The compositor's draw list and the key it was built from — the largest of the
-    /// three memos, and the only one whose value is not a projection
-    /// ([`Engine::draw_list`]).
-    draw_cache: Memo<render::DrawKey, std::sync::Arc<[crate::gpu::composite::CompositeGroup]>>,
+    /// What this client is willing to spend, as a frontend has set it — see
+    /// [`ClientSettings`].
+    client: ClientSettings,
     /// The layer roster and the key it was built from ([`Engine::projected_layers`]).
     layer_cache: Memo<ShownKey, Layers>,
     /// The guide roster this client sees, on the roster above's terms plus one
@@ -228,10 +212,9 @@ pub struct Engine {
     /// diagnostics: the two paths are the same pixels by design, so only a count can
     /// say which one ran.
     strokes_reused: u64,
-    /// Raw pointer reports of the in-flight stroke, dumped on release under the
-    /// `debug-unfrozen` feature so a misfit stroke can be replayed as a test.
-    #[cfg(feature = "debug-unfrozen")]
-    debug_samples: Vec<crate::command::InputSample>,
+    /// The raw pointer reports of the stroke in hand, for a dump — see
+    /// [`DebugCapture`], which is nothing at all without its feature.
+    debug: DebugCapture,
     /// Who this client is when it writes to the log, and the counters that keep
     /// its writes unique.
     authoring: Authoring,

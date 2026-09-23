@@ -25,8 +25,7 @@ pub(crate) struct MatteDraw {
     /// `flags` says the region is the whole plane.
     pub rect: [f32; 4],
     /// Region kind, as the shader reads it (§15.5): `matte.wesl`'s
-    /// [`REGION_OUTSIDE`](stark_shaders::mirror::matte::REGION_OUTSIDE) or
-    /// [`REGION_EVERYTHING`](stark_shaders::mirror::matte::REGION_EVERYTHING).
+    /// [`REGION_OUTSIDE`] or [`REGION_EVERYTHING`].
     pub flags: f32,
     /// Fill color in the document's working color space. Zeros for a gradient
     /// matte, whose color comes from `ramp` per fragment.

@@ -3,8 +3,8 @@
 //!
 //! Both are **requests** rather than commands — they have to answer (§4) — and both
 //! go through the *same* draw list rendering does
-//! ([`DrawList`](super::draw_list::DrawList)), so what they report is the paint the
-//! screen is drawing rather than a second opinion about it. Neither samples the media pass's
+//! ([`DrawList`]), so what they report is the paint the screen is drawing rather than
+//! a second opinion about it. Neither samples the media pass's
 //! output: that lights the paint, tonemaps it and encodes sRGB, so picking it up
 //! would load the brush with a color the palette never mixed.
 //!
@@ -405,8 +405,7 @@ impl PickTrace {
             views.iter().all(|v| v.viewport == self.size),
             "every patch of a trace is the trace's size",
         );
-        let p = &engine.compositor_pipeline;
-        let prepared = engine.compositor.prepare_pick(p, views, groups);
+        let prepared = engine.presenter.prepare_pick(views, groups);
         let mut encoder =
             engine
                 .shared
@@ -417,8 +416,8 @@ impl PickTrace {
                 });
         for slot in 0..prepared.patches() {
             let patch = engine
-                .compositor
-                .composite_patch(p, &mut encoder, &prepared, slot);
+                .presenter
+                .composite_patch(&mut encoder, &prepared, slot);
             self.patches.push(patch);
         }
         engine.shared.gpu.queue.submit([encoder.finish()]);

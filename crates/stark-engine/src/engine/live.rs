@@ -160,7 +160,7 @@ impl Preview {
     }
 
     /// The invalidation epoch a cached head is stamped against, as the number
-    /// `render::DrawKey` keys on.
+    /// `presenter::DrawKey` keys on.
     pub(super) fn epoch(&self) -> u64 {
         self.epoch.get()
     }
@@ -583,42 +583,6 @@ impl Engine {
         out.sort_by_key(|g| g.actor);
         out
     }
-
-    /// Dump the finished stroke's raw input as a pasteable Rust literal.
-    ///
-    /// A misfit seen in the app is otherwise unreproducible: the fit depends on the
-    /// exact sequence of pointer reports — their spacing carries the pen's speed,
-    /// which the density policy and the freezing both key off — and no synthetic curve
-    /// stands in for a real hand. Compiled away without the feature, along with the
-    /// buffer it prints (see [`Engine::note_debug_sample`]).
-    #[cfg(feature = "debug-unfrozen")]
-    pub(super) fn log_debug_samples(&mut self) {
-        if self.debug_samples.is_empty() {
-            return;
-        }
-        // Positions *and* the pen channels: pressure sizes the brush and tilt steers
-        // it, both fitted as their own least-squares channels, so a capture without
-        // them cannot reproduce a fault in either.
-        let mut lit = String::from("&[");
-        for (i, s) in self.debug_samples.iter().enumerate() {
-            if i > 0 {
-                lit.push(',');
-            }
-            lit.push_str(&format!(
-                "[{:.2},{:.2},{:.3},{:.3},{:.3}]",
-                s.pos.x, s.pos.y, s.pressure, s.tilt.x, s.tilt.y
-            ));
-        }
-        lit.push(']');
-        tracing::info!(
-            samples = self.debug_samples.len(),
-            "raw stroke [x,y,pressure,tiltx,tilty]: {lit}"
-        );
-        self.debug_samples.clear();
-    }
-
-    #[cfg(not(feature = "debug-unfrozen"))]
-    pub(super) fn log_debug_samples(&mut self) {}
 }
 
 /// Draw spans `head.spans..frozen` onto the frozen head, so the next move need

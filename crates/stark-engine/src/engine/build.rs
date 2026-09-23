@@ -4,9 +4,10 @@
 
 use std::sync::Arc;
 
-use super::{
-    Authoring, DEFAULT_FAST_COMMIT, DEFAULT_HISTORY_BUDGET, Engine, EngineShared, ROOT_LAYER,
-};
+use super::capture::DebugCapture;
+use super::commit::ClientSettings;
+use super::presenter::Presenter;
+use super::{Authoring, Engine, EngineShared, ROOT_LAYER};
 use crate::Result;
 use crate::assets::AssetStore;
 use crate::colorspace::ColorSpace;
@@ -35,7 +36,12 @@ impl EngineShared {
     /// The shared half as a sibling is seeded from: every handle shared, and the
     /// pictures and the prepared stroke not, being a document's rather than the
     /// device's — and not `Clone`, for `ApplyCtx::for_sibling`'s reason.
-    fn sibling(&self) -> Self {
+    ///
+    /// **`settings` is a parameter rather than a field read**, because this value's own
+    /// copy is the one it was *built* with: the settings a render uses live on the
+    /// compositor and move without it (`Presenter::settings`). Asking the caller for
+    /// them is what keeps a sibling from opening on a look the donor has left behind.
+    fn sibling(&self, settings: ViewSettings) -> Self {
         Self {
             gpu: self.gpu.clone(),
             target_format: self.target_format,
@@ -44,7 +50,7 @@ impl EngineShared {
             scratch: self.scratch.clone(),
             passes: self.passes.clone(),
             environment: self.environment.clone(),
-            settings: self.settings,
+            settings,
         }
     }
 
@@ -124,8 +130,7 @@ impl Engine {
 
         Ok(Self::assemble(
             built.shared,
-            built.compositor,
-            built.compositor_pipeline,
+            Presenter::new(built.compositor, built.compositor_pipeline),
             initial,
             viewport,
         ))
@@ -179,7 +184,12 @@ impl Engine {
             shared.settings,
         );
         let compositor = Compositor::new(&compositor_pipeline);
-        Self::assemble(shared, compositor, compositor_pipeline, initial, viewport)
+        Self::assemble(
+            shared,
+            Presenter::new(compositor, compositor_pipeline),
+            initial,
+            viewport,
+        )
     }
 
     /// The fields every engine opens with, wrapped around the handful that differ —
@@ -193,15 +203,13 @@ impl Engine {
     /// rather than a silently wrong engine.
     fn assemble(
         shared: EngineShared,
-        compositor: Compositor,
-        compositor_pipeline: CompositorPipeline,
+        presenter: Presenter,
         initial: Substrate,
         viewport: Extent2,
     ) -> Self {
         let mut engine = Self {
             shared,
-            compositor,
-            compositor_pipeline,
+            presenter,
             initial,
             timeline: super::commit::Committed::opening(origin(initial)),
             // An engine opens on its viewport, aimed at the root layer its timeline
@@ -215,15 +223,12 @@ impl Engine {
             preview: Default::default(),
             doc_revision: 0,
             doc_origin: 0,
-            draw_cache: Memo::default(),
             layer_cache: Memo::default(),
             guide_cache: Memo::default(),
             guide_epoch: Revision::default(),
-            history_budget: DEFAULT_HISTORY_BUDGET,
-            fast_commit: DEFAULT_FAST_COMMIT,
+            client: ClientSettings::default(),
             strokes_reused: 0,
-            #[cfg(feature = "debug-unfrozen")]
-            debug_samples: Vec::new(),
+            debug: DebugCapture::new(),
             authoring: Authoring::solo(),
         };
         // Park the substrate registry on the document's substrate — a no-op unless
@@ -248,13 +253,10 @@ impl Engine {
     /// document's and stay behind (`EngineShared::sibling`).
     pub fn shared(&self) -> EngineShared {
         debug_assert!(
-            Arc::ptr_eq(&self.shared.passes, &self.compositor_pipeline.passes()),
+            Arc::ptr_eq(&self.shared.passes, &self.presenter.passes()),
             "the shared passes and this engine's pipeline have come apart",
         );
-        EngineShared {
-            settings: self.compositor_pipeline.settings(),
-            ..self.shared.sibling()
-        }
+        self.shared.sibling(self.presenter.settings())
     }
 
     /// Rebuild the GPU subsystems (pool/stroke/compositor) for `cs`. Requires an
@@ -284,15 +286,16 @@ impl Engine {
             substrate: &substrate,
             environment: &environment,
             // View settings, not the document's: a new color space keeps them.
-            settings: self.compositor_pipeline.settings(),
+            settings: self.presenter.settings(),
         });
         // Whole, not field by field: anything added to the shared half is rebuilt by
         // construction rather than by somebody remembering this line. `passes` is the
         // one that matters — left stale, the next sibling built off `shared()` takes
         // pipelines that no longer exist, which `Engine::shared` asserts against.
         self.shared = built.shared;
-        self.compositor = built.compositor;
-        self.compositor_pipeline = built.compositor_pipeline;
+        // The memo goes with them: it holds a list over tiles of the old format, and a
+        // rebuild needs an empty document anyway, so there is nothing in it to keep.
+        self.presenter = Presenter::new(built.compositor, built.compositor_pipeline);
     }
 }
 
