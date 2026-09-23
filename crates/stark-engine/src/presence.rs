@@ -379,50 +379,151 @@ impl PresenceTx {
 }
 
 /// The receiving half: one peer's gesture, reassembled from the frames that arrived.
+///
+/// **The states are the protocol's, so an invalid combination cannot be built.** They
+/// were four `Option`s whose valid pairings lived in prose — a selection left no
+/// assembly, a stroke whose head had not arrived left nothing drawn, and the last seq
+/// spliced meant nothing at all outside a stroke.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct GestureRx {
-    /// The ordinal being tracked — the only thing that reliably tells this gesture from
-    /// the one before it. Held apart from `drawn` and `stroke` because neither is
-    /// present in every state: a selection leaves no `stroke`, and a stroke whose head
-    /// has not arrived leaves nothing `drawn`.
-    id: Option<u64>,
-    /// The stroke being reassembled, and the path so far. Kept apart from `drawn`
-    /// because a stroke that has lost frames stops *growing* while still being
-    /// tracked, awaiting the next resync frame.
-    stroke: Option<StrokeAssembly>,
-    /// What a renderer should draw for this peer right now.
-    drawn: Option<LiveGesture>,
-    /// [`PeerFrame::seq`](stark_model::peer::PeerFrame::seq) of the last frame spliced into
-    /// `stroke`. A delta is only safe to splice if it *immediately* follows the frame
-    /// before it — see [`Self::apply`].
-    last_seq: Option<u64>,
+pub(crate) enum GestureRx {
+    #[default]
+    Idle,
+    /// A marquee, lasso or fill region. Sent whole (`GestureTx::encode`), so there is
+    /// nothing to assemble and what arrived *is* what to draw.
+    Region { id: u64, drawn: LiveGesture },
+    /// A stroke. `assembly` is `None` until a head arrives — a delta for a gesture
+    /// this receiver joined mid-flight names an ordinal but draws nothing.
+    Stroke { id: u64, assembly: Option<Assembly> },
 }
 
+/// A stroke being reassembled: the record the fold will draw, spliced into in place.
 #[derive(Clone, Debug)]
-struct StrokeAssembly {
-    id: u64,
-    head: StrokeHead,
-    path: Vec<ControlPoint>,
+pub(crate) struct Assembly {
+    /// The very type the author committed from, so the two ends cannot disagree about
+    /// what a live stroke is — and the path the frames splice into, rather than a
+    /// second buffer copied into it per frame.
+    record: StrokeRecord,
     /// Control points the sender has stopped resending — i.e. the ones its fitter
     /// froze. The receiver learns this for free from the delta's `from`, and it is
     /// exactly what the incremental repaint needs to know (§17.6).
     frozen: usize,
-    /// The stroke's start marker as of the newest spliced frame
-    /// ([`StrokeRecord::start`](stark_model::document::StrokeRecord::start)):
-    /// overwritten per frame, and final by the time an entry span could be baked (§6.2).
-    start: f32,
+    /// [`PeerFrame::seq`](stark_model::peer::PeerFrame::seq) of the last frame spliced
+    /// in, or `None` for an assembly nothing has reached yet. A delta is only safe to
+    /// splice if it *immediately* follows the frame before it — see [`Self::splice`].
+    last_seq: Option<u64>,
+}
+
+impl Assembly {
+    /// The assembly a head opens: the record's invariant half, an empty path, and the
+    /// frozen watermark `carried` over from the assembly this one replaces.
+    fn opening(head: StrokeHead, start: f32, carried: usize) -> Self {
+        Self {
+            record: StrokeRecord {
+                layer: head.layer,
+                brush: head.brush,
+                path: Vec::new(),
+                seed: head.seed,
+                start,
+                // The sender's: the path frames carry is in the layer's frame, and the
+                // fold needs the very offset the author's commit will use (§14.12).
+                translation: head.translation,
+            },
+            frozen: carried,
+            last_seq: None,
+        }
+    }
+
+    /// Splice one frame's points in, answering whether the path moved. `whole` is
+    /// whether the frame resends the path entire and so stands on its own.
+    fn splice(
+        &mut self,
+        seq: u64,
+        whole: bool,
+        from: usize,
+        points: Vec<ControlPoint>,
+        start: f32,
+    ) -> bool {
+        // **A delta is only safe to splice if nothing was lost before it.**
+        // `truncate(from); extend(points)` keeps everything below `from`, which is
+        // sound only because the sender froze those points — a fact it announced
+        // through the `from` of the frames in between. Miss one and a still-provisional
+        // control point is retained, then promoted to "frozen" by a later frame's
+        // `from`: right length, no hole, wrong in the middle.
+        //
+        // Frames from one client are numbered without gaps and `Peers::merge` only ever
+        // hands over strictly newer ones, so "nothing was lost" is exactly "this seq
+        // follows the last one spliced".
+        //
+        // What is held is still a true prefix of the stroke, so a refusal leaves it on
+        // the canvas and stops it growing until the next resync repairs it. Short is
+        // provisional, which a live preview always is; absent is a flicker.
+        if !whole && self.last_seq.is_none_or(|last| last + 1 != seq) {
+            return false;
+        }
+        if from > self.record.path.len() {
+            // Unreachable from an honest sender once continuity holds — its `from` is a
+            // frozen count, which never exceeds its own path. Kept because the frame
+            // came off a wire.
+            return false;
+        }
+        self.last_seq = Some(seq);
+        self.record.path.truncate(from);
+        self.record.path.extend(points);
+        // The marker as this frame states it — newest wins, unlike the watermark below,
+        // because it is a statement about the curve rather than a count of what was sent.
+        self.record.start = start;
+        // The watermark only ever advances (`max`) — a resync frame, whose `from` is 0,
+        // leaves the carried-over count standing. Clamped rather than asserted against
+        // the path: an honest sender never resends fewer points than it froze, but the
+        // frame came off a wire.
+        self.frozen = self.frozen.max(from).min(self.record.path.len());
+        true
+    }
 }
 
 impl GestureRx {
-    /// What to draw for this peer, if anything.
-    pub(crate) fn drawn(&self) -> Option<&LiveGesture> {
-        self.drawn.as_ref()
+    /// The ordinal being tracked — the only thing that reliably tells this gesture
+    /// from the one before it.
+    fn id(&self) -> Option<u64> {
+        match self {
+            Self::Idle => None,
+            Self::Region { id, .. } | Self::Stroke { id, .. } => Some(*id),
+        }
     }
 
-    /// The ordinal of the gesture in flight — what tells a cached render of this
-    /// peer's stroke apart from a render of the one before it.
-    pub(crate) fn id(&self) -> Option<u64> {
-        self.id
+    /// What to draw for this peer and which gesture it is, or `None` when nothing is.
+    /// The pair, because the ordinal is what tells a cached render of this gesture from
+    /// a render of the one before it, and the two are present together or not at all.
+    ///
+    /// **The one copy of the path the receiving side makes**: it is assembled in place
+    /// and cloned here, where the fold takes ownership of it.
+    pub(crate) fn drawn(&self) -> Option<(u64, LiveGesture)> {
+        match self {
+            Self::Idle | Self::Stroke { assembly: None, .. } => None,
+            Self::Region { id, drawn } => Some((*id, drawn.clone())),
+            Self::Stroke {
+                id,
+                assembly: Some(a),
+            } => Some((*id, LiveGesture::Stroke(a.record.clone()))),
+        }
+    }
+
+    /// Whether there is a gesture on the canvas for this peer.
+    pub(crate) fn is_drawing(&self) -> bool {
+        match self {
+            Self::Idle | Self::Stroke { assembly: None, .. } => false,
+            Self::Region { .. } | Self::Stroke { .. } => true,
+        }
+    }
+
+    /// The live stroke being reassembled, if that is what this peer is drawing.
+    pub(crate) fn live_stroke(&self) -> Option<&StrokeRecord> {
+        match self {
+            Self::Idle | Self::Region { .. } | Self::Stroke { assembly: None, .. } => None,
+            Self::Stroke {
+                assembly: Some(a), ..
+            } => Some(&a.record),
+        }
     }
 
     /// How many leading control points the sender has declared final. Conservative:
@@ -431,24 +532,29 @@ impl GestureRx {
     /// [`frozen_spans`](Self::frozen_spans) instead.
     #[cfg(test)]
     pub(crate) fn frozen(&self) -> usize {
-        self.stroke.as_ref().map_or(0, |s| s.frozen)
+        match self {
+            Self::Idle | Self::Region { .. } | Self::Stroke { assembly: None, .. } => 0,
+            Self::Stroke {
+                assembly: Some(a), ..
+            } => a.frozen,
+        }
     }
 
     /// How many spans of the reassembled stroke are settled, so the preview can
     /// repaint only the tail (§6.2, §17.6).
     pub(crate) fn frozen_spans(&self) -> usize {
-        self.stroke
-            .as_ref()
-            .map_or(0, |s| frozen_spans_for(s.frozen, s.path.len()))
+        match self {
+            Self::Idle | Self::Region { .. } | Self::Stroke { assembly: None, .. } => 0,
+            Self::Stroke {
+                assembly: Some(a), ..
+            } => frozen_spans_for(a.frozen, a.record.path.len()),
+        }
     }
 
     /// Take the gesture down. Returns whether anything was being drawn.
     pub(crate) fn clear(&mut self) -> bool {
-        let was_drawing = self.drawn.is_some();
-        self.id = None;
-        self.stroke = None;
-        self.drawn = None;
-        self.last_seq = None;
+        let was_drawing = self.is_drawing();
+        *self = Self::Idle;
         was_drawing
     }
 
@@ -459,126 +565,90 @@ impl GestureRx {
         // assembled rather than splicing two of them together. Keyed on the ordinal
         // rather than on the stroke assembly, because a *selection* leaves no assembly
         // and its marquee would then outlive the gesture that drew it.
-        let changed = if self.id == Some(frame.id()) {
+        let id = frame.id();
+        let changed = if self.id() == Some(id) {
             false
         } else {
             self.clear()
         };
-        self.id = Some(frame.id());
         match frame {
             GestureFrame::Selection { op, .. } => {
-                self.stroke = None;
-                self.last_seq = Some(seq);
-                self.drawn = Some(LiveGesture::Selection(op));
+                *self = Self::Region {
+                    id,
+                    drawn: LiveGesture::Selection(op),
+                };
                 true
             }
             GestureFrame::Fill {
-                op,
-                translation: frame,
-                ..
+                op, translation, ..
             } => {
-                self.stroke = None;
-                self.last_seq = Some(seq);
-                self.drawn = Some(LiveGesture::Fill {
-                    layer: active_layer,
-                    op,
-                    translation: frame,
-                });
+                *self = Self::Region {
+                    id,
+                    drawn: LiveGesture::Fill {
+                        layer: active_layer,
+                        op,
+                        translation,
+                    },
+                };
                 true
             }
             GestureFrame::Stroke {
-                id,
                 head,
                 from,
                 points,
                 start,
+                ..
             } => {
                 let from = from as usize;
-                // Start (or restart, on a resync frame) whenever the head is present.
                 debug_assert!(
                     head.is_none() || from == 0,
                     "a head rides only a frame that starts the path over"
                 );
-                // A frame that resends the path whole stands on its own; a delta has
-                // to be spliced onto what came before it.
+                // A frame that resends the path whole stands on its own; a delta has to
+                // be spliced onto what came before it.
                 let whole = head.is_some() && from == 0;
-                if let Some(head) = head
-                    && (self.stroke.as_ref().is_none_or(|s| s.id != id) || from == 0)
-                {
-                    // A resync restarts the *assembly*, not the gesture: within one
-                    // ordinal the frozen watermark carries over, because a frozen
-                    // control point never moves and a resync says nothing new about
-                    // freezing. Reset to zero it would discard the renderer's cached
-                    // head, which keys on `frozen_spans`, once per resync per peer.
-                    let frozen = match self.stroke.as_ref() {
-                        Some(s) if s.id == id => s.frozen,
-                        _ => 0,
-                    };
-                    // The head arrives already sanitized: `Peers::merge` is the one
-                    // door, and gating here would cover a stroke's brush while leaving
-                    // the frame's other two free-form payloads as they arrived (§21.5).
-                    self.stroke = Some(StrokeAssembly {
-                        id,
-                        head: *head,
-                        path: Vec::new(),
-                        frozen,
+                // A *region* under this ordinal has no assembly and keeps its outline
+                // unless the head below replaces it.
+                let held = match self {
+                    Self::Stroke { assembly, .. } => assembly.take(),
+                    Self::Idle | Self::Region { .. } => None,
+                };
+                // Start — or restart, on a resync frame — whenever the head is present.
+                // A resync restarts the *assembly*, not the gesture: within one ordinal
+                // the frozen watermark carries over, because a frozen control point
+                // never moves and a resync says nothing new about freezing. Reset to
+                // zero it would discard the renderer's cached head, which keys on
+                // `frozen_spans`, once per resync per peer.
+                //
+                // The head arrives already sanitized: `Peers::merge` is the one door,
+                // and gating here would cover a stroke's brush while leaving the frame's
+                // other two free-form payloads as they arrived (§21.5).
+                let opened = match head {
+                    Some(head) if held.is_none() || from == 0 => Some(Assembly::opening(
+                        *head,
                         start,
-                    });
-                    self.last_seq = None;
-                }
-                let Some(assembly) = self.stroke.as_mut() else {
+                        held.map_or(0, |a| a.frozen),
+                    )),
+                    Some(_) | None => held,
+                };
+                let Some(mut assembly) = opened else {
                     // A delta for a gesture whose head we never saw. Nothing to draw
                     // until the next resync frame — and nothing of the *previous*
                     // gesture either, which the ordinal check above has seen to.
+                    if let Self::Idle | Self::Stroke { .. } = self {
+                        *self = Self::Stroke { id, assembly: None };
+                    }
                     return changed;
                 };
-                // **A delta is only safe to splice if nothing was lost before it.**
-                // `truncate(from); extend(points)` keeps everything below `from`, which
-                // is sound only because the sender froze those points — a fact it
-                // announced through the `from` of the frames in between. Miss one and a
-                // still-provisional control point is retained, then promoted to "frozen"
-                // by a later frame's `from`: right length, no hole, wrong in the middle.
-                //
-                // Frames from one client are numbered without gaps and `Peers::merge`
-                // only ever hands over strictly newer ones, so "nothing was lost" is
-                // exactly "this seq follows the last one spliced".
-                if !whole && self.last_seq.is_none_or(|last| last + 1 != seq) {
-                    // What is held is still a true prefix of the stroke, so it stays on
-                    // the canvas and stops growing until the next resync repairs it.
-                    // Short is provisional, which a live preview always is; absent is a
-                    // flicker.
-                    return changed;
-                }
-                if from > assembly.path.len() {
-                    // Unreachable from an honest sender once continuity holds — its
-                    // `from` is a frozen count, which never exceeds its own path. Kept
-                    // because the frame came off a wire.
-                    return changed;
-                }
-                self.last_seq = Some(seq);
-                assembly.path.truncate(from);
-                assembly.path.extend(points);
-                // The marker as this frame states it — newest wins, unlike the
-                // watermark below, because it is a statement about the curve
-                // rather than a count of what was sent.
-                assembly.start = start;
-                // The watermark only ever advances (`max`) — a resync frame, whose
-                // `from` is 0, leaves the carried-over count standing. Clamped rather
-                // than asserted against the path: an honest sender never resends
-                // fewer points than it froze, but the frame came off a wire.
-                assembly.frozen = assembly.frozen.max(from).min(assembly.path.len());
-                self.drawn = Some(LiveGesture::Stroke(StrokeRecord {
-                    layer: assembly.head.layer,
-                    brush: assembly.head.brush,
-                    path: assembly.path.clone(),
-                    seed: assembly.head.seed,
-                    start: assembly.start,
-                    // The sender's, off the head: the path frames carry is in the
-                    // layer's frame, and the fold needs the very offset the
-                    // author's commit will use (§14.12).
-                    translation: assembly.head.translation,
-                }));
-                true
+                let spliced = assembly.splice(seq, whole, from, points, start);
+                *self = Self::Stroke {
+                    id,
+                    // An assembly nothing has ever reached holds no stroke: continuity
+                    // refuses every later delta, so only the next head can fill it, and
+                    // that opens a new one regardless.
+                    assembly: assembly.last_seq.is_some().then_some(assembly),
+                };
+                changed || spliced
             }
         }
     }
@@ -873,10 +943,9 @@ mod tests {
 
     /// The control points a receiver would draw.
     fn shown(rx: &GestureRx) -> Vec<ControlPoint> {
-        match rx.drawn() {
-            Some(LiveGesture::Stroke(rec)) => rec.path.clone(),
-            _ => Vec::new(),
-        }
+        rx.live_stroke()
+            .map(|rec| rec.path.clone())
+            .unwrap_or_default()
     }
 
     /// The latch (§17.5), driven without a `Session`: a frame goes out on the first
@@ -1106,11 +1175,11 @@ mod tests {
         let first = tx.encode(0, Some(stroke(3, 1)), false).expect("a frame");
         assert!(rx.apply(first, 1, layer));
         assert_eq!(shown(&rx), path[..3], "the first frame carries the head");
-        let Some(LiveGesture::Stroke(rec)) = rx.drawn() else {
-            panic!("a stroke frame draws a stroke");
-        };
         assert_eq!(
-            rec.start, 0.25,
+            rx.live_stroke()
+                .expect("a stroke frame draws a stroke")
+                .start,
+            0.25,
             "the marker rides every frame into the drawn record"
         );
 

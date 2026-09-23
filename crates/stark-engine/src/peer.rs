@@ -12,7 +12,9 @@ use stark_model::document::{ActorId, LayerId, StrokeRecord};
 use stark_model::geom::Vec2;
 use stark_model::peer::{GESTURE_TIMEOUT, PEER_TIMEOUT, PeerFrame};
 
-use crate::gesture::{GestureView, LiveGesture};
+use crate::gesture::GestureView;
+#[cfg(test)]
+use crate::gesture::LiveGesture;
 use crate::presence::GestureRx;
 
 /// Who this client is on the wire.
@@ -88,35 +90,31 @@ impl Peer {
 
     /// What to draw for this peer right now, if anything.
     #[cfg(test)]
-    pub(crate) fn gesture(&self) -> Option<&LiveGesture> {
-        self.rx.drawn()
+    pub(crate) fn gesture(&self) -> Option<LiveGesture> {
+        self.rx.drawn().map(|(_, gesture)| gesture)
     }
 
     /// This peer's gesture as the preview fold wants it — the same shape
     /// [`Session::live_view`](crate::session::Session::live_view) produces for
     /// the local client.
     pub(crate) fn gesture_view(&self) -> Option<GestureView> {
+        let (ordinal, gesture) = self.rx.drawn()?;
         Some(GestureView {
             actor: self.actor,
-            gesture: self.rx.drawn()?.clone(),
-            // Set and cleared with `drawn`, so an ordinal is present exactly when
-            // there is a gesture to number and never needs a default.
-            ordinal: self.rx.id()?,
+            gesture,
+            ordinal,
             frozen_spans: self.rx.frozen_spans(),
         })
     }
 
     /// Whether this peer has a gesture on the canvas.
     fn is_gesturing(&self) -> bool {
-        self.rx.drawn().is_some()
+        self.rx.is_drawing()
     }
 
     /// The live stroke this peer is drawing, if any — what the preview fold renders.
     pub fn live_stroke(&self) -> Option<&StrokeRecord> {
-        match self.rx.drawn() {
-            Some(LiveGesture::Stroke(rec)) => Some(rec),
-            _ => None,
-        }
+        self.rx.live_stroke()
     }
 
     /// How many spans of [`live_stroke`](Self::live_stroke) are settled, so the
