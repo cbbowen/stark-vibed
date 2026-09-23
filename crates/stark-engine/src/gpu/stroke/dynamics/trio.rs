@@ -60,16 +60,28 @@ impl Trio {
         labels: [&'static str; 3],
         resid: bool,
     ) -> Self {
-        let key = |i: usize| Key {
+        let keys = std::array::from_fn(|i: usize| Key {
             size,
             format: at[i].storage_format(),
             usage,
             label: labels[i],
-        };
+        });
+        Self::take_at(scope, life, keys, resid)
+    }
+
+    /// [`take`](Self::take) against keys the caller built — for a trio whose channels
+    /// are copied out to keys that have to be the *same* ones, which is easiest to
+    /// mean when both ends ask one function for them ([`tool`](super::tool)).
+    pub(super) fn take_at(
+        scope: &mut SubmitScope,
+        life: Life,
+        keys: [Key; 3],
+        resid: bool,
+    ) -> Self {
         Self {
-            color: life.take(scope, key(0)),
-            aux: life.take(scope, key(1)),
-            resid: resid.then(|| life.take(scope, key(2))),
+            color: life.take(scope, keys[0]),
+            aux: life.take(scope, keys[1]),
+            resid: resid.then(|| life.take(scope, keys[2])),
         }
     }
 

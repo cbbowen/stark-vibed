@@ -13,7 +13,7 @@ use std::sync::Arc;
 use crate::gpu::desc;
 use crate::gpu::tile::TileMap;
 
-use super::super::incremental::{Carried, LoopCarry, LoopTiles, Reservoir};
+use super::super::incremental::{Carried, LoopCarry, LoopTiles};
 use super::super::region::chunk_segments;
 use super::super::segments::{BleedFire, Segment};
 use super::super::swept::{SweepPass, segment_instance, tile_xform, xform_group};
@@ -24,15 +24,11 @@ use super::region::{
     LOOP_USAGE, Piece, REGION_WRITES, RegionBox, RegionChannels, RegionRun, composite_tiles,
     region_selection, slice_region,
 };
+use super::tool::{BRUSH_RES, ToolPingPong};
 use super::trio::{Life, Trio};
 use crate::gpu::scratch::{BufKey, Key, LeasedSlots, LeasedTex, SubmitScope};
 use stark_shaders::mirror::stamp::SegmentInstance;
 use stark_shaders::mirror::stamp_common::SWEEP_VERTS;
-/// Resolution (texels per side) of the stamp loop's tool reservoir
-/// (§6.2). Brush-local, so carried color detail is ~radius/32 canvas px — plenty
-/// for smeared paint, and small enough that the per-stamp reservoir update is
-/// nearly free.
-const BRUSH_RES: u32 = 64;
 /// The label on the loop's compute pass, which the ceiling lane's render pass cuts in
 /// two and which resumes under the same name after it.
 const LOOP_PASS: &str = "stark dynamics stamp loop";
@@ -277,12 +273,9 @@ struct DynamicsRun<'a> {
     /// [`RegionRun::prefix_bg`].
     depth: wgpu::TextureView,
     noise: super::super::tips::NoiseLease,
-    /// The tool reservoir ping-pong — one whole channel trio per half, the residual
-    /// among them (§6.7), so the tip carries the rest of the color it picked up rather
-    /// than the grey a pigment space's concentrations alone describe — and which half
-    /// currently holds the tool.
-    brush: [Trio; 2],
-    cur: usize,
+    /// The tool reservoir ping-pong (§6.2) — what the tip is carrying, and which half
+    /// holds it.
+    brush: ToolPingPong,
     /// The segment's swept reservoir prefixes (fp32, so the per-fragment difference
     /// keeps its precision — each is created at its own `bake_*_w` declaration's
     /// format). Rebuilt per segment, so a single set serves the whole stroke: nothing
@@ -329,10 +322,11 @@ impl<'a> DynamicsRun<'a> {
             resume,
             ..
         } = range;
-        let prior = resume.prior;
+        let prior = resume.prior.map(ToolState::looped);
         // The brush's swept-extent prefix-τ, shared with the fast path, at the group
         // every kernel with a tip binds one.
         let mut region = RegionRun::new(r, scene, &range, &tip.prefix, "stark dynamics stroke");
+        let resid = r.color_space.has_resid();
         let scope = &mut region.scope;
         // The unintegrated field under the prefix (the reservoir texels' own exposure).
         let depth = tip.depth.clone();
@@ -341,52 +335,7 @@ impl<'a> DynamicsRun<'a> {
         let noise = r.tips.noise(&rec.brush.color_dynamics(), consts.noise_seed);
         scope.hold(noise.clone());
 
-        // A stroke that starts fresh initializes its first reservoir by a render clear
-        // (the driver does the f16 encode), hence RENDER_ATTACHMENT; one resuming from
-        // a [`ToolState`] copies into it instead, hence the COPY pair — which also
-        // carries the end state back out.
-        let brush_usage = LOOP_USAGE
-            | wgpu::TextureUsages::RENDER_ATTACHMENT
-            | wgpu::TextureUsages::COPY_SRC
-            | wgpu::TextureUsages::COPY_DST;
-        // A ping-pong pair out of the pool, one whole trio a half: fully written
-        // (cleared, copied into, or stored texel-for-texel by the reservoir passes)
-        // before anything reads it, which is the pool's no-zero-init contract
-        // (`scratch`).
-        let resid = r.color_space.has_resid();
-        let brush_half = |scope: &mut SubmitScope, labels: [&'static str; 3]| {
-            Trio::take(
-                scope,
-                Life::Run,
-                (BRUSH_RES, BRUSH_RES),
-                brush_usage,
-                [
-                    d::BRUSH_DST_COLOR_W,
-                    d::BRUSH_DST_AUX_W,
-                    d::BRUSH_DST_RESID_W,
-                ],
-                labels,
-                resid,
-            )
-        };
-        let brush = [
-            brush_half(
-                scope,
-                [
-                    "stark dynamics brush color a",
-                    "stark dynamics brush aux a",
-                    "stark dynamics brush resid a",
-                ],
-            ),
-            brush_half(
-                scope,
-                [
-                    "stark dynamics brush color b",
-                    "stark dynamics brush aux b",
-                    "stark dynamics brush resid b",
-                ],
-            ),
-        ];
+        let brush = ToolPingPong::take(scope, resid);
         // The ceiling lane (§6.2), on a wet stroke whose ceiling the pen drives: the
         // carried tiles, and the swept sweep's own bind groups for drawing the lane
         // over the region — the brush bound exactly as the fast path binds it, so the
@@ -395,9 +344,7 @@ impl<'a> DynamicsRun<'a> {
         // Cloned, which for a persistent map is a refcount: the run replaces only the
         // tiles its own pieces draw, and the rest ride forward shared with the carry
         // this range resumed from.
-        let levels = prior
-            .map(ToolState::looped)
-            .map_or_else(LoopTiles::new, |t| t.levels.clone());
+        let levels = prior.map_or_else(LoopTiles::new, |t| t.levels.clone());
         let lane = leveled.then(|| {
             let (prefix, noise) = super::super::swept::sweep_brush_groups(
                 r,
@@ -409,80 +356,15 @@ impl<'a> DynamicsRun<'a> {
             );
             LaneBinds { prefix, noise }
         });
-        let fresh = if let Some(t) = prior.map(ToolState::looped) {
-            // Resume: the tip arrives at this range carrying exactly what it carried
-            // when the previous range stopped.
-            scope.encoder().copy_texture_to_texture(
-                t.reservoir.color.tex().as_image_copy(),
-                brush[0].color.tex.as_image_copy(),
-                RESERVOIR_EXTENT,
-            );
-            scope.encoder().copy_texture_to_texture(
-                t.reservoir.aux.tex().as_image_copy(),
-                brush[0].aux.tex.as_image_copy(),
-                RESERVOIR_EXTENT,
-            );
-            if let (Some(src), Some(dst)) = (&t.reservoir.resid, brush[0].resid_tex()) {
-                scope.encoder().copy_texture_to_texture(
-                    src.tex().as_image_copy(),
-                    dst.as_image_copy(),
-                    RESERVOIR_EXTENT,
-                );
+        let fresh = match prior {
+            Some(t) => {
+                brush.resume(scope, &t.reservoir);
+                t.fresh.clone()
             }
-            t.fresh.clone()
-        } else {
-            // Init: latent = the brush's own color, per-unit opacity = exactly 1
-            // (minted paint is opaque per unit, §6.2); the carried amount starts
-            // at the pre-`charge` glob (0 = empty tool).
-            let charge = dynamics.charge;
-            scope
-                .encoder()
-                .begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("stark dynamics brush init"),
-                    color_attachments: &[
-                        Some(desc::attach(
-                            &brush[0].color.view,
-                            desc::clear_to(wgpu::Color {
-                                r: consts.channels[0] as f64,
-                                g: consts.channels[1] as f64,
-                                b: consts.channels[2] as f64,
-                                a: 1.0,
-                            }),
-                        )),
-                        Some(desc::attach(
-                            &brush[0].aux.view,
-                            desc::clear_to(wgpu::Color {
-                                // Carried height = the pre-`charge` glob; the rest of
-                                // the reservoir aux is unused (height is the only
-                                // thing the tool carries, §6.1). Opacity scales the
-                                // glob outright, and for a finite source that *is*
-                                // the ceiling — so no budget lane is needed here,
-                                // where the `add` rate's unbounded mint takes one
-                                // (§6.2, `dynamics.wesl::lay_parcel`).
-                                r: (charge * consts.opacity) as f64,
-                                g: 0.0,
-                                b: 0.0,
-                                a: 0.0,
-                            }),
-                        )),
-                        // A freshly charged tip holds the brush's own color, and that
-                        // color's residual with it — the same clear, off the same
-                        // constants (§6.7).
-                        brush[0].resid_view().map(|v| {
-                            desc::attach(
-                                v,
-                                desc::clear_to(wgpu::Color {
-                                    r: consts.resid[0] as f64,
-                                    g: consts.resid[1] as f64,
-                                    b: consts.resid[2] as f64,
-                                    a: 0.0,
-                                }),
-                            )
-                        }),
-                    ][..brush[0].targets().count()],
-                    ..Default::default()
-                });
-            LoopTiles::new()
+            None => {
+                brush.charge(scope, consts, dynamics.charge);
+                LoopTiles::new()
+            }
         };
         // Each at the format its own `bake_*_w` declaration names (§6.10).
         let mut bake = |at: stark_shaders::Binding, label: &'static str| {
@@ -503,7 +385,6 @@ impl<'a> DynamicsRun<'a> {
             depth,
             noise,
             brush,
-            cur: 0,
             bake_load,
             bake_latm,
             bake_rlm,
@@ -900,12 +781,12 @@ impl<'a> DynamicsRun<'a> {
                 // The reservoir ping-pong: read `phase`, write the other half. The
                 // residual turns on the same phase as the color, or the tool's two
                 // halves would drift apart.
-                b::BRUSH_SRC_COLOR => view(&self.brush[phase].color.view),
-                b::BRUSH_SRC_AUX => view(&self.brush[phase].aux.view),
-                b::BRUSH_SRC_RESID => opt(self.brush[phase].resid_view(), "reservoir"),
-                b::BRUSH_DST_COLOR_W => view(&self.brush[1 - phase].color.view),
-                b::BRUSH_DST_AUX_W => view(&self.brush[1 - phase].aux.view),
-                b::BRUSH_DST_RESID_W => opt(self.brush[1 - phase].resid_view(), "reservoir"),
+                b::BRUSH_SRC_COLOR => view(&self.brush.src(phase).color.view),
+                b::BRUSH_SRC_AUX => view(&self.brush.src(phase).aux.view),
+                b::BRUSH_SRC_RESID => opt(self.brush.src(phase).resid_view(), "reservoir"),
+                b::BRUSH_DST_COLOR_W => view(&self.brush.dst(phase).color.view),
+                b::BRUSH_DST_AUX_W => view(&self.brush.dst(phase).aux.view),
+                b::BRUSH_DST_RESID_W => opt(self.brush.dst(phase).resid_view(), "reservoir"),
                 b::CELL_TOOL => view(&cell().tool),
                 b::CELL_LAT => view(&cell().lat),
                 b::CELL_RES => opt(cell().res.as_ref(), "cell"),
@@ -998,9 +879,9 @@ impl<'a> DynamicsRun<'a> {
     /// of one transfer, and they only add up if both read the canvas and the
     /// reservoir as this segment found them (`dynamics.wesl::exchange_at`).
     ///
-    /// `self.cur` outlives the pass: it names the reservoir texture holding the
-    /// tool's state, so after the last dispatch it names the state this piece ends
-    /// in — which is what the next piece, or the next range, resumes from.
+    /// The ping-pong outlives the pass: it names the half holding the tool's state, so
+    /// after the last dispatch it names the state this piece ends in — which is what
+    /// the next piece, or the next range, resumes from.
     fn record_loop(
         &mut self,
         plan: &[LoopDispatch<WetStep>],
@@ -1013,7 +894,6 @@ impl<'a> DynamicsRun<'a> {
         // the run's encoder for as long as it is recording.
         let r = self.region.r;
         let kit = &r.dynamics.wet;
-        let mut cur = self.cur;
         // The reservoir half of `exchange`, which the extent half is laid beside on x:
         // [`BRUSH_RES`]² whatever the segment does.
         let reservoir = kit.exchange.groups((BRUSH_RES, BRUSH_RES));
@@ -1041,6 +921,7 @@ impl<'a> DynamicsRun<'a> {
                         .dispatch(&mut pass, bind.deposit(), off, d.extent);
                 }
                 WetStep::Segment { index, cells } => {
+                    let cur = self.brush.cur();
                     // Bake this segment's swept reservoir prefix first — it folds in the
                     // tip's current orientation as well as the reservoir state.
                     kit.bake
@@ -1104,24 +985,27 @@ impl<'a> DynamicsRun<'a> {
                         }
                         pass = self.region.loop_pass(LOOP_PASS);
                     }
-                    cur = 1 - cur;
+                    self.brush.advance();
                 }
                 // The pen-up: snapshot the final extent, bake the standing tip's
                 // remaining-pass delivery off the reservoir the last segment left
                 // (`cur` still names it — the slot's zero travel switches the bake onto
                 // the settle's weighted integral), then settle the transfer the stroke
-                // stopped in the middle of. The tool is not written back, so `cur` is
-                // left alone here too.
+                // stopped in the middle of. The tool is not written back, so the
+                // ping-pong is left alone here too.
                 WetStep::Settle => {
                     kit.snapshot
                         .dispatch(&mut pass, bind.snapshot(), off, d.extent);
-                    kit.bake
-                        .dispatch(&mut pass, bind.bake(cur), off, (BAKE_RES, BAKE_RES));
+                    kit.bake.dispatch(
+                        &mut pass,
+                        bind.bake(self.brush.cur()),
+                        off,
+                        (BAKE_RES, BAKE_RES),
+                    );
                     kit.settle.dispatch(&mut pass, bind.settle(), off, d.extent);
                 }
             }
         }
-        self.cur = cur;
     }
 
     /// Slice each affected tile's full `TILE_TEX` block out of the shared region into
@@ -1143,50 +1027,12 @@ impl<'a> DynamicsRun<'a> {
         )
     }
 
-    /// Remember the tool for the range that resumes after this one. Copied rather than
-    /// aliased: the loop's own reservoir textures go back to the pool when the run's
-    /// scope closes, and the range that resumes writes its first exchange straight into
-    /// whatever it is handed. 64² rgba16f ×2, so ~64 KB.
-    ///
-    /// The copies are pooled [`Kept`](crate::gpu::scratch::Kept) leases — one is
-    /// captured per pointer move, and the drop that returns one is provably behind the
-    /// resuming run's submit.
+    /// Remember the tool for the range that resumes after this one
+    /// ([`ToolPingPong::capture`]).
     fn capture_tool(&mut self) -> ToolState {
-        let r = self.region.r;
-        let held = &self.brush[self.cur];
-        let (color_src, aux_src) = (held.color.tex.clone(), held.aux.tex.clone());
-        let resid_src = held.resid_tex().cloned();
-        let scope = &mut self.region.scope;
-        // Each copy's destination at the format of the reservoir half it is cut from,
-        // which is that half's own `brush_dst_*_w` declaration (§6.10).
-        let mut copy_out = |src: &wgpu::Texture, at: stark_shaders::Binding, label| {
-            let dst = r.scratch.keep(
-                &r.ctx.device,
-                Key {
-                    size: (BRUSH_RES, BRUSH_RES),
-                    format: at.storage_format(),
-                    usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
-                    label,
-                },
-            );
-            scope.encoder().copy_texture_to_texture(
-                src.as_image_copy(),
-                dst.tex().as_image_copy(),
-                RESERVOIR_EXTENT,
-            );
-            dst
-        };
+        let reservoir = self.brush.capture(self.region.r, &mut self.region.scope);
         ToolState(Carried::Loop(Box::new(LoopCarry {
-            reservoir: Reservoir {
-                color: copy_out(&color_src, d::BRUSH_DST_COLOR_W, "stark tool state color"),
-                aux: copy_out(&aux_src, d::BRUSH_DST_AUX_W, "stark tool state aux"),
-                // Carried across ranges with the color, and for the same reason: a tip
-                // that lifted black paint has to still be carrying black when the next
-                // pointer move resumes it (§6.7).
-                resid: resid_src
-                    .as_ref()
-                    .map(|t| copy_out(t, d::BRUSH_DST_RESID_W, "stark tool state resid")),
-            },
+            reservoir,
             // The mint budget rides as the leases the last piece extracted —
             // already copies of the run's own state, so nothing more to copy
             // out here. Empty at the identity opacity.
@@ -1353,14 +1199,6 @@ struct CoarseBindings {
     hoist: wgpu::BindGroup,
     deposit: wgpu::BindGroup,
 }
-
-/// The reservoir textures' shape — [`BRUSH_RES`]² of the tile color format, which
-/// is what makes a [`ToolState`] copyable into and out of the loop's ping-pong.
-const RESERVOIR_EXTENT: wgpu::Extent3d = wgpu::Extent3d {
-    width: BRUSH_RES,
-    height: BRUSH_RES,
-    depth_or_array_layers: 1,
-};
 
 #[cfg(test)]
 mod tests {

@@ -17,6 +17,7 @@ mod liquify;
 mod plan;
 mod region;
 mod run;
+mod tool;
 mod trio;
 
 pub(in crate::gpu::stroke) use bleed::BLEED_TRAVEL_QUANTUM;
