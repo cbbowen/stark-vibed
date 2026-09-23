@@ -17,6 +17,7 @@ use super::super::incremental::{Carried, LoopCarry, LoopTiles};
 use super::super::region::chunk_segments;
 use super::super::segments::{BleedFire, Segment};
 use super::super::swept::{SweepPass, segment_instance, tile_xform, xform_group};
+use super::super::volume::ResolvedTip;
 use super::super::{Complaint, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
 use super::bleed::bleed_fires;
 use super::plan::{LoopDispatch, WetStep, cell_scratch_size, dynamics_plan};
@@ -48,7 +49,7 @@ use stark_shaders::mirror::dynamics_common::Stamp;
 use stark_shaders::mirror::dynamics_common::binding as sb;
 use stark_shaders::mirror::dynamics_common::decl as sd;
 
-use stark_model::document::BrushDynamics;
+use stark_model::document::{BrushDynamics, StrokeRecord};
 
 /// The mint-budget tile's pool key (`LoopCarry::fresh`): copy usages only — no pass
 /// binds one. They ferry the region aux's `.yz` lanes across pieces, and the whole aux
@@ -151,23 +152,138 @@ fn block(region: &wgpu::Texture, origin: wgpu::Origin3d) -> wgpu::TexelCopyTextu
     }
 }
 
-/// The brush as the swept sweep binds it (§6.2) — for the per-segment draw of
-/// the ceiling lane over the region, which runs the sweep's own pipeline over
-/// the sweep's own layouts.
-struct LaneBinds {
+/// **The one value that says the pen drives this stroke's ceiling** (§6.2): the brush
+/// as the *swept* sweep binds it — prefix-τ and noise over the swept layouts, so the
+/// lane's sums are the fast path's — and the lane's own carried tiles. Absent on every
+/// other stroke, which is what `ceiling_lane = 0` says on the shader's side, and
+/// implies `consts.capped`.
+struct CeilingLane {
     prefix: wgpu::BindGroup,
     noise: wgpu::BindGroup,
+    /// The lane's tiles ([`LoopCarry::levels`]), evolving with the run exactly as the
+    /// mint budget beside them does.
+    carried: CarriedLanes,
 }
 
-/// One piece's draw state for the ceiling lane (§6.2): the region-sized lane the
-/// deposits read, the piece's segments instanced as the sweep draws them, and
-/// the three groups `stamp.wesl::fs_levels` is drawn with.
-struct LevelsPass {
-    view: wgpu::TextureView,
+impl CeilingLane {
+    /// The lane of a stroke whose ceiling the pen drives, resuming from `carried`.
+    fn of(
+        region: &mut RegionRun<'_>,
+        tip: &ResolvedTip,
+        rec: &StrokeRecord,
+        carried: LoopTiles,
+    ) -> Option<Self> {
+        let (r, consts, substrate) = (region.r, region.consts, region.scene.substrate);
+        consts.ceiling_lane.then(|| {
+            let (prefix, noise) = super::super::swept::sweep_brush_groups(
+                r,
+                &mut region.scope,
+                tip,
+                rec,
+                substrate,
+                consts,
+            );
+            Self {
+                prefix,
+                noise,
+                carried: CarriedLanes::new(levels_key(), carried),
+            }
+        })
+    }
+
+    /// Open the lane over one piece: the region-sized lane it draws into — **drawn**
+    /// into per segment, so a render attachment rather than storage, and read by the
+    /// deposits between draws — cleared (the pool hands back stale texels), seeded from
+    /// the carry, and given the piece's own draw state.
+    fn open<'p>(
+        &'p self,
+        region: &mut RegionRun<'_>,
+        piece: &Piece,
+        segments: &[Segment],
+        bbox: RegionBox,
+    ) -> LanePiece<'p> {
+        let (r, consts) = (region.r, region.consts);
+        let RegionBox { origin, w, h } = bbox;
+        let lane = region.scope.take_piece(Key {
+            size: (w, h),
+            format: super::super::swept::CEILING_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
+            label: "stark dynamics region levels",
+        });
+        region
+            .scope
+            .encoder()
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark dynamics region levels clear"),
+                color_attachments: &[Some(desc::attach(&lane.view, desc::CLEAR))],
+                ..Default::default()
+            });
+        self.carried.seed(&mut region.scope, piece, &lane.tex);
+        let instances: Vec<SegmentInstance> = segments.iter().map(segment_instance).collect();
+        let bytes: &[u8] = bytemuck::cast_slice(&instances);
+        let buf = region.scope.take_piece_buffer(BufKey {
+            size: bytes.len() as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            label: "stark dynamics levels instances",
+        });
+        region.scope.write_lease(&buf, bytes);
+        let xform = tile_xform(consts, origin, (w as f32, h as f32), 1);
+        LanePiece {
+            lane,
+            xform: xform_group(r, &mut region.scope, &xform),
+            instances: buf,
+            prefix: &self.prefix,
+            noise: &self.noise,
+        }
+    }
+}
+
+/// One piece's ceiling lane (§6.2): the region-sized lane, the piece's segments
+/// instanced as the sweep draws them, and the three groups `stamp.wesl::fs_levels` is
+/// drawn with — two of them the run's own, borrowed rather than copied per piece.
+struct LanePiece<'a> {
+    lane: LeasedTex,
     xform: wgpu::BindGroup,
-    prefix: wgpu::BindGroup,
-    noise: wgpu::BindGroup,
     instances: wgpu::Buffer,
+    prefix: &'a wgpu::BindGroup,
+    noise: &'a wgpu::BindGroup,
+}
+
+impl LanePiece<'_> {
+    /// What a dispatch binds where a stroke without a lane binds the kit's 1×1 zero.
+    fn view(&self) -> &wgpu::TextureView {
+        &self.lane.view
+    }
+
+    /// Draw segment `index`'s sums over the lane — a render pass, because the lane
+    /// accumulates by blending, the one read-modify-write of a region texel the loop
+    /// makes without a snapshot.
+    fn draw(&self, region: &mut RegionRun<'_>, index: u32) {
+        let pipeline = region.r.swept.pipeline(SweepPass::Levels);
+        let mut pass = region
+            .scope
+            .encoder()
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark dynamics ceiling lane"),
+                color_attachments: &[Some(desc::attach(&self.lane.view, desc::LOAD))],
+                ..Default::default()
+            });
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &self.xform, &[0]);
+        pass.set_bind_group(1, self.prefix, &[]);
+        pass.set_bind_group(2, self.noise, &[]);
+        pass.set_vertex_buffer(0, self.instances.slice(..));
+        pass.draw(0..SWEEP_VERTS, index..index + 1);
+    }
+
+    /// The lane itself, the piece done with it — taking it out is what hands the run's
+    /// carry back for the extract.
+    fn into_region(self) -> LeasedTex {
+        self.lane
+    }
 }
 
 impl StrokeRenderer {
@@ -290,23 +406,11 @@ struct DynamicsRun<'a> {
     /// touched with the leases it extracted. Untouched — and empty — at the
     /// identity opacity.
     fresh: CarriedLanes,
-    /// The ceiling lane's carried tiles ([`LoopCarry::levels`]), evolving with
-    /// the run exactly as `fresh` does. Empty unless the pen drives the ceiling.
-    levels: CarriedLanes,
-    /// The brush as the **swept** sweep binds it — its prefix-τ and noise groups
-    /// over the swept layouts — for the per-segment draw of the ceiling lane
-    /// over the region (§6.2). `None` unless the pen drives the ceiling.
-    lane: Option<LaneBinds>,
+    /// The ceiling lane (§6.2), on a stroke whose ceiling the pen drives.
+    ceiling: Option<CeilingLane>,
 }
 
 impl<'a> DynamicsRun<'a> {
-    /// Whether the pen drives this stroke's ceiling (§6.2) — the run then draws
-    /// the ceiling lane over its region per segment and carries it per tile
-    /// beside the mint budget. Implies `consts.capped`.
-    fn leveled(&self) -> bool {
-        self.lane.is_some()
-    }
-
     /// Open the run: resolve the brush's textures, and put the tool in the state the
     /// stroke arrives at this range with — resumed from `tool`, or freshly charged.
     fn new(
@@ -336,26 +440,12 @@ impl<'a> DynamicsRun<'a> {
         scope.hold(noise.clone());
 
         let brush = ToolPingPong::take(scope, resid);
-        // The ceiling lane (§6.2), on a wet stroke whose ceiling the pen drives: the
-        // carried tiles, and the swept sweep's own bind groups for drawing the lane
-        // over the region — the brush bound exactly as the fast path binds it, so the
-        // lane's sums are the fast path's.
-        let leveled = consts.ceiling_lane;
         // Cloned, which for a persistent map is a refcount: the run replaces only the
         // tiles its own pieces draw, and the rest ride forward shared with the carry
         // this range resumed from.
         let levels = prior.map_or_else(LoopTiles::new, |t| t.levels.clone());
-        let lane = leveled.then(|| {
-            let (prefix, noise) = super::super::swept::sweep_brush_groups(
-                r,
-                scope,
-                tip,
-                rec,
-                scene.substrate,
-                consts,
-            );
-            LaneBinds { prefix, noise }
-        });
+        let ceiling = CeilingLane::of(&mut region, tip, rec, levels);
+        let scope = &mut region.scope;
         let fresh = match prior {
             Some(t) => {
                 brush.resume(scope, &t.reservoir);
@@ -389,8 +479,7 @@ impl<'a> DynamicsRun<'a> {
             bake_latm,
             bake_rlm,
             fresh: CarriedLanes::new(fresh_key(), fresh),
-            levels: CarriedLanes::new(levels_key(), levels),
-            lane,
+            ceiling,
         }
     }
 
@@ -419,11 +508,7 @@ impl<'a> DynamicsRun<'a> {
         let Some(piece) = self.region.open(base, segments, fires) else {
             return base.clone();
         };
-        let RegionBox {
-            origin: region_origin,
-            w,
-            h,
-        } = piece.bbox();
+        let region_origin = piece.bbox().origin;
         // Composite the canvas under the piece into a 1:1 region — the read half of
         // the loop's cost, and the one that scales with the *area* the stroke covers
         // rather than with its segment count.
@@ -441,11 +526,12 @@ impl<'a> DynamicsRun<'a> {
             self.fresh
                 .seed(&mut self.region.scope, &piece, &region.channels.aux.tex);
         }
-        // …and the ceiling lane's carried tiles over the cleared lane (§6.2), the
-        // same cut.
-        if let Some(levels_tex) = &region.levels_tex {
-            self.levels.seed(&mut self.region.scope, &piece, levels_tex);
-        }
+        // The ceiling lane over this piece (§6.2), seeded from its own carry by the
+        // same cut, on a stroke whose ceiling the pen drives.
+        let lane = self
+            .ceiling
+            .as_ref()
+            .map(|c| c.open(&mut self.region, &piece, segments, piece.bbox()));
 
         // ---- The dispatch plan, one slot per dispatch, uploaded as one buffer the
         // loop reads through dynamic offsets.
@@ -464,60 +550,38 @@ impl<'a> DynamicsRun<'a> {
         // the flush that submits the commands naming them. The bind groups outlive the
         // block because the loop below is recorded against them, and a `BindGroup`
         // holds its own references to every view in it.
-        let (plan, stamps, bind, levels_pass) = {
+        let (plan, stamps, bind) = {
             crate::timing::span!("stroke.plan");
             let ctx = self.region.plan_ctx(region_origin);
             let plan = dynamics_plan(&ctx, segments, fires, first, settle);
-            let under = self.snapshot_scratch(plan.dsize);
+            let under = snapshot_scratch(&mut self.region, plan.dsize);
             // The cell scratch (§6.2), only when some slot actually takes the coarse
             // path — a small or hard tip allocates nothing and binds nothing.
             let cells = plan
                 .slots
                 .iter()
                 .any(|d| matches!(d.step, WetStep::Segment { cells: Some(_), .. }))
-                .then(|| self.cell_scratch(plan.dsize));
+                .then(|| cell_scratch(&mut self.region, plan.dsize));
             // The bleed pair's mobility scratch (§6.2), only when some slot is a firing —
             // a brush that does not bleed allocates nothing and binds the 1×1 stand-in.
             let bleed = plan
                 .slots
                 .iter()
                 .any(|d| matches!(d.step, WetStep::Bleed))
-                .then(|| self.bleed_scratch(plan.dsize));
+                .then(|| bleed_scratch(&mut self.region, plan.dsize));
             let stamps = self.region.upload(&plan.slots);
             let bind = self.bind_piece(
-                &region,
-                &under,
+                PieceScratch {
+                    region: &region,
+                    under: &under,
+                    cells: cells.as_ref(),
+                    bleed: bleed.as_ref(),
+                    lane: lane.as_ref().map(LanePiece::view),
+                },
                 &stamps,
-                cells.as_ref(),
-                bleed.as_ref(),
                 Needs::of(&plan.slots),
             );
-            // The ceiling lane's draw state (§6.2): the segments as the sweep
-            // instances them, and the region as one sweep target.
-            let levels_pass = region.levels.as_ref().map(|view| {
-                let lane = self
-                    .lane
-                    .as_ref()
-                    .expect("a leveled region comes of a lane");
-                let instances: Vec<SegmentInstance> =
-                    segments.iter().map(segment_instance).collect();
-                let bytes: &[u8] = bytemuck::cast_slice(&instances);
-                let buf = self.region.scope.take_piece_buffer(BufKey {
-                    size: bytes.len() as u64,
-                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                    label: "stark dynamics levels instances",
-                });
-                self.region.scope.write_lease(&buf, bytes);
-                let xform = tile_xform(self.region.consts, region_origin, (w as f32, h as f32), 1);
-                LevelsPass {
-                    view: view.clone(),
-                    xform: xform_group(self.region.r, &mut self.region.scope, &xform),
-                    prefix: lane.prefix.clone(),
-                    noise: lane.noise.clone(),
-                    instances: buf,
-                }
-            });
-            (plan, stamps, bind, levels_pass)
+            (plan, stamps, bind)
         };
 
         {
@@ -526,12 +590,14 @@ impl<'a> DynamicsRun<'a> {
             // where a per-segment cost lands, and where a change to the dispatch
             // count shows up before it shows up in a total.
             crate::timing::span!("stroke.loop");
-            self.record_loop(
+            record_loop(
+                &mut self.region,
+                &mut self.brush,
                 &plan.slots,
                 plan.dsize,
                 &stamps,
                 &bind,
-                levels_pass.as_ref(),
+                lane.as_ref(),
             );
         }
         // Extract the budget's new totals for the carry (§6.2): a fresh lease
@@ -544,9 +610,11 @@ impl<'a> DynamicsRun<'a> {
                 .extract(r, &mut self.region.scope, &piece, &region.channels.aux.tex);
         }
         // The ceiling lane's new sums, cut the same way and held the same way.
-        if let Some(levels_tex) = &region.levels_tex {
-            self.levels
-                .extract(r, &mut self.region.scope, &piece, levels_tex);
+        let lane = lane.map(LanePiece::into_region);
+        if let (Some(ceiling), Some(lane)) = (&mut self.ceiling, &lane) {
+            ceiling
+                .carried
+                .extract(r, &mut self.region.scope, &piece, &lane.tex);
         }
 
         // Slicing the evolved region back into fresh CoW tiles — the write half,
@@ -589,34 +657,6 @@ impl<'a> DynamicsRun<'a> {
             ],
             r.color_space.has_resid(),
         );
-        // The ceiling lane over the region (§6.2), on a stroke whose ceiling the
-        // pen drives: **drawn** into per segment, so a render attachment rather
-        // than storage, and read by the deposits between draws. Cleared here —
-        // the pool hands back stale texels — and seeded from the carry below.
-        let (levels_tex, levels) = self
-            .leveled()
-            .then(|| {
-                let LeasedTex { tex, view } = self.region.scope.take_piece(Key {
-                    size: (w, h),
-                    format: super::super::swept::CEILING_FORMAT,
-                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                        | wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::COPY_SRC
-                        | wgpu::TextureUsages::COPY_DST,
-                    label: "stark dynamics region levels",
-                });
-                self.region
-                    .scope
-                    .encoder()
-                    .begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("stark dynamics region levels clear"),
-                        color_attachments: &[Some(desc::attach(&view, desc::CLEAR))],
-                        ..Default::default()
-                    });
-                (tex, view)
-            })
-            .unzip();
-
         let halo = piece.halo();
         composite_tiles(
             r,
@@ -629,83 +669,7 @@ impl<'a> DynamicsRun<'a> {
         let selection = self.region.scene.selection;
         let sel_mask = region_selection(r, &mut self.region.scope, selection, halo, rect);
 
-        Region {
-            channels,
-            levels_tex,
-            levels,
-            sel_mask,
-        }
-    }
-
-    /// The extent snapshot scratch: the copy that gives `deposit` and `settle`
-    /// something to read while they storage-write the region.
-    ///
-    /// `size` is the plan's own [`dsize`](super::plan::Plan::dsize) — the
-    /// largest rect the piece will actually dispatch, rounded to the pool's quantum —
-    /// so it is a maximum over the rects rather than a bound they must respect, and
-    /// nothing needs asserting or clamping.
-    fn snapshot_scratch(&mut self, size: u32) -> Trio {
-        Trio::take(
-            &mut self.region.scope,
-            Life::Piece,
-            (size, size),
-            LOOP_USAGE,
-            [d::UNDER_COLOR_W, d::UNDER_AUX_W, d::UNDER_RESID_W],
-            [
-                "stark dynamics under color",
-                "stark dynamics under aux",
-                "stark dynamics under resid",
-            ],
-            self.region.r.color_space.has_resid(),
-        )
-    }
-
-    /// The bleed pair's mobility scratch (§6.2): where `bleed_weight` leaves the weight
-    /// the ladder reads back thirty-six times a texel.
-    ///
-    /// Sized to the **snapshot square**, not a firing's rect, and that is what makes
-    /// the read safe: the ladder clamps a tap into the scratch's own extent, so a
-    /// texel outside the dispatched rect can still be read, and one this pass had not
-    /// written would hold the previous firing's answer.
-    fn bleed_scratch(&mut self, dsize: u32) -> wgpu::TextureView {
-        self.region
-            .scope
-            .take_piece(Key {
-                size: (dsize, dsize),
-                format: d::BLEED_W_W.storage_format(),
-                usage: LOOP_USAGE,
-                label: "stark dynamics bleed w",
-            })
-            .view
-    }
-
-    /// The extent-cell scratch (§6.2): where `cell_hoist` leaves the per-cell means
-    /// for `deposit_coarse` to read back. [`cell_scratch_size`] of the piece's own
-    /// `dsize`, which `cell_geometry` asserted every slot's hoist grid against, and
-    /// leased on the piece like the region.
-    fn cell_scratch(&mut self, dsize: u32) -> Cells {
-        let r = self.region.r;
-        let size = cell_scratch_size(dsize);
-        // Each at the format its own `cell_*_w` declaration names (§6.10).
-        let mut tex = |at: stark_shaders::Binding, label: &'static str| {
-            self.region
-                .scope
-                .take_piece(Key {
-                    size: (size, size),
-                    format: at.storage_format(),
-                    usage: LOOP_USAGE,
-                    label,
-                })
-                .view
-        };
-        Cells {
-            tool: tex(d::CELL_TOOL_W, "stark dynamics cell tool"),
-            lat: tex(d::CELL_LAT_W, "stark dynamics cell lat"),
-            res: r
-                .color_space
-                .has_resid()
-                .then(|| tex(d::CELL_RES_W, "stark dynamics cell res")),
-        }
+        Region { channels, sel_mask }
     }
 
     /// Every bind group the loop switches between while recording one piece.
@@ -721,13 +685,17 @@ impl<'a> DynamicsRun<'a> {
     /// WebGPU object per piece per pointer move.
     fn bind_piece<'p>(
         &'p self,
-        region: &'p Region,
-        under: &'p Trio,
+        over: PieceScratch<'p>,
         stamps: &'p LeasedSlots<Stamp>,
-        cells: Option<&'p Cells>,
-        bleed: Option<&'p wgpu::TextureView>,
         needs: Needs,
     ) -> PieceBindings {
+        let PieceScratch {
+            region,
+            under,
+            cells,
+            bleed,
+            lane,
+        } = over;
         let r = self.region.r;
         let kit = &r.dynamics.wet;
         let device = &r.ctx.device;
@@ -800,7 +768,7 @@ impl<'a> DynamicsRun<'a> {
                 b::BLEED_W_W => view(mobility()),
                 // The ceiling lane (§6.2), by the stand-in argument again: a stroke
                 // whose ceiling the pen does not drive carries `ceiling_lane = 0`.
-                b::REGION_LEVELS => view(region.levels.as_ref().unwrap_or(&kit.levels_placeholder)),
+                b::REGION_LEVELS => view(lane.unwrap_or(&kit.levels_placeholder)),
                 b::SUBSTRATE_TEX => view(&self.region.scene.substrate.view),
                 b::DEPTH_TEX => view(&self.depth),
                 b::SAMP => samp(&kit.sampler),
@@ -870,144 +838,6 @@ impl<'a> DynamicsRun<'a> {
         }
     }
 
-    /// Record the loop: bake → exchange (+ snapshot) → deposit per segment, in
-    /// stroke order. One compute pass; the implicit barriers between dispatches give
-    /// the sequential semantics, and usage scopes are per-dispatch, so the region may
-    /// be sampled by one dispatch and storage-written by the next.
-    ///
-    /// `exchange` comes *before* `deposit` and not after: the two are the two halves
-    /// of one transfer, and they only add up if both read the canvas and the
-    /// reservoir as this segment found them (`dynamics.wesl::exchange_at`).
-    ///
-    /// The ping-pong outlives the pass: it names the half holding the tool's state, so
-    /// after the last dispatch it names the state this piece ends in — which is what
-    /// the next piece, or the next range, resumes from.
-    fn record_loop(
-        &mut self,
-        plan: &[LoopDispatch<WetStep>],
-        dsize: u32,
-        stamps: &LeasedSlots<Stamp>,
-        bind: &PieceBindings,
-        levels: Option<&LevelsPass>,
-    ) {
-        // Off the renderer rather than through `self`, so the pass below may borrow
-        // the run's encoder for as long as it is recording.
-        let r = self.region.r;
-        let kit = &r.dynamics.wet;
-        // The reservoir half of `exchange`, which the extent half is laid beside on x:
-        // [`BRUSH_RES`]² whatever the segment does.
-        let reservoir = kit.exchange.groups((BRUSH_RES, BRUSH_RES));
-        let mut pass = self.region.loop_pass(LOOP_PASS);
-        for (i, d) in plan.iter().enumerate() {
-            // Asked of the lease the slots were staged into, so the stride they were
-            // *written* at and the stride they are *bound* at are one expression rather
-            // than two that happen to agree.
-            let off = stamps.offset(i);
-            match d.step {
-                // The tool plays no part in the lateral flux, so `cur` — the reservoir
-                // ping-pong — stays exactly where the previous segment left it. The
-                // standalone snapshot kernel rather than the exchange's tail, because
-                // there is no exchange dispatch to ride in.
-                WetStep::Bleed => {
-                    kit.snapshot
-                        .dispatch(&mut pass, bind.snapshot(), off, d.extent);
-                    // The pair's mobility, once per texel, for the ladder to read back
-                    // (§6.2). Over the **whole snapshot square** rather than the
-                    // firing's rect: the ladder clamps a tap into the scratch's extent,
-                    // so every texel it can reach has to have been written this firing.
-                    kit.bleed_weight
-                        .dispatch(&mut pass, bind.bleed_weight(), off, (dsize, dsize));
-                    kit.deposit
-                        .dispatch(&mut pass, bind.deposit(), off, d.extent);
-                }
-                WetStep::Segment { index, cells } => {
-                    let cur = self.brush.cur();
-                    // Bake this segment's swept reservoir prefix first — it folds in the
-                    // tip's current orientation as well as the reservoir state.
-                    kit.bake
-                        .dispatch(&mut pass, bind.bake(cur), off, (BAKE_RES, BAKE_RES));
-                    // Then the tool's own side of this segment's transfer, off the
-                    // region as the segment found it. Reads `cur` and writes the other
-                    // half, so the next segment's bake sees a tool that has travelled
-                    // and reloaded.
-                    //
-                    // The extent `snapshot` rides in the tail of this same grid: it
-                    // depends on nothing the exchange writes, so a barrier between them
-                    // would buy no ordering. Hence the widened x — reservoir groups
-                    // first, extent groups after — and a y tall enough for the taller
-                    // of the two (`dynamics.wesl::exchange`).
-                    let tail = kit.exchange.groups(d.extent);
-                    kit.exchange.dispatch_groups(
-                        &mut pass,
-                        bind.exchange(cur),
-                        off,
-                        (reservoir.0 + tail.0, reservoir.1.max(tail.1)),
-                    );
-                    // The canvas's half: exact per texel, or — where the tip's
-                    // shoulder allows (`extent_cell`) — hoisted once per cell and
-                    // applied over the same texel grid. The hoist reads the bake this
-                    // segment just wrote and nothing the exchange writes, so the extra
-                    // serialized dispatch lands only on the wide tips that are
-                    // texel-bound rather than dispatch-bound.
-                    match cells.map(|cl| (cl, bind.coarse())) {
-                        Some((cl, cb)) => {
-                            kit.hoist.dispatch(&mut pass, &cb.hoist, off, cl);
-                            kit.deposit_coarse
-                                .dispatch(&mut pass, &cb.deposit, off, d.extent);
-                        }
-                        None => kit
-                            .deposit
-                            .dispatch(&mut pass, bind.deposit(), off, d.extent),
-                    }
-                    // The ceiling lane (§6.2): this segment's sums drawn over the
-                    // region *after* its deposit, so the deposit read the lane as
-                    // the segments before it left it and the next reads it with
-                    // this one in. A render pass, because the lane accumulates by
-                    // blending — the one read-modify-write of a region texel the
-                    // loop makes without a snapshot — so the compute pass ends
-                    // around it and resumes after.
-                    if let Some(l) = levels {
-                        drop(pass);
-                        {
-                            let mut rpass = self.region.scope.encoder().begin_render_pass(
-                                &wgpu::RenderPassDescriptor {
-                                    label: Some("stark dynamics ceiling lane"),
-                                    color_attachments: &[Some(desc::attach(&l.view, desc::LOAD))],
-                                    ..Default::default()
-                                },
-                            );
-                            rpass.set_pipeline(r.swept.pipeline(SweepPass::Levels));
-                            rpass.set_bind_group(0, &l.xform, &[0]);
-                            rpass.set_bind_group(1, &l.prefix, &[]);
-                            rpass.set_bind_group(2, &l.noise, &[]);
-                            rpass.set_vertex_buffer(0, l.instances.slice(..));
-                            rpass.draw(0..SWEEP_VERTS, index..index + 1);
-                        }
-                        pass = self.region.loop_pass(LOOP_PASS);
-                    }
-                    self.brush.advance();
-                }
-                // The pen-up: snapshot the final extent, bake the standing tip's
-                // remaining-pass delivery off the reservoir the last segment left
-                // (`cur` still names it — the slot's zero travel switches the bake onto
-                // the settle's weighted integral), then settle the transfer the stroke
-                // stopped in the middle of. The tool is not written back, so the
-                // ping-pong is left alone here too.
-                WetStep::Settle => {
-                    kit.snapshot
-                        .dispatch(&mut pass, bind.snapshot(), off, d.extent);
-                    kit.bake.dispatch(
-                        &mut pass,
-                        bind.bake(self.brush.cur()),
-                        off,
-                        (BAKE_RES, BAKE_RES),
-                    );
-                    kit.settle.dispatch(&mut pass, bind.settle(), off, d.extent);
-                }
-            }
-        }
-    }
-
     /// Slice each affected tile's full `TILE_TEX` block out of the shared region into
     /// a fresh CoW tile → aprons stay bit-identical to neighbour interiors (§6.4), and
     /// the wide region aux narrows to the persistent one (height). See
@@ -1037,7 +867,10 @@ impl<'a> DynamicsRun<'a> {
             // already copies of the run's own state, so nothing more to copy
             // out here. Empty at the identity opacity.
             fresh: std::mem::take(&mut self.fresh.tiles),
-            levels: std::mem::take(&mut self.levels.tiles),
+            levels: self
+                .ceiling
+                .as_mut()
+                .map_or_else(LoopTiles::new, |c| std::mem::take(&mut c.carried.tiles)),
         })))
     }
 
@@ -1051,9 +884,198 @@ impl<'a> DynamicsRun<'a> {
         let tool = capture.then(|| self.capture_tool());
         let held = (
             std::mem::take(&mut self.fresh.tiles),
-            std::mem::take(&mut self.levels.tiles),
+            self.ceiling
+                .as_mut()
+                .map(|c| std::mem::take(&mut c.carried.tiles)),
         );
         self.region.finish(end_dist, tool, held)
+    }
+}
+
+/// The extent snapshot scratch: the copy that gives `deposit` and `settle`
+/// something to read while they storage-write the region.
+///
+/// `size` is the plan's own [`dsize`](super::plan::Plan::dsize) — the
+/// largest rect the piece will actually dispatch, rounded to the pool's quantum —
+/// so it is a maximum over the rects rather than a bound they must respect, and
+/// nothing needs asserting or clamping.
+fn snapshot_scratch(region: &mut RegionRun<'_>, size: u32) -> Trio {
+    let resid = region.r.color_space.has_resid();
+    Trio::take(
+        &mut region.scope,
+        Life::Piece,
+        (size, size),
+        LOOP_USAGE,
+        [d::UNDER_COLOR_W, d::UNDER_AUX_W, d::UNDER_RESID_W],
+        [
+            "stark dynamics under color",
+            "stark dynamics under aux",
+            "stark dynamics under resid",
+        ],
+        resid,
+    )
+}
+
+/// The bleed pair's mobility scratch (§6.2): where `bleed_weight` leaves the weight
+/// the ladder reads back thirty-six times a texel.
+///
+/// Sized to the **snapshot square**, not a firing's rect, and that is what makes
+/// the read safe: the ladder clamps a tap into the scratch's own extent, so a
+/// texel outside the dispatched rect can still be read, and one this pass had not
+/// written would hold the previous firing's answer.
+fn bleed_scratch(region: &mut RegionRun<'_>, dsize: u32) -> wgpu::TextureView {
+    region
+        .scope
+        .take_piece(Key {
+            size: (dsize, dsize),
+            format: d::BLEED_W_W.storage_format(),
+            usage: LOOP_USAGE,
+            label: "stark dynamics bleed w",
+        })
+        .view
+}
+
+/// The extent-cell scratch (§6.2): where `cell_hoist` leaves the per-cell means
+/// for `deposit_coarse` to read back. [`cell_scratch_size`] of the piece's own
+/// `dsize`, which `cell_geometry` asserted every slot's hoist grid against, and
+/// leased on the piece like the region.
+fn cell_scratch(region: &mut RegionRun<'_>, dsize: u32) -> Cells {
+    let resid = region.r.color_space.has_resid();
+    let size = cell_scratch_size(dsize);
+    // Each at the format its own `cell_*_w` declaration names (§6.10).
+    let mut tex = |at: stark_shaders::Binding, label: &'static str| {
+        region
+            .scope
+            .take_piece(Key {
+                size: (size, size),
+                format: at.storage_format(),
+                usage: LOOP_USAGE,
+                label,
+            })
+            .view
+    };
+    Cells {
+        tool: tex(d::CELL_TOOL_W, "stark dynamics cell tool"),
+        lat: tex(d::CELL_LAT_W, "stark dynamics cell lat"),
+        res: resid.then(|| tex(d::CELL_RES_W, "stark dynamics cell res")),
+    }
+}
+
+/// Record the loop: bake → exchange (+ snapshot) → deposit per segment, in
+/// stroke order. One compute pass; the implicit barriers between dispatches give
+/// the sequential semantics, and usage scopes are per-dispatch, so the region may
+/// be sampled by one dispatch and storage-written by the next.
+///
+/// `exchange` comes *before* `deposit` and not after: the two are the two halves
+/// of one transfer, and they only add up if both read the canvas and the
+/// reservoir as this segment found them (`dynamics.wesl::exchange_at`).
+///
+/// The run's region and ping-pong are taken apart rather than passed whole, because
+/// `lane` is the run's own ceiling lane borrowed for the piece. The ping-pong outlives
+/// the pass: it names the half holding the tool's state, so after the last dispatch it
+/// names the state this piece ends in — which is what the next piece, or the next
+/// range, resumes from.
+fn record_loop(
+    region: &mut RegionRun<'_>,
+    brush: &mut ToolPingPong,
+    plan: &[LoopDispatch<WetStep>],
+    dsize: u32,
+    stamps: &LeasedSlots<Stamp>,
+    bind: &PieceBindings,
+    lane: Option<&LanePiece<'_>>,
+) {
+    let kit = &region.r.dynamics.wet;
+    // The reservoir half of `exchange`, which the extent half is laid beside on x:
+    // [`BRUSH_RES`]² whatever the segment does.
+    let reservoir = kit.exchange.groups((BRUSH_RES, BRUSH_RES));
+    let mut pass = region.loop_pass(LOOP_PASS);
+    for (i, d) in plan.iter().enumerate() {
+        // Asked of the lease the slots were staged into, so the stride they were
+        // *written* at and the stride they are *bound* at are one expression rather
+        // than two that happen to agree.
+        let off = stamps.offset(i);
+        match d.step {
+            // The tool plays no part in the lateral flux, so `cur` — the reservoir
+            // ping-pong — stays exactly where the previous segment left it. The
+            // standalone snapshot kernel rather than the exchange's tail, because
+            // there is no exchange dispatch to ride in.
+            WetStep::Bleed => {
+                kit.snapshot
+                    .dispatch(&mut pass, bind.snapshot(), off, d.extent);
+                // The pair's mobility, once per texel, for the ladder to read back
+                // (§6.2). Over the **whole snapshot square** rather than the
+                // firing's rect: the ladder clamps a tap into the scratch's extent,
+                // so every texel it can reach has to have been written this firing.
+                kit.bleed_weight
+                    .dispatch(&mut pass, bind.bleed_weight(), off, (dsize, dsize));
+                kit.deposit
+                    .dispatch(&mut pass, bind.deposit(), off, d.extent);
+            }
+            WetStep::Segment { index, cells } => {
+                let cur = brush.cur();
+                // Bake this segment's swept reservoir prefix first — it folds in the
+                // tip's current orientation as well as the reservoir state.
+                kit.bake
+                    .dispatch(&mut pass, bind.bake(cur), off, (BAKE_RES, BAKE_RES));
+                // Then the tool's own side of this segment's transfer, off the
+                // region as the segment found it. Reads `cur` and writes the other
+                // half, so the next segment's bake sees a tool that has travelled
+                // and reloaded.
+                //
+                // The extent `snapshot` rides in the tail of this same grid: it
+                // depends on nothing the exchange writes, so a barrier between them
+                // would buy no ordering. Hence the widened x — reservoir groups
+                // first, extent groups after — and a y tall enough for the taller
+                // of the two (`dynamics.wesl::exchange`).
+                let tail = kit.exchange.groups(d.extent);
+                kit.exchange.dispatch_groups(
+                    &mut pass,
+                    bind.exchange(cur),
+                    off,
+                    (reservoir.0 + tail.0, reservoir.1.max(tail.1)),
+                );
+                // The canvas's half: exact per texel, or — where the tip's
+                // shoulder allows (`extent_cell`) — hoisted once per cell and
+                // applied over the same texel grid. The hoist reads the bake this
+                // segment just wrote and nothing the exchange writes, so the extra
+                // serialized dispatch lands only on the wide tips that are
+                // texel-bound rather than dispatch-bound.
+                match cells.map(|cl| (cl, bind.coarse())) {
+                    Some((cl, cb)) => {
+                        kit.hoist.dispatch(&mut pass, &cb.hoist, off, cl);
+                        kit.deposit_coarse
+                            .dispatch(&mut pass, &cb.deposit, off, d.extent);
+                    }
+                    None => kit
+                        .deposit
+                        .dispatch(&mut pass, bind.deposit(), off, d.extent),
+                }
+                // The ceiling lane (§6.2): this segment's sums drawn over the
+                // region *after* its deposit, so the deposit read the lane as
+                // the segments before it left it and the next reads it with
+                // this one in. The draw is a render pass, so the compute pass
+                // ends around it and resumes after.
+                if let Some(l) = lane {
+                    drop(pass);
+                    l.draw(region, index);
+                    pass = region.loop_pass(LOOP_PASS);
+                }
+                brush.advance();
+            }
+            // The pen-up: snapshot the final extent, bake the standing tip's
+            // remaining-pass delivery off the reservoir the last segment left
+            // (`cur` still names it — the slot's zero travel switches the bake onto
+            // the settle's weighted integral), then settle the transfer the stroke
+            // stopped in the middle of. The tool is not written back, so the
+            // ping-pong is left alone here too.
+            WetStep::Settle => {
+                kit.snapshot
+                    .dispatch(&mut pass, bind.snapshot(), off, d.extent);
+                kit.bake
+                    .dispatch(&mut pass, bind.bake(brush.cur()), off, (BAKE_RES, BAKE_RES));
+                kit.settle.dispatch(&mut pass, bind.settle(), off, d.extent);
+            }
+        }
     }
 }
 
@@ -1065,15 +1087,21 @@ struct Region {
     /// write-back cuts tiles out of the colour and residual and the mint budget is
     /// seeded into and extracted out of the aux — and a copy is addressed by texture.
     channels: Trio,
-    /// The ceiling lane over the region (§6.2), on a stroke whose ceiling the pen
-    /// drives: drawn per segment, read by the deposits, seeded from and extracted
-    /// into the carry by copy like the mint budget — never written back, being
-    /// no part of a tile.
-    levels_tex: Option<wgpu::Texture>,
-    levels: Option<wgpu::TextureView>,
     /// The selection over the region (§6.8) — its own gathered mask, or the 1×1
     /// constant that stands in for an unrestricted selection.
     sel_mask: wgpu::TextureView,
+}
+
+/// What one piece's bind groups are built over: the region and its selection, the
+/// extent snapshot, and the three a piece takes only when its plan asks for one — the
+/// cells, the bleed pair's mobility and the ceiling lane.
+#[derive(Clone, Copy)]
+struct PieceScratch<'p> {
+    region: &'p Region,
+    under: &'p Trio,
+    cells: Option<&'p Cells>,
+    bleed: Option<&'p wgpu::TextureView>,
+    lane: Option<&'p wgpu::TextureView>,
 }
 
 /// The extent-cell scratch (§6.2): the coarse deposit's per-cell means, sized by
