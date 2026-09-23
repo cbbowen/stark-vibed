@@ -68,7 +68,7 @@ impl Engine<Shapes> for Desk {
     }
 
     fn held(&self, id: AssetId) -> Option<Vec<u8>> {
-        self.engine().asset_bytes(id)
+        self.engine().content_bytes(Shapes::need(id))
     }
 
     fn import(&mut self, png: &[u8]) -> Result<AssetId, String> {
@@ -82,7 +82,7 @@ impl Engine<Substrates> for Desk {
     }
 
     fn held(&self, id: AssetId) -> Option<Vec<u8>> {
-        self.engine().substrate_bytes(SubstrateId::Image(id))
+        self.engine().content_bytes(Substrates::need(id))
     }
 
     fn import(&mut self, png: &[u8]) -> Result<AssetId, String> {

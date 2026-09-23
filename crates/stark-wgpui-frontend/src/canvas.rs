@@ -2427,10 +2427,10 @@ impl Canvas {
         let Some(tx) = self.collab.broadcaster() else {
             return;
         };
-        let bytes = self.renderer.as_ref().and_then(|r| match need {
-            AssetNeed::Substrate(id) => r.desk.engine().substrate_bytes(SubstrateId::Image(id)),
-            _ => r.desk.engine().asset_bytes(need.content()),
-        });
+        let bytes = self
+            .renderer
+            .as_ref()
+            .and_then(|r| r.desk.engine().content_bytes(need));
         if let Some(bytes) = bytes {
             collab::offer(&tx, need, bytes);
         }
@@ -2885,8 +2885,7 @@ impl Canvas {
             .as_ref()?
             .desk
             .engine()
-            .asset_bytes(id)
-            .is_some()
+            .holds(AssetNeed::Brush(id))
         {
             return Some(id);
         }
@@ -3004,7 +3003,7 @@ impl Canvas {
                 // The engine's own canonical bytes, not the ones handed to it: the id
                 // names *those*, and a library holding anything else would be a
                 // library whose rows do not match its blobs.
-                let canonical = engine.asset_bytes(id).unwrap_or(png);
+                let canonical = engine.content_bytes(AssetNeed::Brush(id)).unwrap_or(png);
                 let kept = self.keep::<assets::Shapes>(&file_name, id, canonical);
                 self.offer(<assets::Shapes as assets::Kind>::need(id));
                 self.wear_shape(BrushShape::Stamp(id), cx);
@@ -3035,7 +3034,7 @@ impl Canvas {
                 let canonical = self
                     .renderer
                     .as_ref()
-                    .and_then(|r| r.desk.engine().substrate_bytes(id))
+                    .and_then(|r| r.desk.engine().content_bytes(AssetNeed::Substrate(content)))
                     .unwrap_or(png);
                 let kept = self.keep::<assets::Substrates>(&file_name, content, canonical);
                 self.wear_substrate(id, cx);
@@ -3902,7 +3901,7 @@ impl Render for Canvas {
         let engine_bytes = |id| {
             self.renderer
                 .as_ref()
-                .and_then(|r| r.desk.engine().asset_bytes(id))
+                .and_then(|r| r.desk.engine().content_bytes(AssetNeed::Brush(id)))
                 .or_else(|| crate::assets::bytes_for(id).map(<[u8]>::to_vec))
         };
         // The stamp gallery is the **editor's**, so it is built only while one is open:
@@ -3927,7 +3926,7 @@ impl Render for Canvas {
         let substrate_bytes = |id| {
             self.renderer
                 .as_ref()
-                .and_then(|r| r.desk.engine().substrate_bytes(SubstrateId::Image(id)))
+                .and_then(|r| r.desk.engine().content_bytes(AssetNeed::Substrate(id)))
                 .or_else(|| crate::assets::bytes_for(id).map(<[u8]>::to_vec))
         };
         // Headed by what it *is* rather than by what it holds: the shelf around it is

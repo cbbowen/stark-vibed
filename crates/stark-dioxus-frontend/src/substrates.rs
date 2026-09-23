@@ -58,7 +58,7 @@
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use stark_engine::command::DocCommand;
-use stark_model::SubstrateId;
+use stark_model::{AssetNeed, SubstrateId};
 
 use crate::library;
 use crate::render::Renderer;
@@ -226,7 +226,7 @@ fn seed_session(state: AppState, id: SubstrateId) {
         .renderer
         .peek()
         .as_ref()
-        .and_then(|r| r.desk.engine().substrate_bytes(id));
+        .and_then(|r| r.desk.engine().content_bytes(AssetNeed::Substrate(asset)));
     if let Some(bytes) = bytes {
         library::seed_session::<Substrates>(state, asset, bytes);
     }

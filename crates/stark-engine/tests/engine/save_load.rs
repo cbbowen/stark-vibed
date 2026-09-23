@@ -459,6 +459,62 @@ fn a_substrate_that_is_not_what_it_claims_is_refused() {
     );
 }
 
+/// **A brush's bytes are checked against the id they were filed under too** — the one
+/// arm of the install that did not ask (§8, §19).
+///
+/// Every install goes through one door now ([`Engine::install`]), so a file offering a
+/// stamp under someone else's id is refused the way a substrate's already was. It used
+/// to be filed under whatever it *did* hash to and answered `Ok`: the need stayed unmet,
+/// the stroke naming it drew with no shape at all, and nothing was said about it.
+///
+/// The second half is what the one door costs. It canonicalizes on the way in, so a
+/// bundle's bytes have to come back out unchanged — otherwise loading a file and saving
+/// it again would rewrite every stamp it carries.
+///
+/// [`Engine::install`]: stark_engine::Engine::install
+#[test]
+fn a_brush_that_is_not_what_it_claims_is_refused() {
+    let (Some(donor), Some(mut opener)) = (engine_or_skip_blue(), engine_or_skip_blue()) else {
+        return;
+    };
+    let bristles = stark_testdata::assets::bristles();
+    let id = donor
+        .import_brush(&bristles)
+        .expect("the bristle stamp imports");
+    let need = stark_model::AssetNeed::Brush(id);
+    // A different shape, so its coverage hashes elsewhere — which is the whole premise.
+    let impostor = stark_testdata::assets::flat_tip();
+
+    let refused = opener.install(need, &impostor);
+    assert!(
+        matches!(
+            refused,
+            Err(stark_engine::EngineError::Document(
+                stark_model::DocError::Misnamed { .. }
+            ))
+        ),
+        "the flat tip must not install itself as the bristle stamp: {refused:?}"
+    );
+    assert!(
+        !opener.holds(need),
+        "nothing may be held under the id that asked"
+    );
+
+    // What the file actually carries: the store's own canonical form, which has to
+    // survive being installed again.
+    let canonical = donor
+        .content_bytes(need)
+        .expect("the store keeps a canonical form of what it imported");
+    opener
+        .install(need, &canonical)
+        .expect("bytes under their own id install");
+    assert_eq!(
+        opener.content_bytes(need),
+        Some(canonical),
+        "a bundle's stamp bytes have to survive the install, or a re-save would rewrite them"
+    );
+}
+
 /// **A lean file names the substrate it was painted on but does not carry it, and
 /// still replays to the same pixels** (§8's version 6, §12.4).
 ///

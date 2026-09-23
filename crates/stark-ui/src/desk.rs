@@ -13,7 +13,7 @@
 
 use stark_engine::command::ViewCommand;
 use stark_engine::{Engine, EngineError, Extent2, Identity, ObservableState, Transfer};
-use stark_model::{AssetId, AssetNeed, ColorSpaceId, DocError, DocumentFile, SubstrateId};
+use stark_model::{AssetId, AssetNeed, ColorSpaceId, DocumentFile, SubstrateId};
 
 use crate::prefs::Hdr;
 
@@ -137,30 +137,12 @@ impl Desk {
     /// Install content under the need that asked for it — read out of this build's
     /// bundle or arrived off a peer (§12.4).
     ///
-    /// Refused, in every arm, when the bytes are not what the id names
-    /// (`DocError::Misnamed`). A brush's id comes out of its import, so a mismatched one
-    /// is held under its own id and the need stays unmet. **Exhaustive on the need**:
-    /// `AssetNeed::substrate()` answers `None` for a brush and for a picture alike, and
-    /// a two-arm form files a picture in the brush store (§8, §23).
+    /// The engine's own door ([`Engine::install`](stark_engine::Engine::install)), which
+    /// is where the check that the bytes are what the id names lives. Here so that
+    /// [`replace`](Self::replace) and both frontends' offer paths reach it without each
+    /// naming the three stores.
     pub fn install(&mut self, need: AssetNeed, bytes: &[u8]) -> stark_engine::Result<()> {
-        match need {
-            AssetNeed::Brush(expected) => {
-                let actual = self.engine.import_brush(bytes)?;
-                if actual != expected {
-                    return Err(DocError::Misnamed {
-                        expected: need,
-                        actual: AssetNeed::Brush(actual),
-                    }
-                    .into());
-                }
-                Ok(())
-            }
-            AssetNeed::Substrate(id) => self
-                .engine
-                .accept_substrate(SubstrateId::Image(id), bytes)
-                .map(drop),
-            AssetNeed::Picture(id) => self.engine.accept_picture(id, bytes),
-        }
+        self.engine.install(need, bytes)
     }
 
     /// Replace the document: install what it `owed`, replace, and frame the piece

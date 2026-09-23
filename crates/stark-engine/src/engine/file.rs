@@ -79,16 +79,10 @@ impl Engine {
         // The id alone: `CanvasMeta` has no field for the scale it starts at, so a
         // document begun off its natural size (`Engine::on_shared`) reopens at it.
         file.canvas.substrate = self.initial.id;
-        // One bag, keyed by the need itself, so a store is asked only for the bytes
-        // it can decode (§8). The match is over *which store*, not over which bag to
-        // push to — the key carries that.
+        // One bag, keyed by the need itself, so a store is asked only for the bytes it
+        // can decode ([`Engine::content_bytes`], §8).
         for need in file.required_content() {
-            let bytes = match need {
-                AssetNeed::Brush(id) => self.asset_bytes(id),
-                AssetNeed::Substrate(_) => need.substrate().and_then(|id| self.substrate_bytes(id)),
-                AssetNeed::Picture(id) => self.shared.apply.pictures.bytes(id),
-            };
-            if let Some(bytes) = bytes {
+            if let Some(bytes) = self.content_bytes(need) {
                 file.content.push((need, bytes));
             }
         }
@@ -158,29 +152,12 @@ impl Engine {
                 .expect("a ValidatedFile's color space resolves, by construction");
             self.rebuild_gpu_for(cs);
         }
-        // Each entry to the store its need names, which is the whole reason the bundle
-        // is keyed by one: a substrate handed to the brush store decodes as luminance
-        // × alpha rather than channel 0, and nothing downstream can tell (§8).
+        // Each entry to the store its need names, and checked against the id it was
+        // filed under, which is the whole reason the bundle is keyed by a need
+        // ([`Engine::install`], §8).
         for (need, bytes) in &file.content {
-            let handed = match need {
-                AssetNeed::Brush(_) => self
-                    .shared
-                    .apply
-                    .assets
-                    .insert_bytes(bytes)
-                    .map(|_| ())
-                    .map_err(|e| format!("brush asset: {e}")),
-                AssetNeed::Substrate(id) => self
-                    .accept_substrate(SubstrateId::Image(*id), bytes)
-                    .map(|_| ())
-                    .map_err(|e| format!("canvas substrate: {e}")),
-                AssetNeed::Picture(id) => self
-                    .accept_picture(*id, bytes)
-                    .map(|_| ())
-                    .map_err(|e| format!("placed picture: {e}")),
-            };
-            if let Err(e) = handed {
-                tracing::warn!("skipping content this document names — {e}");
+            if let Err(e) = self.install(*need, bytes) {
+                tracing::warn!(?need, "skipping content this document names — {e}");
             }
         }
         // A joiner is the one caller that legitimately starts short: the actions arrive
@@ -296,8 +273,64 @@ impl Engine {
         self.shared.apply.assets.contains(id)
     }
 
+    /// The canonical bytes this engine holds for `need`, out of the store that need
+    /// names — `None` for content that has not arrived, and for the procedural flat
+    /// substrate, which has none (§8, §12.4).
+    ///
+    /// **The one door**, for the reason the bundle is keyed by a need rather than by an
+    /// id: all three needs carry an [`AssetId`], so a caller that matched two of them
+    /// and let the third fall through would serve a *picture* out of the brush store and
+    /// nothing downstream could tell (§8, §23). Exhaustive here, once, instead.
+    pub fn content_bytes(&self, need: AssetNeed) -> Option<Vec<u8>> {
+        match need {
+            AssetNeed::Brush(id) => self.asset_bytes(id),
+            AssetNeed::Substrate(_) => need.substrate().and_then(|id| self.substrate_bytes(id)),
+            AssetNeed::Picture(id) => self.shared.apply.pictures.bytes(id),
+        }
+    }
+
+    /// Install content under the need that asked for it — out of a save file's bundle,
+    /// read from the opening app's own catalog, or fetched off a peer (§8, §12.4).
+    ///
+    /// [`content_bytes`](Self::content_bytes)' inverse, and exhaustive for its reason:
+    /// each entry goes to the store its need names, and a substrate handed to the brush
+    /// store decodes as luminance × alpha rather than channel 0 with nothing downstream
+    /// able to tell (§8).
+    ///
+    /// **Refused, in every arm, when the bytes are not what the id names**
+    /// ([`DocError::Misnamed`]). Bytes under someone else's id are the one way
+    /// content-addressed content could still deposit the wrong tooth, stamp with the
+    /// wrong shape or place a different picture; the id comes out of the bytes on the
+    /// way in, so the disagreement is detectable and is detected. A brush was the arm
+    /// that did not ask, so a misnamed one installed under its own id and left the need
+    /// quietly unmet.
+    ///
+    /// A substrate the document has already moved to while its bytes were in flight is
+    /// rebound here, which is what swaps the flat stand-in for the real thing
+    /// ([`accept_substrate`](Self::accept_substrate)).
+    pub fn install(&mut self, need: AssetNeed, bytes: &[u8]) -> Result<()> {
+        match need {
+            AssetNeed::Brush(expected) => {
+                let actual = self.import_brush(bytes)?;
+                if actual != expected {
+                    return Err(DocError::Misnamed {
+                        expected: need,
+                        actual: AssetNeed::Brush(actual),
+                    }
+                    .into());
+                }
+                Ok(())
+            }
+            AssetNeed::Substrate(id) => self
+                .accept_substrate(SubstrateId::Image(id), bytes)
+                .map(drop),
+            AssetNeed::Picture(id) => self.accept_picture(id, bytes),
+        }
+    }
+
     /// Whether this engine already holds what `need` names, in whichever of the
-    /// three stores it belongs to — asked without copying the bytes.
+    /// three stores it belongs to — asked without copying the bytes, which is why it is
+    /// a match of its own rather than [`content_bytes`](Self::content_bytes) thrown away.
     pub fn holds(&self, need: AssetNeed) -> bool {
         match need {
             AssetNeed::Brush(id) => self.has_asset(id),

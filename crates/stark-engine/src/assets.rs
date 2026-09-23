@@ -140,25 +140,19 @@ impl AssetStore {
         }
     }
 
-    /// Import a brush image (any PNG), returning its content id. The id is the
-    /// hash of the *decoded coverage* (not the file bytes), so it is independent
-    /// of source encoding — and the asset is stored as a compact grayscale PNG.
+    /// Import a brush image (any PNG), returning its content id — **the one way in**,
+    /// for a shipped catalog entry, a file's bundle and a peer's offer alike.
+    ///
+    /// The id is the hash of the *decoded coverage* rather than of the file bytes, so it
+    /// is independent of source encoding, and the stored form is re-encoded from that
+    /// coverage. A saved bundle is already that encoding, so a reload re-derives what it
+    /// was handed; anything else is canonicalized on the way in, which is what makes
+    /// [`bytes`](Self::bytes)' promise unconditional.
     pub(crate) fn import(&self, bytes: &[u8]) -> Result<AssetId> {
-        // Canonicalize: stored form is re-encoded from the coverage.
-        self.load(bytes, None)
-    }
-
-    /// Re-insert an asset from its saved (already-canonical grayscale PNG) bytes
-    /// when loading a document — keeps the stored bytes verbatim.
-    pub(crate) fn insert_bytes(&self, bytes: &[u8]) -> Result<AssetId> {
-        self.load(bytes, Some(bytes.to_vec()))
-    }
-
-    fn load(&self, decode_from: &[u8], store_bytes: Option<Vec<u8>>) -> Result<AssetId> {
         // Decode, cap and hash are the identity contract's, not ours (§19): the id
         // names the canonical coverage, so a reload of the stored PNG lands back on
         // the same id.
-        let canonical = stark_assetid::coverage(decode_from)?;
+        let canonical = stark_assetid::coverage(bytes)?;
         let id = canonical.id();
         let stark_assetid::Canonical {
             width: w,
@@ -167,15 +161,12 @@ impl AssetStore {
         } = canonical;
         let mut masks = unpoisoned(self.masks.lock());
         if let Entry::Vacant(slot) = masks.entry(id) {
-            let bytes = match store_bytes {
-                Some(b) => b,
-                None => stark_assetid::Canonical {
-                    width: w,
-                    height: h,
-                    texels: coverage.clone(),
-                }
-                .encode()?,
-            };
+            let bytes = stark_assetid::Canonical {
+                width: w,
+                height: h,
+                texels: coverage.clone(),
+            }
+            .encode()?;
             // Two readings of one τ field: the follow-stroke volume — the whole of the
             // bake for the common brush, one layer of the mask as it stands integrated
             // over its own width — and the same τ unintegrated, which is what the tool
