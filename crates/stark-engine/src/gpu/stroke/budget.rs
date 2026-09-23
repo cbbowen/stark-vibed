@@ -86,7 +86,7 @@ const _: () = assert!(
 /// also emits a bleed slot per crossing of the bleed cadence — up to
 /// `dynamics::bleed::MAX_BLEED_FIRES_PER_SEGMENT` of them — and the pen-up settle, so a
 /// piece plans at most `(1 + MAX_BLEED_FIRES_PER_SEGMENT) · MAX_STAMPS + 1` slots. At
-/// `dynamics::plan::STAMP_STRIDE` apiece that is ~17.8 MB. Making the cut count planned
+/// one `uniforms::Slot` stride apiece that is ~17.8 MB. Making the cut count planned
 /// slots instead would couple `chunk_segments` to the bleed cadence to save megabytes
 /// only a bleeding brush pays at all.
 pub(super) const MAX_STAMPS: usize = 4096;

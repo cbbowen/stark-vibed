@@ -756,7 +756,7 @@ impl<'a> DynamicsRun<'a> {
     /// The extent snapshot scratch: the copy that gives `deposit` and `settle`
     /// something to read while they storage-write the region.
     ///
-    /// `size` is the plan's own [`dsize`](super::plan::DynamicsPlan::dsize) — the
+    /// `size` is the plan's own [`dsize`](super::plan::Plan::dsize) — the
     /// largest rect the piece will actually dispatch, rounded to the pool's quantum —
     /// so it is a maximum over the rects rather than a bound they must respect, and
     /// nothing needs asserting or clamping.
@@ -1145,8 +1145,9 @@ impl<'a> DynamicsRun<'a> {
     /// scope closes, and the range that resumes writes its first exchange straight into
     /// whatever it is handed. 64² rgba16f ×2, so ~64 KB.
     ///
-    /// The copies are pooled [`Kept`] leases — one is captured per pointer move, and
-    /// the drop that returns one is provably behind the resuming run's submit.
+    /// The copies are pooled [`Kept`](crate::gpu::scratch::Kept) leases — one is
+    /// captured per pointer move, and the drop that returns one is provably behind the
+    /// resuming run's submit.
     fn capture_tool(&mut self) -> ToolState {
         let r = self.region.r;
         let held = &self.brush[self.cur];

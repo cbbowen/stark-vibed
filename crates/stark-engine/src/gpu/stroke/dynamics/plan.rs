@@ -629,7 +629,7 @@ pub(super) struct Plan<K> {
 ///
 /// Every painting dispatch is a segment: the tool exchanges once per segment rather
 /// than on a cadence of its own, so there is no interval state to carry between
-/// ranges. The bleed cadence and the pen-up ride as their own [`SlotKind`]s.
+/// ranges. The bleed cadence and the pen-up ride as their own [`WetStep`]s.
 pub(super) fn dynamics_plan(
     ctx: &PlanCtx<'_>,
     segments: &[Segment],
