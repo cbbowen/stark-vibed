@@ -171,14 +171,7 @@ fn grain() -> Vec<u8> {
             pixels.push((h & 0xFF) as u8);
         }
     }
-    let mut out = Vec::new();
-    let mut encoder = png::Encoder::new(&mut out, DIM, DIM);
-    encoder.set_color(png::ColorType::Grayscale);
-    encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder.write_header().expect("png header");
-    writer.write_image_data(&pixels).expect("png body");
-    writer.finish().expect("png finish");
-    out
+    crate::common::gray_png(DIM, DIM, &pixels)
 }
 
 /// Put `e` on `file` as [`ACTOR`], ready to be handed actions.

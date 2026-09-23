@@ -20,22 +20,10 @@ use stark_model::geom::Vec2;
 fn blob_png(width: u32, height: u32) -> Vec<u8> {
     let (cx, cy) = (width as f32 / 2.0, height as f32 / 2.0);
     let r = cx.min(cy);
-    let mut pixels = vec![0u8; (width * height) as usize];
-    for y in 0..height {
-        for x in 0..width {
-            let d = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt() / r;
-            pixels[(y * width + x) as usize] = (255.0 * (1.0 - d).clamp(0.0, 1.0)) as u8;
-        }
-    }
-    let mut out = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut out, width, height);
-        encoder.set_color(png::ColorType::Grayscale);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().expect("png header");
-        writer.write_image_data(&pixels).expect("png data");
-    }
-    out
+    gray_png_from(width, height, |x, y| {
+        let d = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt() / r;
+        (255.0 * (1.0 - d).clamp(0.0, 1.0)) as u8
+    })
 }
 
 fn decode_dims(png_bytes: &[u8]) -> (u32, u32) {

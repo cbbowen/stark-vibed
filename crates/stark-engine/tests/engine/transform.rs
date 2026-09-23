@@ -17,35 +17,9 @@ use stark_engine::command::{DocCommand, Edit};
 use stark_model::ColorSpaceId;
 use stark_model::Srgb;
 use stark_model::document::{
-    LayerId, MatteRegion, Parcel, PerspectiveMap, Place, SelectionMode, SelectionOp,
-    SelectionShape, TransformMap, WarpMap, rect_corners,
+    LayerId, MatteRegion, Parcel, PerspectiveMap, Place, TransformMap, WarpMap, rect_corners,
 };
 use stark_model::geom::{Affine2, Vec2};
-
-/// A compact red blob centred at `c` — two short crossing strokes, so it has
-/// height variation for the lighting to bite on.
-fn blob(engine: &mut stark_engine::Engine, c: Vec2) {
-    paint(
-        engine,
-        RED,
-        16.0,
-        &[c + Vec2::new(-18.0, 0.0), c + Vec2::new(18.0, 0.0)],
-    );
-    paint(
-        engine,
-        RED,
-        10.0,
-        &[c + Vec2::new(0.0, -14.0), c + Vec2::new(0.0, 14.0)],
-    );
-}
-
-fn select_rect(engine: &mut stark_engine::Engine, min: Vec2, max: Vec2, feather: f32) {
-    engine.process(DocCommand::Select(SelectionOp::new(
-        SelectionMode::Replace,
-        SelectionShape::rect_from_corners(min, max),
-        feather,
-    )));
-}
 
 fn transform(engine: &mut stark_engine::Engine, affine: Affine2) {
     transform_map(engine, TransformMap::Affine(affine));

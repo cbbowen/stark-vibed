@@ -10,10 +10,11 @@
 //! Everything here is headless and needs no network: the semantics live in
 //! `stark-engine`, which is the point of putting them there.
 
+use crate::common::collab::{pair, snap, sync};
 use crate::common::palette::{GREEN_SOFT, RED};
 use crate::common::{
     Lead, MARGIN_FLAT, Probe, assert_images, assert_images_differ, engine_or_skip, leads, paint,
-    rgb,
+    texel,
 };
 use stark_engine::command::Tool;
 use stark_engine::command::{
@@ -37,19 +38,6 @@ const LEFT_MAX: Vec2 = Vec2::new(0.0, 400.0);
 /// selection and a half outside it.
 const CROSSING: [Vec2; 2] = [Vec2::new(-80.0, 0.0), Vec2::new(80.0, 0.0)];
 
-fn snap(e: &mut Engine) -> RgbaImage {
-    e.render_to_image()
-}
-
-fn sync(a: &mut Engine, b: &mut Engine) {
-    for action in a.take_outbox() {
-        b.merge_remote(action);
-    }
-    for action in b.take_outbox() {
-        a.merge_remote(action);
-    }
-}
-
 fn select_left(engine: &mut Engine) {
     engine.process(DocCommand::Select(SelectionOp::new(
         SelectionMode::Replace,
@@ -66,17 +54,7 @@ fn select_left(engine: &mut Engine) {
 /// one's mirror — had already been converted, so the two were a mirror only until
 /// somebody moved the margin.
 fn is_painted(img: &RgbaImage, canvas: Vec2) -> bool {
-    leads(texel_of(img, canvas), Lead::Red, MARGIN_FLAT)
-}
-
-/// The RGB at a canvas point of an image centred on **its own** size.
-///
-/// `common::texel` for a render that is not [`SIZE`](crate::common::SIZE)-square, which every
-/// render in this file is not: a peer's viewport is what sizes them.
-fn texel_of(img: &RgbaImage, canvas: Vec2) -> [i32; 3] {
-    let half = Vec2::new(img.width as f32, img.height as f32) * 0.5;
-    let p = canvas + half;
-    rgb(img.pixel(p.x as u32, p.y as u32))
+    leads(texel(img, canvas), Lead::Red, MARGIN_FLAT)
 }
 
 /// **The defect this design exists to fix.** One collaborator's selection must not
@@ -87,12 +65,9 @@ fn texel_of(img: &RgbaImage, canvas: Vec2) -> [i32; 3] {
 /// clipped B's next stroke, on B's own screen.
 #[test]
 fn one_peers_selection_does_not_clip_anothers_stroke() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
 
     // A masks the left half of the canvas, and B hears about it.
     select_left(&mut a);
@@ -125,12 +100,9 @@ fn one_peers_selection_does_not_clip_anothers_stroke() {
 /// rather than merely tidy.
 #[test]
 fn a_peers_stroke_is_reproduced_through_the_authors_own_mask() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
 
     select_left(&mut a);
     paint(&mut a, RED, 12.0, &CROSSING);
@@ -216,12 +188,9 @@ fn peers_hold_independent_selections_and_still_converge() {
 /// not a rule anything has to enforce.
 #[test]
 fn undoing_my_selection_leaves_yours() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
 
     select_left(&mut a);
     b.process(DocCommand::Select(SelectionOp::new(
@@ -266,12 +235,9 @@ fn a_solo_document_is_unaffected() {
 /// under a single id, which `layer_index` resolved to whichever came first.
 #[test]
 fn concurrent_layer_adds_do_not_collide() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
 
     a.process(DocCommand::AddLayer {
         carrier: None,
@@ -326,12 +292,9 @@ fn solo_layer_ids_are_the_actions_that_minted_them() {
 /// with nothing on screen to explain it.
 #[test]
 fn a_remote_removal_repoints_the_active_layer() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
 
     a.process(DocCommand::AddLayer {
         carrier: None,
@@ -365,12 +328,9 @@ fn a_remote_removal_repoints_the_active_layer() {
 /// the wire.
 #[test]
 fn a_peers_live_stroke_previews_and_the_commit_matches_it() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
 
     // A draws, publishing as it goes; B reassembles and previews.
     let brush = crate::common::brush(RED, 12.0);
@@ -507,12 +467,9 @@ fn a_brush_from_the_frontend_is_held_like_one_from_a_peer() {
 /// not.
 #[test]
 fn a_slow_receiver_pump_keeps_a_live_stroke_alive() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
 
     a.process(ViewCommand::set_brush(crate::common::brush(RED, 12.0)));
     a.process(GestureCommand::Start {
@@ -722,7 +679,7 @@ const UPPER: [Vec2; 2] = [Vec2::new(20.0, 80.0), Vec2::new(110.0, 80.0)];
 /// Whether the pixel reads as the green of [`stroking`]'s brush, the mirror of
 /// [`is_painted`] for the other actor's color.
 fn is_green(img: &RgbaImage, canvas: Vec2) -> bool {
-    leads(texel_of(img, canvas), Lead::Green, MARGIN_FLAT)
+    leads(texel(img, canvas), Lead::Green, MARGIN_FLAT)
 }
 
 /// Draw this client's live stroke along `points`, and leave the pointer down.
@@ -1066,12 +1023,9 @@ fn a_peers_stroke_on_their_new_substrate_shows_under_a_held_drag() {
 /// about the drawing (§17.3). Your own outline is unaffected either way.
 #[test]
 fn peer_selection_outlines_are_opt_in() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
 
     // B is present and has a selection whose edge crosses the viewport.
     b.process(DocCommand::Select(SelectionOp::new(

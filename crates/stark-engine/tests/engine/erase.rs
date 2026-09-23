@@ -15,10 +15,8 @@
 // at the target coverage.
 use crate::common::palette::RED;
 use crate::common::*;
-use stark_engine::command::{DocCommand, Edit};
-use stark_model::Srgb;
 use stark_model::document::{
-    BrushEffect, BrushParams, EraseEffect, FillOp, LayerId, ModSource, Modulation, SelectionShape,
+    BrushEffect, BrushParams, EraseEffect, LayerId, ModSource, Modulation,
 };
 use stark_model::geom::Vec2;
 
@@ -35,21 +33,6 @@ fn eraser(opacity: f32, radius: f32) -> BrushParams {
     });
     b.drain = 0.0;
     b
-}
-
-/// Fill the whole canvas with `color` at `opacity` — the bed, or the headline
-/// test's stated-coverage reference.
-fn fill_canvas(engine: &mut stark_engine::Engine, color: [f32; 3], opacity: f32) {
-    let layer = engine.observe().active_layer;
-    engine.process(DocCommand::Set(Edit::Fill {
-        layer,
-        op: FillOp::new(
-            SelectionShape::rect_from_corners(Vec2::new(-128.0, -128.0), Vec2::new(128.0, 128.0)),
-            0.0,
-            Srgb::new(color),
-            opacity,
-        ),
-    }));
 }
 
 /// A full-strength eraser returns the canvas to bare — the very pixels it showed
@@ -243,13 +226,6 @@ fn erasing_bare_canvas_changes_nothing() {
         (0.0, 0),
         "an eraser over bare canvas moved pixels"
     );
-}
-
-/// A straight leg along `y` from `x0` to `x1` at one `pressure` — the two reports
-/// a hand makes of a straight run (`tests/engine/opacity.rs` makes the same
-/// construction, for the same reason).
-fn leg(x0: f32, x1: f32, y: f32, pressure: f32) -> Vec<(Vec2, f32)> {
-    vec![(Vec2::new(x0, y), pressure), (Vec2::new(x1, y), pressure)]
 }
 
 /// The eraser's ceiling under the pen (§6.12, `EraseModulations::opacity`):

@@ -20,7 +20,7 @@ use crate::common::*;
 use stark_engine::command::Tool;
 use stark_engine::command::{GestureCommand, HoverReport, InputSample, PeerCommand, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
-use stark_engine::{Background, Engine, ExportScale, Offscreen, Rendered};
+use stark_engine::{Background, Engine, ExportScale, Rendered};
 use stark_model::Srgb;
 use stark_model::document::{MatteRegion, Parcel, Place};
 use stark_model::geom::Vec2;
@@ -322,16 +322,18 @@ fn an_unpaintable_layer_refuses_the_mark() {
         return;
     };
     engine.process(ViewCommand::set_brush(brush(RED_SOFT, 10.0)));
-    engine.process(stark_engine::command::DocCommand::AddMatte {
-        carrier: None,
-        at: Place::Top,
-        region: MatteRegion::OutsideRect {
-            min: Vec2::new(-120.0, -120.0),
-            max: Vec2::new(120.0, 120.0),
+    let matte = added(
+        &mut engine,
+        stark_engine::command::DocCommand::AddMatte {
+            carrier: None,
+            at: Place::Top,
+            region: MatteRegion::OutsideRect {
+                min: Vec2::new(-120.0, -120.0),
+                max: Vec2::new(120.0, 120.0),
+            },
+            paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
         },
-        paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
-    });
-    let matte = engine.observe().layers.last().expect("the matte").id;
+    );
     engine.process(PeerCommand::SetActiveLayer(matte));
     let before = engine.render_to_image();
     hover_ab(&mut engine);
@@ -654,16 +656,11 @@ fn a_click_after_a_watched_approach_commits_nothing() {
 /// export test in `export.rs` uses, without a frame so the fallback rect is
 /// the same viewport `render_to_image` shows.
 fn export_live(engine: &mut Engine) -> stark_engine::RgbaImage {
-    pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                None,
-                ExportScale::Factor(1.0),
-                Background::Substrate,
-                Rendered::Live,
-            )
-            .expect("export"),
+    export(
+        engine,
+        None,
+        ExportScale::Factor(1.0),
+        Background::Substrate,
+        Rendered::Live,
     )
-    .expect("the readback completes")
 }

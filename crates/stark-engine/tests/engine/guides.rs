@@ -22,13 +22,15 @@
 //! opposite sides of the crate boundary and so can only be checked by drawing
 //! it (§20.9).
 
-use crate::common::{Probe, engine_or_skip, engine_or_skip_in_format, engine_or_skip_sized};
+use crate::common::collab::pair;
+use crate::common::{
+    Probe, engine_or_skip, engine_or_skip_in_format, engine_or_skip_sized, srgb_code,
+};
 use stark_engine::Engine;
 use stark_engine::Extent2;
 use stark_engine::command::{DocCommand, Edit, PeerCommand, ViewCommand};
 use stark_engine::{MediaParams, Output, Transfer};
 use stark_model::Srgb;
-use stark_model::color::{linear_to_srgb, srgb_to_linear};
 use stark_model::document::{ActorId, GuideId, Lens, PerspectiveGuide};
 use stark_model::geom::Vec2;
 
@@ -184,12 +186,9 @@ fn guides_survive_save_load() {
 /// artist on the other end is constructing against a different perspective.
 #[test]
 fn guides_reach_a_peer() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
 
     let first = add(&mut a, distinctive(), Some("the ground"));
     let second = add(&mut a, PerspectiveGuide::default(), None);
@@ -285,12 +284,9 @@ fn every_guide_edit_is_one_undo_step() {
 /// the guide.
 #[test]
 fn an_eye_is_this_client_s_alone() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
     let id = add(&mut a, distinctive(), Some("the ground"));
     for action in a.take_outbox() {
         b.merge_remote(action);
@@ -373,12 +369,9 @@ fn an_open_eye_survives_an_undone_removal() {
 /// the roster answering with whichever comes first.
 #[test]
 fn concurrent_adds_cannot_collide() {
-    let (Some(mut a), Some(mut b)) = (engine_or_skip(), engine_or_skip()) else {
+    let Some((mut a, mut b)) = pair() else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
 
     // Same lamport on both sides: neither has heard the other.
     add(&mut a, distinctive(), Some("mine"));
@@ -591,19 +584,6 @@ fn chrome_pose() -> PerspectiveGuide {
     }
 }
 
-/// One half-float channel back to the 8-bit sRGB code it *means* — the decode is the
-/// target's own transfer, the encode is sRGB's. Per channel, which is why the two
-/// transfers compared below are the two that keep sRGB primaries (`wide.rs` is where a
-/// change of primaries is measured).
-fn code(transfer: Transfer, v: f32) -> i32 {
-    let lin = match transfer {
-        Transfer::Linear => v,
-        Transfer::Srgb => srgb_to_linear(v.clamp(0.0, 1.0)),
-        other => unreachable!("{other:?} is not one of the two this test renders"),
-    };
-    (linear_to_srgb(lin.clamp(0.0, 1.0)) * 255.0).round() as i32
-}
-
 /// The guide rendered for `transfer`, over a black substrate and over a white one.
 fn over_both_substrates(e: &mut Engine, transfer: Transfer) -> (Vec<f32>, Vec<f32>) {
     e.process(ViewCommand::SetOutput(Output::new(transfer, 1.0)));
@@ -713,8 +693,8 @@ fn guide_chrome_means_the_same_colour_on_any_display() {
              through — the premise above claims a region the pass does not fill"
         );
         probed += 1;
-        let a: [i32; 3] = std::array::from_fn(|c| code(Transfer::Srgb, srgb.0[i * 4 + c]));
-        let b: [i32; 3] = std::array::from_fn(|c| code(Transfer::Linear, linear.0[i * 4 + c]));
+        let a: [i32; 3] = std::array::from_fn(|c| srgb_code(Transfer::Srgb, srgb.0[i * 4 + c]));
+        let b: [i32; 3] = std::array::from_fn(|c| srgb_code(Transfer::Linear, linear.0[i * 4 + c]));
         // The crosshair's core is `CHROME` and nothing else, which is what anchors the
         // comparison: two renders agreeing about a colour neither of them names could
         // both be wrong by the same curve.

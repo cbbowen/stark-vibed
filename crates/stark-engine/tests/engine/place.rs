@@ -11,7 +11,6 @@
 //!   stronger claim than for any other, since nothing here goes through a shader.
 
 use crate::common::*;
-use stark_assetid::Picture;
 use stark_engine::Engine;
 use stark_engine::command::DocCommand;
 use stark_model::document::ActionKind;
@@ -39,13 +38,7 @@ fn swatch() -> Vec<u8> {
             });
         }
     }
-    Picture {
-        width: SWATCH,
-        height: SWATCH,
-        pixels,
-    }
-    .encode()
-    .expect("a well-formed swatch")
+    picture_png(SWATCH, SWATCH, pixels)
 }
 
 /// Import the swatch and place it centred on the canvas origin, which the default

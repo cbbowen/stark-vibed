@@ -125,7 +125,7 @@ fn an_invisible_layer_does_not_repaint_the_one_below() {
 fn an_off_size_render_matches_one_at_the_substrates_own_size() {
     use stark_engine::Extent2;
     use stark_engine::command::ViewCommand;
-    use stark_engine::{Background, ExportScale, Offscreen, Rendered};
+    use stark_engine::{Background, ExportScale, Rendered};
     use stark_model::document::{BlendMode, MatteRegion, Parcel, Place};
 
     // The piece: a frame whose rect is exactly the exported size, centred on the
@@ -158,31 +158,28 @@ fn an_off_size_render_matches_one_at_the_substrates_own_size() {
             26.0,
             &[Vec2::new(-80.0, 40.0), Vec2::new(90.0, -30.0)],
         );
-        engine.process(DocCommand::AddMatte {
-            carrier: None,
-            at: Place::Top,
-            region: MatteRegion::OutsideRect {
-                min: -HALF,
-                max: HALF,
+        let frame = added(
+            &mut engine,
+            DocCommand::AddMatte {
+                carrier: None,
+                at: Place::Top,
+                region: MatteRegion::OutsideRect {
+                    min: -HALF,
+                    max: HALF,
+                },
+                paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
             },
-            paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
-        });
-        let frame = engine.observe().layers.last().expect("matte").id;
+        );
         // The view is the export's, so nothing about the substrate's size can reach
         // the picture other than through the attachments this is testing.
         engine.process(ViewCommand::CenterOn(Vec2::ZERO));
-        let image = pollster::block_on(
-            engine
-                .export(
-                    &mut Offscreen::default(),
-                    Some(frame),
-                    ExportScale::Factor(1.0),
-                    Background::Substrate,
-                    Rendered::Committed,
-                )
-                .expect("export"),
-        )
-        .expect("the readback completes");
+        let image = export(
+            &mut engine,
+            Some(frame),
+            ExportScale::Factor(1.0),
+            Background::Substrate,
+            Rendered::Committed,
+        );
         Some(image)
     };
 
@@ -253,18 +250,14 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
     };
     let shot = |engine: &mut stark_engine::Engine, into: &mut Offscreen, scale: f32| {
         let frame = engine.observe().layers.last().expect("matte").id;
-        pollster::block_on(
-            engine
-                .export(
-                    into,
-                    Some(frame),
-                    ExportScale::Factor(scale),
-                    Background::Substrate,
-                    Rendered::Committed,
-                )
-                .expect("export"),
+        export_into(
+            engine,
+            into,
+            Some(frame),
+            ExportScale::Factor(scale),
+            Background::Substrate,
+            Rendered::Committed,
         )
-        .expect("the readback completes")
     };
     let same = |a: &stark_engine::RgbaImage, b: &stark_engine::RgbaImage, what: &str| {
         assert_eq!((a.width, a.height), (b.width, b.height), "{what}: size");
@@ -361,30 +354,28 @@ fn a_kept_offscreen_survives_a_frame_with_more_merges_than_the_last() {
         24.0,
         &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
     );
-    engine.process(DocCommand::AddMatte {
-        carrier: None,
-        at: Place::Top,
-        region: MatteRegion::OutsideRect {
-            min: Vec2::new(-80.0, -60.0),
-            max: Vec2::new(80.0, 60.0),
+    let frame = added(
+        &mut engine,
+        DocCommand::AddMatte {
+            carrier: None,
+            at: Place::Top,
+            region: MatteRegion::OutsideRect {
+                min: Vec2::new(-80.0, -60.0),
+                max: Vec2::new(80.0, 60.0),
+            },
+            paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
         },
-        paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
-    });
-    let frame = engine.observe().layers.last().expect("matte").id;
+    );
 
     let shot = |engine: &mut stark_engine::Engine, into: &mut Offscreen| {
-        pollster::block_on(
-            engine
-                .export(
-                    into,
-                    Some(frame),
-                    ExportScale::Factor(1.0),
-                    Background::Substrate,
-                    Rendered::Committed,
-                )
-                .expect("export"),
+        export_into(
+            engine,
+            into,
+            Some(frame),
+            ExportScale::Factor(1.0),
+            Background::Substrate,
+            Rendered::Committed,
         )
-        .expect("the readback completes")
     };
 
     // One merge: the buffer is one slot wide, and every bind group over it is built

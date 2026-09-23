@@ -4,9 +4,7 @@
 
 use crate::common::*;
 use stark_engine::command::{DocCommand, Edit, ViewCommand};
-use stark_engine::{
-    Background, Engine, ExportScale, MediaParams, Offscreen, Output, Rendered, Transfer,
-};
+use stark_engine::{Background, Engine, ExportScale, MediaParams, Output, Rendered, Transfer};
 use stark_model::Srgb;
 use stark_model::color::{linear_p3_to_linear_srgb, linear_to_srgb, srgb_to_linear};
 use stark_model::document::{BrushEffect, BrushParams, BrushShape, ColorAdjust, Filter};
@@ -130,17 +128,13 @@ fn an_export_holds_the_paint_to_the_cube() {
         return;
     };
     hdr.process(ViewCommand::SetOutput(Output::new(Transfer::Linear, 1.0)));
-    let img = pollster::block_on(
-        hdr.export(
-            &mut Offscreen::default(),
-            None,
-            ExportScale::Factor(1.0),
-            Background::Substrate,
-            Rendered::Committed,
-        )
-        .expect("export"),
-    )
-    .expect("the readback completes");
+    let img = export(
+        &mut hdr,
+        None,
+        ExportScale::Factor(1.0),
+        Background::Substrate,
+        Rendered::Committed,
+    );
     let c = center(&img);
     assert!(
         c[0] == 0 && c[1] >= 250,

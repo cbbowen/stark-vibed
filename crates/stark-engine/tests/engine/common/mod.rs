@@ -19,9 +19,11 @@ use stark_engine::path::DEFAULT_TOLERANCE;
 pub use stark_engine::testing::Probe;
 use stark_engine::{Engine, EngineError, RgbaImage};
 use stark_model::document::LayerId;
-use stark_model::document::{BrushParams, BrushShape};
+use stark_model::document::{
+    BrushParams, BrushShape, FillOp, SelectionMode, SelectionOp, SelectionShape,
+};
 use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, Vec2};
-use stark_model::{ColorSpaceId, DocError};
+use stark_model::{ColorSpaceId, DocError, Gradient, GradientStop};
 
 pub const SIZE: Extent2 = Extent2 {
     width: 256,
@@ -276,7 +278,8 @@ pub fn stripe_substrate() -> Vec<u8> {
     gray_png(W, H, &row.repeat(H as usize))
 }
 
-/// An 8-bit grayscale PNG of `w` × `h` row-major `pixels`.
+/// An 8-bit grayscale PNG of `w` × `h` row-major `pixels` — a height map or a brush
+/// stamp, without reaching for a bundled asset.
 pub fn gray_png(w: u32, h: u32, pixels: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     let mut encoder = png::Encoder::new(&mut out, w, h);
@@ -286,6 +289,24 @@ pub fn gray_png(w: u32, h: u32, pixels: &[u8]) -> Vec<u8> {
     writer.write_image_data(pixels).expect("png body");
     writer.finish().expect("png finish");
     out
+}
+
+/// [`gray_png`] of a field sampled per texel: `f(x, y)` over `w` × `h`.
+pub fn gray_png_from(w: u32, h: u32, f: impl Fn(u32, u32) -> u8) -> Vec<u8> {
+    let pixels: Vec<u8> = (0..w * h).map(|i| f(i % w, i / w)).collect();
+    gray_png(w, h, &pixels)
+}
+
+/// A canonical RGBA picture of `w` × `h` row-major `pixels`, encoded the way an
+/// import expects (§23) — the placed-image counterpart of [`gray_png`].
+pub fn picture_png(w: u32, h: u32, pixels: Vec<u8>) -> Vec<u8> {
+    stark_assetid::Picture {
+        width: w,
+        height: h,
+        pixels,
+    }
+    .encode()
+    .expect("a well-formed picture")
 }
 
 /// Paint and commit a stroke through `points` with an explicit brush.
@@ -334,6 +355,169 @@ pub fn stroke_pressed(engine: &mut Engine, b: BrushParams, points: &[(Vec2, f32)
 /// Paint and commit a stroke through the given canvas points with `color`.
 pub fn paint(engine: &mut Engine, color: [f32; 3], radius: f32, points: &[Vec2]) {
     stroke_with(engine, brush(color, radius), points);
+}
+
+/// A compact red blob centred at `c` — two crossing strokes, so it has height
+/// variation for the lighting to bite on and a seam would show in it.
+pub fn blob(engine: &mut Engine, c: Vec2) {
+    paint(
+        engine,
+        palette::RED,
+        16.0,
+        &[c + Vec2::new(-18.0, 0.0), c + Vec2::new(18.0, 0.0)],
+    );
+    paint(
+        engine,
+        palette::RED,
+        10.0,
+        &[c + Vec2::new(0.0, -14.0), c + Vec2::new(0.0, 14.0)],
+    );
+}
+
+/// A straight leg along `y` from `x0` to `x1` at one `pressure` — the two reports a
+/// hand actually makes of a straight run, which is the point wherever this is used:
+/// the ceiling is interpolated across each segment (§6.2, `Paint::opacity_ramp`), so
+/// a stroke does not have to be finely reported for its ceiling to be smooth.
+pub fn leg(x0: f32, x1: f32, y: f32, pressure: f32) -> Vec<(Vec2, f32)> {
+    vec![(Vec2::new(x0, y), pressure), (Vec2::new(x1, y), pressure)]
+}
+
+/// Replace the selection with the rect `min..max`, feathered by `feather` (§6.8).
+pub fn select_rect(engine: &mut Engine, min: Vec2, max: Vec2, feather: f32) {
+    engine.process(DocCommand::Select(SelectionOp::new(
+        SelectionMode::Replace,
+        SelectionShape::rect_from_corners(min, max),
+        feather,
+    )));
+}
+
+/// Commit a fill of the rect `min..max` on the active layer, through the direct
+/// command path. `opacity` is how far it covers, which is what the panel's slider
+/// sets.
+///
+/// **A test wanting a bitwise-uniform field asks for `feather` 0 and must fill
+/// rather than stroke.** A feather-0 fill lays one parcel value on every interior
+/// texel; a swept deposit's per-segment sums leave ±1-ulp f16 speckle along the
+/// stroke's own length (§6.2), which is real texture, so a byte-exact claim laid
+/// with a stroke is measuring the deposit rather than whatever it meant to.
+pub fn fill_rect(
+    engine: &mut Engine,
+    min: Vec2,
+    max: Vec2,
+    color: [f32; 3],
+    feather: f32,
+    opacity: f32,
+) {
+    let layer = engine.observe().active_layer;
+    engine.process(DocCommand::Set(Edit::Fill {
+        layer,
+        op: FillOp::new(
+            SelectionShape::rect_from_corners(min, max),
+            feather,
+            Srgb::new(color),
+            opacity,
+        ),
+    }));
+}
+
+/// [`fill_rect`] over the whole [`SIZE`] canvas at feather 0 — the bed a wet-loop or
+/// a warp test lays before asking what its pass did to it.
+pub fn fill_canvas(engine: &mut Engine, color: [f32; 3], opacity: f32) {
+    let half = Vec2::new(SIZE.width as f32, SIZE.height as f32) * 0.5;
+    fill_rect(engine, -half, half, color, 0.0, opacity);
+}
+
+/// Run `cmd` and hand back the layer it minted.
+///
+/// A command answers with nothing (§4), so the id has to be read back — and
+/// `layers.last()` is not it: the top of the stack is somebody else's layer the
+/// moment a document holds two (the trap the AddFilterButton fell into once). This
+/// diffs the ids the projection held before the command against after, so the answer
+/// is what the command added, wherever it landed.
+pub fn added(engine: &mut Engine, cmd: impl Into<stark_engine::command::InputCommand>) -> LayerId {
+    let before: Vec<LayerId> = engine.observe().layers.iter().map(|l| l.id).collect();
+    engine.process(cmd);
+    engine
+        .observe()
+        .layers
+        .iter()
+        .map(|l| l.id)
+        .find(|id| !before.contains(id))
+        .expect("the command added a layer")
+}
+
+/// A gradient of the given stops, `(position, sRGB)` (§22).
+pub fn gradient(stops: &[(f32, [f32; 3])]) -> Gradient {
+    Gradient::new(
+        stops
+            .iter()
+            .map(|&(t, color)| GradientStop {
+                t,
+                color: Srgb::new(color),
+            })
+            .collect(),
+    )
+    .expect("a gradient of the given stops")
+}
+
+/// One channel of a rendered texel back to the 8-bit sRGB code it *means* — the
+/// decode is the target's own transfer, the encode is sRGB's, and the clamp is the
+/// 8-bit store's.
+///
+/// Per channel, so a transfer that changes primaries is out of its reach:
+/// `tests/engine/wide.rs` is where a change of primaries is measured.
+pub fn srgb_code(transfer: stark_engine::Transfer, v: f32) -> i32 {
+    use stark_engine::Transfer;
+    use stark_model::color::{linear_to_srgb, srgb_to_linear};
+    let lin = match transfer {
+        Transfer::Linear => v,
+        Transfer::ExtendedSrgb => srgb_to_linear(v),
+        Transfer::Srgb => srgb_to_linear(v.clamp(0.0, 1.0)),
+        p3 => unreachable!("{p3:?} changes primaries, which one channel cannot undo"),
+    };
+    (linear_to_srgb(lin.clamp(0.0, 1.0)) * 255.0).round() as i32
+}
+
+/// Export `frame` and block on the readback — `Engine::export`'s two-phase result
+/// (§15.6) collapsed to the image, which is all a test wants from it.
+///
+/// Both halves panic rather than answer: the outer refusal is a bad *request* and
+/// the inner one is the GPU failing underneath (§5), and no caller here is asking
+/// either question. `tests/engine/export.rs` asks the outer one of `export_plan`
+/// directly, where it is the claim rather than the setup.
+pub fn export(
+    engine: &mut Engine,
+    frame: Option<LayerId>,
+    scale: stark_engine::ExportScale,
+    background: stark_engine::Background,
+    content: stark_engine::Rendered,
+) -> RgbaImage {
+    export_into(
+        engine,
+        &mut stark_engine::Offscreen::default(),
+        frame,
+        scale,
+        background,
+        content,
+    )
+}
+
+/// [`export`] into an `Offscreen` the caller keeps — for the two composite tests
+/// whose claim *is* that a kept slot is reused.
+pub fn export_into(
+    engine: &mut Engine,
+    into: &mut stark_engine::Offscreen,
+    frame: Option<LayerId>,
+    scale: stark_engine::ExportScale,
+    background: stark_engine::Background,
+    content: stark_engine::Rendered,
+) -> RgbaImage {
+    pollster::block_on(
+        engine
+            .export(into, frame, scale, background, content)
+            .expect("the export is a request the device can meet"),
+    )
+    .expect("the readback completes")
 }
 
 /// Commit a stroke through `points` as a **replay** rather than a gesture: one
@@ -474,9 +658,23 @@ pub fn screen_of(canvas: Vec2) -> (u32, u32) {
 }
 
 /// The RGB at canvas point `canvas`, as signed channels a difference can be taken in.
+///
+/// The origin comes off **this image's** centre rather than [`SIZE`]'s, so an export
+/// or a sized engine's render can be probed by the same canvas coordinate as a
+/// default one.
 pub fn texel(img: &RgbaImage, canvas: Vec2) -> [i32; 3] {
-    let (x, y) = screen_of(canvas);
-    rgb(img.pixel(x, y))
+    let p = canvas + Vec2::new(img.width as f32, img.height as f32) * 0.5;
+    rgb(img.pixel(p.x as u32, p.y as u32))
+}
+
+/// Two colors agree to within `tol` in every channel.
+pub fn near(a: [f32; 3], b: [f32; 3], tol: f32) -> bool {
+    (0..3).all(|i| (a[i] - b[i]).abs() <= tol)
+}
+
+/// Whether a pixel reads as mat-board black — what a matte paints in (§15.4).
+pub fn is_dark(c: [u8; 4]) -> bool {
+    c[0] < 60 && c[1] < 60 && c[2] < 60
 }
 
 /// A pixel's three color channels, signed — what [`leads`] and [`apart`] both compare.

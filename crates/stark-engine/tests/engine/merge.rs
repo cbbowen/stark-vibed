@@ -701,25 +701,6 @@ fn a_clipped_member_merges_into_a_faded_carrier() {
 // The second kind of merge: a filter layer, run into the paint beneath it (§14.11.7).
 // ---------------------------------------------------------------------------
 
-/// Add a filter into `carrier`'s stack (the document's own when `None`) and hand back
-/// its id — `tests/engine/filter.rs`'s helper, on its argument: the engine mints the id, so
-/// the new filter is the layer the projection *gained*.
-fn add_filter(engine: &mut Engine, carrier: Option<LayerId>, filter: Filter) -> LayerId {
-    let before: Vec<LayerId> = engine.observe().layers.iter().map(|l| l.id).collect();
-    engine.process(DocCommand::AddFilter {
-        carrier,
-        above: None,
-        filter,
-    });
-    engine
-        .observe()
-        .layers
-        .iter()
-        .find(|l| l.filter.is_some() && !before.contains(&l.id))
-        .map(|l| l.id)
-        .expect("the filter landed")
-}
-
 /// Every color drained away — the sharpest filter to test a merge with, for
 /// `tests/engine/filter.rs`'s reason: it is visible on any painting and its correct answer
 /// differs from the naive one, so a merge that took a shortcut through the wrong
@@ -743,7 +724,14 @@ fn merging_a_filter_into_its_carrier_leaves_the_picture_alone() {
         return;
     };
     paint(&mut engine, WARM, 44.0, H_STROKE);
-    let filter = add_filter(&mut engine, Some(ROOT), GREY);
+    let filter = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: Some(ROOT),
+            above: None,
+            filter: GREY,
+        },
+    );
 
     let (before, after, dest) = merged(&mut engine, filter);
     assert_eq!(
@@ -767,7 +755,14 @@ fn merging_a_filter_at_the_foot_of_the_root_leaves_the_picture_alone() {
         return;
     };
     paint(&mut engine, WARM, 44.0, H_STROKE);
-    let filter = add_filter(&mut engine, None, GREY);
+    let filter = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: GREY,
+        },
+    );
 
     let (before, after, dest) = merged(&mut engine, filter);
     assert_eq!(dest, ROOT);
@@ -790,7 +785,14 @@ fn a_filter_merge_keeps_the_destinations_params_and_bakes_its_strength() {
     paint_pale(&mut engine, 60.0, H_STROKE);
     let base = add_layer(&mut engine);
     paint(&mut engine, WARM, 44.0, V_STROKE);
-    let filter = add_filter(&mut engine, Some(base), GREY);
+    let filter = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: Some(base),
+            above: None,
+            filter: GREY,
+        },
+    );
     engine.process(DocCommand::Set(Edit::LayerOpacity(filter, 0.4)));
     engine.process(DocCommand::Set(Edit::LayerOpacity(base, 0.7)));
     engine.process(DocCommand::Set(Edit::LayerBlend(base, BlendMode::Multiply)));
@@ -821,7 +823,14 @@ fn merging_a_neutral_filter_is_exact() {
         return;
     };
     paint(&mut engine, WARM, 44.0, H_STROKE);
-    let filter = add_filter(&mut engine, Some(ROOT), Filter::Color(ColorAdjust::NEUTRAL));
+    let filter = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: Some(ROOT),
+            above: None,
+            filter: Filter::Color(ColorAdjust::NEUTRAL),
+        },
+    );
 
     // What the destination's thumbnail is keyed on, read before and after: a merge
     // that hands the tiles across untouched must hand the *revision* across too
@@ -860,13 +869,16 @@ fn a_resampling_filter_is_never_offered_a_merge() {
         return;
     };
     paint(&mut engine, WARM, 44.0, H_STROKE);
-    let filter = add_filter(
+    let filter = added(
         &mut engine,
-        Some(ROOT),
-        Filter::Chromatic(ChromaticAberration {
-            spread: 8.0,
-            angle: 0.0,
-        }),
+        DocCommand::AddFilter {
+            carrier: Some(ROOT),
+            above: None,
+            filter: Filter::Chromatic(ChromaticAberration {
+                spread: 8.0,
+                angle: 0.0,
+            }),
+        },
     );
     assert_eq!(
         offered(&engine, filter),
@@ -898,7 +910,14 @@ fn a_filter_merges_in_a_pigment_document() {
         return;
     };
     paint(&mut engine, WARM, 44.0, H_STROKE);
-    let filter = add_filter(&mut engine, Some(ROOT), GREY);
+    let filter = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: Some(ROOT),
+            above: None,
+            filter: GREY,
+        },
+    );
 
     let (before, after, _) = merged(&mut engine, filter);
     assert_images(&before, &after, 2, "a filter merged in pigment");

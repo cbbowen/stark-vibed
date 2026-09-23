@@ -23,10 +23,6 @@ fn capture(engine: &mut Engine, path: &[Vec2]) -> Option<Gradient> {
     ))
 }
 
-fn near(a: [f32; 3], b: [f32; 3], tol: f32) -> bool {
-    (0..3).all(|i| (a[i] - b[i]).abs() <= tol)
-}
-
 /// Two abutting bars, a trace across both: the ramp's ends are the two paints.
 ///
 /// In both color spaces, because it is a different claim in each — in Mixbox the

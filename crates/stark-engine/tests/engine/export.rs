@@ -13,7 +13,7 @@ use stark_engine::command::{
     DocCommand, Edit, GestureCommand, InputSample, PeerCommand, ViewCommand,
 };
 use stark_engine::path::DEFAULT_TOLERANCE;
-use stark_engine::{Background, Engine, ExportScale, Offscreen, Rendered, RgbaImage};
+use stark_engine::{Background, Engine, ExportScale, Rendered, RgbaImage};
 use stark_model::Srgb;
 use stark_model::document::LayerId;
 use stark_model::document::{MatteRegion, Parcel, Place, SelectionOp};
@@ -30,18 +30,17 @@ const FRAME: MatteRegion = MatteRegion::OutsideRect {
 const WIDE: &[Vec2] = &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)];
 
 fn add_frame(engine: &mut Engine) -> LayerId {
-    engine.process(DocCommand::AddMatte {
-        carrier: None,
-        at: Place::Top,
-        region: FRAME,
-        paint: Parcel::Solid(Srgb::new(BLACK)),
-    });
-    engine.observe().layers.last().expect("matte").id
+    added(
+        engine,
+        DocCommand::AddMatte {
+            carrier: None,
+            at: Place::Top,
+            region: FRAME,
+            paint: Parcel::Solid(Srgb::new(BLACK)),
+        },
+    )
 }
 
-fn is_dark(c: [u8; 4]) -> bool {
-    c[0] < 60 && c[1] < 60 && c[2] < 60
-}
 fn corners(img: &RgbaImage) -> [[u8; 4]; 4] {
     let (w, h) = (img.width - 1, img.height - 1);
     [
@@ -65,18 +64,13 @@ fn exports_the_frame_rect_without_its_own_matte() {
     paint(&mut engine, RED_SOFT, 30.0, WIDE);
     let frame = add_frame(&mut engine);
 
-    let img = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Factor(1.0),
-                Background::Substrate,
-                Rendered::Live,
-            )
-            .expect("export"),
-    )
-    .expect("the readback completes");
+    let img = export(
+        &mut engine,
+        Some(frame),
+        ExportScale::Factor(1.0),
+        Background::Substrate,
+        Rendered::Live,
+    );
     assert_eq!(
         (img.width, img.height),
         (120, 80),
@@ -101,30 +95,20 @@ fn scale_changes_resolution_not_framing() {
     paint(&mut engine, RED_SOFT, 30.0, WIDE);
     let frame = add_frame(&mut engine);
 
-    let one = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Factor(1.0),
-                Background::Substrate,
-                Rendered::Live,
-            )
-            .expect("1x"),
-    )
-    .expect("the readback completes");
-    let two = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Factor(2.0),
-                Background::Substrate,
-                Rendered::Live,
-            )
-            .expect("2x"),
-    )
-    .expect("the readback completes");
+    let one = export(
+        &mut engine,
+        Some(frame),
+        ExportScale::Factor(1.0),
+        Background::Substrate,
+        Rendered::Live,
+    );
+    let two = export(
+        &mut engine,
+        Some(frame),
+        ExportScale::Factor(2.0),
+        Background::Substrate,
+        Rendered::Live,
+    );
     assert_eq!((two.width, two.height), (one.width * 2, one.height * 2));
 
     // Same framing: the four corners and the centre agree between the two, which
@@ -142,18 +126,13 @@ fn scale_changes_resolution_not_framing() {
     ));
 
     // An explicit width is the same thing said the other way round.
-    let by_width = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Width(240),
-                Background::Substrate,
-                Rendered::Live,
-            )
-            .expect("by width"),
-    )
-    .expect("the readback completes");
+    let by_width = export(
+        &mut engine,
+        Some(frame),
+        ExportScale::Width(240),
+        Background::Substrate,
+        Rendered::Live,
+    );
     assert_eq!((by_width.width, by_width.height), (240, 160));
 }
 
@@ -175,30 +154,20 @@ fn transparent_export_cuts_out_the_paint() {
     );
     let frame = add_frame(&mut engine);
 
-    let cut = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Factor(1.0),
-                Background::Transparent,
-                Rendered::Live,
-            )
-            .expect("transparent"),
-    )
-    .expect("the readback completes");
-    let opaque = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Factor(1.0),
-                Background::Substrate,
-                Rendered::Live,
-            )
-            .expect("substrate"),
-    )
-    .expect("the readback completes");
+    let cut = export(
+        &mut engine,
+        Some(frame),
+        ExportScale::Factor(1.0),
+        Background::Transparent,
+        Rendered::Live,
+    );
+    let opaque = export(
+        &mut engine,
+        Some(frame),
+        ExportScale::Factor(1.0),
+        Background::Substrate,
+        Rendered::Live,
+    );
 
     for (i, c) in corners(&cut).iter().enumerate() {
         assert_eq!(
@@ -226,18 +195,13 @@ fn export_uses_the_documents_substrate() {
         return;
     };
     let frame = add_frame(&mut engine);
-    let paper = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Factor(1.0),
-                Background::Substrate,
-                Rendered::Live,
-            )
-            .expect("paper"),
-    )
-    .expect("the readback completes");
+    let paper = export(
+        &mut engine,
+        Some(frame),
+        ExportScale::Factor(1.0),
+        Background::Substrate,
+        Rendered::Live,
+    );
     assert!(
         !is_dark(paper.pixel(4, 4)),
         "default substrate is near-white"
@@ -246,18 +210,13 @@ fn export_uses_the_documents_substrate() {
     engine.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new([
         0.02, 0.02, 0.03,
     ]))));
-    let ink = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Factor(1.0),
-                Background::Substrate,
-                Rendered::Live,
-            )
-            .expect("ink"),
-    )
-    .expect("the readback completes");
+    let ink = export(
+        &mut engine,
+        Some(frame),
+        ExportScale::Factor(1.0),
+        Background::Substrate,
+        Rendered::Live,
+    );
     assert!(
         is_dark(ink.pixel(4, 4)),
         "a dark substrate should reach the export, got {:?}",
@@ -267,18 +226,13 @@ fn export_uses_the_documents_substrate() {
     // And it undoes like any other edit.
     engine.process(DocCommand::Undo);
     assert!(!is_dark(
-        pollster::block_on(
-            engine
-                .export(
-                    &mut Offscreen::default(),
-                    Some(frame),
-                    ExportScale::Factor(1.0),
-                    Background::Substrate,
-                    Rendered::Live
-                )
-                .expect("undone")
+        export(
+            &mut engine,
+            Some(frame),
+            ExportScale::Factor(1.0),
+            Background::Substrate,
+            Rendered::Live
         )
-        .expect("the readback completes")
         .pixel(4, 4)
     ));
 }
@@ -291,18 +245,13 @@ fn export_omits_the_selection_outline() {
         return;
     };
     let frame = add_frame(&mut engine);
-    let clean = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Factor(1.0),
-                Background::Substrate,
-                Rendered::Live,
-            )
-            .expect("clean"),
-    )
-    .expect("the readback completes");
+    let clean = export(
+        &mut engine,
+        Some(frame),
+        ExportScale::Factor(1.0),
+        Background::Substrate,
+        Rendered::Live,
+    );
 
     // A marquee well inside the frame, so its outline would land in the export.
     engine.process(GestureCommand::Start {
@@ -320,18 +269,13 @@ fn export_omits_the_selection_outline() {
         "the marquee should have taken"
     );
 
-    let selected = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Factor(1.0),
-                Background::Substrate,
-                Rendered::Live,
-            )
-            .expect("with selection"),
-    )
-    .expect("the readback completes");
+    let selected = export(
+        &mut engine,
+        Some(frame),
+        ExportScale::Factor(1.0),
+        Background::Substrate,
+        Rendered::Live,
+    );
     assert_images(
         &clean,
         &selected,
@@ -352,18 +296,13 @@ fn export_without_a_frame_falls_back() {
         return;
     };
     // Nothing painted: the viewport is the only thing left to mean.
-    let empty = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                None,
-                ExportScale::Factor(1.0),
-                Background::Substrate,
-                Rendered::Live,
-            )
-            .expect("empty"),
-    )
-    .expect("the readback completes");
+    let empty = export(
+        &mut engine,
+        None,
+        ExportScale::Factor(1.0),
+        Background::Substrate,
+        Rendered::Live,
+    );
     assert_eq!((empty.width, empty.height), (SIZE.width, SIZE.height));
 
     // Painted: the populated tiles' bounds, which are tile-aligned and so at least
@@ -539,18 +478,13 @@ fn the_export_limit_is_the_devices_own() {
         .export_plan(Some(frame), ExportScale::Factor(1.0))
         .expect("an export exactly at the device limit is allowed");
     assert_eq!((plan.size.width, plan.size.height), (limit, limit));
-    let img = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Factor(1.0),
-                Background::Substrate,
-                Rendered::Committed,
-            )
-            .expect("export at the limit"),
-    )
-    .expect("the readback completes");
+    let img = export(
+        &mut engine,
+        Some(frame),
+        ExportScale::Factor(1.0),
+        Background::Substrate,
+        Rendered::Committed,
+    );
     assert_eq!((img.width, img.height), (limit, limit));
 
     // One pixel more is refused in the engine's words, not wgpu's.
@@ -616,18 +550,13 @@ fn a_piece_past_the_export_limit_still_has_an_overview() {
     assert!(plan.size.height < panel.height);
 
     // The overview really is renderable, which is the thing the panel gave up on.
-    let image = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Fit(panel),
-                Background::Substrate,
-                Rendered::Committed,
-            )
-            .expect("export"),
-    )
-    .expect("the readback completes");
+    let image = export(
+        &mut engine,
+        Some(frame),
+        ExportScale::Fit(panel),
+        Background::Substrate,
+        Rendered::Committed,
+    );
     assert_eq!(
         (image.width, image.height),
         (plan.size.width, plan.size.height)
@@ -679,28 +608,20 @@ fn export_is_rgba_whatever_the_target_format_is() {
         paint(engine, [0.9, 0.35, 0.1], 30.0, WIDE);
         add_frame(engine);
     }
-    let a = pollster::block_on(
-        rgba.export(
-            &mut Offscreen::default(),
-            Some(LayerId::solo(1)),
-            ExportScale::Factor(1.0),
-            Background::Substrate,
-            Rendered::Live,
-        )
-        .expect("rgba export"),
-    )
-    .expect("the readback completes");
-    let b = pollster::block_on(
-        bgra.export(
-            &mut Offscreen::default(),
-            Some(LayerId::solo(1)),
-            ExportScale::Factor(1.0),
-            Background::Substrate,
-            Rendered::Live,
-        )
-        .expect("bgra export"),
-    )
-    .expect("the readback completes");
+    let a = export(
+        &mut rgba,
+        Some(LayerId::solo(1)),
+        ExportScale::Factor(1.0),
+        Background::Substrate,
+        Rendered::Live,
+    );
+    let b = export(
+        &mut bgra,
+        Some(LayerId::solo(1)),
+        ExportScale::Factor(1.0),
+        Background::Substrate,
+        Rendered::Live,
+    );
 
     assert_eq!((a.width, a.height), (b.width, b.height));
     assert_images(
@@ -739,18 +660,13 @@ fn export_plan_reports_the_size_it_will_produce() {
     assert_eq!((plan.size.width, plan.size.height), (240, 160));
     assert_eq!(plan.zoom, 2.0);
 
-    let img = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Factor(2.0),
-                Background::Substrate,
-                Rendered::Live,
-            )
-            .expect("export"),
-    )
-    .expect("the readback completes");
+    let img = export(
+        &mut engine,
+        Some(frame),
+        ExportScale::Factor(2.0),
+        Background::Substrate,
+        Rendered::Live,
+    );
     assert_eq!(
         (img.width, img.height),
         (plan.size.width, plan.size.height),
@@ -773,18 +689,13 @@ fn committed_renders_omit_the_in_flight_stroke() {
         return;
     };
     let frame = add_frame(&mut engine);
-    let bare = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Factor(1.0),
-                Background::Substrate,
-                Rendered::Committed,
-            )
-            .expect("bare"),
-    )
-    .expect("the readback completes");
+    let bare = export(
+        &mut engine,
+        Some(frame),
+        ExportScale::Factor(1.0),
+        Background::Substrate,
+        Rendered::Committed,
+    );
 
     // A stroke *held down* across the middle of the frame: nothing is committed yet.
     engine.process(GestureCommand::Start {
@@ -798,30 +709,20 @@ fn committed_renders_omit_the_in_flight_stroke() {
     });
     assert!(engine.observe().is_stroking, "the stroke should be in hand");
 
-    let live = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Factor(1.0),
-                Background::Substrate,
-                Rendered::Live,
-            )
-            .expect("live"),
-    )
-    .expect("the readback completes");
-    let committed = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Factor(1.0),
-                Background::Substrate,
-                Rendered::Committed,
-            )
-            .expect("committed"),
-    )
-    .expect("the readback completes");
+    let live = export(
+        &mut engine,
+        Some(frame),
+        ExportScale::Factor(1.0),
+        Background::Substrate,
+        Rendered::Live,
+    );
+    let committed = export(
+        &mut engine,
+        Some(frame),
+        ExportScale::Factor(1.0),
+        Background::Substrate,
+        Rendered::Committed,
+    );
     assert_images_differ(
         &bare,
         &live,
@@ -838,18 +739,13 @@ fn committed_renders_omit_the_in_flight_stroke() {
     // And on release the two agree again: the difference is only ever "in flight",
     // never "invisible to one of them".
     engine.process(GestureCommand::End);
-    let after = pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Factor(1.0),
-                Background::Substrate,
-                Rendered::Committed,
-            )
-            .expect("after"),
-    )
-    .expect("the readback completes");
+    let after = export(
+        &mut engine,
+        Some(frame),
+        ExportScale::Factor(1.0),
+        Background::Substrate,
+        Rendered::Committed,
+    );
     assert_images(
         &live,
         &after,

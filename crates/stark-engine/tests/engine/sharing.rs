@@ -78,7 +78,7 @@ fn brush_assets_are_shared_live() {
         return;
     };
     let shared = Engine::new_sharing(&donor, SIZE);
-    let png = gray_png(16, 16, 255);
+    let png = flat_png(16, 16, 255);
     let id = donor.import_brush(&png).expect("import a valid stamp");
     assert!(
         shared.has_asset(id),
@@ -96,7 +96,7 @@ fn substrates_are_shared_live() {
         return;
     };
     let shared = Engine::new_sharing(&donor, SIZE);
-    let png = gray_png(64, 64, 128);
+    let png = flat_png(64, 64, 128);
     let id = donor
         .import_substrate(&png)
         .expect("import a valid substrate");
@@ -189,18 +189,8 @@ fn export_view_frames_the_callers_view() {
 
 /// A minimal grayscale PNG — a valid stamp or height map without reaching for
 /// bundled assets.
-fn gray_png(w: u32, h: u32, level: u8) -> Vec<u8> {
-    let mut out = Vec::new();
-    {
-        let mut enc = png::Encoder::new(&mut out, w, h);
-        enc.set_color(png::ColorType::Grayscale);
-        enc.set_depth(png::BitDepth::Eight);
-        let mut writer = enc.write_header().expect("png header");
-        writer
-            .write_image_data(&vec![level; (w * h) as usize])
-            .expect("png data");
-    }
-    out
+fn flat_png(w: u32, h: u32, level: u8) -> Vec<u8> {
+    crate::common::gray_png(w, h, &vec![level; (w * h) as usize])
 }
 
 /// **An engine built from a held `EngineShared` is the same engine

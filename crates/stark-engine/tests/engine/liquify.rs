@@ -14,13 +14,10 @@
 
 use crate::common::palette::RED;
 use crate::common::*;
-use stark_engine::command::{DocCommand, Edit, GestureCommand, InputSample, Tool, ViewCommand};
+use stark_engine::command::{GestureCommand, InputSample, Tool, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Engine, RgbaImage};
-use stark_model::Srgb;
-use stark_model::document::{
-    BrushEffect, BrushParams, BrushShape, FillOp, LayerId, LiquifyEffect, SelectionShape,
-};
+use stark_model::document::{BrushEffect, BrushParams, BrushShape, LayerId, LiquifyEffect};
 use stark_model::geom::{TileCoord, Vec2};
 
 /// A liquify brush of the given strength — no pigment (the effect carries none),
@@ -51,16 +48,7 @@ fn flat_band(engine: &mut Engine, radius: f32, from: Vec2, to: Vec2) {
 /// that, worst 2 levels). The identity claim needs a field with nothing to
 /// relocate.
 fn flat_fill(engine: &mut Engine, min: Vec2, max: Vec2) {
-    let layer = engine.observe().active_layer;
-    engine.process(DocCommand::Set(Edit::Fill {
-        layer,
-        op: FillOp::new(
-            SelectionShape::rect_from_corners(min, max),
-            0.0,
-            Srgb::new(RED),
-            1.0,
-        ),
-    }));
+    fill_rect(engine, min, max, RED, 0.0, 1.0);
 }
 
 /// The rewrite guard, end to end: a stroke whose strength is zero moves nothing
@@ -327,21 +315,10 @@ fn a_paint_inside_the_reach_resets_the_run_and_one_beyond_it_does_not() {
 fn disc_png(size: u32) -> Vec<u8> {
     let c = size as f32 / 2.0;
     let r = 0.9 * c;
-    let pixels: Vec<u8> = (0..size * size)
-        .map(|i| {
-            let (x, y) = ((i % size) as f32 + 0.5 - c, (i / size) as f32 + 0.5 - c);
-            if x * x + y * y < r * r { 255 } else { 0 }
-        })
-        .collect();
-    let mut out = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut out, size, size);
-        encoder.set_color(png::ColorType::Grayscale);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header().expect("png header");
-        writer.write_image_data(&pixels).expect("png data");
-    }
-    out
+    gray_png_from(size, size, |px, py| {
+        let (x, y) = (px as f32 + 0.5 - c, py as f32 + 0.5 - c);
+        if x * x + y * y < r * r { 255 } else { 0 }
+    })
 }
 
 /// A hard-shouldered red band along `y = 0` from `x = −150` to about `x = −20`,

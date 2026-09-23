@@ -123,27 +123,6 @@ fn ramp(stops: &[(f32, [f32; 3])]) -> Gradient {
     .expect("a valid test ramp")
 }
 
-/// Add a filter into `carrier`'s stack (the document's own when `None`) and hand
-/// back its id. The engine mints the id, so the new filter is the layer the
-/// projection *gained* — found by diffing against the ids that existed before,
-/// because "the topmost filter" is somebody else's filter the moment a document
-/// holds two (the trap the AddFilterButton fell into once).
-fn add_filter(engine: &mut Engine, carrier: Option<LayerId>, filter: Filter) -> LayerId {
-    let before: Vec<LayerId> = engine.observe().layers.iter().map(|l| l.id).collect();
-    engine.process(DocCommand::AddFilter {
-        carrier,
-        above: None,
-        filter,
-    });
-    engine
-        .observe()
-        .layers
-        .iter()
-        .find(|l| l.filter.is_some() && !before.contains(&l.id))
-        .map(|l| l.id)
-        .expect("the filter landed")
-}
-
 /// A painting with a red stroke across the middle, and nothing else.
 fn painted() -> Option<Engine> {
     let mut engine = engine_or_skip()?;
@@ -163,7 +142,14 @@ fn a_filter_recolors_what_is_beneath_it() {
         center(&before),
     );
 
-    add_filter(&mut engine, None, GREY);
+    added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: GREY,
+        },
+    );
     let after = engine.render_to_image();
     assert!(
         is_grey(center(&after)),
@@ -184,7 +170,14 @@ fn a_filter_recolors_what_is_beneath_it() {
 fn desaturating_keeps_the_lightness_it_found() {
     let Some(mut engine) = painted() else { return };
     let before = center(&engine.render_to_image());
-    add_filter(&mut engine, None, GREY);
+    added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: GREY,
+        },
+    );
     let after = center(&engine.render_to_image());
 
     let lightness = |c: [u8; 4]| {
@@ -218,11 +211,25 @@ fn desaturating_keeps_the_lightness_it_found() {
 #[test]
 fn a_tint_is_the_color_a_grey_becomes() {
     let Some(mut engine) = painted() else { return };
-    add_filter(&mut engine, None, GREY);
+    added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: GREY,
+        },
+    );
     let grey = center(&engine.render_to_image());
     assert!(is_grey(grey), "the setup should be achromatic: {grey:?}");
 
-    let toned = add_filter(&mut engine, None, TONED);
+    let toned = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: TONED,
+        },
+    );
     let got = center(&engine.render_to_image());
     assert!(
         !is_grey(got),
@@ -269,7 +276,14 @@ fn a_tint_is_the_color_a_grey_becomes() {
 fn a_neutral_filter_changes_no_pixel() {
     let Some(mut engine) = painted() else { return };
     let before = engine.render_to_image();
-    add_filter(&mut engine, None, NEUTRAL);
+    added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: NEUTRAL,
+        },
+    );
     let after = engine.render_to_image();
     assert_images(
         &before,
@@ -289,7 +303,14 @@ fn a_neutral_filter_changes_no_pixel() {
 fn a_hidden_or_faded_filter_changes_no_pixel() {
     let Some(mut engine) = painted() else { return };
     let before = engine.render_to_image();
-    let id = add_filter(&mut engine, None, GREY);
+    let id = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: GREY,
+        },
+    );
     assert_images_differ(
         &before,
         &engine.render_to_image(),
@@ -349,7 +370,14 @@ fn a_carried_filter_reaches_only_its_own_group() {
 
     // Carried onto the lower layer, so the two become a group and the filter sees
     // only what that group has composited.
-    add_filter(&mut engine, Some(lower), GREY);
+    added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: Some(lower),
+            above: None,
+            filter: GREY,
+        },
+    );
     let after = engine.render_to_image();
 
     let (x_lo, x_hi) = (before.width / 4, before.width * 3 / 4);
@@ -380,7 +408,14 @@ fn a_filter_with_nothing_beneath_it_changes_no_pixel() {
     let before = engine.render_to_image();
 
     // At the foot of the document.
-    let id = add_filter(&mut engine, None, GREY);
+    let id = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: GREY,
+        },
+    );
     engine.process(DocCommand::MoveLayer {
         id,
         carrier: None,
@@ -433,7 +468,14 @@ fn a_filter_refuses_carried_layers() {
     let Some(mut engine) = painted() else { return };
     let paint_layer = engine.observe().active_layer;
     let before = engine.render_to_image();
-    let id = add_filter(&mut engine, None, NEUTRAL);
+    let id = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: NEUTRAL,
+        },
+    );
 
     // A move onto the filter is declined outright…
     engine.process(DocCommand::MoveLayer {
@@ -500,7 +542,14 @@ fn the_reach_note_agrees_with_the_renderer() {
     };
 
     // Carried onto a painted layer: the carrier's own content is beneath it.
-    let carried = add_filter(&mut engine, Some(paint_layer), GREY);
+    let carried = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: Some(paint_layer),
+            above: None,
+            filter: GREY,
+        },
+    );
     assert!(
         underlay_of(&engine, carried),
         "a filter carried onto painted content reaches it (its bar must not say \
@@ -510,7 +559,14 @@ fn the_reach_note_agrees_with_the_renderer() {
 
     // Above the paint in the root stack: reaches it. Hide the paint: reaches
     // nothing, exactly as the draw list culls it.
-    let top = add_filter(&mut engine, None, GREY);
+    let top = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: GREY,
+        },
+    );
     assert!(
         underlay_of(&engine, top),
         "paint beneath, in the same stack"
@@ -529,7 +585,14 @@ fn the_reach_note_agrees_with_the_renderer() {
 #[test]
 fn a_filter_can_be_selected_but_takes_no_paint() {
     let Some(mut engine) = painted() else { return };
-    let id = add_filter(&mut engine, None, NEUTRAL);
+    let id = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: NEUTRAL,
+        },
+    );
     engine.process(PeerCommand::SetActiveLayer(id));
 
     let obs = engine.observe();
@@ -558,7 +621,14 @@ fn a_filter_can_be_selected_but_takes_no_paint() {
 fn a_filter_undoes() {
     let Some(mut engine) = painted() else { return };
     let plain = engine.render_to_image();
-    let id = add_filter(&mut engine, None, NEUTRAL);
+    let id = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: NEUTRAL,
+        },
+    );
     engine.process(DocCommand::Set(Edit::Filter(id, GREY)));
     let grey = engine.render_to_image();
     assert_images_differ(&plain, &grey, 0, "the filter did nothing");
@@ -592,7 +662,14 @@ fn a_filter_undoes() {
 #[test]
 fn dragging_a_filter_previews_without_logging() {
     let Some(mut engine) = painted() else { return };
-    let id = add_filter(&mut engine, None, NEUTRAL);
+    let id = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: NEUTRAL,
+        },
+    );
     let steps = engine.scrub_range().expect("solo timeline").1;
 
     let mut shown = None;
@@ -645,7 +722,14 @@ fn dragging_a_filter_previews_without_logging() {
 fn chromatic_aberration_parts_the_spectrum_both_ways() {
     let Some(mut engine) = painted() else { return };
     let before = engine.render_to_image();
-    add_filter(&mut engine, None, FRINGE);
+    added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: FRINGE,
+        },
+    );
     let after = engine.render_to_image();
     assert_images_differ(
         &before,
@@ -674,13 +758,16 @@ fn chromatic_aberration_parts_the_spectrum_both_ways() {
 fn chromatic_aberration_is_the_identity_deep_inside_flat_paint() {
     let Some(mut engine) = painted() else { return };
     let before = engine.render_to_image();
-    add_filter(
+    added(
         &mut engine,
-        None,
-        Filter::Chromatic(ChromaticAberration {
-            spread: 8.0,
-            angle: 0.0,
-        }),
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: Filter::Chromatic(ChromaticAberration {
+                spread: 8.0,
+                angle: 0.0,
+            }),
+        },
     );
     let after = engine.render_to_image();
     assert_images_differ(
@@ -716,7 +803,14 @@ fn chromatic_aberration_parts_the_spectrum_in_pigment_too() {
     };
     paint(&mut engine, RED_SOFT, 22.0, STROKE);
     let before = engine.render_to_image();
-    add_filter(&mut engine, None, FRINGE);
+    added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: FRINGE,
+        },
+    );
     let after = engine.render_to_image();
     assert_images_differ(
         &before,
@@ -749,7 +843,14 @@ fn chromatic_aberration_parts_the_spectrum_in_pigment_too() {
 fn clipping_a_point_filter_changes_nothing() {
     let Some(mut engine) = painted() else { return };
     let bare = engine.render_to_image();
-    let id = add_filter(&mut engine, None, GREY);
+    let id = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: GREY,
+        },
+    );
     let open = engine.render_to_image();
     assert_images_differ(
         &bare,
@@ -829,7 +930,14 @@ fn a_clipped_gather_stays_inside_the_paint() {
     let Some(mut engine) = painted() else { return };
     let bare = engine.render_to_image();
 
-    let id = add_filter(&mut engine, None, FRINGE);
+    let id = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: FRINGE,
+        },
+    );
     let open = engine.render_to_image();
     engine.process(DocCommand::SetLayerClip(id, true));
     let shut = engine.render_to_image();
@@ -872,7 +980,14 @@ fn a_clipped_gather_stays_inside_the_paint() {
 #[test]
 fn a_filter_survives_save_and_load() {
     let Some(mut engine) = painted() else { return };
-    let id = add_filter(&mut engine, None, NEUTRAL);
+    let id = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: NEUTRAL,
+        },
+    );
     // Set through the command rather than added already-dialled, so both of the two
     // new actions are in the log this saves.
     engine.process(DocCommand::Set(Edit::Filter(
@@ -891,10 +1006,13 @@ fn a_filter_survives_save_and_load() {
     // A second filter of the **other kind** rides the same log, so the *enum* is
     // exercised and not just one variant's fields: a filter read as the wrong kind is
     // a different picture rather than an error.
-    let chroma = add_filter(
+    let chroma = added(
         &mut engine,
-        None,
-        Filter::Chromatic(ChromaticAberration::NEUTRAL),
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: Filter::Chromatic(ChromaticAberration::NEUTRAL),
+        },
     );
     engine.process(DocCommand::Set(Edit::Filter(
         chroma,
@@ -907,7 +1025,14 @@ fn a_filter_survives_save_and_load() {
     // payload has a *length* (a stop list) and an `Option` around it — two more shapes
     // to get wrong, each a fresh way to come back as a different ramp. Three stops,
     // every number distinct.
-    let map = add_filter(&mut engine, None, Filter::GradientMap(None));
+    let map = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: Filter::GradientMap(None),
+        },
+    );
     engine.process(DocCommand::Set(Edit::Filter(
         map,
         Filter::GradientMap(Some(ramp(&[
@@ -917,7 +1042,14 @@ fn a_filter_survives_save_and_load() {
         ]))),
     )));
     // And a fourth of the fourth kind, so the enum stays exercised whole.
-    let blur = add_filter(&mut engine, None, Filter::FocalBlur(FocalBlur::NEUTRAL));
+    let blur = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: Filter::FocalBlur(FocalBlur::NEUTRAL),
+        },
+    );
     engine.process(DocCommand::Set(Edit::Filter(
         blur,
         Filter::FocalBlur(FocalBlur {
@@ -964,7 +1096,14 @@ fn a_filters_id_is_not_reused_after_a_reload() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    add_filter(&mut engine, None, NEUTRAL);
+    added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: NEUTRAL,
+        },
+    );
     let bytes = engine.save_bytes().expect("serialize");
 
     let mut loaded = engine_or_skip().expect("adapter available (original built)");
@@ -998,7 +1137,14 @@ fn a_filters_id_is_not_reused_after_a_reload() {
 #[test]
 fn a_black_to_white_gradient_map_is_the_lightness_preserving_greyscale() {
     let Some(mut engine) = painted() else { return };
-    let id = add_filter(&mut engine, None, GREY);
+    let id = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: GREY,
+        },
+    );
     let desaturated = engine.render_to_image();
 
     engine.process(DocCommand::Set(Edit::Filter(
@@ -1036,13 +1182,16 @@ fn a_gradient_map_repaints_the_paint_and_only_the_paint() {
         center(&before),
     );
 
-    add_filter(
+    added(
         &mut engine,
-        None,
-        Filter::GradientMap(Some(ramp(&[
-            (0.0, [0.85, 0.1, 0.1]),
-            (1.0, [0.85, 0.1, 0.1]),
-        ]))),
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: Filter::GradientMap(Some(ramp(&[
+                (0.0, [0.85, 0.1, 0.1]),
+                (1.0, [0.85, 0.1, 0.1]),
+            ]))),
+        },
     );
     let after = engine.render_to_image();
     assert!(
@@ -1065,7 +1214,14 @@ fn a_gradient_map_repaints_the_paint_and_only_the_paint() {
 fn a_rampless_gradient_map_changes_no_pixel() {
     let Some(mut engine) = painted() else { return };
     let before = engine.render_to_image();
-    let id = add_filter(&mut engine, None, Filter::GradientMap(None));
+    let id = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: Filter::GradientMap(None),
+        },
+    );
     assert_images(
         &before,
         &engine.render_to_image(),
@@ -1109,13 +1265,16 @@ fn a_gradient_map_works_in_a_pigment_document() {
         return;
     };
     paint(&mut engine, [0.1, 0.1, 0.9], 22.0, STROKE);
-    add_filter(
+    added(
         &mut engine,
-        None,
-        Filter::GradientMap(Some(ramp(&[
-            (0.0, [0.85, 0.1, 0.1]),
-            (1.0, [0.85, 0.1, 0.1]),
-        ]))),
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: Filter::GradientMap(Some(ramp(&[
+                (0.0, [0.85, 0.1, 0.1]),
+                (1.0, [0.85, 0.1, 0.1]),
+            ]))),
+        },
     );
     let after = center(&engine.render_to_image());
     assert!(
@@ -1144,7 +1303,14 @@ fn a_focal_blur_spreads_the_paint_past_its_edge() {
     let Some(mut engine) = painted() else { return };
     let bare = engine.render_to_image();
 
-    add_filter(&mut engine, None, BLUR);
+    added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: BLUR,
+        },
+    );
     let after = engine.render_to_image();
     assert!(
         red_dominant(center(&after)),
@@ -1192,21 +1358,23 @@ fn a_focal_blur_is_the_identity_on_a_uniform_field() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let layer = engine.observe().active_layer;
-    engine.process(DocCommand::Set(Edit::Fill {
-        layer,
-        op: stark_model::document::FillOp::new(
-            stark_model::document::SelectionShape::rect_from_corners(
-                Vec2::new(-140.0, -140.0),
-                Vec2::new(140.0, 140.0),
-            ),
-            0.0,
-            Srgb::new(RED_SOFT),
-            1.0,
-        ),
-    }));
+    fill_rect(
+        &mut engine,
+        Vec2::splat(-140.0),
+        Vec2::splat(140.0),
+        RED_SOFT,
+        0.0,
+        1.0,
+    );
     let before = engine.render_to_image();
-    add_filter(&mut engine, None, BLUR);
+    added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: BLUR,
+        },
+    );
     let after = engine.render_to_image();
     assert_images(
         &before,
@@ -1234,7 +1402,14 @@ fn a_focal_blur_is_the_identity_on_a_uniform_field() {
 #[test]
 fn each_aperture_spreads_the_light_differently() {
     let Some(mut engine) = painted() else { return };
-    let filter = add_filter(&mut engine, None, Filter::FocalBlur(FocalBlur::NEUTRAL));
+    let filter = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: Filter::FocalBlur(FocalBlur::NEUTRAL),
+        },
+    );
     // Every shape the picker offers, plus the obstructed disc — which is a
     // *setting* rather than an entry in `ALL` now that the mirror lens and the plain
     // one are one shape, and which would therefore go untested by a sweep of the
@@ -1300,7 +1475,14 @@ fn an_oval_aperture_reaches_further_along_its_long_axis() {
         ),
     }));
     let bare = engine.render_to_image();
-    let filter = add_filter(&mut engine, None, Filter::FocalBlur(FocalBlur::NEUTRAL));
+    let filter = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: Filter::FocalBlur(FocalBlur::NEUTRAL),
+        },
+    );
 
     // How far out from the centre the blur still changed a pixel, along the centre
     // row and the centre column. The spill dies into the 8-bit floor a texel or two
@@ -1360,7 +1542,14 @@ fn an_oval_aperture_reaches_further_along_its_long_axis() {
 fn a_neutral_focal_blur_changes_no_pixel() {
     let Some(mut engine) = painted() else { return };
     let before = engine.render_to_image();
-    add_filter(&mut engine, None, Filter::FocalBlur(FocalBlur::NEUTRAL));
+    added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: Filter::FocalBlur(FocalBlur::NEUTRAL),
+        },
+    );
     assert_images(
         &before,
         &engine.render_to_image(),
@@ -1382,7 +1571,14 @@ fn a_clipped_focal_blur_stays_inside_the_paint() {
     let Some(mut engine) = painted() else { return };
     let bare = engine.render_to_image();
 
-    let id = add_filter(&mut engine, None, BLUR);
+    let id = added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: BLUR,
+        },
+    );
     let open = engine.render_to_image();
     engine.process(DocCommand::SetLayerClip(id, true));
     let shut = engine.render_to_image();
@@ -1437,13 +1633,16 @@ fn a_ring_blur_that_gathers_nothing_invents_no_hue() {
         &[Vec2::new(0.0, 0.0), Vec2::new(0.5, 0.0)],
     );
     let sharp = engine.render_to_image();
-    let id = add_filter(
+    let id = added(
         &mut engine,
-        None,
-        Filter::FocalBlur(FocalBlur {
-            radius: 70.0,
-            aperture: Aperture::Disc { obstruction: 0.9 },
-        }),
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: Filter::FocalBlur(FocalBlur {
+                radius: 70.0,
+                aperture: Aperture::Disc { obstruction: 0.9 },
+            }),
+        },
     );
     engine.process(DocCommand::SetLayerClip(id, true));
     let shut = engine.render_to_image();
@@ -1507,13 +1706,16 @@ fn a_focal_blur_survives_an_extreme_zoom() {
         factor: 64.0,
     });
     let sharp = engine.render_to_image();
-    let id = add_filter(
+    let id = added(
         &mut engine,
-        None,
-        Filter::FocalBlur(FocalBlur {
-            radius: 32.0,
-            aperture: Aperture::Disc { obstruction: 0.0 },
-        }),
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: Filter::FocalBlur(FocalBlur {
+                radius: 32.0,
+                aperture: Aperture::Disc { obstruction: 0.0 },
+            }),
+        },
     );
     let blurred = engine.render_to_image();
     assert_images_differ(
@@ -1543,7 +1745,14 @@ fn a_focal_blur_works_in_a_pigment_document() {
     };
     paint(&mut engine, RED_SOFT, 22.0, STROKE);
     let before = engine.render_to_image();
-    add_filter(&mut engine, None, BLUR);
+    added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: BLUR,
+        },
+    );
     let after = engine.render_to_image();
     assert_images_differ(
         &before,
@@ -1573,7 +1782,14 @@ fn a_filter_works_in_a_pigment_document() {
     let before = center(&engine.render_to_image());
     assert!(red_dominant(before), "the stroke should be red: {before:?}");
 
-    add_filter(&mut engine, None, GREY);
+    added(
+        &mut engine,
+        DocCommand::AddFilter {
+            carrier: None,
+            above: None,
+            filter: GREY,
+        },
+    );
     let after = center(&engine.render_to_image());
     assert!(
         is_grey(after),

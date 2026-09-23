@@ -363,14 +363,6 @@ fn a_pen_driven_ceiling_pressed_home_is_the_dial() {
     }
 }
 
-/// A straight leg along `y` from `x0` to `x1` at one `pressure` — the two reports
-/// a hand actually makes of a straight run, which is the point: the ceiling is
-/// interpolated across each segment (§6.2, `Paint::opacity_ramp`), so a stroke
-/// does not have to be finely reported for its ceiling to be smooth.
-fn leg(x0: f32, x1: f32, y: f32, pressure: f32) -> Vec<(Vec2, f32)> {
-    vec![(Vec2::new(x0, y), pressure), (Vec2::new(x1, y), pressure)]
-}
-
 /// **The larger ceiling wins** (§6.2), one way round: a light pass back over a
 /// heavy mark, within one stroke, leaves the mark as it was — the property a
 /// pen-driven ceiling has to have in the stroke's own time, because a live

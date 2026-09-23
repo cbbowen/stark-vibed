@@ -52,10 +52,6 @@ fn over_substrate(radius: u32) -> PickOptions {
     }
 }
 
-fn near(a: [f32; 3], b: [f32; 3], tol: f32) -> bool {
-    (0..3).all(|i| (a[i] - b[i]).abs() <= tol)
-}
-
 fn assert_near(got: Option<[f32; 3]>, want: [f32; 3], tol: f32, what: &str) {
     let got = got.unwrap_or_else(|| panic!("{what}: nothing picked"));
     assert!(

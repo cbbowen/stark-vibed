@@ -119,29 +119,26 @@ fn the_view_never_reaches_the_document() {
         return;
     };
     bar(&mut engine, -90.0, 40.0);
-    engine.process(stark_engine::command::DocCommand::AddMatte {
-        carrier: None,
-        at: Place::Top,
-        region: MatteRegion::OutsideRect {
-            min: Vec2::new(-100.0, -60.0),
-            max: Vec2::new(100.0, 60.0),
+    let frame = added(
+        &mut engine,
+        stark_engine::command::DocCommand::AddMatte {
+            carrier: None,
+            at: Place::Top,
+            region: MatteRegion::OutsideRect {
+                min: Vec2::new(-100.0, -60.0),
+                max: Vec2::new(100.0, 60.0),
+            },
+            paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
         },
-        paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
-    });
-    let frame = engine.observe().layers.last().expect("matte").id;
+    );
     let shot = |engine: &mut Engine| {
-        pollster::block_on(
-            engine
-                .export(
-                    &mut Offscreen::default(),
-                    Some(frame),
-                    ExportScale::Factor(1.0),
-                    Background::Substrate,
-                    Rendered::Committed,
-                )
-                .expect("export"),
+        export(
+            engine,
+            Some(frame),
+            ExportScale::Factor(1.0),
+            Background::Substrate,
+            Rendered::Committed,
         )
-        .expect("the readback completes")
     };
     let upright = shot(&mut engine);
     let before = engine.observe();

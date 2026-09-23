@@ -6,7 +6,7 @@
 use crate::common::palette::{GREEN, RED};
 use crate::common::*;
 use stark_engine::command::Tool;
-use stark_engine::command::{DocCommand, Edit, GestureCommand, InputSample, ViewCommand};
+use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::document::{
     BrushDynamics, BrushEffect, BrushParams, BrushShape, LayerId, OrientationSource,
@@ -206,21 +206,10 @@ fn a_wet_brushs_flow_scales_the_smear() {
 /// that is about the *deposit*, not the loop under test.
 #[test]
 fn a_wet_brush_at_flow_zero_is_the_identity() {
-    use stark_model::Srgb;
-    use stark_model::document::{FillOp, SelectionShape};
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let layer = engine.observe().active_layer;
-    engine.process(DocCommand::Set(Edit::Fill {
-        layer,
-        op: FillOp::new(
-            SelectionShape::rect_from_corners(Vec2::new(-128.0, -128.0), Vec2::new(128.0, 128.0)),
-            0.0,
-            Srgb::new(RED),
-            1.0,
-        ),
-    }));
+    fill_canvas(&mut engine, RED, 1.0);
     let before = engine.render_to_image();
     let mut b = dyn_brush(
         GREEN,

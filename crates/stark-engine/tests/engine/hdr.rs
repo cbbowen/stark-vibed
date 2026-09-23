@@ -5,11 +5,9 @@
 use crate::common::*;
 use stark_engine::command::{DocCommand, Edit, ViewCommand};
 use stark_engine::{
-    Background, Engine, EnvironmentId, ExportScale, MediaParams, Offscreen, Output, Rendered,
-    Transfer,
+    Background, Engine, EnvironmentId, ExportScale, MediaParams, Output, Rendered, Transfer,
 };
 use stark_model::Srgb;
-use stark_model::color::{linear_to_srgb, srgb_to_linear};
 use stark_model::document::{BrushEffect, BrushParams, BrushShape};
 use stark_model::geom::Vec2;
 
@@ -67,20 +65,6 @@ fn zoom(engine: &mut Engine, factor: f32) {
     engine.process(ViewCommand::Zoom { anchor, factor });
 }
 
-/// A half-float texel back to the 8-bit code the SDR path would have stored — the
-/// decode is the transfer's own, the encode is sRGB's, and the clamp is the 8-bit
-/// store's. Per channel, so the P3 transfers are out of its reach: `wide.rs` is where
-/// a change of primaries is measured.
-fn code(transfer: Transfer, v: f32) -> i32 {
-    let lin = match transfer {
-        Transfer::Linear => v,
-        Transfer::ExtendedSrgb => srgb_to_linear(v),
-        Transfer::Srgb => srgb_to_linear(v.clamp(0.0, 1.0)),
-        p3 => unreachable!("{p3:?} changes primaries, which one channel cannot undo"),
-    };
-    (linear_to_srgb(lin.clamp(0.0, 1.0)) * 255.0).round() as i32
-}
-
 /// At headroom 1, whatever transfer the surface speaks, the half-float picture is
 /// the 8-bit one to within its own rounding — at 1:1 and through the resolve.
 #[test]
@@ -105,7 +89,7 @@ fn an_sdr_preview_on_an_hdr_surface_is_the_sdr_picture() {
                 .zip(want.pixels.as_chunks::<4>().0)
             {
                 for c in 0..3 {
-                    let d = (code(transfer, g[c]) - i32::from(w[c])).abs();
+                    let d = (srgb_code(transfer, g[c]) - i32::from(w[c])).abs();
                     worst = worst.max(d);
                     if d > 1 {
                         off_by_two += 1;
@@ -257,18 +241,13 @@ fn an_export_from_an_hdr_session_is_the_sdr_export() {
     };
     hdr.process(ViewCommand::SetOutput(Output::new(Transfer::Linear, 4.0)));
     let shot = |engine: &mut Engine| {
-        pollster::block_on(
-            engine
-                .export(
-                    &mut Offscreen::default(),
-                    None,
-                    ExportScale::Factor(1.0),
-                    Background::Substrate,
-                    Rendered::Committed,
-                )
-                .expect("export"),
+        export(
+            engine,
+            None,
+            ExportScale::Factor(1.0),
+            Background::Substrate,
+            Rendered::Committed,
         )
-        .expect("the readback completes")
     };
     let a = shot(&mut sdr);
     let b = shot(&mut hdr);

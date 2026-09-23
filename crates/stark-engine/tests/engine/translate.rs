@@ -10,36 +10,11 @@
 //! unchanged (§14.11.1's law run backwards) and, dragged and merged back, come
 //! to the same picture the old cut/paste path produced.
 
-use crate::common::palette::{GREEN_SOFT, RED};
+use crate::common::palette::GREEN_SOFT;
 use crate::common::*;
 use stark_engine::command::{DocCommand, Edit, ViewCommand};
 use stark_model::document::{SelectionMode, SelectionOp, SelectionShape, TransformMap};
 use stark_model::geom::{Affine2, IVec2, Vec2};
-
-/// A compact red blob centred at `c` — two crossing strokes, so the lighting has
-/// height variation to bite on and a seam would show.
-fn blob(engine: &mut stark_engine::Engine, c: Vec2) {
-    paint(
-        engine,
-        RED,
-        16.0,
-        &[c + Vec2::new(-18.0, 0.0), c + Vec2::new(18.0, 0.0)],
-    );
-    paint(
-        engine,
-        RED,
-        10.0,
-        &[c + Vec2::new(0.0, -14.0), c + Vec2::new(0.0, 14.0)],
-    );
-}
-
-fn select_rect(engine: &mut stark_engine::Engine, min: Vec2, max: Vec2, feather: f32) {
-    engine.process(DocCommand::Select(SelectionOp::new(
-        SelectionMode::Replace,
-        SelectionShape::rect_from_corners(min, max),
-        feather,
-    )));
-}
 
 fn translate_active(engine: &mut stark_engine::Engine, to: IVec2) {
     let layer = engine.observe().active_layer;

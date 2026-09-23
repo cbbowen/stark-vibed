@@ -38,17 +38,17 @@ fn at(img: &RgbaImage, x: u32, y: u32) -> [u8; 4] {
 fn outside(img: &RgbaImage) -> [u8; 4] {
     at(img, 12, img.height / 2)
 }
-fn is_dark(c: [u8; 4]) -> bool {
-    c[0] < 60 && c[1] < 60 && c[2] < 60
-}
 
-fn add_frame(engine: &mut Engine) {
-    engine.process(DocCommand::AddMatte {
-        carrier: None,
-        at: Place::Top,
-        region: HOLE,
-        paint: Parcel::Solid(Srgb::new(BLACK)),
-    });
+fn add_frame(engine: &mut Engine) -> LayerId {
+    added(
+        engine,
+        DocCommand::AddMatte {
+            carrier: None,
+            at: Place::Top,
+            region: HOLE,
+            paint: Parcel::Solid(Srgb::new(BLACK)),
+        },
+    )
 }
 
 /// The core claim: a frame matte covers everything outside its rect and nothing
@@ -179,8 +179,7 @@ fn matte_below_paint_does_not_cover_it() {
     paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
     // Below the root layer: `above: None` appends on top, so insert under the
     // root by moving it after the fact.
-    add_frame(&mut engine);
-    let matte_id = engine.observe().layers.last().expect("matte").id;
+    let matte_id = add_frame(&mut engine);
     engine.process(DocCommand::MoveLayer {
         carrier: None,
         id: LayerId::ROOT,
@@ -232,8 +231,7 @@ fn a_matte_can_be_selected_but_takes_no_paint() {
         return;
     };
     paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
-    add_frame(&mut engine);
-    let matte_id = engine.observe().layers.last().expect("matte").id;
+    let matte_id = add_frame(&mut engine);
 
     // Adding a matte does not *steal* the painting target...
     assert_ne!(
@@ -299,8 +297,7 @@ fn dragging_a_frame_previews_without_logging() {
         return;
     };
     paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
-    add_frame(&mut engine);
-    let matte_id = engine.observe().layers.last().expect("matte").id;
+    let matte_id = add_frame(&mut engine);
     let framed = engine.render_to_image();
 
     // Three "pointer moves" of a drag that shrinks the hole.
@@ -437,8 +434,7 @@ fn picking_a_frame_color_previews_without_logging() {
         return;
     };
     paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
-    add_frame(&mut engine);
-    let matte_id = engine.observe().layers.last().expect("matte").id;
+    let matte_id = add_frame(&mut engine);
     let black = engine.render_to_image();
 
     // Three "pointer moves" of a pick towards a pale mat board.
@@ -508,8 +504,7 @@ fn a_frame_color_pick_that_changes_nothing_logs_nothing() {
         return;
     };
     paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
-    add_frame(&mut engine);
-    let matte_id = engine.observe().layers.last().expect("matte").id;
+    let matte_id = add_frame(&mut engine);
     let black = engine.render_to_image();
 
     for v in [0.3f32, 0.6, 0.0] {
@@ -566,22 +561,12 @@ fn matte_undoes() {
 // The whole-plane region and the gradient paint (§15.5, §22.4).
 // ---------------------------------------------------------------------------
 
+use stark_model::Gradient;
 use stark_model::document::Parcel as MP;
 use stark_model::document::{GradientAxis, GradientParcel};
-use stark_model::{Gradient, GradientStop};
 
 fn red_blue() -> Gradient {
-    Gradient::new(vec![
-        GradientStop {
-            t: 0.0,
-            color: Srgb::new([0.85, 0.1, 0.1]),
-        },
-        GradientStop {
-            t: 1.0,
-            color: Srgb::new([0.1, 0.2, 0.85]),
-        },
-    ])
-    .expect("two stops")
+    gradient(&[(0.0, [0.85, 0.1, 0.1]), (1.0, [0.1, 0.2, 0.85])])
 }
 
 /// A backing: an `Everything` matte born at the bottom of the stack covers the
@@ -899,8 +884,7 @@ fn a_translated_mattes_rect_is_read_and_written_on_the_canvas() {
         return;
     };
     paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
-    add_frame(&mut engine);
-    let matte_id = engine.observe().layers.last().expect("matte").id;
+    let matte_id = add_frame(&mut engine);
     let framed = engine.render_to_image();
     engine.process(DocCommand::Set(Edit::Translate {
         layer: matte_id,

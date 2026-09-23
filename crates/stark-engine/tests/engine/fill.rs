@@ -18,8 +18,7 @@ use stark_engine::command::{DocCommand, Edit, GestureCommand, InputSample, ViewC
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::Srgb;
 use stark_model::document::{
-    BrushDynamics, BrushEffect, BrushParams, FillOp, SelectionMode, SelectionOp, SelectionShape,
-    ShapeAction,
+    BrushDynamics, BrushEffect, BrushParams, FillOp, SelectionMode, SelectionShape, ShapeAction,
 };
 use stark_model::geom::Vec2;
 
@@ -38,36 +37,6 @@ fn is_red(img: &RgbaImage, canvas: Vec2) -> bool {
 
 fn is_green(img: &RgbaImage, canvas: Vec2) -> bool {
     leads(texel(img, canvas), Lead::Green, MARGIN_FLAT)
-}
-
-fn select_rect(engine: &mut stark_engine::Engine, min: Vec2, max: Vec2, feather: f32) {
-    engine.process(DocCommand::Select(SelectionOp::new(
-        SelectionMode::Replace,
-        SelectionShape::rect_from_corners(min, max),
-        feather,
-    )));
-}
-
-/// Commit a fill of the rect `min..max` with `color`, through the direct command
-/// path. `opacity` is how far it covers, which is what the panel's slider sets.
-fn fill_rect(
-    engine: &mut stark_engine::Engine,
-    min: Vec2,
-    max: Vec2,
-    color: [f32; 3],
-    feather: f32,
-    opacity: f32,
-) {
-    let layer = engine.observe().active_layer;
-    engine.process(DocCommand::Set(Edit::Fill {
-        layer,
-        op: FillOp::new(
-            SelectionShape::rect_from_corners(min, max),
-            feather,
-            Srgb::new(color),
-            opacity,
-        ),
-    }));
 }
 
 /// Arm the Fill action with a red brush. A fill lays *the brush's color*, so
@@ -596,17 +565,7 @@ use stark_model::document::{GradientAxis, GradientParcel, Parcel};
 use stark_model::{Gradient, GradientStop};
 
 fn red_blue() -> Gradient {
-    Gradient::new(vec![
-        GradientStop {
-            t: 0.0,
-            color: Srgb::new(RED),
-        },
-        GradientStop {
-            t: 1.0,
-            color: Srgb::new(BLUE_SOFT),
-        },
-    ])
-    .expect("two stops")
+    gradient(&[(0.0, RED), (1.0, BLUE_SOFT)])
 }
 
 fn is_blue(img: &RgbaImage, canvas: Vec2) -> bool {

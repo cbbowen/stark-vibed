@@ -22,7 +22,7 @@
 
 use crate::common::*;
 use stark_engine::command::DocCommand;
-use stark_engine::{Background, ExportScale, Offscreen, Rendered, RgbaImage};
+use stark_engine::{Background, ExportScale, Rendered, RgbaImage};
 use stark_model::Srgb;
 use stark_model::document::{BrushParams, BrushShape, MatteRegion, Parcel, Place};
 use stark_model::geom::Vec2;
@@ -143,18 +143,13 @@ fn hatched(engine: &mut stark_engine::Engine) {
 
 fn shot(engine: &mut stark_engine::Engine, scale: f32) -> RgbaImage {
     let frame = engine.observe().layers.last().expect("matte").id;
-    pollster::block_on(
-        engine
-            .export(
-                &mut Offscreen::default(),
-                Some(frame),
-                ExportScale::Factor(scale),
-                Background::Substrate,
-                Rendered::Committed,
-            )
-            .expect("export"),
+    export(
+        engine,
+        Some(frame),
+        ExportScale::Factor(scale),
+        Background::Substrate,
+        Rendered::Committed,
     )
-    .expect("the readback completes")
 }
 
 /// A 1:4 render is the 1:1 render averaged down — and is *not* one texel in sixteen

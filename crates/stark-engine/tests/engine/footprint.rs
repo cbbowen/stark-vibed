@@ -41,7 +41,7 @@
 use stark_model::Srgb;
 use std::collections::BTreeSet;
 
-use crate::common::{Probe, engine_or_skip, paint};
+use crate::common::{Probe, engine_or_skip, paint, picture_png};
 use stark_engine::Engine;
 use stark_engine::command::{DocCommand, Edit, InputCommand};
 use stark_engine::testing::{DocState, undeclared};
@@ -132,13 +132,7 @@ fn swatch(w: u32, h: u32) -> Vec<u8> {
             ]
         })
         .collect();
-    stark_assetid::Picture {
-        width: w,
-        height: h,
-        pixels,
-    }
-    .encode()
-    .expect("a well-formed swatch")
+    picture_png(w, h, pixels)
 }
 
 /// Every action kind the engine can be driven to commit, each held to its own
