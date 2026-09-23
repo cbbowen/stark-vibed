@@ -625,6 +625,149 @@ pub fn whole_render(engine: &mut Engine) -> RgbaImage {
 /// commit against a replay.
 pub const SEAM_LEVELS: u8 = 4;
 
+/// How far apart two renders of one dial's positions may sit. The dials differ, so
+/// each caller says.
+#[derive(Clone, Copy)]
+pub struct DragTol {
+    /// The preview must move the canvas by **more** than this, or the drag showed
+    /// nothing and the rest of the protocol is vacuous.
+    pub shows: u8,
+    /// How far a commit may sit from the preview it supersedes, and an undo from the
+    /// render the drag opened on.
+    pub settles: u8,
+}
+
+/// **The bargain every dial makes with the preview slot** (§1.3), asked of one dial.
+///
+/// A slider or a picker reports a value per pointer *move*. Logging each would bury
+/// the history under a hundred one-step-apart edits and leave undo unable to take
+/// the adjustment back, so a drag previews per move and logs once, on release. That
+/// is one protocol, and it was written out at seven dials — the frame rect, the
+/// canvas color, the frame color, layer opacity, the bend, a filter's sliders.
+///
+/// `edit` builds the edit for a value; `values` is the drag, its last entry the value
+/// released on. In order:
+///
+/// - the preview reaches the canvas, so the rest is not vacuous, and logs nothing;
+/// - a history step mid-drag drops the preview and finds nothing of the drag logged;
+/// - the release costs **exactly one** action and renders what the last preview did;
+/// - one undo takes the whole drag back.
+///
+/// "Logged nothing" is read off the timeline's own length, not off pixels: a drag
+/// step that did log would usually render identically to one that did not, and the
+/// claim is about the history.
+///
+/// `during` is called with the drag up and `mid_undo` right after the mid-drag undo,
+/// for each file's own reading of what `observe()` reports there — which is the one
+/// thing these seven dials do not share, since each answers about its own state.
+/// [`settled_drag_logs_nothing`] is the fifth claim, for the dials that make it.
+pub fn drag_protocol<V>(
+    engine: &mut Engine,
+    edit: impl Fn(&V) -> Edit,
+    values: &[V],
+    tol: DragTol,
+    during: impl Fn(&mut Engine),
+    mid_undo: impl Fn(&mut Engine),
+) {
+    let opening = engine.render_to_image();
+    let steps = logged(engine);
+    let last = values.last().expect("a drag moves somewhere");
+
+    let drag = |engine: &mut Engine| {
+        for v in values {
+            engine.process(ViewCommand::Preview(Some(edit(v))));
+        }
+    };
+
+    drag(engine);
+    let dragging = engine.render_to_image();
+    assert_images_differ(
+        &opening,
+        &dragging,
+        tol.shows,
+        "the drag previewed nothing, so the rest of this claim is vacuous",
+    );
+    assert_eq!(logged(engine), steps, "a preview logged an action");
+    during(engine);
+
+    engine.process(DocCommand::Undo);
+    mid_undo(engine);
+    engine.process(DocCommand::Redo);
+    assert_eq!(
+        logged(engine),
+        steps,
+        "a history step mid-drag logged a step of the drag"
+    );
+    assert_images(
+        &opening,
+        &engine.render_to_image(),
+        tol.settles,
+        "a history step mid-drag should drop the preview and log nothing of it",
+    );
+
+    // The drag again, since the history step above dropped it, then the release.
+    drag(engine);
+    engine.process(DocCommand::Set(edit(last)));
+    assert_eq!(
+        logged(engine),
+        steps + 1,
+        "the whole drag should cost exactly one action"
+    );
+    assert_images(
+        &dragging,
+        &engine.render_to_image(),
+        tol.settles,
+        "the commit rendered something other than what the drag previewed",
+    );
+
+    engine.process(DocCommand::Undo);
+    assert_images(
+        &opening,
+        &engine.render_to_image(),
+        tol.settles,
+        "one undo should take back the whole drag",
+    );
+}
+
+/// A drag released on the value it was pressed on is **not an edit** — but it still
+/// has to commit, because every release commits and the preview it left standing must
+/// be superseded by something. The refusal that reconciles those two is the engine's,
+/// and this is where it is asked of one dial.
+///
+/// `rest` is the value the drag opened on, and `values` its travel, the last entry
+/// being `rest` again.
+pub fn settled_drag_logs_nothing<V>(
+    engine: &mut Engine,
+    edit: impl Fn(&V) -> Edit,
+    values: &[V],
+    rest: &V,
+    tol: u8,
+) {
+    let opening = engine.render_to_image();
+    let steps = logged(engine);
+    for v in values {
+        engine.process(ViewCommand::Preview(Some(edit(v))));
+    }
+    engine.process(DocCommand::Set(edit(rest)));
+    assert_eq!(
+        logged(engine),
+        steps,
+        "a drag that ended where it started logged a step"
+    );
+    assert_images(
+        &opening,
+        &engine.render_to_image(),
+        tol,
+        "the settled drag should leave the document as it found it, preview and all",
+    );
+}
+
+/// How many actions this engine's timeline holds — what "the drag logged nothing"
+/// is read off.
+fn logged(engine: &Engine) -> usize {
+    engine.scrub_range().expect("a solo timeline scrubs").1
+}
+
 /// A reading of the committed document, to hold a later one against.
 ///
 /// The `DocState` whole — cheap to clone, since it is persistent maps of tile

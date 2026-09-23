@@ -298,58 +298,29 @@ fn dragging_a_frame_previews_without_logging() {
     };
     paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
     let matte_id = add_frame(&mut engine);
-    let framed = engine.render_to_image();
 
-    // Three "pointer moves" of a drag that shrinks the hole.
-    for w in [45.0f32, 40.0, 35.0] {
-        engine.process(ViewCommand::Preview(Some(Edit::MatteRect(
-            matte_id,
-            Vec2::new(-w, -w),
-            Vec2::new(w, w),
-        ))));
-    }
-    let dragging = engine.render_to_image();
-    assert_images_differ(
-        &framed,
-        &dragging,
-        4,
-        "the preview should move the frame on screen",
-    );
-    // `observe` reports the previewed rect, which is what keeps the handles under
-    // the pointer instead of a frame behind on the committed value.
-    let previewed = engine.observe().layers.last().and_then(|l| l.matte.clone());
-    assert_eq!(previewed.and_then(|m| m.dims()).map(|d| d.0), Some(70.0));
-
-    // Undoing now must take back the *frame*, not a drag step — nothing about the
-    // drag has been logged yet.
-    engine.process(DocCommand::Undo);
-    let undone = engine.render_to_image();
-    assert!(
-        red_dominant(outside(&undone)),
-        "undo during a drag should remove the frame, so nothing was logged by it"
-    );
-    engine.process(DocCommand::Redo);
-
-    // Releasing commits exactly one action, and drops the preview.
-    engine.process(DocCommand::Set(Edit::MatteRect(
-        matte_id,
-        Vec2::new(-35.0, -35.0),
-        Vec2::new(35.0, 35.0),
-    )));
-    let committed = engine.render_to_image();
-    assert_images(
-        &dragging,
-        &committed,
-        2,
-        "the committed rect should match what the drag previewed",
-    );
-    engine.process(DocCommand::Undo);
-    let back = engine.render_to_image();
-    assert_images(
-        &framed,
-        &back,
-        2,
-        "one undo should take back the whole drag",
+    drag_protocol(
+        &mut engine,
+        |w: &f32| Edit::MatteRect(matte_id, Vec2::new(-w, -w), Vec2::new(*w, *w)),
+        &[45.0f32, 40.0, 35.0],
+        DragTol {
+            shows: 4,
+            settles: 2,
+        },
+        |engine| {
+            // `observe` reports the previewed rect, which is what keeps the handles
+            // under the pointer instead of a frame behind on the committed value.
+            let previewed = engine.observe().layers.last().and_then(|l| l.matte.clone());
+            assert_eq!(previewed.and_then(|m| m.dims()).map(|d| d.0), Some(70.0));
+        },
+        |engine| {
+            // The undo took back the *frame*, not a drag step — nothing about the
+            // drag has been logged yet.
+            assert!(
+                red_dominant(outside(&engine.render_to_image())),
+                "undo during a drag should remove the frame, so nothing was logged by it"
+            );
+        },
     );
 }
 
@@ -365,60 +336,36 @@ fn dragging_the_canvas_color_previews_without_logging() {
     };
     let blank = engine.render_to_image();
     paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
-    let painted = engine.render_to_image();
     let substrate = engine.observe().substrate_color;
 
-    // Three "pointer moves" of a drag towards a dark substrate.
-    for v in [0.5f32, 0.3, 0.1] {
-        engine.process(ViewCommand::Preview(Some(Edit::SubstrateColor(Srgb::new(
-            [v, v, v],
-        )))));
-    }
-    let dragging = engine.render_to_image();
-    assert_images_differ(
-        &painted,
-        &dragging,
-        4,
-        "the preview should recolor the canvas on screen",
+    drag_protocol(
+        &mut engine,
+        |v: &f32| Edit::SubstrateColor(Srgb::new([*v, *v, *v])),
+        &[0.5f32, 0.3, 0.1],
+        DragTol {
+            shows: 4,
+            settles: 2,
+        },
+        |engine| {
+            // `observe` reports the previewed color, so the panel's swatch agrees
+            // with the canvas it controls instead of trailing a commit behind it.
+            assert_eq!(engine.observe().substrate_color, Srgb::new([0.1, 0.1, 0.1]));
+        },
+        |engine| {
+            // The undo took back the *stroke*, not a drag step, and dropped the
+            // preview with it — landing on the untouched document.
+            assert_images(
+                &blank,
+                &engine.render_to_image(),
+                2,
+                "undo during a drag should take back the stroke and drop the preview",
+            );
+        },
     );
-    // `observe` reports the previewed color, so the panel's swatch agrees with the
-    // canvas it controls instead of trailing a commit behind it.
-    assert_eq!(engine.observe().substrate_color, Srgb::new([0.1, 0.1, 0.1]));
-
-    // Undoing now must take back the *stroke*, not a drag step, and drop the
-    // preview with it — landing on the untouched document, because nothing about
-    // the drag has been logged.
-    engine.process(DocCommand::Undo);
-    assert_images(
-        &blank,
-        &engine.render_to_image(),
-        2,
-        "undo during a drag should take back the stroke and drop the preview",
-    );
-    engine.process(DocCommand::Redo);
-
-    // Releasing commits exactly one action, and drops the preview.
-    engine.process(DocCommand::Set(Edit::SubstrateColor(Srgb::new([
-        0.1, 0.1, 0.1,
-    ]))));
-    let committed = engine.render_to_image();
-    assert_images(
-        &dragging,
-        &committed,
-        2,
-        "the committed color should match what the drag previewed",
-    );
-    engine.process(DocCommand::Undo);
     assert_eq!(
         engine.observe().substrate_color,
         substrate,
-        "one undo should take back the whole drag"
-    );
-    assert_images(
-        &painted,
-        &engine.render_to_image(),
-        2,
-        "and restore the image it started from",
+        "the undo that took back the drag should restore the color it opened on"
     );
 }
 
@@ -435,62 +382,29 @@ fn picking_a_frame_color_previews_without_logging() {
     };
     paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
     let matte_id = add_frame(&mut engine);
-    let black = engine.render_to_image();
 
-    // Three "pointer moves" of a pick towards a pale mat board.
-    for v in [0.3f32, 0.6, 0.9] {
-        engine.process(ViewCommand::Preview(Some(Edit::MattePaint(
-            matte_id,
-            Parcel::Solid(Srgb::new([v, v, v])),
-        ))));
-    }
-    let picking = engine.render_to_image();
-    assert!(
-        !is_dark(outside(&picking)),
-        "the preview should recolor the frame on screen"
-    );
-    // `observe` reports the previewed color, so the swatch agrees with the canvas
-    // it controls instead of trailing a commit behind it.
-    let previewed = engine.observe().layers.last().and_then(|l| l.matte.clone());
-    assert_eq!(
-        previewed.map(|m| m.paint),
-        Some(Parcel::Solid(Srgb::new([0.9, 0.9, 0.9])))
-    );
-
-    // A history step during the pick drops the preview and finds nothing of it
-    // logged, so undo-then-redo lands back on the black frame.
-    engine.process(DocCommand::Undo);
-    engine.process(DocCommand::Redo);
-    assert_images(
-        &black,
-        &engine.render_to_image(),
-        2,
-        "nothing about the pick should have been logged by it",
-    );
-
-    // Settling commits exactly one action, which supersedes the preview it matches.
-    for v in [0.3f32, 0.6, 0.9] {
-        engine.process(ViewCommand::Preview(Some(Edit::MattePaint(
-            matte_id,
-            Parcel::Solid(Srgb::new([v, v, v])),
-        ))));
-    }
-    engine.process(DocCommand::Set(Edit::MattePaint(
-        matte_id,
-        Parcel::Solid(Srgb::new([0.9, 0.9, 0.9])),
-    )));
-    assert_images(
-        &picking,
-        &engine.render_to_image(),
-        2,
-        "the committed color should match what the pick previewed",
-    );
-    engine.process(DocCommand::Undo);
-    assert_images(
-        &black,
-        &engine.render_to_image(),
-        2,
-        "one undo should take back the whole pick",
+    drag_protocol(
+        &mut engine,
+        |v: &f32| Edit::MattePaint(matte_id, Parcel::Solid(Srgb::new([*v, *v, *v]))),
+        &[0.3f32, 0.6, 0.9],
+        DragTol {
+            shows: 2,
+            settles: 2,
+        },
+        |engine| {
+            assert!(
+                !is_dark(outside(&engine.render_to_image())),
+                "the preview should recolor the frame on screen"
+            );
+            // `observe` reports the previewed color, so the swatch agrees with the
+            // canvas it controls instead of trailing a commit behind it.
+            let previewed = engine.observe().layers.last().and_then(|l| l.matte.clone());
+            assert_eq!(
+                previewed.map(|m| m.paint),
+                Some(Parcel::Solid(Srgb::new([0.9, 0.9, 0.9])))
+            );
+        },
+        |_| {},
     );
 }
 
@@ -505,23 +419,13 @@ fn a_frame_color_pick_that_changes_nothing_logs_nothing() {
     };
     paint(&mut engine, RED_SOFT, 30.0, WIDE_STROKE);
     let matte_id = add_frame(&mut engine);
-    let black = engine.render_to_image();
 
-    for v in [0.3f32, 0.6, 0.0] {
-        engine.process(ViewCommand::Preview(Some(Edit::MattePaint(
-            matte_id,
-            Parcel::Solid(Srgb::new([v, v, v])),
-        ))));
-    }
-    engine.process(DocCommand::Set(Edit::MattePaint(
-        matte_id,
-        Parcel::Solid(Srgb::new(BLACK)),
-    )));
-    assert_images(
-        &black,
-        &engine.render_to_image(),
+    settled_drag_logs_nothing(
+        &mut engine,
+        |v: &f32| Edit::MattePaint(matte_id, Parcel::Solid(Srgb::new([*v, *v, *v]))),
+        &[0.3f32, 0.6, 0.0],
+        &BLACK[0],
         2,
-        "the settled pick should leave the document as it found it, preview and all",
     );
 
     // Nothing was logged, so one undo reaches past it to the frame itself.

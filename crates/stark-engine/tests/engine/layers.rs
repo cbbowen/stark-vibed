@@ -478,56 +478,27 @@ fn dragging_layer_opacity_previews_without_logging() {
         return;
     };
     two_layers(&mut engine);
-    let opaque = engine.render_to_image();
+    let layer = top(&engine);
 
-    // Three "pointer moves" of a drag towards transparent.
-    for v in [0.6f32, 0.3, 0.0] {
-        engine.process(ViewCommand::Preview(Some(Edit::LayerOpacity(
-            top(&engine),
-            v,
-        ))));
-    }
-    assert!(
-        red_dominant(center(&engine.render_to_image())),
-        "the preview should fade the green layer on screen"
-    );
-    // `observe` reports the previewed opacity, so the slider's own track agrees with
-    // the canvas it controls instead of trailing a commit behind it.
-    assert_eq!(opacity_of(&engine, top(&engine)), Some(0.0));
-
-    // Undoing now must reach the *stroke*, not a drag step, and drop the preview with
-    // it — so undo-then-redo lands exactly back on the opaque document, which nothing
-    // about the drag has been logged into.
-    engine.process(DocCommand::Undo);
-    engine.process(DocCommand::Redo);
-    assert_images(
-        &opaque,
-        &engine.render_to_image(),
-        2,
-        "a history step during a drag should drop the preview and log nothing of it",
-    );
-
-    // Release: one commit, which supersedes the preview it matches.
-    for v in [0.6f32, 0.3, 0.0] {
-        engine.process(ViewCommand::Preview(Some(Edit::LayerOpacity(
-            top(&engine),
-            v,
-        ))));
-    }
-    let dragging = engine.render_to_image();
-    engine.process(DocCommand::Set(Edit::LayerOpacity(top(&engine), 0.0)));
-    assert_images(
-        &dragging,
-        &engine.render_to_image(),
-        2,
-        "the committed opacity should match what the drag previewed",
-    );
-    engine.process(DocCommand::Undo);
-    assert_images(
-        &opaque,
-        &engine.render_to_image(),
-        2,
-        "one undo should take back the whole drag",
+    drag_protocol(
+        &mut engine,
+        |v: &f32| Edit::LayerOpacity(layer, *v),
+        &[0.6f32, 0.3, 0.0],
+        DragTol {
+            shows: 2,
+            settles: 2,
+        },
+        |engine| {
+            assert!(
+                red_dominant(center(&engine.render_to_image())),
+                "the preview should fade the green layer on screen"
+            );
+            // `observe` reports the previewed opacity, so the slider's own track
+            // agrees with the canvas it controls instead of trailing a commit
+            // behind it.
+            assert_eq!(opacity_of(engine, layer), Some(0.0));
+        },
+        |_| {},
     );
 }
 
@@ -542,20 +513,14 @@ fn an_opacity_drag_that_ends_where_it_started_logs_nothing() {
         return;
     };
     two_layers(&mut engine);
-    let opaque = engine.render_to_image();
+    let layer = top(&engine);
 
-    for v in [0.6f32, 0.3, 1.0] {
-        engine.process(ViewCommand::Preview(Some(Edit::LayerOpacity(
-            top(&engine),
-            v,
-        ))));
-    }
-    engine.process(DocCommand::Set(Edit::LayerOpacity(top(&engine), 1.0)));
-    assert_images(
-        &opaque,
-        &engine.render_to_image(),
+    settled_drag_logs_nothing(
+        &mut engine,
+        |v: &f32| Edit::LayerOpacity(layer, *v),
+        &[0.6f32, 0.3, 1.0],
+        &1.0,
         2,
-        "the settled drag should leave the document as it found it, preview and all",
     );
 
     engine.process(DocCommand::Undo);
@@ -576,57 +541,28 @@ fn dragging_a_blend_parameter_previews_without_logging() {
         return;
     };
     two_layers(&mut engine);
-    engine.process(DocCommand::Set(Edit::LayerBlend(top(&engine), RADIANCE)));
-    let rest = engine.render_to_image();
+    let layer = top(&engine);
+    engine.process(DocCommand::Set(Edit::LayerBlend(layer, RADIANCE)));
+    let bend = |k: &f32| Edit::LayerBlend(layer, BlendMode::Drago { k: *k });
 
-    // Three "pointer moves" of a drag towards the hot end.
-    for k in [1.0f32, 2.0, 4.0] {
-        engine.process(ViewCommand::Preview(Some(Edit::LayerBlend(
-            top(&engine),
-            BlendMode::Drago { k },
-        ))));
-    }
-    let dragging = engine.render_to_image();
-    assert_images_differ(&rest, &dragging, 2, "the preview should reach the canvas");
-    // `observe` reports the previewed mode, so the track agrees with the canvas.
-    assert_eq!(
-        blend_of(&engine, top(&engine)),
-        Some(BlendMode::Drago { k: 4.0 })
-    );
-
-    // Release: one commit, which supersedes the preview it matches.
-    engine.process(DocCommand::Set(Edit::LayerBlend(
-        top(&engine),
-        BlendMode::Drago { k: 4.0 },
-    )));
-    assert_images(
-        &dragging,
-        &engine.render_to_image(),
-        2,
-        "the committed bend should match what the drag previewed",
-    );
-    engine.process(DocCommand::Undo);
-    assert_images(
-        &rest,
-        &engine.render_to_image(),
-        2,
-        "one undo should take back the whole drag",
+    drag_protocol(
+        &mut engine,
+        bend,
+        &[1.0f32, 2.0, 4.0],
+        DragTol {
+            shows: 2,
+            settles: 2,
+        },
+        |engine| {
+            // `observe` reports the previewed mode, so the track agrees with the
+            // canvas.
+            assert_eq!(blend_of(engine, layer), Some(BlendMode::Drago { k: 4.0 }));
+        },
+        |_| {},
     );
 
     // …and a drag that travels out and comes back is not an edit at all.
-    for k in [1.0f32, 2.0, DRAGO_K] {
-        engine.process(ViewCommand::Preview(Some(Edit::LayerBlend(
-            top(&engine),
-            BlendMode::Drago { k },
-        ))));
-    }
-    engine.process(DocCommand::Set(Edit::LayerBlend(top(&engine), RADIANCE)));
-    assert_images(
-        &rest,
-        &engine.render_to_image(),
-        2,
-        "the settled drag should leave the document as it found it, preview and all",
-    );
+    settled_drag_logs_nothing(&mut engine, bend, &[1.0f32, 2.0, DRAGO_K], &DRAGO_K, 2);
     engine.process(DocCommand::Undo);
     assert_eq!(
         blend_of(&engine, top(&engine)),

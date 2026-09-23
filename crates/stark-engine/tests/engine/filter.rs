@@ -670,44 +670,32 @@ fn dragging_a_filter_previews_without_logging() {
             filter: NEUTRAL,
         },
     );
-    let steps = engine.scrub_range().expect("solo timeline").1;
+    let steps: Vec<Filter> = (1..=8)
+        .map(|i| {
+            Filter::Color(ColorAdjust {
+                saturation: 1.0 - i as f32 / 8.0,
+                ..ColorAdjust::NEUTRAL
+            })
+        })
+        .collect();
+    let shown = steps.last().cloned();
 
-    let mut shown = None;
-    for i in 1..=8 {
-        let filter = Filter::Color(ColorAdjust {
-            saturation: 1.0 - i as f32 / 8.0,
-            ..ColorAdjust::NEUTRAL
-        });
-        engine.process(ViewCommand::Preview(Some(Edit::Filter(id, filter.clone()))));
-        shown = Some(filter);
-    }
-    assert_eq!(
-        engine.scrub_range().expect("solo timeline").1,
-        steps,
-        "previewing logged an action",
-    );
-    // The projection reports the *previewed* filter, which is what keeps the
-    // sliders and the canvas agreeing under the pointer.
-    let previewed = engine.render_to_image();
-    let obs = engine.observe();
-    let info = obs.layers.iter().find(|l| l.id == id).expect("projected");
-    assert_eq!(info.filter, shown, "observe() should report the preview");
-    drop(obs);
-
-    engine.process(DocCommand::Set(Edit::Filter(
-        id,
-        shown.expect("eight samples"),
-    )));
-    assert_eq!(
-        engine.scrub_range().expect("solo timeline").1,
-        steps + 1,
-        "the whole drag should cost exactly one action",
-    );
-    assert_images(
-        &previewed,
-        &engine.render_to_image(),
-        0,
-        "the commit rendered something other than what the preview showed",
+    drag_protocol(
+        &mut engine,
+        |f: &Filter| Edit::Filter(id, f.clone()),
+        &steps,
+        DragTol {
+            shows: 2,
+            settles: 0,
+        },
+        |engine| {
+            // The projection reports the *previewed* filter, which is what keeps the
+            // sliders and the canvas agreeing under the pointer.
+            let obs = engine.observe();
+            let info = obs.layers.iter().find(|l| l.id == id).expect("projected");
+            assert_eq!(info.filter, shown, "observe() should report the preview");
+        },
+        |_| {},
     );
 }
 
