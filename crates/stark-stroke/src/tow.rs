@@ -29,7 +29,7 @@
 //! originating client, upstream of the record**, and §12.1's bit-agreement
 //! rules reach only what is derived *from* the record.
 
-use crate::command::InputSample;
+use crate::InputSample;
 use crate::path::InputTolerance;
 use stark_model::geom::Vec2;
 
@@ -90,7 +90,7 @@ pub struct TowString {
 /// do at pen-up: the last emission already *is* the tip, and lifting the pen
 /// stops pulling the string rather than reeling it in (§6.11).
 #[derive(Clone, Debug)]
-pub(crate) struct Tow {
+pub struct Tow {
     rope: f32,
     /// The input's own positional resolution — the same tolerance the fit prices its
     /// thresholds in (`PathFitter::with_tolerance`). What it decides here is how far
@@ -118,7 +118,7 @@ impl Tow {
     /// In debug, on a `rope` that is not positive and finite. Substituting some
     /// positive rope here would put a smoothing the artist switched off back into the
     /// stroke, so the gate stays the caller's.
-    pub(crate) fn new(rope: f32, tolerance: InputTolerance, first: InputSample) -> Self {
+    pub fn new(rope: f32, tolerance: InputTolerance, first: InputSample) -> Self {
         debug_assert!(
             rope.is_finite() && rope > 0.0,
             "a tow of {rope} is not a tow; the caller gates on rope > 0"
@@ -132,7 +132,7 @@ impl Tow {
     }
 
     /// The string as the overlay draws it.
-    pub(crate) fn string(&self) -> TowString {
+    pub fn string(&self) -> TowString {
         TowString {
             tip: self.tip,
             target: self.target.pos,
@@ -148,7 +148,7 @@ impl Tow {
     /// Attributes ride the pen, not the arc (§6.11): an emitted sample carries
     /// the report stream's own attributes at that point of the *run*, so the
     /// final emission of a run carries exactly `next`'s.
-    pub(crate) fn to(&mut self, next: InputSample, emit: &mut impl FnMut(InputSample)) {
+    pub fn to(&mut self, next: InputSample, emit: &mut impl FnMut(InputSample)) {
         let prev = self.target;
         self.target = next;
         let run = next.pos - prev.pos;

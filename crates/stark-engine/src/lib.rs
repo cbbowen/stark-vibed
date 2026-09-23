@@ -65,10 +65,8 @@
 #![warn(unreachable_pub)]
 
 pub(crate) mod assets;
-pub(crate) mod assist;
 pub(crate) mod colorspace;
 pub mod command;
-pub(crate) mod detmath;
 pub mod document;
 pub(crate) mod engine;
 pub(crate) mod error;
@@ -78,18 +76,43 @@ pub(crate) mod gpu;
 pub mod guides;
 pub(crate) mod image;
 pub(crate) mod noise;
-pub mod path;
 pub(crate) mod peer;
 pub(crate) mod pictures;
 mod presence;
 mod projection;
 pub(crate) mod session;
-pub(crate) mod spline;
 pub mod timing;
-pub(crate) mod tow;
 /// The canvas view: pan, zoom, rotation and the mirror (§18.1.2). Session
 /// state, which is why it is here and not in the document crate.
 pub(crate) mod view;
+
+// The CPU geometry is `stark-stroke`'s (CLAUDE.md): it names no wgpu type, so its own
+// tests do not wait on this crate. Aliased at the paths the rest of the engine spells
+// it by, which is the whole of what the move cost the call sites.
+pub(crate) use stark_stroke::{assist, detmath, tow};
+
+/// Stroke path fitting and adaptive flattening — [`stark_stroke::path`], at the path
+/// frontends and the suite name it by.
+///
+/// Listed name by name rather than re-exported whole, because the engine's public
+/// surface is what a frontend needs and the geometry crate's is wider: the arc
+/// primitives and the input tolerance below are the stroke renderer's, not anyone
+/// else's.
+pub mod path {
+    pub use stark_stroke::path::{
+        DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, FlattenTolerance, IntermediateSample, MAX_TOLERANCE,
+        MIN_TOLERANCE, PathFitter, cumulative_lengths, fit, fit_with_tolerance, flatten,
+        flatten_spans_from, locate, point_at, span_count, span_end,
+    };
+
+    pub(crate) use stark_stroke::path::{
+        Arc, InputTolerance, arc_at, arc_sagitta, fit_arc, fit_at, flatten_spans, frozen_spans_for,
+    };
+    // The arc series' domain and the half-turn it caps, for the one guard that ties
+    // them to the bleed walk-back that widened it (`gpu::stroke::dynamics::bleed`).
+    #[cfg(test)]
+    pub(crate) use stark_stroke::path::{MAX_ARC_TURN, MAX_HALF_TURN_SIN};
+}
 
 /// Take a lock whose only contents are a **cache, a free list or a tally**, poisoned
 /// or not.

@@ -33,8 +33,8 @@ mod adjust;
 mod realize;
 mod recognize;
 
-pub(crate) use realize::PenProfile;
-pub(crate) use recognize::recognize;
+pub use realize::PenProfile;
+pub use recognize::recognize;
 
 use stark_model::document::AxisPlane;
 use stark_model::geom::{Ellipse, Vec2};
@@ -45,7 +45,7 @@ use stark_model::geom::{Ellipse, Vec2};
 /// committed is the path it produces, not the shape itself. Keeping it would start to
 /// pay for post-hoc stroke editing (§18.2.1), at the price of a wire-format change.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub(crate) enum AssistShape {
+pub enum AssistShape {
     /// A straight segment from `a` to `b`. `b` is the end the stroke finished at —
     /// the end under the pointer, and so the end a drag moves.
     Line {
@@ -76,7 +76,7 @@ pub(crate) enum AssistShape {
 
 /// Which way round a loop travels on its ellipse's own parameter.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Winding {
+pub enum Winding {
     /// The parameter increases along the loop.
     Forward,
     /// The parameter decreases along the loop.
@@ -124,7 +124,7 @@ impl AssistShape {
     }
 
     /// Which family this is.
-    pub(crate) fn family(&self) -> Assisted {
+    pub fn family(&self) -> Assisted {
         match self {
             AssistShape::Line { .. } => Assisted::Line,
             AssistShape::Ellipse { .. } => Assisted::Ellipse,

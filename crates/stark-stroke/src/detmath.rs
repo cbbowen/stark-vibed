@@ -82,7 +82,7 @@ pub(crate) fn acos_approx(v: f32) -> f32 {
 /// Signed zeros and the axes are exact — `atan2(±0, x > 0)` is `±0`, `atan2(±0, x < 0)`
 /// is `±π`, and a zero `x` gives `±π/2` — so a caller asking for "no turn" gets exactly
 /// zero. NaN in, NaN out.
-pub(crate) fn atan2(y: f32, x: f32) -> f32 {
+pub fn atan2(y: f32, x: f32) -> f32 {
     use std::f32::consts::{FRAC_PI_2, FRAC_PI_4, PI};
     /// `π − PI`: the part of π an f32 cannot hold, for the left half-plane.
     const PI_LO: f32 = f32::from_bits(0xb3bb_bd2e);
@@ -177,7 +177,7 @@ fn atan_nonneg(x: f32) -> f32 {
 /// The quarter turn nearest `t` is split off exactly — `4t` is exact, and so is its
 /// distance to the nearest integer — which leaves at most an eighth of a turn for two
 /// series; the quarter only swaps and negates them. Non-finite `t` gives NaN.
-pub(crate) fn sin_cos_turns(t: f32) -> (f32, f32) {
+pub fn sin_cos_turns(t: f32) -> (f32, f32) {
     let u = 4.0 * t;
     let quarter = u.round();
     let a = (u - quarter) * 0.25 * std::f32::consts::TAU;

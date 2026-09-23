@@ -58,7 +58,7 @@ const TARGETS_PER_KNOT: usize = 4;
 /// Read off the *fitted* path rather than off the raw reports: that is already the
 /// smoothed, de-jittered version of the same signal, and it is what the stroke would
 /// have been drawn with had nothing snapped.
-pub(crate) struct PenProfile {
+pub struct PenProfile {
     /// Fraction along the stroke of each row, in order.
     at: Vec<f32>,
     rows: Vec<[f32; CHANNELS]>,
@@ -69,7 +69,7 @@ impl PenProfile {
     /// ([`StrokeRecord::start`](stark_model::document::StrokeRecord::start)). The
     /// shape is recognized from the stroke after the press, so a run-up ahead of the
     /// marker is left out here too, or it would shift the pen along the shape.
-    pub(crate) fn of(path: &[ControlPoint], start: f32) -> Self {
+    pub fn of(path: &[ControlPoint], start: f32) -> Self {
         let spans = 0..span_count(path.len());
         let poly = flatten_spans_from(path, start, spans, 0.0, FLATTEN_TOLERANCE);
         let total = poly.last().map_or(0.0, |s| s.dist);
@@ -115,7 +115,7 @@ impl AssistShape {
     /// ends are pinned to their own control points, so points placed analytically on the
     /// ellipse leave an `O(Δ²)` bulge exactly at the seam and the solve is what places the
     /// end rows to cancel it. The pen channels are fitted either way.
-    pub(crate) fn to_path(self, pen: &PenProfile, knots: usize) -> Vec<ControlPoint> {
+    pub fn to_path(self, pen: &PenProfile, knots: usize) -> Vec<ControlPoint> {
         let (seed, targets, fit_geometry) = match self {
             Self::Line { a, b, .. } => {
                 let m = knots.clamp(2, MAX_KNOTS);

@@ -6,7 +6,7 @@
 use super::arclen::{ARC_SAMPLES_PER_SPAN, arc_profile_into, param_at};
 use super::tolerance::InputTolerance;
 use super::{frozen_spans_for, span_count};
-use crate::command::InputSample;
+use crate::InputSample;
 use crate::spline::{CubicBSpline, Observations, SplineIndex};
 use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
@@ -294,7 +294,7 @@ impl PathFitter {
     /// as zoomed out, and a pen digitizer resolves far finer than a mouse at either —
     /// so the caller that owns the view transform states it, and the fit's two prices
     /// ([`KNOT_COST`], [`KNOT_SPACING`]) are denominated in it.
-    pub(crate) fn with_tolerance(tolerance: InputTolerance) -> Self {
+    pub fn with_tolerance(tolerance: InputTolerance) -> Self {
         Self {
             pts: Vec::new(),
             runup: Vec::new(),
@@ -337,7 +337,7 @@ impl PathFitter {
     /// pressure begins at the press — a hovering pen reports none — and geometry
     /// is what the run-up is evidence of. Tilt and time are kept; both are
     /// continuous through a press.
-    pub(crate) fn seed_runup(&mut self, samples: &[InputSample]) {
+    pub fn seed_runup(&mut self, samples: &[InputSample]) {
         if !self.pts.is_empty() || self.finished {
             return;
         }
@@ -382,7 +382,7 @@ impl PathFitter {
     /// instead would mean inventing a position the hand never visited; refusing it
     /// leaves exactly the stroke the admissible reports describe.
     ///
-    /// [`InputSample::is_admissible`]: crate::command::InputSample::is_admissible
+    /// [`InputSample::is_admissible`]: crate::InputSample::is_admissible
     pub fn push(&mut self, s: InputSample) {
         if self.accept(s) {
             self.grow_or_hold();
@@ -592,7 +592,7 @@ impl PathFitter {
     /// (§17.5): a frozen control point never moves again, so a peer that
     /// has been told about it never has to be told again, and the wire cost of a
     /// stroke follows its tail rather than its length.
-    pub(crate) fn frozen_points(&self) -> usize {
+    pub fn frozen_points(&self) -> usize {
         let n = self.path_len();
         if self.finished {
             n
@@ -1111,7 +1111,7 @@ pub fn fit_with_tolerance(
 }
 
 /// [`fit_with_tolerance`] for a tolerance already held.
-pub(crate) fn fit_at(
+pub fn fit_at(
     samples: impl IntoIterator<Item = InputSample>,
     tolerance: InputTolerance,
 ) -> Vec<ControlPoint> {
@@ -1258,7 +1258,7 @@ mod tests {
             // The boundary itself, which `TileRect::covering` refuses: `COORD_LIMIT`
             // is `2³¹` tiles out, and `2³¹` is one past `i32::MAX`.
             ("pos.y at the limit", |mut s| {
-                s.pos.y = crate::command::COORD_LIMIT;
+                s.pos.y = crate::COORD_LIMIT;
                 s
             }),
             ("pos.y", |mut s| {

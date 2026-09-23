@@ -13,10 +13,10 @@ pub const DEFAULT_TOLERANCE: f32 = 1.0;
 /// Bounds a supplied tolerance is held to.
 ///
 /// Zero (or negative) would make a control point free and every sample worth one.
-/// The ceiling is 64 canvas px per input px — past the most zoomed-out view
-/// [`ViewTransform`](crate::view::ViewTransform) allows — and is what keeps the
-/// window advancing, and so the per-sample work bounded, rather than letting a
-/// stroke never grow a control point at all.
+/// The ceiling is 64 canvas px per input px — past the most zoomed-out view the
+/// engine's `ViewTransform` allows — and is what keeps the window advancing, and so
+/// the per-sample work bounded, rather than letting a stroke never grow a control
+/// point at all.
 ///
 /// `pub` so the tolerance sweep in `benches/path.rs`, which holds the fit's cost flat
 /// *to the top of this range*, can name the bound rather than restate it.
@@ -33,15 +33,15 @@ pub const MAX_TOLERANCE: f32 = 64.0;
 /// none has a clamp of its own to forget. The session's doors convert the frontend's
 /// raw `f32` once.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub(crate) struct InputTolerance(f32);
+pub struct InputTolerance(f32);
 
 impl InputTolerance {
     /// [`DEFAULT_TOLERANCE`].
-    pub(crate) const DEFAULT: Self = Self::new(DEFAULT_TOLERANCE);
+    pub const DEFAULT: Self = Self::new(DEFAULT_TOLERANCE);
 
     /// `raw` held to the range, and [`DEFAULT_TOLERANCE`] for a non-finite one: a
     /// number that is not one says nothing in either direction.
-    pub(crate) const fn new(raw: f32) -> Self {
+    pub const fn new(raw: f32) -> Self {
         Self(if raw.is_finite() {
             raw.clamp(MIN_TOLERANCE, MAX_TOLERANCE)
         } else {
@@ -50,7 +50,7 @@ impl InputTolerance {
     }
 
     /// The tolerance, in canvas px.
-    pub(crate) const fn get(self) -> f32 {
+    pub const fn get(self) -> f32 {
         self.0
     }
 }

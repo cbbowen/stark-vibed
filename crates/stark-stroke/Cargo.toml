@@ -1,0 +1,38 @@
+[package]
+name = "stark-stroke"
+version = "0.0.0"
+edition.workspace = true
+license.workspace = true
+description = "The stroke's CPU geometry for Stark: fit, flatten, assist, tow (CLAUDE.md)."
+
+[dependencies]
+# The document (§2): `ControlPoint` is what a fit produces, `geom` is what it is
+# measured in. As for every other crate here, the model never depends back.
+stark-model = { workspace = true }
+# The spline solve, and the only crate here that names it (§P6).
+nalgebra = { workspace = true }
+# `InputSample` rides the gesture wire (§17.5).
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[[bench]]
+name = "path"
+harness = false
+
+[dev-dependencies]
+# The fit fingerprint: `STARK_GOLDEN_EXACT` for the CPU half of a stroke
+# (`path::fingerprint`). Test-only, so it stays out of the shipped graph.
+blake3 = { workspace = true }
+criterion = { version = "0.8", features = ["html_reports"] }
+# `Quat` alone, to turn the recognizer's perspective planes in a test. The arithmetic
+# itself arrives through `stark_model::geom`.
+glam = { workspace = true }
+# Recorded pen input for the fitter tests and the fingerprint.
+stark-testdata = { path = "../stark-testdata" }
+# The geometry's invariants over generated input, at a fixed case count so the suite
+# does not slow down.
+proptest = { workspace = true }
+
+# The shared lint set (root Cargo.toml).
+[lints]
+workspace = true

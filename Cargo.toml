@@ -41,6 +41,7 @@ default-members = [
     "crates/stark-shaders",
     # Host-only, and it carries the tests of what the build script used to be.
     "crates/stark-shaders-build",
+    "crates/stark-stroke",
     "crates/stark-wgpui-frontend",
 ]
 
@@ -152,6 +153,9 @@ stark-model = { path = "crates/stark-model" }
 # and compile the shaders that import it, because stark-engine would go on asking for
 # them regardless of its own feature. `stark-engine/mixbox` forwards it instead.
 stark-shaders = { path = "crates/stark-shaders", default-features = false }
+# The stroke's CPU geometry (§6.2, §6.9, §6.12). No wgpu, so the engine's 60k lines
+# and a GPU device are not between an edit to the fit and its own tests.
+stark-stroke = { path = "crates/stark-stroke" }
 nalgebra = "0.35"
 
 

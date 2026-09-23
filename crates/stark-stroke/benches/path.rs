@@ -26,18 +26,18 @@
 //! it — which is why the sweeps are here and not merely another recorded stroke.
 //! `MAX_WINDOW_SAMPLES` in `path/fit.rs` carries the bound and the argument for it.
 //!
-//! Run with `cargo bench -p stark-engine --bench path`.
+//! Run with `cargo bench -p stark-stroke --bench path`.
 
 use criterion::{BatchSize, BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use std::time::Duration;
 
-use stark_engine::command::InputSample;
-use stark_engine::path::{
+use stark_model::geom::Vec2;
+use stark_stroke::InputSample;
+use stark_stroke::path::{
     self, DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, FlattenTolerance, MAX_TOLERANCE, MIN_TOLERANCE,
     PathFitter,
 };
-use stark_model::geom::Vec2;
 
 /// The recorded strokes, by the property of the fit each one stresses.
 fn cases() -> Vec<(&'static str, Vec<InputSample>)> {

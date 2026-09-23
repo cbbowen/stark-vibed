@@ -90,8 +90,10 @@ pub const FLATTEN_TOLERANCE: FlattenTolerance = FlattenTolerance {
 impl FlattenTolerance {
     /// The same budget with the *error* bounds scaled by `k`, the length cap left
     /// alone — a cap encodes a hard requirement, not an error.
-    #[cfg(test)]
-    pub(crate) fn relaxed(self, k: f32) -> Self {
+    ///
+    /// Only tests ask for one, but they are the engine's as well as this crate's, and
+    /// a `#[cfg(test)]` reaches neither across a crate boundary.
+    pub fn relaxed(self, k: f32) -> Self {
         Self {
             position: self.position * k,
             angle: self.angle * k,
@@ -206,7 +208,7 @@ pub fn flatten(knots: &[ControlPoint], tol: FlattenTolerance) -> Vec<Intermediat
 /// stroke with no gap and no overlap — what an incremental renderer wants, with
 /// [`PathFitter::frozen_spans`](super::PathFitter::frozen_spans), and the same pixels a
 /// replay flattening the whole stroke lays.
-pub(crate) fn flatten_spans(
+pub fn flatten_spans(
     knots: &[ControlPoint],
     spans: Range<usize>,
     dist0: f32,

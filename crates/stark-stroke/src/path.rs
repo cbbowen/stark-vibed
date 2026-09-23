@@ -2,7 +2,7 @@
 //!
 //! Three representations, deliberately distinct:
 //!
-//! - [`InputSample`](crate::command::InputSample) — one raw pointer report, as it
+//! - [`InputSample`](crate::InputSample) — one raw pointer report, as it
 //!   arrived. Never stored: it exists only between the pointer event and the fitter.
 //! - [`ControlPoint`](stark_model::path::ControlPoint) — a knot of the fitted stroke
 //!   curve, and what a stroke *is* once captured
@@ -49,20 +49,20 @@ pub use flatten::{
 };
 pub use tolerance::{DEFAULT_TOLERANCE, MAX_TOLERANCE, MIN_TOLERANCE};
 
-pub(crate) use arc::{Arc, arc_at, arc_sagitta, fit_arc};
+pub use arc::{Arc, arc_at, arc_sagitta, fit_arc};
 // The arc series' domain and the half-turn it caps, for the one guard that ties them
-// to the bleed walk-back that widened the domain — which lives in `gpu::stroke`,
-// since this module sits below it and cannot name either of that term's factors.
-#[cfg(test)]
-pub(crate) use arc::{MAX_ARC_TURN, MAX_HALF_TURN_SIN};
+// to the bleed walk-back that widened the domain — which lives in the engine's
+// `gpu::stroke`, since this crate sits below it and cannot name either of that term's
+// factors.
+pub use arc::{MAX_ARC_TURN, MAX_HALF_TURN_SIN};
 pub(crate) use arclen::{arc_profile, param_at, polyline_length};
 pub use arclen::{cumulative_lengths, locate};
-pub(crate) use fit::fit_at;
+pub use fit::fit_at;
 // The pen-channel layout, for `assist::realize`, which fits the same channels onto the
 // same control polygon.
 pub(crate) use fit::{CHANNELS, control_points, pen_row};
-pub(crate) use flatten::flatten_spans;
-pub(crate) use tolerance::InputTolerance;
+pub use flatten::flatten_spans;
+pub use tolerance::InputTolerance;
 
 /// How many cubic spans the curve through `control_points` has.
 ///
@@ -95,7 +95,7 @@ pub fn span_count(control_points: usize) -> usize {
 /// holds because `frozen - 1 <= total - 1` and `span_count(total) = total + 1` for a
 /// curve. For `total < 2` there is no curve, `span_count` is 0, and no head range
 /// exists.
-pub(crate) fn frozen_spans_for(frozen: usize, total: usize) -> usize {
+pub fn frozen_spans_for(frozen: usize, total: usize) -> usize {
     let out = frozen.saturating_sub(1).min(span_count(total));
     debug_assert!(
         out < span_count(total) || span_count(total) == 0,
@@ -109,7 +109,7 @@ pub(crate) fn frozen_spans_for(frozen: usize, total: usize) -> usize {
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::{IntermediateSample, PathFitter, arc::point_segment_distance};
-    use crate::command::InputSample;
+    use crate::InputSample;
     use stark_model::geom::Vec2;
     use stark_model::path::ControlPoint;
 

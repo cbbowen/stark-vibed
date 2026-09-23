@@ -9852,16 +9852,15 @@ dependencies = [
  "history",
  "jpeg-encoder",
  "mixbox",
- "nalgebra",
  "png 0.18.1",
  "pollster 1.0.1",
- "proptest",
  "quanta",
  "rpds",
  "serde",
  "stark-assetid",
  "stark-model",
  "stark-shaders",
+ "stark-stroke",
  "stark-testdata",
  "strum",
  "thiserror 2.0.20",
@@ -9943,6 +9942,21 @@ dependencies = [
  "quote",
  "syn 2.0.119",
  "wesl",
+]
+
+[[package]]
+name = "stark-stroke"
+version = "0.0.0"
+dependencies = [
+ "blake3",
+ "criterion",
+ "glam 0.33.6",
+ "nalgebra",
+ "proptest",
+ "serde",
+ "stark-model",
+ "stark-testdata",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

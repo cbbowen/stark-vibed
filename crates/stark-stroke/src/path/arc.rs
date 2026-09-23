@@ -27,7 +27,7 @@ const MIN_SAGITTA: f32 = 0.01;
 /// quality knob: past it the [`detmath`](crate::detmath) series stop being the right
 /// approximation, and so does the annular sector the shaders rasterize a curved sweep
 /// as.
-pub(crate) const MAX_HALF_TURN_SIN: f32 = 0.2;
+pub const MAX_HALF_TURN_SIN: f32 = 0.2;
 
 /// The widest turn `κ·s` [`arc_at`] is asked to walk, and so the domain its `detmath`
 /// series are measured over (`the_series_stay_within_their_measured_bounds`).
@@ -37,7 +37,7 @@ pub(crate) const MAX_HALF_TURN_SIN: f32 = 0.2;
 /// `κ·r·BLEED_TRAVEL_QUANTUM`: 0.4277, rounded up. That second term is named by two
 /// constants this module sits below and cannot see, so the sum is asserted from up
 /// there instead (`gpu::stroke::dynamics::bleed`).
-pub(crate) const MAX_ARC_TURN: f32 = 0.428;
+pub const MAX_ARC_TURN: f32 = 0.428;
 
 /// Below this speed a curve's derivative names no tangent, and [`fit_arc`] sends the
 /// edge straight. Unsquared: far narrower than `flatten::turn`'s own stationary test
@@ -48,7 +48,7 @@ const STATIONARY_SPEED: f32 = 1e-12;
 
 /// One flattened edge, as it will actually be swept.
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub(crate) struct Arc {
+pub struct Arc {
     /// Unit tangent the arc leaves its start along.
     pub dir: Vec2,
     /// Signed curvature (1/canvas px), positive turning left of `dir`. Exactly 0 for
@@ -79,7 +79,7 @@ pub(crate) struct Arc {
 /// The end tangent is *not* pinned to the curve's tangent there, so consecutive arcs
 /// still meet with a small kink — second order in the turn, where the chord's was
 /// first order.
-pub(crate) fn fit_arc(vel: Vec2, v: Vec2, max_curvature: f32) -> Arc {
+pub fn fit_arc(vel: Vec2, v: Vec2, max_curvature: f32) -> Arc {
     let chord = v.length();
     if chord < 1e-5 {
         // No chord names no direction. Length 0 makes the edge a point, which is what
@@ -123,7 +123,7 @@ pub(crate) fn fit_arc(vel: Vec2, v: Vec2, max_curvature: f32) -> Arc {
 /// How far an arc bows away from its own chord: `|R|(1 − cos(θ/2))`, and 0 for a
 /// straight edge. What a bounding box has to add, since the two endpoints no longer
 /// bound the edge between them.
-pub(crate) fn arc_sagitta(curvature: f32, length: f32) -> f32 {
+pub fn arc_sagitta(curvature: f32, length: f32) -> f32 {
     if curvature == 0.0 {
         return 0.0;
     }
@@ -138,7 +138,7 @@ pub(crate) fn arc_sagitta(curvature: f32, length: f32) -> f32 {
 /// Defined for turns `|curvature · s| ≤` [`MAX_ARC_TURN`], the range its series are
 /// truncated for and measured over. Past it their error grows with the first term
 /// each drops, and nothing measures it.
-pub(crate) fn arc_at(start: Vec2, dir: Vec2, curvature: f32, s: f32) -> (Vec2, Vec2) {
+pub fn arc_at(start: Vec2, dir: Vec2, curvature: f32, s: f32) -> (Vec2, Vec2) {
     if curvature == 0.0 {
         return (start + dir * s, dir);
     }

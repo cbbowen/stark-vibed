@@ -130,7 +130,7 @@ const PARAM_BINS: usize = 32;
 /// shape, never instead: only then does the grid get to say *which* line, or on which
 /// plane the ellipse is a circle. A curve that happens to bow along a fan line is still
 /// a curve, and the two bars cannot be traded against each other.
-pub(crate) fn recognize(
+pub fn recognize(
     trace: &[Vec2],
     tolerance: InputTolerance,
     guides: &Scaffold,

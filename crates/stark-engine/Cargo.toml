@@ -44,7 +44,10 @@ stark-assetid = { workspace = true }
 # The document (§2). This crate is its derived, cached view: it depends on the
 # model, and the model never depends back.
 stark-model = { workspace = true }
-nalgebra = { workspace = true }
+# The stroke's CPU geometry (§6.2, §6.9, §6.12): the fit, the flattener, the assist,
+# the towed tip and the deterministic series. A crate of its own because none of it
+# names a wgpu type, and so none of it should wait on one.
+stark-stroke = { workspace = true }
 # Vendored as a git submodule (CC BY-NC 4.0); see vendor/mixbox/LICENSE. Pure
 # no_std + libm, so it builds for wasm. Backs the Mixbox color space (§6.7).
 # Optional, and the reason the `mixbox` feature exists: without it this is not
@@ -90,10 +93,6 @@ mixbox = ["dep:mixbox", "stark-shaders/mixbox"]
 debug-unfrozen = []
 
 [[bench]]
-name = "path"
-harness = false
-
-[[bench]]
 name = "stroke"
 harness = false
 
@@ -106,12 +105,9 @@ pollster = { workspace = true }
 criterion = { version = "0.8", features = ["html_reports"] }
 # Synthesizing oversized brush-shape PNGs in tests/engine/assets.rs (already a regular dep).
 png = { workspace = true }
-# Recorded pen input for the fitter tests. A dev-dependency on purpose: as a module
-# it was public API and rode along in the wasm binary.
+# Recorded pen input for the suite and the benchmarks. A dev-dependency on purpose:
+# as a module it was public API and rode along in the wasm binary.
 stark-testdata = { path = "../stark-testdata" }
-# The geometry's invariants over generated input (`path`, `assist`), at a fixed case
-# count so the suite does not slow down.
-proptest = { workspace = true }
 
 # The shared lint set (root Cargo.toml).
 [lints]
