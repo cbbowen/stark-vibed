@@ -665,11 +665,7 @@ pub(super) fn segment_instance(segment: &Segment) -> SegmentInstance {
         ramps: [paint.add_ramp, paint.tooth_give_ramp],
         // The solved stretch map (§6.6). Unscaled for the ramp's reason: it acts on
         // brush-local coordinates, which are already the frame's own units.
-        stretch: [
-            sweep.stretch.travel,
-            sweep.stretch.shear,
-            sweep.stretch.lateral,
-        ],
+        stretch: sweep.stretch.lanes(),
     }
 }
 

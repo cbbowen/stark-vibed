@@ -58,6 +58,15 @@ impl Stretch {
         turns: 0.0,
     };
 
+    /// The three the shaders read, in the order both uniforms declare them
+    /// (`Stamp::stretch`, `SegmentInstance::stretch`). [`turns`](Self::turns) is not
+    /// among them: it is folded into [`Sweep::orient`](super::Sweep::orient) before
+    /// either path sees the map, which is the whole of "another slice of the same
+    /// volume".
+    pub(in crate::gpu::stroke) const fn lanes(&self) -> [f32; 3] {
+        [self.travel, self.shear, self.lateral]
+    }
+
     /// Solve the map for an elongation `s` along a facing axis sitting `orient` turns
     /// round from the travel direction — which is
     /// [`orientation_turns`](super::orientation_turns)'s own answer for both sources.

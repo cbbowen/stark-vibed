@@ -87,6 +87,67 @@ pub(super) enum WarpStep {
     Apply,
 }
 
+/// **The neutral slot**: what a [`Stamp`] member means when the slot kind building it
+/// leaves that member alone.
+///
+/// Zero everywhere except the seven lanes whose neutral value is **1**, six of which
+/// are *scales*, where a zeroed lane does not say "none of this" but "none of the thing
+/// it multiplies": `tooth_bearing` at 0 books the tool's half of every transfer against
+/// no substrate at all — infinite tooth, not absent tooth; `cell_px` at 0 is no deposit
+/// grid rather than the exact one; `stretch` zeroed is a tip of no width every prefix
+/// difference is divided by (§6.6); `opacity` and `opacity_mod` at 0 are the strongest
+/// ceiling there is where 1 is the identity branch (§6.2). The seventh, `tooth_give`,
+/// runs the other way (`BrushParams::tooth_give`): zeroed it is the driest tip there is,
+/// where 1 is a tip that follows every fall — which is what keeps a bleed slot's lateral
+/// flux clear of the substrate (`dynamics.wesl::substrate_tooth`).
+///
+/// **Spelled out member by member on purpose.** A `..Default::default()` would let a
+/// lane the shader grows join the zeros in silence, and half of what is below is not
+/// zero; the compile error a new member raises here is where it gets classified.
+const NEUTRAL: Stamp = Stamp {
+    start: [0.0; 2],
+    dir: [0.0; 2],
+    radius: 0.0,
+    travel_radii: 0.0,
+    radius_ramp: 0.0,
+    lambda_lift: 0.0,
+    lambda_deposit: 0.0,
+    lambda_bleed: 0.0,
+    curvature: 0.0,
+    drag: 0.0,
+    brush_lat: [0.0; 3],
+    opacity: 1.0,
+    brush_res: [0.0; 3],
+    add: 0.0,
+    noise_freq: [0.0; 3],
+    arc_at_start: 0.0,
+    noise_amp: [0.0; 3],
+    drain: 0.0,
+    stretch: Stretch::NONE.lanes(),
+    orientation: 0.0,
+    // The pitch's denominator is a divisor: `NONE` gates on its zero numerator and keeps
+    // 1 below it, so a missed guard cannot divide by zero (§6.4).
+    substrate_num: TexelsPerPx::NONE.num,
+    rect_origin: [0; 2],
+    cell_anchor: [0; 2],
+    tooth_give: 1.0,
+    tooth_softness: 0.0,
+    tooth_bearing: 1.0,
+    substrate_den: TexelsPerPx::NONE.den,
+    cell_px: 1,
+    bleed_reach: 0,
+    canvas_origin: [0; 2],
+    jitter_eps: 0.0,
+    jitter_seed: 0,
+    opacity_mod: 1.0,
+    opacity_ramp: 0.0,
+    add_ramp: 0.0,
+    tooth_give_ramp: 0.0,
+    drag_ramp: 0.0,
+    ceiling_lane: 0,
+    base_offset: [0; 2],
+};
+
 /// The [`Stamp`] lanes every slot in a plan fills the same way, resolved once, so
 /// each builder below lists only what its kind differs by.
 struct SlotCommon<'a> {
@@ -105,13 +166,14 @@ struct SlotCommon<'a> {
 
 impl SlotCommon<'_> {
     /// The lanes every slot fills the same way — the stroke's color and the substrate
-    /// map — over the neutral value of everything a slot kind may leave alone.
-    fn slot(&self) -> Slot {
-        Slot {
-            channels: self.k.channels,
-            // The other half of the same color (§6.7) — filled wherever `channels` is,
-            // and zero in a space whose three channels already say everything.
-            resid: self.k.resid,
+    /// map — over [`NEUTRAL`].
+    fn slot(&self) -> Stamp {
+        Stamp {
+            brush_lat: self.k.channels,
+            // The other half of the same color (§6.7) — filled wherever `brush_lat` is,
+            // and zero in a space whose three channels already say everything. The
+            // shader declares three where `k` keeps four, its `.w` being unused.
+            brush_res: [self.k.resid[0], self.k.resid[1], self.k.resid[2]],
             // The paint effect's ceiling (§6.2), off `k` like the color: one
             // resolution for every slot kind and for the swept path's integrate.
             // Only a painting segment's mint reads it; a bleed or settle slot
@@ -119,10 +181,11 @@ impl SlotCommon<'_> {
             opacity: self.k.opacity,
             // …and whether the pen drives it, which is likewise the stroke's. A
             // bleed or settle slot carries the flag inertly with the dial.
-            ceiling_lane: self.k.ceiling_lane,
+            ceiling_lane: u32::from(self.k.ceiling_lane),
             // Off `k` like the color: the swept path's `TileXform` reads the same pair,
             // and both key it on the canvas texel.
-            substrate: self.k.substrate,
+            substrate_num: self.k.substrate.num,
+            substrate_den: self.k.substrate.den,
             // A stroke constant like the color above it, and off `k` for the same
             // reason: it is the one number the tooth needs that the pen never moves,
             // so every slot kind carries the same width and the swept path's
@@ -135,8 +198,11 @@ impl SlotCommon<'_> {
             // kinds disagree about.
             jitter_eps: self.k.jitter_eps,
             jitter_seed: self.k.jitter_seed,
+            // The jitter's and the substrate tap's shared domain: the absolute canvas
+            // grid, integral, so this loop can key a hash on canvas position at all
+            // (§6.4).
             canvas_origin: [self.region_origin.x as i32, self.region_origin.y as i32],
-            ..Slot::default()
+            ..NEUTRAL
         }
     }
 
@@ -146,18 +212,18 @@ impl SlotCommon<'_> {
     /// A bleed window's `radius_ramp` is 0 by construction (`bleed_fires`: a firing
     /// diffuses at the one radius its stencil was solved against), so the ramp is
     /// shared here exactly rather than by coincidence.
-    fn swept(&self, sw: &Sweep, rect: &Rect) -> Slot {
-        Slot {
-            start: sw.start - self.region_origin,
-            dir: sw.dir,
+    fn swept(&self, sw: &Sweep, rect: &Rect) -> Stamp {
+        Stamp {
+            start: (sw.start - self.region_origin).to_array(),
+            dir: sw.dir.to_array(),
             radius: sw.radius,
             travel_radii: sw.length / sw.radius,
             radius_ramp: sw.radius_ramp,
             curvature: sw.curvature,
-            orient: sw.orient,
-            stretch: sw.stretch,
+            orientation: sw.orient,
+            stretch: sw.stretch.lanes(),
             rect_origin: rect.origin,
-            dist: sw.dist,
+            arc_at_start: sw.dist,
             ..self.slot()
         }
     }
@@ -169,12 +235,14 @@ impl SlotCommon<'_> {
     /// `lambda_bleed` stays 0: the lateral flux runs only on the dedicated bleed
     /// slots, so between firings the canvas takes the no-bleed path bit-for-bit
     /// (§6.2).
-    fn painting(&self, sw: &Sweep, rect: &Rect, bearing: f32) -> Slot {
-        let namp = self.k.namp;
-        Slot {
-            noise_freq: self.k.nfreq,
+    fn painting(&self, sw: &Sweep, rect: &Rect, bearing: f32) -> Stamp {
+        let (nfreq, namp) = (self.k.nfreq, self.k.namp);
+        Stamp {
+            // Three lanes of a four-lane lookup on either side: the shader folds
+            // 1/NOISE_TILE_PX into `.z` and has no use for a fourth.
+            noise_freq: [nfreq[0], nfreq[1], nfreq[2]],
             noise_amp: [namp[0], namp[1], namp[2]],
-            bearing,
+            tooth_bearing: bearing,
             ..self.swept(sw, rect)
         }
     }
@@ -189,9 +257,9 @@ fn segment_slot(
     rect: &Rect,
     grid: &CellGrid,
     bearing: f32,
-) -> Slot {
+) -> Stamp {
     let paint = &s.paint;
-    Slot {
+    Stamp {
         // The exchange rates as the segment resolved them, the flow already on the
         // exponent (`generate_segments_in`, §6.2) — nothing here scales, as nothing
         // here scales `add`.
@@ -217,11 +285,11 @@ fn segment_slot(
         add_ramp: paint.add_ramp,
         tooth_give_ramp: paint.tooth_give_ramp,
         tooth_give: paint.tooth_give,
-        cell: grid.edge as f32,
+        cell_px: grid.edge,
         cell_anchor: grid.anchor,
         // No `bleed_reach` and no `lambda_bleed`: the lateral flux runs only on the
         // dedicated firings, so a painting segment takes the no-bleed path bit-for-bit
-        // (§6.2). Both are `Slot::default`'s zero.
+        // (§6.2). Both are [`NEUTRAL`]'s zero.
         ..common.painting(&s.sweep, rect, bearing)
     }
 }
@@ -231,20 +299,21 @@ fn segment_slot(
 /// except the lateral flux. The noise lanes are zeroed too, so the deposit skips its
 /// color-jitter taps.
 ///
-/// Everything a painting segment carries and this does not is `Slot::default`'s zero,
+/// Everything a painting segment carries and this does not is [`NEUTRAL`]'s zero,
 /// which is what the slot *means*: λ_lift = 0 so the canvas keeps everything,
 /// λ_deposit = 0 so the uninvolved tool lays nothing, no drain because nothing is laid,
 /// no `add` because this is not a stretch of painting, and no tooth because there is no
 /// `add` for the substrate to gate.
-fn bleed_slot(common: &SlotCommon<'_>, fire: &BleedFire, rect: &Rect) -> Slot {
+fn bleed_slot(common: &SlotCommon<'_>, fire: &BleedFire, rect: &Rect) -> Stamp {
     let w = &fire.window;
     // The stencil this firing diffuses with: how far it reaches, and how hard it
     // relaxes to get there. Both come out of the diffusivity the axis asks for — see
     // [`bleed_stencil`], which is where the axis's whole meaning is.
     let (reach, lambda_bleed) = bleed_stencil(fire.bleed, w.radius, w.length);
-    Slot {
-        // The stencil's longest tap — the only slot that carries one.
-        bleed_reach: reach,
+    Stamp {
+        // The stencil's longest tap — the only slot that carries one, and a whole
+        // number by construction (`bleed_stencil` rounds it to a texel).
+        bleed_reach: reach as i32,
         // The rate that lands this window's exposure on the blend its reach needs — not
         // `lambda(axis)`, which is the vertical rates' mapping and would make the axis a
         // rate rather than a diffusivity. A firing whose modulated axis has fallen to
@@ -259,20 +328,20 @@ fn bleed_slot(common: &SlotCommon<'_>, fire: &BleedFire, rect: &Rect) -> Slot {
 /// pen left the page, on the same uniform. Zero travel is what makes the shared
 /// `segment_frame`/`outside_sweep` reduce to the tip's own extent and `snapshot` copy
 /// exactly the texels the settle will write.
-fn settle_slot(common: &SlotCommon<'_>, s: &Segment, rect: &Rect, tan: Vec2) -> Slot {
+fn settle_slot(common: &SlotCommon<'_>, s: &Segment, rect: &Rect, tan: Vec2) -> Stamp {
     let (sw, paint) = (&s.sweep, &s.paint);
-    Slot {
+    Stamp {
         // Where the travel ended, facing the way the pen was going ([`settle_tangent`])
         // — the two lanes a standing tip cannot take off the sweep it is the end of.
-        start: segment_end(sw) - common.region_origin,
-        dir: tan,
+        start: (segment_end(sw) - common.region_origin).to_array(),
+        dir: tan.to_array(),
         // A pen-up is a break of contact, not a stretch of it: no travel, and with it
         // no ramp and no curvature, the frame being a standing tip. The arc is the
         // segment's far end rather than its start, for the same reason.
         travel_radii: 0.0,
         radius_ramp: 0.0,
         curvature: 0.0,
-        dist: sw.dist + sw.length,
+        arc_at_start: sw.dist + sw.length,
         // The rates are the *last* segment's — where the pen was when it left the page
         // — and its λs carry that segment's flow, as a painting slot's do.
         lambda_lift: paint.lambda_lift,
@@ -285,7 +354,7 @@ fn settle_slot(common: &SlotCommon<'_>, s: &Segment, rect: &Rect, tan: Vec2) -> 
         // No `add`: the source is a rate per unit of travel, and there is none. No bleed
         // reach and no λ_bleed either: that axis carries no reservoir, every firing
         // having applied its window as the tip passed, so a break of contact strands
-        // nothing to finish. All three are `Slot::default`'s zero.
+        // nothing to finish. All three are [`NEUTRAL`]'s zero.
         //
         // The bearing is the neutral 1: the tool is not written back at pen-up, and the
         // settle's own gate is per texel, from the substrate. The color channels are
@@ -297,9 +366,9 @@ fn settle_slot(common: &SlotCommon<'_>, s: &Segment, rect: &Rect, tan: Vec2) -> 
 
 /// One segment of a **liquify** stroke (§6.13): the segment's step composed into the
 /// run's field, and not one rate a deposit would run on.
-fn warp_slot(common: &SlotCommon<'_>, s: &Segment, rect: &Rect, base_offset: [i32; 2]) -> Slot {
+fn warp_slot(common: &SlotCommon<'_>, s: &Segment, rect: &Rect, base_offset: [i32; 2]) -> Stamp {
     let paint = &s.paint;
-    Slot {
+    Stamp {
         // The one rate a warp slot carries: the modulated strength, and how it changes
         // across the segment.
         drag: paint.drag,
@@ -308,247 +377,11 @@ fn warp_slot(common: &SlotCommon<'_>, s: &Segment, rect: &Rect, base_offset: [i3
         // The drag runs dry as a deposit would (§6.2): the drain at the texel's own
         // arc, which is what the sweep's arc length beside it is for.
         drain: common.k.drain_px,
-        // Every rate a deposit would run on stays `Slot::default`'s zero — a warp slot
+        // Every rate a deposit would run on stays [`NEUTRAL`]'s zero — a warp slot
         // lays nothing, lifts nothing, bleeds nothing — and the noise lanes with them:
         // the effect has no color for a jitter to wander (§6.13). The tooth too, since a
         // field gated by the substrate's every step is a tear rather than a warp.
         ..common.swept(&s.sweep, rect)
-    }
-}
-
-/// One dispatch's uniform in **named fields**, packed into [`Stamp`]'s lanes by
-/// [`Slot::pack`] — the one place on this side of the boundary that knows which lane
-/// is which.
-///
-/// [`Default`] is the neutral slot — every rate off, and `bearing` at the 1 that
-/// leaves an exchange alone — so each kind below lists only what it differs by.
-#[derive(Clone, Copy)]
-struct Slot {
-    /// The sweep's start in region px, and the unit travel tangent it leaves along.
-    start: Vec2,
-    dir: Vec2,
-    /// The tip's radius in region px — and so the frame the sweep is unrolled in
-    /// (§6.6) — with its travel as a multiple of that radius: 0 on a settle, which
-    /// is a break of contact rather than a stretch of it.
-    radius: f32,
-    travel_radii: f32,
-    /// `λ = ln(1 − axis) ≤ 0`, clamped away from −∞. Zero is "no transfer".
-    lambda_lift: f32,
-    lambda_deposit: f32,
-    /// The brush's own color channels. **Undrained** — and no per-unit opacity
-    /// beside them: minted paint is opaque per unit, faded only by the drain
-    /// (§6.2).
-    channels: [f32; 3],
-    /// The paint effect's opacity — the ceiling the mint's prefix-difference law
-    /// runs under in the shader (§6.2). 1 is the identity, exactly.
-    opacity: f32,
-    /// The ceiling's modulation factor across this segment (§6.2) — the mean of
-    /// its two ends and the difference between them, read at the texel's own
-    /// travel by the shader. Only where `ceiling_lane` is set; `(1, 0)` — a
-    /// scale's neutral and no ramp — everywhere else.
-    opacity_mod: f32,
-    opacity_ramp: f32,
-    /// How this segment's other **per-texel** rates change across it (§6.2) —
-    /// `Paint`'s three ramps, carried through unchanged. The exchange's own lambdas
-    /// have none: that solve is one problem per dispatch (see `dynamics.wesl`).
-    add_ramp: f32,
-    tooth_give_ramp: f32,
-    drag_ramp: f32,
-    /// Whether the stroke's ceiling is pen-driven, off `k` like the dial: routes
-    /// the mint through the ceiling lane the region aux's `.w` carries.
-    ceiling_lane: bool,
-    /// The same color's **residual** (§6.7) in `.xyz`; `.w` unused. Undrained like
-    /// `channels`, and zero in a space that has no residual to carry.
-    resid: [f32; 4],
-    /// The dispatch rect's top-left in region texels, integral.
-    rect_origin: Vec2,
-    /// Shape orientation in turns ∈ [0, 1) — picks the prefix-τ slice (§6.6).
-    orient: f32,
-    /// The `drain` falloff per canvas px — [`BrushParams::drain_px`](stark_model::document::BrushParams::drain_px), the brush's own
-    /// per-*radius* knob already divided, so the shader's arc length (canvas px) and
-    /// this rate are in the same units.
-    drain: f32,
-    /// The `add` source rate per unit exposure, **undrained** like the opacity.
-    add: f32,
-    /// Signed curvature of the sweep (1/region px); 0 is a straight one.
-    curvature: f32,
-    /// The liquify follow rate (§6.13): the segment's modulated strength, the
-    /// fraction of its pass the paint under the tip's core keeps up with — nonzero
-    /// **only** on a warp slot.
-    drag: f32,
-    /// Where the region's texel (0, 0) sits in the base composite `warp_apply`
-    /// resamples from (§6.13), in texels — the reach margin the base was grown by.
-    base_offset: [i32; 2],
-    /// The bleed stencil's longest tap in texels — nonzero **only** on a bleed slot.
-    bleed_reach: f32,
-    /// The color-dynamics lookup (§6.2): frequency per axis + 1/NOISE_TILE_PX and
-    /// per-channel amplitude. All zero = no jitter.
-    noise_freq: [f32; 4],
-    noise_amp: [f32; 3],
-    /// Arc length at the slot's start (canvas px) — the noise's third axis.
-    dist: f32,
-    /// The tooth's bearing fraction: the share of the substrate a tip with this tooth,
-    /// going this way, stands on (§6.4). What the *tool* books its half of the
-    /// transfer against, having no substrate of its own. 1 where there is nothing to bite.
-    bearing: f32,
-    /// The lateral canvas diffusion rate (≤ 0) — nonzero **only** on a bleed slot.
-    lambda_bleed: f32,
-    /// How much give this slot's tip has (1 = the substrate gates nothing), how wide
-    /// the transition around that is, and how the substrate map is read (§6.4).
-    tooth_give: f32,
-    tooth_softness: f32,
-    substrate: TexelsPerPx,
-    /// The extent cell's edge in texels (§6.2) — 1 is the exact per-texel deposit,
-    /// which is also the neutral value: the exact kernels never read the lane.
-    cell: f32,
-    /// The cell grid's canvas anchor: the region's canvas origin modulo the cell,
-    /// so cell boundaries are pinned to canvas texels whatever region surrounds them
-    /// (§6.4). Zero whenever `cell` is 1.
-    cell_anchor: Vec2,
-    /// How much the tip grows across this slot's sweep, as a fraction of
-    /// [`frame`](Self::radius) — [`Sweep::ramp`](super::super::segments::Sweep).
-    ///
-    /// Zero on a bleed window and on a settle, and both are meant: a firing is a
-    /// stretch of *diffusion* at one tip (the radius [`bleed_stencil`] solved its
-    /// stencil against), and a settle is a standing tip with no travel to ramp along.
-    radius_ramp: f32,
-    /// The tip drawn out along its facing axis (§6.6), solved into the map that
-    /// carries a point of the reference travel frame into the frame the prefix-τ
-    /// volume and the bake rows are indexed in ([`Stretch`]).
-    ///
-    /// The identity is `(1, 0, 1)`, a triple of *scales*: a zeroed lane is not "no
-    /// stretch" but a tip of no width and infinite gain
-    /// ([`Stretch::NONE`](super::super::segments::Stretch::NONE)).
-    stretch: Stretch,
-    /// The deposit jitter (§6.2): the gate's half-range (0 = off, the neutral
-    /// value), the stroke's seed for it, and the region's canvas origin — the
-    /// jitter's map from region texels to the absolute canvas grid it is keyed on.
-    jitter_eps: f32,
-    jitter_seed: u32,
-    canvas_origin: [i32; 2],
-}
-
-impl Default for Slot {
-    /// Zero everywhere except the lanes whose neutral value is **1**, which are
-    /// *scales*: a zeroed scale does not mean "none of this" but "none of the thing it
-    /// multiplies". `bearing` at 0 would book the tool's half of every transfer
-    /// against no substrate at all — infinite tooth, not absent tooth; `cell` at 1 is
-    /// the exact per-texel deposit; `opacity` and `opacity_mod` at 1 are the identity
-    /// ceiling (§6.2).
-    ///
-    /// `tooth_give` is 1 for a reason of its own: the knob runs the other way
-    /// (`BrushParams::tooth_give`), so a zeroed lane is not "no tooth" but the driest
-    /// tip there is. 1 is a tip that follows every fall, which is what keeps a bleed
-    /// slot's lateral flux clear of the substrate (`dynamics.wesl::substrate_tooth`).
-    fn default() -> Self {
-        Self {
-            start: Vec2::ZERO,
-            dir: Vec2::ZERO,
-            radius: 0.0,
-            travel_radii: 0.0,
-            lambda_lift: 0.0,
-            lambda_deposit: 0.0,
-            channels: [0.0; 3],
-            // A scale, so its neutral value is 1 — the identity the shader
-            // branches to exactly — not 0, which would be the strongest ceiling
-            // there is (`stretch`'s argument, one field over).
-            opacity: 1.0,
-            opacity_mod: 1.0,
-            opacity_ramp: 0.0,
-            add_ramp: 0.0,
-            tooth_give_ramp: 0.0,
-            drag_ramp: 0.0,
-            ceiling_lane: false,
-            resid: [0.0; 4],
-            rect_origin: Vec2::ZERO,
-            orient: 0.0,
-            drain: 0.0,
-            add: 0.0,
-            curvature: 0.0,
-            drag: 0.0,
-            base_offset: [0, 0],
-            bleed_reach: 0.0,
-            noise_freq: [0.0; 4],
-            noise_amp: [0.0; 3],
-            dist: 0.0,
-            bearing: 1.0,
-            lambda_bleed: 0.0,
-            tooth_give: 1.0,
-            // Never read where `tooth_give` is 1, so the value is free; zero rather
-            // than the brush's default because a slot that reads it is a slot
-            // `SlotCommon` filled, and this is what an unfilled one looks like.
-            tooth_softness: 0.0,
-            substrate: TexelsPerPx::NONE,
-            cell: 1.0,
-            cell_anchor: Vec2::ZERO,
-            radius_ramp: 0.0,
-            stretch: Stretch::NONE,
-            jitter_eps: 0.0,
-            jitter_seed: 0,
-            canvas_origin: [0, 0],
-        }
-    }
-}
-
-impl Slot {
-    /// This slot as the uniform `dynamics_common.wesl` declares and both roots read.
-    /// A rename rather than a packing: the mirror generates `Stamp`'s members from the
-    /// shader's own declaration (§6.10), so each line below pairs one name with one
-    /// name, checked by the compiler.
-    ///
-    /// The casts are the members the shader declares **integral**: a rect origin, a
-    /// cell edge, a stencil reach. They are `f32` here because the rect arithmetic
-    /// around them is, and each is a whole number by construction — `rect.origin` is a
-    /// texel corner, `cell` an edge in texels, `reach` a tap count.
-    fn pack(&self) -> Stamp {
-        Stamp {
-            start: self.start.to_array(),
-            dir: self.dir.to_array(),
-            radius: self.radius,
-            travel_radii: self.travel_radii,
-            radius_ramp: self.radius_ramp,
-            lambda_lift: self.lambda_lift,
-            lambda_deposit: self.lambda_deposit,
-            lambda_bleed: self.lambda_bleed,
-            curvature: self.curvature,
-            brush_lat: self.channels,
-            opacity: self.opacity,
-            brush_res: [self.resid[0], self.resid[1], self.resid[2]],
-            add: self.add,
-            drag: self.drag,
-            noise_freq: [self.noise_freq[0], self.noise_freq[1], self.noise_freq[2]],
-            arc_at_start: self.dist,
-            noise_amp: self.noise_amp,
-            drain: self.drain,
-            stretch: [
-                self.stretch.travel,
-                self.stretch.shear,
-                self.stretch.lateral,
-            ],
-            orientation: self.orient,
-            substrate_num: self.substrate.num,
-            substrate_den: self.substrate.den,
-            rect_origin: [self.rect_origin.x as i32, self.rect_origin.y as i32],
-            cell_anchor: [self.cell_anchor.x as i32, self.cell_anchor.y as i32],
-            tooth_give: self.tooth_give,
-            tooth_softness: self.tooth_softness,
-            tooth_bearing: self.bearing,
-            cell_px: self.cell as i32,
-            bleed_reach: self.bleed_reach as i32,
-            jitter_eps: self.jitter_eps,
-            jitter_seed: self.jitter_seed,
-            canvas_origin: self.canvas_origin,
-            opacity_mod: self.opacity_mod,
-            opacity_ramp: self.opacity_ramp,
-            add_ramp: self.add_ramp,
-            tooth_give_ramp: self.tooth_give_ramp,
-            drag_ramp: self.drag_ramp,
-            ceiling_lane: u32::from(self.ceiling_lane),
-            // The flag lands the offset on its `vec2` alignment and the offset
-            // closes the struct's 16-byte round, so no generated pad sits between
-            // them or after (§6.10) — the mirror would name one if one did.
-            base_offset: self.base_offset,
-        }
     }
 }
 
@@ -606,7 +439,9 @@ fn dispatch_rect(lo: Vec2, hi: Vec2, region_origin: Vec2) -> Rect {
     let hi = hi - region_origin + Vec2::splat(RECT_MARGIN);
     let origin = Vec2::new(lo.x.floor(), lo.y.floor());
     Rect {
-        origin,
+        // Integral by that floor, and carried as the integers the shader declares
+        // (`Stamp::rect_origin`) rather than as floats it would have to round back.
+        origin: [origin.x as i32, origin.y as i32],
         w: ((hi.x - origin.x).ceil() as u32) + 1,
         h: ((hi.y - origin.y).ceil() as u32) + 1,
     }
@@ -614,8 +449,8 @@ fn dispatch_rect(lo: Vec2, hi: Vec2, region_origin: Vec2) -> Rect {
 
 /// One slot's dispatch rectangle.
 struct Rect {
-    /// The rect's top-left in region texels, integral — the `d.xy` a slot carries.
-    origin: Vec2,
+    /// The rect's top-left in region texels — the `rect_origin` a slot carries.
+    origin: [i32; 2],
     /// Its extent in texels.
     w: u32,
     h: u32,
@@ -673,12 +508,12 @@ fn cell_span(base: i32, span: i32, c: i32) -> u32 {
 /// dispatched over cannot come apart.
 struct CellGrid {
     /// The cell's edge in texels (§6.2). 1 is the exact per-texel deposit, which is
-    /// also the neutral value: the exact kernels never read the lane.
-    edge: u32,
+    /// also [`NEUTRAL`]'s value: the exact kernels never read the lane.
+    edge: i32,
     /// The cell grid's canvas anchor: the region's canvas origin modulo the edge, so
     /// cell boundaries are pinned to canvas texels whatever region surrounds them
     /// (§6.4). Zero whenever [`edge`](Self::edge) is 1.
-    anchor: Vec2,
+    anchor: [i32; 2],
     /// The `cell_hoist` workgroup counts covering every cell the slot's texel grid can
     /// touch — `None` when the slot keeps the exact kernel and dispatches no hoist.
     hoist: Option<(u32, u32)>,
@@ -696,7 +531,7 @@ fn cell_geometry(cell: u32, region_origin: Vec2, rect: &Rect, dsize: u32) -> Cel
     if cell <= 1 {
         return CellGrid {
             edge: 1,
-            anchor: Vec2::ZERO,
+            anchor: [0; 2],
             hoist: None,
         };
     }
@@ -711,16 +546,14 @@ fn cell_geometry(cell: u32, region_origin: Vec2, rect: &Rect, dsize: u32) -> Cel
     // Restating `RegionRect::origin`'s own guarantee rather than establishing it — see
     // there for why a fractional origin cannot arrive, and why it would be a seam if
     // one did.
-    let anchor = Vec2::new(
-        (region_origin.x as i32).rem_euclid(c) as f32,
-        (region_origin.y as i32).rem_euclid(c) as f32,
-    );
+    let anchor = [
+        (region_origin.x as i32).rem_euclid(c),
+        (region_origin.y as i32).rem_euclid(c),
+    ];
     let scanned = rect.scanned();
-    let cells = |origin: f32, a: f32, span: u32| -> u32 {
-        cell_span(origin as i32 + a as i32, span.min(dsize) as i32, c)
-    };
-    let cx = cells(rect.origin.x, anchor.x, scanned.0);
-    let cy = cells(rect.origin.y, anchor.y, scanned.1);
+    let cells = |origin: i32, a: i32, span: u32| cell_span(origin + a, span.min(dsize) as i32, c);
+    let cx = cells(rect.origin[0], anchor[0], scanned.0);
+    let cy = cells(rect.origin[1], anchor[1], scanned.1);
     // Arithmetic rather than a real risk: a rect spans at most `dsize` texels, so at
     // a cell of `c ≥ 2` it names at most
     // `ceil(dsize/c) + 1 + 2·CELL_BORDER ≤ dsize.div_ceil(2) + 3` cells, and
@@ -732,7 +565,7 @@ fn cell_geometry(cell: u32, region_origin: Vec2, rect: &Rect, dsize: u32) -> Cel
         "a {cx}x{cy}-cell hoist overruns the {fit}-cell scratch",
     );
     CellGrid {
-        edge: cell,
+        edge: c,
         anchor,
         hoist: Some((cx, cy)),
     }
@@ -919,8 +752,7 @@ pub(super) fn dynamics_plan(
                             rect,
                             &grid,
                             bearing(s.paint.tooth_give, mid_dir),
-                        )
-                        .pack(),
+                        ),
                     }
                 }
                 SlotSource::Bleed(fire) => LoopDispatch {
@@ -930,7 +762,7 @@ pub(super) fn dynamics_plan(
                     // per-texel exposures, and the firings are rare and small next to
                     // the painting they cut.
                     step: WetStep::Bleed,
-                    slot: bleed_slot(&common, fire, rect).pack(),
+                    slot: bleed_slot(&common, fire, rect),
                 },
                 SlotSource::Settle(s) => LoopDispatch {
                     extent,
@@ -943,8 +775,7 @@ pub(super) fn dynamics_plan(
                     // `segments` is one piece of one range, and a lookback that walked
                     // it would stop wherever that cut fell, so a live tail and its
                     // commit would settle at different angles.
-                    slot: settle_slot(&common, s, rect, settle_tangent(rec, ctx.tol, segments))
-                        .pack(),
+                    slot: settle_slot(&common, s, rect, settle_tangent(rec, ctx.tol, segments)),
                 },
             }
         })
@@ -990,18 +821,17 @@ pub(super) fn liquify_plan(
     plan.extend(segments.iter().zip(&rects).map(|(s, rect)| LoopDispatch {
         extent: (rect.w, rect.h),
         step: WarpStep::Warp,
-        slot: warp_slot(&common, s, rect, base_offset).pack(),
+        slot: warp_slot(&common, s, rect, base_offset),
     }));
     // The resample, over the region: its rect is the region itself, at the region's
     // own origin.
     plan.push(LoopDispatch {
         extent: region,
         step: WarpStep::Apply,
-        slot: Slot {
+        slot: Stamp {
             base_offset,
             ..common.slot()
-        }
-        .pack(),
+        },
     });
     Plan { slots: plan, dsize }
 }
@@ -1095,12 +925,13 @@ fn settle_tangent(
 mod tests {
     use super::super::bleed::bleed_fires;
     use super::*;
+    use crate::gpu::stroke::StrokeConstants;
     use crate::gpu::stroke::StrokeSpans;
     use crate::gpu::stroke::budget::flatten_budget;
     use crate::gpu::stroke::region::cover;
-    use crate::gpu::stroke::segments::Stretch;
     use crate::gpu::stroke::segments::generate_segments_in;
     use crate::gpu::stroke::segments::testing::{record, run, seg, seg_between, smearing};
+    use crate::gpu::stroke::segments::{Paint, Stretch};
     use stark_model::geom::Vec2;
 
     /// The coarse deposit scans the grid [`Rect::scanned`] rounds to.
@@ -1121,163 +952,70 @@ mod tests {
         );
     }
 
-    // --- the slot's lane packing -------------------------------------------
+    // --- the neutral slot ---------------------------------------------------
 
-    /// Every field of the plan's slot reaches the member of `Stamp` the shader reads
-    /// it from.
+    /// [`SlotCommon::swept`] shares the frame's `radius_ramp` across all three slot
+    /// kinds it serves, which is exact only because a **bleed window does not ramp**: a
+    /// firing diffuses at the one radius [`bleed_stencil`] solved its reach and rate
+    /// against, and a rim moving under the sweep would diffuse at a width that stencil
+    /// was not built for (§6.2).
     ///
-    /// `Stamp`'s members are named (§6.10), so a swap of two same-typed neighbours is
-    /// a compile error rather than a wrong picture. What is left to assert is the
-    /// handful of lines where the two sides spell one quantity differently —
-    /// `orient`/`orientation`, `dist`/`arc_at_start`, `ramp`/`radius_ramp`,
-    /// `bearing`/`tooth_bearing` — and the three that split a host array
-    /// (`channels`, `resid`, `noise_freq`).
+    /// Stated here because the sharing is silent if it ever stops being true — a bleed
+    /// slot would start carrying its crossing segment's ramp and nothing would say so.
     #[test]
-    fn every_slot_field_lands_in_the_member_the_shader_reads_it_from() {
-        let packed = Slot {
-            start: Vec2::new(1.0, 2.0),
-            dir: Vec2::new(3.0, 4.0),
-            radius: 5.0,
-            travel_radii: 6.0,
-            lambda_lift: 7.0,
-            lambda_deposit: 8.0,
-            channels: [9.0, 10.0, 11.0],
-            opacity: 53.0,
-            opacity_mod: 55.0,
-            opacity_ramp: 56.0,
-            add_ramp: 57.0,
-            tooth_give_ramp: 58.0,
-            drag_ramp: 59.0,
-            ceiling_lane: true,
-            base_offset: [61, 62],
-            rect_origin: Vec2::new(13.0, 14.0),
-            orient: 15.0,
-            drain: 16.0,
-            add: 17.0,
-            curvature: 18.0,
-            drag: 54.0,
-            bleed_reach: 19.0,
-            noise_freq: [20.0, 21.0, 22.0, 23.0],
-            noise_amp: [24.0, 25.0, 26.0],
-            dist: 29.0,
-            bearing: 30.0,
-            lambda_bleed: 31.0,
-            tooth_give: 32.0,
-            tooth_softness: 48.0,
-            substrate: TexelsPerPx {
-                num: [33, 34],
-                den: 35,
-            },
-            resid: [36.0, 37.0, 38.0, 39.0],
-            cell: 40.0,
-            cell_anchor: Vec2::new(41.0, 42.0),
-            radius_ramp: 44.0,
-            stretch: Stretch {
-                travel: 45.0,
-                shear: 46.0,
-                lateral: 47.0,
-                turns: 0.0,
-            },
-            jitter_eps: 49.0,
-            jitter_seed: 50,
-            canvas_origin: [51, 52],
+    fn a_bleed_window_never_ramps() {
+        let mut segments = run(200, 0.2, 30.0);
+        for (i, s) in segments.iter_mut().enumerate() {
+            s.sweep.radius_ramp = 0.4 - 0.001 * i as f32;
         }
-        .pack();
-
-        // The pairs the two sides spell differently.
-        assert_eq!(packed.travel_radii, 6.0, "travel_radii");
-        assert_eq!(packed.orientation, 15.0, "orient → orientation");
-        assert_eq!(packed.arc_at_start, 29.0, "dist → arc_at_start");
-        assert_eq!(packed.radius_ramp, 44.0, "ramp → radius_ramp (§6.2)");
-        assert_eq!(packed.tooth_bearing, 30.0, "bearing → tooth_bearing (§6.4)");
-        assert_eq!(packed.substrate_num, [33, 34], "substrate.num (§6.4)");
-        assert_eq!(packed.substrate_den, 35, "substrate.den (§6.4)");
-        assert_eq!(packed.cell_px, 40, "cell → cell_px, as an integer (§6.2)");
-        assert_eq!(packed.cell_anchor, [41, 42], "cell_anchor, as integers");
-        assert_eq!(packed.rect_origin, [13, 14], "rect_origin, as integers");
-        assert_eq!(packed.bleed_reach, 19, "bleed_reach, as an integer");
-        // The three the host keeps as one array and the shader splits.
-        assert_eq!(packed.brush_lat, [9.0, 10.0, 11.0], "channels → brush_lat");
-        assert_eq!(packed.brush_res, [36.0, 37.0, 38.0], "resid (§6.7)");
-        assert_eq!(packed.noise_freq, [20.0, 21.0, 22.0], "noise_freq");
-        // And the ones whose names already match, so that a member never assigned at
-        // all — which `..Default::default()` would zero in silence — still fails here.
-        assert_eq!(packed.start, [1.0, 2.0]);
-        assert_eq!(packed.dir, [3.0, 4.0]);
-        assert_eq!(packed.radius, 5.0);
-        assert_eq!(packed.lambda_lift, 7.0);
-        assert_eq!(packed.lambda_deposit, 8.0);
-        assert_eq!(packed.lambda_bleed, 31.0);
-        assert_eq!(packed.curvature, 18.0);
-        assert_eq!(packed.add, 17.0);
-        assert_eq!(packed.drag, 54.0, "the liquify follow rate (§6.13)");
-        assert_eq!(
-            packed.base_offset,
-            [61, 62],
-            "the base composite's margin (§6.13)"
+        let (fires, _) = bleed_fires(0.5, &segments);
+        assert!(!fires.is_empty(), "no firing to check");
+        assert!(
+            fires.iter().all(|f| f.window.radius_ramp == 0.0),
+            "a firing's window ramps, so a bleed slot no longer shares the swept frame",
         );
-        assert_eq!(packed.drain, 16.0);
-        assert_eq!(packed.noise_amp, [24.0, 25.0, 26.0]);
-        assert_eq!(packed.tooth_give, 32.0);
-        assert_eq!(packed.tooth_softness, 48.0);
-        assert_eq!(
-            packed.stretch,
-            [45.0, 46.0, 47.0],
-            "the facing stretch (§6.6)"
-        );
-        assert_eq!(packed.jitter_eps, 49.0, "the deposit jitter (§6.2)");
-        assert_eq!(packed.jitter_seed, 50);
-        assert_eq!(packed.canvas_origin, [51, 52]);
-        assert_eq!(packed.opacity, 53.0, "the effect's ceiling (§6.2)");
-        assert_eq!(packed.opacity_mod, 55.0, "the ceiling's pen factor (§6.2)");
-        assert_eq!(
-            packed.opacity_ramp, 56.0,
-            "…and its ramp across the segment"
-        );
-        assert_eq!(packed.add_ramp, 57.0, "the source rate's ramp (§6.2)");
-        assert_eq!(packed.tooth_give_ramp, 58.0, "the tooth give's (§6.4)");
-        assert_eq!(packed.drag_ramp, 59.0, "the liquify follow's (§6.13)");
-        assert_eq!(packed.ceiling_lane, 1, "the ceiling lane's flag (§6.2)");
     }
 
-    /// The neutral slot is neutral *in the shader's terms*, which for seven fields is
-    /// not zero. Six are **scales**, where a zeroed lane says "none of the thing it
-    /// multiplies": a `bearing` of 0 is infinite tooth rather than absent tooth, a
-    /// `cell` of 0 no deposit grid rather than the exact one, a zeroed stretch a tip
-    /// of no width every prefix difference is divided by (§6.6), a zeroed `opacity`
+    /// [`NEUTRAL`] is neutral *in the shader's terms*, which for seven members is not
+    /// zero. Six are **scales**, where a zeroed lane says "none of the thing it
+    /// multiplies": a `tooth_bearing` of 0 is infinite tooth rather than absent tooth,
+    /// a `cell_px` of 0 no deposit grid rather than the exact one, a zeroed `stretch` a
+    /// tip of no width every prefix difference is divided by (§6.6), a zeroed `opacity`
     /// or `opacity_mod` the strongest ceiling there is where 1 is the identity branch
     /// (§6.2). The seventh, `tooth_give`, runs the other way
-    /// (`BrushParams::tooth_give`): zeroed it is the driest tip there is. A derived
-    /// `Default` would make every slot kind that leaves one alone quietly wrong.
+    /// (`BrushParams::tooth_give`): zeroed it is the driest tip there is.
+    ///
+    /// The spelled-out const is what makes a new member raise a compile error rather
+    /// than take a zero; this is what says the zero would have been wrong.
     #[test]
-    fn the_default_slot_is_neutral_rather_than_zeroed() {
-        let d = Slot::default().pack();
-        assert_eq!(d.tooth_bearing, 1.0, "the default bearing must be 1, not 0");
-        assert_eq!(d.cell_px, 1, "the default cell must be 1 — exact — not 0");
+    fn the_neutral_stamp_is_neutral_rather_than_zeroed() {
+        let d = NEUTRAL;
+        assert_eq!(d.tooth_bearing, 1.0, "the neutral bearing must be 1, not 0");
+        assert_eq!(d.cell_px, 1, "the neutral cell must be 1 — exact — not 0");
         assert_eq!(
             d.tooth_give, 1.0,
-            "the default give must be 1 — full contact — not 0, which is the dry mark"
+            "the neutral give must be 1 — full contact — not 0, which is the dry mark"
         );
         assert_eq!(
             d.stretch,
             [1.0, 0.0, 1.0],
-            "the default stretch must be the identity map, not zeroes"
+            "the neutral stretch must be the identity map, not zeroes"
         );
         assert_eq!(
             d.opacity, 1.0,
-            "the default opacity must be 1 — the identity ceiling — not 0"
+            "the neutral opacity must be 1 — the identity ceiling — not 0"
         );
         assert_eq!(
             d.opacity_mod, 1.0,
-            "the default ceiling factor must be 1 — the pen taking nothing — not 0"
+            "the neutral ceiling factor must be 1 — the pen taking nothing — not 0"
         );
         // The substrate pitch's denominator is a divisor: `TexelsPerPx::NONE` gates on
         // its zero numerator, and keeps 1 below it so a missed guard cannot divide by 0.
         assert_eq!(
             d.substrate_den, 1,
-            "the default substrate pitch must be `NONE`"
+            "the neutral substrate pitch must be `NONE`"
         );
-        // And everything else is zero, which for the rest of the slot *is* neutral —
+        // And everything else is zero, which for the rest of the stamp *is* neutral —
         // stated as the complement of the members above so a new one has to be
         // classified rather than silently joining whichever list it was written near.
         let z = Stamp {
@@ -1293,7 +1031,7 @@ mod tests {
         assert_eq!(
             bytemuck::bytes_of(&d),
             bytemuck::bytes_of(&z),
-            "a member of the default slot is neither zero nor one of the neutrals above",
+            "a member of the neutral stamp is neither zero nor one of the values above",
         );
     }
 
@@ -1306,7 +1044,7 @@ mod tests {
     #[test]
     fn cell_boundaries_are_canvas_anchored_whatever_the_region_origin() {
         let rect = Rect {
-            origin: Vec2::ZERO,
+            origin: [0; 2],
             w: 64,
             h: 64,
         };
@@ -1316,7 +1054,7 @@ mod tests {
                 grid.hoist.is_some(),
                 "a cell of 5 must take the coarse path"
             );
-            let (c, a) = (5i32, grid.anchor.x as i32);
+            let (c, a) = (5i32, grid.anchor[0]);
             // The canvas texels where the shader's cell index steps: its region
             // texel is `canvas − origin`, its cell `floor((rt + anchor) / c)`.
             let idx = |canvas: i32| (canvas - origin as i32 + a).div_euclid(c);
@@ -1346,9 +1084,9 @@ mod tests {
         let dsize = 64;
         for cell in [2u32, 3, 5, 10, 16] {
             for region_origin in [-640.0f32, -5.0, 0.0, 3.0, 17.0, 999.0] {
-                for rect_origin in [0.0f32, 1.0, 7.0, 33.0] {
+                for rect_origin in [0i32, 1, 7, 33] {
                     let rect = Rect {
-                        origin: Vec2::splat(rect_origin),
+                        origin: [rect_origin; 2],
                         w: 24,
                         h: 40,
                     };
@@ -1357,15 +1095,15 @@ mod tests {
                         grid.hoist.is_some(),
                         "a cell above 1 must take the coarse path"
                     );
-                    let (c, a) = (cell as i32, grid.anchor.x as i32);
+                    let (c, a) = (cell as i32, grid.anchor[0]);
                     // The shader's `cell_base`: the rect's first cell, less the border.
-                    let base = (rect_origin as i32 + a).div_euclid(c) - CELL_BORDER;
+                    let base = (rect_origin + a).div_euclid(c) - CELL_BORDER;
                     // The texels the deposit scans: its rect as rounded to whole
                     // workgroups, clamped to the snapshot square — what `cells` counts.
                     let span = rect.scanned().0.min(dsize) as i32;
-                    let count = cell_span(rect_origin as i32 + a, span, c) as i32;
+                    let count = cell_span(rect_origin + a, span, c) as i32;
                     for t in 0..span {
-                        let rt = rect_origin as i32 + t;
+                        let rt = rect_origin + t;
                         // `cell_tap`'s continuous cell coordinate, in the shader's f32.
                         let u = ((rt + a) as f32 + 0.5) / cell as f32 - 0.5;
                         let lo = u.floor() as i32 - base;
@@ -1681,6 +1419,609 @@ mod tests {
                              texel whose own thread returned",
                             rect.w,
                             rect.h,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // --- W2: the retired host `Slot`, kept for one thing ----------------------
+    //
+    // Everything from here down is the pre-W2 machinery — the 40-field host struct, its
+    // hand-written `Default`, the `pack()` that renamed it onto `Stamp`, and the slot
+    // expressions the two plans used to spell inline. It is here to prove the rewrite
+    // lays the same bytes, and comes out with the test at the bottom.
+
+    /// One dispatch's uniform in **named fields**, packed into [`Stamp`]'s lanes by
+    /// [`Slot::pack`] — the one place on this side of the boundary that knows which lane
+    /// is which.
+    ///
+    /// [`Default`] is the neutral slot — every rate off, and `bearing` at the 1 that
+    /// leaves an exchange alone — so each kind below lists only what it differs by.
+    #[derive(Clone, Copy)]
+    struct Slot {
+        /// The sweep's start in region px, and the unit travel tangent it leaves along.
+        start: Vec2,
+        dir: Vec2,
+        /// The tip's radius in region px — and so the frame the sweep is unrolled in
+        /// (§6.6) — with its travel as a multiple of that radius: 0 on a settle, which
+        /// is a break of contact rather than a stretch of it.
+        radius: f32,
+        travel_radii: f32,
+        /// `λ = ln(1 − axis) ≤ 0`, clamped away from −∞. Zero is "no transfer".
+        lambda_lift: f32,
+        lambda_deposit: f32,
+        /// The brush's own color channels. **Undrained** — and no per-unit opacity
+        /// beside them: minted paint is opaque per unit, faded only by the drain
+        /// (§6.2).
+        channels: [f32; 3],
+        /// The paint effect's opacity — the ceiling the mint's prefix-difference law
+        /// runs under in the shader (§6.2). 1 is the identity, exactly.
+        opacity: f32,
+        /// The ceiling's modulation factor across this segment (§6.2) — the mean of
+        /// its two ends and the difference between them, read at the texel's own
+        /// travel by the shader. Only where `ceiling_lane` is set; `(1, 0)` — a
+        /// scale's neutral and no ramp — everywhere else.
+        opacity_mod: f32,
+        opacity_ramp: f32,
+        /// How this segment's other **per-texel** rates change across it (§6.2) —
+        /// `Paint`'s three ramps, carried through unchanged. The exchange's own lambdas
+        /// have none: that solve is one problem per dispatch (see `dynamics.wesl`).
+        add_ramp: f32,
+        tooth_give_ramp: f32,
+        drag_ramp: f32,
+        /// Whether the stroke's ceiling is pen-driven, off `k` like the dial: routes
+        /// the mint through the ceiling lane the region aux's `.w` carries.
+        ceiling_lane: bool,
+        /// The same color's **residual** (§6.7) in `.xyz`; `.w` unused. Undrained like
+        /// `channels`, and zero in a space that has no residual to carry.
+        resid: [f32; 4],
+        /// The dispatch rect's top-left in region texels, integral.
+        rect_origin: Vec2,
+        /// Shape orientation in turns ∈ [0, 1) — picks the prefix-τ slice (§6.6).
+        orient: f32,
+        /// The `drain` falloff per canvas px — [`BrushParams::drain_px`](stark_model::document::BrushParams::drain_px), the brush's own
+        /// per-*radius* knob already divided, so the shader's arc length (canvas px) and
+        /// this rate are in the same units.
+        drain: f32,
+        /// The `add` source rate per unit exposure, **undrained** like the opacity.
+        add: f32,
+        /// Signed curvature of the sweep (1/region px); 0 is a straight one.
+        curvature: f32,
+        /// The liquify follow rate (§6.13): the segment's modulated strength, the
+        /// fraction of its pass the paint under the tip's core keeps up with — nonzero
+        /// **only** on a warp slot.
+        drag: f32,
+        /// Where the region's texel (0, 0) sits in the base composite `warp_apply`
+        /// resamples from (§6.13), in texels — the reach margin the base was grown by.
+        base_offset: [i32; 2],
+        /// The bleed stencil's longest tap in texels — nonzero **only** on a bleed slot.
+        bleed_reach: f32,
+        /// The color-dynamics lookup (§6.2): frequency per axis + 1/NOISE_TILE_PX and
+        /// per-channel amplitude. All zero = no jitter.
+        noise_freq: [f32; 4],
+        noise_amp: [f32; 3],
+        /// Arc length at the slot's start (canvas px) — the noise's third axis.
+        dist: f32,
+        /// The tooth's bearing fraction: the share of the substrate a tip with this tooth,
+        /// going this way, stands on (§6.4). What the *tool* books its half of the
+        /// transfer against, having no substrate of its own. 1 where there is nothing to bite.
+        bearing: f32,
+        /// The lateral canvas diffusion rate (≤ 0) — nonzero **only** on a bleed slot.
+        lambda_bleed: f32,
+        /// How much give this slot's tip has (1 = the substrate gates nothing), how wide
+        /// the transition around that is, and how the substrate map is read (§6.4).
+        tooth_give: f32,
+        tooth_softness: f32,
+        substrate: TexelsPerPx,
+        /// The extent cell's edge in texels (§6.2) — 1 is the exact per-texel deposit,
+        /// which is also the neutral value: the exact kernels never read the lane.
+        cell: f32,
+        /// The cell grid's canvas anchor: the region's canvas origin modulo the cell,
+        /// so cell boundaries are pinned to canvas texels whatever region surrounds them
+        /// (§6.4). Zero whenever `cell` is 1.
+        cell_anchor: Vec2,
+        /// How much the tip grows across this slot's sweep, as a fraction of
+        /// [`frame`](Self::radius) — [`Sweep::ramp`](super::super::segments::Sweep).
+        ///
+        /// Zero on a bleed window and on a settle, and both are meant: a firing is a
+        /// stretch of *diffusion* at one tip (the radius [`bleed_stencil`] solved its
+        /// stencil against), and a settle is a standing tip with no travel to ramp along.
+        radius_ramp: f32,
+        /// The tip drawn out along its facing axis (§6.6), solved into the map that
+        /// carries a point of the reference travel frame into the frame the prefix-τ
+        /// volume and the bake rows are indexed in ([`Stretch`]).
+        ///
+        /// The identity is `(1, 0, 1)`, a triple of *scales*: a zeroed lane is not "no
+        /// stretch" but a tip of no width and infinite gain
+        /// ([`Stretch::NONE`](super::super::segments::Stretch::NONE)).
+        stretch: Stretch,
+        /// The deposit jitter (§6.2): the gate's half-range (0 = off, the neutral
+        /// value), the stroke's seed for it, and the region's canvas origin — the
+        /// jitter's map from region texels to the absolute canvas grid it is keyed on.
+        jitter_eps: f32,
+        jitter_seed: u32,
+        canvas_origin: [i32; 2],
+    }
+
+    impl Default for Slot {
+        /// Zero everywhere except the lanes whose neutral value is **1**, which are
+        /// *scales*: a zeroed scale does not mean "none of this" but "none of the thing it
+        /// multiplies". `bearing` at 0 would book the tool's half of every transfer
+        /// against no substrate at all — infinite tooth, not absent tooth; `cell` at 1 is
+        /// the exact per-texel deposit; `opacity` and `opacity_mod` at 1 are the identity
+        /// ceiling (§6.2).
+        ///
+        /// `tooth_give` is 1 for a reason of its own: the knob runs the other way
+        /// (`BrushParams::tooth_give`), so a zeroed lane is not "no tooth" but the driest
+        /// tip there is. 1 is a tip that follows every fall, which is what keeps a bleed
+        /// slot's lateral flux clear of the substrate (`dynamics.wesl::substrate_tooth`).
+        fn default() -> Self {
+            Self {
+                start: Vec2::ZERO,
+                dir: Vec2::ZERO,
+                radius: 0.0,
+                travel_radii: 0.0,
+                lambda_lift: 0.0,
+                lambda_deposit: 0.0,
+                channels: [0.0; 3],
+                // A scale, so its neutral value is 1 — the identity the shader
+                // branches to exactly — not 0, which would be the strongest ceiling
+                // there is (`stretch`'s argument, one field over).
+                opacity: 1.0,
+                opacity_mod: 1.0,
+                opacity_ramp: 0.0,
+                add_ramp: 0.0,
+                tooth_give_ramp: 0.0,
+                drag_ramp: 0.0,
+                ceiling_lane: false,
+                resid: [0.0; 4],
+                rect_origin: Vec2::ZERO,
+                orient: 0.0,
+                drain: 0.0,
+                add: 0.0,
+                curvature: 0.0,
+                drag: 0.0,
+                base_offset: [0, 0],
+                bleed_reach: 0.0,
+                noise_freq: [0.0; 4],
+                noise_amp: [0.0; 3],
+                dist: 0.0,
+                bearing: 1.0,
+                lambda_bleed: 0.0,
+                tooth_give: 1.0,
+                // Never read where `tooth_give` is 1, so the value is free; zero rather
+                // than the brush's default because a slot that reads it is a slot
+                // `SlotCommon` filled, and this is what an unfilled one looks like.
+                tooth_softness: 0.0,
+                substrate: TexelsPerPx::NONE,
+                cell: 1.0,
+                cell_anchor: Vec2::ZERO,
+                radius_ramp: 0.0,
+                stretch: Stretch::NONE,
+                jitter_eps: 0.0,
+                jitter_seed: 0,
+                canvas_origin: [0, 0],
+            }
+        }
+    }
+
+    impl Slot {
+        /// This slot as the uniform `dynamics_common.wesl` declares and both roots read.
+        /// A rename rather than a packing: the mirror generates `Stamp`'s members from the
+        /// shader's own declaration (§6.10), so each line below pairs one name with one
+        /// name, checked by the compiler.
+        ///
+        /// The casts are the members the shader declares **integral**: a rect origin, a
+        /// cell edge, a stencil reach. They are `f32` here because the rect arithmetic
+        /// around them is, and each is a whole number by construction — `rect.origin` is a
+        /// texel corner, `cell` an edge in texels, `reach` a tap count.
+        fn pack(&self) -> Stamp {
+            Stamp {
+                start: self.start.to_array(),
+                dir: self.dir.to_array(),
+                radius: self.radius,
+                travel_radii: self.travel_radii,
+                radius_ramp: self.radius_ramp,
+                lambda_lift: self.lambda_lift,
+                lambda_deposit: self.lambda_deposit,
+                lambda_bleed: self.lambda_bleed,
+                curvature: self.curvature,
+                brush_lat: self.channels,
+                opacity: self.opacity,
+                brush_res: [self.resid[0], self.resid[1], self.resid[2]],
+                add: self.add,
+                drag: self.drag,
+                noise_freq: [self.noise_freq[0], self.noise_freq[1], self.noise_freq[2]],
+                arc_at_start: self.dist,
+                noise_amp: self.noise_amp,
+                drain: self.drain,
+                stretch: [
+                    self.stretch.travel,
+                    self.stretch.shear,
+                    self.stretch.lateral,
+                ],
+                orientation: self.orient,
+                substrate_num: self.substrate.num,
+                substrate_den: self.substrate.den,
+                rect_origin: [self.rect_origin.x as i32, self.rect_origin.y as i32],
+                cell_anchor: [self.cell_anchor.x as i32, self.cell_anchor.y as i32],
+                tooth_give: self.tooth_give,
+                tooth_softness: self.tooth_softness,
+                tooth_bearing: self.bearing,
+                cell_px: self.cell as i32,
+                bleed_reach: self.bleed_reach as i32,
+                jitter_eps: self.jitter_eps,
+                jitter_seed: self.jitter_seed,
+                canvas_origin: self.canvas_origin,
+                opacity_mod: self.opacity_mod,
+                opacity_ramp: self.opacity_ramp,
+                add_ramp: self.add_ramp,
+                tooth_give_ramp: self.tooth_give_ramp,
+                drag_ramp: self.drag_ramp,
+                ceiling_lane: u32::from(self.ceiling_lane),
+                // The flag lands the offset on its `vec2` alignment and the offset
+                // closes the struct's 16-byte round, so no generated pad sits between
+                // them or after (§6.10) — the mirror would name one if one did.
+                base_offset: self.base_offset,
+            }
+        }
+    }
+    /// [`dispatch_rect`] before the rect origin was kept integral: the float corner the
+    /// old `Slot` carried and `pack()` cast back.
+    fn old_dispatch_rect(lo: Vec2, hi: Vec2, region_origin: Vec2) -> (Vec2, u32, u32) {
+        let lo = lo - region_origin - Vec2::splat(RECT_MARGIN);
+        let hi = hi - region_origin + Vec2::splat(RECT_MARGIN);
+        let origin = Vec2::new(lo.x.floor(), lo.y.floor());
+        (
+            origin,
+            ((hi.x - origin.x).ceil() as u32) + 1,
+            ((hi.y - origin.y).ceil() as u32) + 1,
+        )
+    }
+
+    /// [`cell_geometry`] before the anchor was — the float anchor `pack()` cast back.
+    fn old_cell_geometry(
+        cell: u32,
+        region_origin: Vec2,
+        origin: Vec2,
+        (w, h): (u32, u32),
+        dsize: u32,
+    ) -> (Vec2, Option<(u32, u32)>) {
+        if cell <= 1 {
+            return (Vec2::ZERO, None);
+        }
+        let c = cell as i32;
+        let anchor = Vec2::new(
+            (region_origin.x as i32).rem_euclid(c) as f32,
+            (region_origin.y as i32).rem_euclid(c) as f32,
+        );
+        let scanned = (w.next_multiple_of(TILE_WG), h.next_multiple_of(TILE_WG));
+        let cells =
+            |o: f32, a: f32, span: u32| cell_span(o as i32 + a as i32, span.min(dsize) as i32, c);
+        (
+            anchor,
+            Some((
+                cells(origin.x, anchor.x, scanned.0),
+                cells(origin.y, anchor.y, scanned.1),
+            )),
+        )
+    }
+
+    /// `SlotCommon::slot` as it was.
+    fn old_slot(k: &StrokeConstants, region_origin: Vec2) -> Slot {
+        Slot {
+            channels: k.channels,
+            resid: k.resid,
+            opacity: k.opacity,
+            ceiling_lane: k.ceiling_lane,
+            substrate: k.substrate,
+            tooth_softness: k.tooth_softness,
+            jitter_eps: k.jitter_eps,
+            jitter_seed: k.jitter_seed,
+            canvas_origin: [region_origin.x as i32, region_origin.y as i32],
+            ..Slot::default()
+        }
+    }
+
+    /// `SlotCommon::painting` as it was — the arc and the bearing given rather than
+    /// taken off a sweep.
+    fn old_painting(k: &StrokeConstants, region_origin: Vec2, dist: f32, bearing: f32) -> Slot {
+        let namp = k.namp;
+        Slot {
+            noise_freq: k.nfreq,
+            noise_amp: [namp[0], namp[1], namp[2]],
+            dist,
+            bearing,
+            ..old_slot(k, region_origin)
+        }
+    }
+
+    /// `dynamics_plan`'s segment arm as it was.
+    fn old_segment(
+        k: &StrokeConstants,
+        region_origin: Vec2,
+        s: &Segment,
+        rect_origin: Vec2,
+        (cell, cell_anchor): (u32, Vec2),
+        bearing: f32,
+    ) -> Stamp {
+        let (sw, paint) = (&s.sweep, &s.paint);
+        Slot {
+            start: sw.start - region_origin,
+            dir: sw.dir,
+            radius: sw.radius,
+            travel_radii: sw.length / sw.radius,
+            radius_ramp: sw.radius_ramp,
+            lambda_lift: paint.lambda_lift,
+            lambda_deposit: paint.lambda_deposit,
+            rect_origin,
+            orient: sw.orient,
+            stretch: sw.stretch,
+            drain: k.drain_px,
+            add: paint.add,
+            opacity_mod: paint.opacity,
+            opacity_ramp: paint.opacity_ramp,
+            add_ramp: paint.add_ramp,
+            tooth_give_ramp: paint.tooth_give_ramp,
+            curvature: sw.curvature,
+            tooth_give: paint.tooth_give,
+            cell: cell as f32,
+            cell_anchor,
+            ..old_painting(k, region_origin, sw.dist, bearing)
+        }
+        .pack()
+    }
+
+    /// `dynamics_plan`'s bleed arm as it was.
+    fn old_bleed(
+        k: &StrokeConstants,
+        region_origin: Vec2,
+        fire: &BleedFire,
+        rect_origin: Vec2,
+    ) -> Stamp {
+        let w = &fire.window;
+        let (reach, lambda_bleed) = bleed_stencil(fire.bleed, w.radius, w.length);
+        Slot {
+            start: w.start - region_origin,
+            dir: w.dir,
+            radius: w.radius,
+            travel_radii: w.length / w.radius,
+            rect_origin,
+            orient: w.orient,
+            stretch: w.stretch,
+            curvature: w.curvature,
+            bleed_reach: reach,
+            dist: w.dist,
+            lambda_bleed,
+            ..old_slot(k, region_origin)
+        }
+        .pack()
+    }
+
+    /// `dynamics_plan`'s settle arm as it was.
+    fn old_settle(
+        k: &StrokeConstants,
+        region_origin: Vec2,
+        s: &Segment,
+        rect_origin: Vec2,
+        tan: Vec2,
+    ) -> Stamp {
+        let (sw, paint) = (&s.sweep, &s.paint);
+        Slot {
+            start: segment_end(sw) - region_origin,
+            dir: tan,
+            radius: sw.radius,
+            lambda_lift: paint.lambda_lift,
+            lambda_deposit: paint.lambda_deposit,
+            rect_origin,
+            orient: sw.orient,
+            stretch: sw.stretch,
+            drain: k.drain_px,
+            tooth_give: paint.tooth_give,
+            ..old_painting(k, region_origin, sw.dist + sw.length, 1.0)
+        }
+        .pack()
+    }
+
+    /// `liquify_plan`'s warp arm as it was.
+    fn old_warp(
+        k: &StrokeConstants,
+        region_origin: Vec2,
+        s: &Segment,
+        rect_origin: Vec2,
+        base_offset: [i32; 2],
+    ) -> Stamp {
+        let (sw, paint) = (&s.sweep, &s.paint);
+        Slot {
+            start: sw.start - region_origin,
+            dir: sw.dir,
+            radius: sw.radius,
+            travel_radii: sw.length / sw.radius,
+            radius_ramp: sw.radius_ramp,
+            drag: paint.drag,
+            drag_ramp: paint.drag_ramp,
+            base_offset,
+            rect_origin,
+            orient: sw.orient,
+            stretch: sw.stretch,
+            curvature: sw.curvature,
+            drain: k.drain_px,
+            dist: sw.dist,
+            ..old_slot(k, region_origin)
+        }
+        .pack()
+    }
+
+    /// A [`StrokeConstants`] with a distinct value in every lane a slot reads off it,
+    /// so a member taken from the wrong one shows.
+    fn proof_consts() -> StrokeConstants {
+        StrokeConstants {
+            channels: [0.11, 0.22, 0.33],
+            resid: [0.44, 0.55, 0.66, 0.77],
+            opacity: 0.61,
+            ceiling_lane: true,
+            capped: true,
+            drain_px: 0.031,
+            substrate: TexelsPerPx {
+                num: [7, 9],
+                den: 4,
+            },
+            tooth_softness: 0.29,
+            nfreq: [1.5, 2.5, 3.5, 4.5],
+            namp: [0.12, 0.13, 0.14, 0.15],
+            noise_seed: 99,
+            jitter_eps: 0.37,
+            jitter_seed: 0xDEAD_BEEF,
+        }
+    }
+
+    /// A [`Segment`] with a distinct value in every lane a slot reads off it.
+    fn proof_segment() -> Segment {
+        Segment {
+            sweep: Sweep {
+                start: Vec2::new(31.25, -17.5),
+                dir: Vec2::new(0.6, 0.8),
+                curvature: 0.0031,
+                radius: 23.5,
+                radius_ramp: 0.21,
+                reach: 27.0,
+                length: 9.75,
+                orient: 0.37,
+                stretch: Stretch {
+                    travel: 1.3,
+                    shear: -0.21,
+                    lateral: 0.77,
+                    turns: 0.04,
+                },
+                dist: 412.5,
+            },
+            paint: Paint {
+                add: 0.83,
+                lambda_lift: -0.51,
+                lambda_deposit: -0.62,
+                bleed: 0.43,
+                drag: 0.71,
+                tooth_give: 0.64,
+                opacity: 0.91,
+                opacity_ramp: -0.07,
+                add_ramp: 0.09,
+                tooth_give_ramp: -0.11,
+                drag_ramp: 0.13,
+            },
+        }
+    }
+
+    #[track_caller]
+    fn same_bytes(what: &str, new: Stamp, old: Stamp) {
+        assert_eq!(
+            bytemuck::bytes_of(&new),
+            bytemuck::bytes_of(&old),
+            "a {what} slot's bytes moved",
+        );
+    }
+
+    /// **The W2 guard**: every slot kind now writes `Stamp` members directly, and this
+    /// says the bytes are the ones the host `Slot` used to pack.
+    ///
+    /// A lane dropped in the rewrite would otherwise take its neutral value in silence:
+    /// both sides are the same 224 bytes either way, so neither the compiler nor a
+    /// named assertion would see it — only a picture would. Swept over the branches the
+    /// two derivations could differ in: every cell the coarse path can pick, a
+    /// stretched tip and an unstretched one, a firing whose axis has fallen to zero, a
+    /// stroke with no substrate and no pen-driven ceiling, and region origins either
+    /// side of the canvas origin.
+    ///
+    /// **Temporary.** It goes out with `Slot`, and everything above it in this section
+    /// with it.
+    #[test]
+    fn the_rewritten_slots_pack_the_bytes_the_host_slot_did() {
+        let plain = StrokeConstants {
+            ceiling_lane: false,
+            capped: false,
+            substrate: TexelsPerPx::NONE,
+            nfreq: [0.0; 4],
+            namp: [0.0; 4],
+            jitter_eps: 0.0,
+            ..proof_consts()
+        };
+        let base = proof_segment();
+        let dsize = 128;
+        let tan = Vec2::new(-0.28, 0.96);
+        let base_offset = [13, -29];
+        for k in [proof_consts(), plain] {
+            for region_origin in [Vec2::ZERO, Vec2::new(-640.0, 256.0), Vec2::new(37.0, -11.0)] {
+                let common = SlotCommon {
+                    k: &k,
+                    region_origin,
+                };
+                for radius in [3.0f32, 23.5, 140.0] {
+                    for stretch in [Stretch::NONE, base.sweep.stretch] {
+                        let mut s = base;
+                        s.sweep.radius = radius;
+                        s.sweep.stretch = stretch;
+                        // The rect each side dispatches over, from its own derivation.
+                        let (lo, hi) = coverage_bounds(&s.sweep);
+                        let rect = dispatch_rect(lo, hi, region_origin);
+                        let (o, w, h) = old_dispatch_rect(lo, hi, region_origin);
+                        assert_eq!(
+                            (rect.origin, rect.w, rect.h),
+                            ([o.x as i32, o.y as i32], w, h),
+                            "the dispatch rect moved",
+                        );
+
+                        for cell in [1u32, 2, 5, 16] {
+                            let grid = cell_geometry(cell, region_origin, &rect, dsize);
+                            let old = old_cell_geometry(cell, region_origin, o, (w, h), dsize);
+                            assert_eq!(grid.hoist, old.1, "the hoist grid moved");
+                            let bearing = 0.734_25;
+                            same_bytes(
+                                "segment",
+                                segment_slot(&common, &s, &rect, &grid, bearing),
+                                old_segment(&k, region_origin, &s, o, (cell, old.0), bearing),
+                            );
+                        }
+
+                        // A window does not ramp (`a_bleed_window_never_ramps`), which
+                        // is what lets the shared frame carry the lane: with a ramp on
+                        // it the two sides genuinely differ.
+                        let mut window = s.sweep;
+                        window.radius_ramp = 0.0;
+                        for bleed in [0.0f32, 0.5] {
+                            let fire = BleedFire {
+                                after: 0,
+                                window,
+                                bleed,
+                            };
+                            same_bytes(
+                                "bleed",
+                                bleed_slot(&common, &fire, &rect),
+                                old_bleed(&k, region_origin, &fire, o),
+                            );
+                        }
+
+                        same_bytes(
+                            "settle",
+                            settle_slot(&common, &s, &rect, tan),
+                            old_settle(&k, region_origin, &s, o, tan),
+                        );
+                        same_bytes(
+                            "warp",
+                            warp_slot(&common, &s, &rect, base_offset),
+                            old_warp(&k, region_origin, &s, o, base_offset),
+                        );
+                        same_bytes(
+                            "liquify apply",
+                            Stamp {
+                                base_offset,
+                                ..common.slot()
+                            },
+                            Slot {
+                                base_offset,
+                                ..old_slot(&k, region_origin)
+                            }
+                            .pack(),
                         );
                     }
                 }
