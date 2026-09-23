@@ -4,9 +4,13 @@
 //! `max`-then-`min` rather than `clamp` is what makes the NaN clause true —
 //! `f32::max`/`min` return the non-NaN operand where `clamp` returns the NaN — so
 //! clippy's suggestion in [`clamp01`] is the wrong one.
+//!
+//! The two gates a **session** setter wants are `pub`: a number arriving from outside
+//! is held to the same range on its way into session state as it would be on its way
+//! into the log, and one rule spelled twice is two rules one edit apart.
 
 /// `x` into `[0, 1]`, with NaN landing on 0 — the module's rule at its simplest.
-pub(crate) const fn clamp01(x: f32) -> f32 {
+pub const fn clamp01(x: f32) -> f32 {
     x.max(0.0).min(1.0)
 }
 
@@ -24,7 +28,7 @@ pub(crate) fn finite_or(x: f32, fallback: f32) -> f32 {
 /// A bare `x.max(0.0)` would turn a `NaN` into 0 but pass an infinity through, and it
 /// is the infinity a shader notices — an infinite feather reaches `selection.wesl` as
 /// a coverage ramp of infinite width, half-strength across the whole plane.
-pub(crate) fn at_least_zero(x: f32, fallback: f32) -> f32 {
+pub fn at_least_zero(x: f32, fallback: f32) -> f32 {
     finite_or(x, fallback).max(0.0)
 }
 

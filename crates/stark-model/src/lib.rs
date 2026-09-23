@@ -27,7 +27,7 @@ pub mod gradient;
 pub mod io;
 pub mod path;
 pub mod peer;
-pub(crate) mod sanitize;
+pub mod sanitize;
 pub mod substrate;
 
 // A name is lifted to the crate root only when it is this crate's headline and its

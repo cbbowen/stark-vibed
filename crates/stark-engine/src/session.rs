@@ -30,6 +30,7 @@ use stark_model::document::{ActorId, BrushParams, GuideId, LayerId, ShapeAction,
 use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
 use stark_model::peer::PeerFrame;
+use stark_model::sanitize::{at_least_zero, clamp01};
 
 use hover::HoverStroke;
 use shape::ShapeDrag;
@@ -307,10 +308,13 @@ impl Session {
     /// Edge softness (canvas px) for the next shape gesture, floored at zero.
     ///
     /// A setter rather than a `pub` field because the value arrives in a command from
-    /// outside and this is where the floor holds. NaN lands on 0, the neutral setting,
-    /// since both of its comparisons are false.
+    /// outside and this is where the gate holds — the model's own, so what the panel
+    /// shows is what [`SelectionOp::at`] and [`FillOp::with_paint`] will use.
+    ///
+    /// [`SelectionOp::at`]: stark_model::document::SelectionOp::at
+    /// [`FillOp::with_paint`]: stark_model::document::FillOp::with_paint
     pub(crate) fn set_selection_feather(&mut self, feather: f32) {
-        self.selection_feather = if feather > 0.0 { feather } else { 0.0 };
+        self.selection_feather = at_least_zero(feather, 0.0);
     }
 
     /// Edge softness the next shape gesture will use.
@@ -320,9 +324,7 @@ impl Session {
 
     /// How strongly the next fill gesture's parcel lands, clamped to `0..=1`.
     pub(crate) fn set_shape_opacity(&mut self, opacity: f32) {
-        // `clamp01`'s rule, spelled here because the model keeps it private: NaN lands
-        // on 0 rather than passing through, since both of its comparisons are false.
-        self.shape_opacity = if opacity > 0.0 { opacity.min(1.0) } else { 0.0 };
+        self.shape_opacity = clamp01(opacity);
     }
 
     /// How strongly the next fill gesture's parcel lands.
@@ -872,6 +874,33 @@ mod tests {
         }
         s.assist_stroke(&Scaffold::default());
         s.assisted()
+    }
+
+    /// **What the panel shows is what the gesture will use.** Both numbers pass the
+    /// model's own gate here, so a value the op would refuse cannot sit in the session
+    /// claiming otherwise — an infinite feather is the one that used to.
+    #[test]
+    fn the_shape_settings_land_where_the_op_that_takes_them_will() {
+        use stark_model::document::{FillOp, SelectionMode, SelectionOp, SelectionShape};
+        let shape = || SelectionShape::rect_from_corners(Vec2::ZERO, Vec2::splat(8.0));
+        let mut s = session(ShapeAction::default());
+        for raw in UNUSABLE_TOLERANCES {
+            s.set_selection_feather(raw);
+            s.set_shape_opacity(raw);
+            assert_eq!(
+                s.selection_feather(),
+                SelectionOp::new(SelectionMode::Replace, shape(), raw).feather(),
+                "feather {raw}",
+            );
+            assert_eq!(
+                (s.selection_feather(), s.shape_opacity()),
+                {
+                    let op = FillOp::new(shape(), raw, stark_model::Srgb::BLACK, raw);
+                    (op.feather(), op.opacity())
+                },
+                "fill parcel at {raw}",
+            );
+        }
     }
 
     /// Recognition is priced in the tolerance the fit uses, the clamped one: a raw 0
