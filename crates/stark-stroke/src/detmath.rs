@@ -20,6 +20,22 @@
 //! f64 appears in [`cos_quadrant`]'s kernels, as it does in fdlibm's: a wider
 //! correctly-rounded operation is as reproducible as a narrow one, and the trigonometric
 //! kernels want the headroom.
+//!
+//! **What is still on libm and writes a tile**: the stamp tip's volume
+//! (`gpu/stroke/volume.rs` — `tau_of`'s logarithm, and the `sin_cos` that rotates the
+//! mask per orientation, for which [`sin_cos_turns`] is already the answer), and a placed
+//! image's alpha-to-height inversion (`gpu/place.rs`, which its own doc says is paid "on
+//! every replay that crosses the placement"). **Still on libm but deciding a composited
+//! frame rather than a stored tile**: the focal blur's axis
+//! (`gpu/composite/blur.rs` — its `atan2` could be [`atan2`] today), the chromatic
+//! aberration's spread (`gpu/composite/filter.rs`) and the environment convolution's
+//! direction (`gpu/environment.rs`).
+//!
+//! Two things that look like remainders and are not. `powi` is not a libm call: a
+//! runtime exponent lowers to `compiler_builtins`' `__powisf2`, which is binary
+//! exponentiation by multiplication and the same Rust source on every target. And the
+//! libm in `assist` is **pre-record** — the assist decides what gets recorded, so it owes
+//! agreement within one process and nothing across them.
 
 /// `sin(x)` as a truncated Maclaurin series, **for small `x` only**: within 1.03 ulp
 /// (worst relative error 9.1e-8 against an f64 reference) for `|x| ≤ 0.428`, which is
