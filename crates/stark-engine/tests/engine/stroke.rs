@@ -499,10 +499,12 @@ fn a_stroke_commits_the_tiles_it_previewed() {
         "a replay folds no preview, so there is nothing for its commit to take"
     );
     let fresh = replayed.render_to_image();
+    // One level, and it measures **zero**: the two paths cut the path the same way
+    // now, so what separates them is only the frozen head's f16 store. It was 4.
     assert_images(
         &committed,
         &fresh,
-        4,
+        1,
         format_args!(
             "the previewed render and a whole render of the same stroke disagree by \
          more than the seam bound: worst {} levels",

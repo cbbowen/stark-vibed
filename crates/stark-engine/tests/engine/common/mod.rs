@@ -662,11 +662,16 @@ pub fn whole_render(engine: &mut Engine) -> RgbaImage {
 /// Per-channel levels a stroke committed from its live preview may sit from the
 /// same stroke rendered whole (§6.2). The preview is a frozen head with the tail
 /// drawn over it, and the head is stored in f16 at the cut where one pass carries
-/// f32 through — a level or two on a plain deposit. The corpus measures the bound
-/// per stroke (`corpus::Tol::seam`: 4 on the swept path, up to 12 through a wide
-/// reservoir); this is the swept figure, for the tests outside it that hold a live
-/// commit against a replay.
-pub const SEAM_LEVELS: u8 = 4;
+/// f32 through, so the two need not agree to the bit.
+///
+/// **They nearly do.** Measured over this bound's four consumers with it set to 0:
+/// a brush shape arriving mid-stroke, a baked stamp's neighbour and a live stroke
+/// under a feathered mask are all *exact*, and only `color_dynamics`'s jittered
+/// preview moves — by 2 levels. So 3, which is that figure and a level. It was 4,
+/// set when the flattener cut the preview's head and the replay's whole stroke at
+/// different tangents; they are cut the same way now, and the corpus reads the same
+/// way (`corpus::Tol::seam`).
+pub const SEAM_LEVELS: u8 = 3;
 
 /// How far apart two renders of one dial's positions may sit. The dials differ, so
 /// each caller says.

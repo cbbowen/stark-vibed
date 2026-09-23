@@ -45,6 +45,17 @@ pub struct Tol {
     /// in one pass — the frozen head against the commit, and the incremental preview
     /// against a fresh render. **No** texel may exceed this, however many are off by
     /// one; a cut that went wrong shows as a step, not as a haze.
+    ///
+    /// **The one column of this table that no longer varies.** It read 4 to 12,
+    /// which was the flattener cutting the preview's head and the replay's whole
+    /// stroke at different tangents; they are cut the same way now. Measured with
+    /// this set to 0, the incremental preview is exact for every case, and the
+    /// committed stroke against the redo's whole render is exact for all but eight —
+    /// `hairpin`, `curve`, `smear`, `smear_taper`, `oversized_smear`, `stamp_arc`,
+    /// `wet_opacity`, `wet_opacity_pen` — which move by 1. So 2 everywhere: the
+    /// worst of them, and a level. The field stays per case because a case that one
+    /// day cannot make the claim should say so where it is declared, rather than
+    /// loosening it for the other twenty.
     pub seam: u8,
     /// Share of the viewport (in **percent**) allowed to move visibly when the same
     /// path is refitted four times finer.
@@ -453,7 +464,7 @@ pub const CASES: &[Case] = &[
         // which is §6.2's additivity in `τ` as directly as this suite can state it.
         tol: Tol {
             golden: 6,
-            seam: 4,
+            seam: 2,
             refine: 0.0,
             lift: 0.0,
         },
@@ -480,7 +491,7 @@ pub const CASES: &[Case] = &[
         },
         tol: Tol {
             golden: 6,
-            seam: 4,
+            seam: 2,
             refine: 0.0,
             lift: 0.0,
         },
@@ -500,7 +511,7 @@ pub const CASES: &[Case] = &[
         path: || centred(stark_testdata::HAIRPIN_STROKE),
         tol: Tol {
             golden: 6,
-            seam: 8,
+            seam: 2,
             // The loosest of the swept cases, and the reason is this case's whole
             // point: its spacing runs from 0.37 px to over 1 px, so it is the stroke
             // where `arc_weights` does the most work, and which samples fall in the
@@ -556,7 +567,7 @@ pub const CASES: &[Case] = &[
         },
         tol: Tol {
             golden: 6,
-            seam: 6,
+            seam: 2,
             // Not zero, and it was — this is the one bound the attribute end condition
             // costs (`PathFitter::solve`). The curve's last control value is held at
             // its neighbour rather than pinned to the last report, so the final span
@@ -599,7 +610,7 @@ pub const CASES: &[Case] = &[
         path: || centred(stark_testdata::LOOP_STROKE),
         tol: Tol {
             golden: 6,
-            seam: 8,
+            seam: 2,
             refine: 4.0,
             lift: 0.0,
         },
@@ -631,7 +642,7 @@ pub const CASES: &[Case] = &[
         path: half_turn_arc,
         tol: Tol {
             golden: 6,
-            seam: 12,
+            seam: 2,
             // The loosest of the arcs, and it is the footprint that spends it: the mask
             // is rotated once per segment, so a finer cut *re-orients* it rather than
             // merely re-sampling it, and a hard-edged bristle answers along its whole
@@ -666,7 +677,7 @@ pub const CASES: &[Case] = &[
         },
         tol: Tol {
             golden: 6,
-            seam: 6,
+            seam: 2,
             refine: 0.0,
             lift: 0.0,
         },
@@ -697,7 +708,7 @@ pub const CASES: &[Case] = &[
         path: half_turn_arc,
         tol: Tol {
             golden: 6,
-            seam: 12,
+            seam: 2,
             refine: 0.10,
             lift: 0.0,
         },
@@ -717,7 +728,7 @@ pub const CASES: &[Case] = &[
         path: || sine_sweep(140, 124.0, 34.0, 1.3),
         tol: Tol {
             golden: 6,
-            seam: 12,
+            seam: 2,
             // Raised with §6.6's family. The refit moves the same paint it always did —
             // this is the base sequential case and its fit is untouched — but a narrower
             // falloff carries more of that movement past twelve levels.
@@ -744,7 +755,7 @@ pub const CASES: &[Case] = &[
         path: || centred(stark_testdata::C_STROKE),
         tol: Tol {
             golden: 6,
-            seam: 12,
+            seam: 2,
             refine: 2.0,
             lift: 0.0,
         },
@@ -769,7 +780,7 @@ pub const CASES: &[Case] = &[
         path: || sine_sweep(80, 180.0, 30.0, 0.75),
         tol: Tol {
             golden: 6,
-            seam: 12,
+            seam: 2,
             refine: 0.0,
             lift: 0.0,
         },
@@ -814,7 +825,7 @@ pub const CASES: &[Case] = &[
         path: || at(&[(-300.0, -120.0), (0.0, 120.0), (300.0, -120.0)]),
         tol: Tol {
             golden: 6,
-            seam: 12,
+            seam: 2,
             refine: 0.0,
             // **The only case the release still moves**, and it is the arithmetic of a
             // three-report path rather than anything about tablets. Eight release
@@ -862,7 +873,7 @@ pub const CASES: &[Case] = &[
         },
         tol: Tol {
             golden: 6,
-            seam: 12,
+            seam: 2,
             refine: 0.12,
             // A handful of texels rather than the exact zero the column's claim is about,
             // and the fit's doing, not the renderer's: §6.6's tip carries a narrower
@@ -897,7 +908,7 @@ pub const CASES: &[Case] = &[
             // The erase case's figure, for its reason (§6.2): the carried parcel
             // holds the same sums however the stroke is cut, so this bound is
             // about f16 stores, not the pass.
-            seam: 4,
+            seam: 2,
             refine: 4.0,
             lift: 0.0,
         },
@@ -945,7 +956,7 @@ pub const CASES: &[Case] = &[
             // The opacity case's figure, for its reason: the carried parcel holds
             // the same sums however the stroke is cut, so this bound is about f16
             // stores, not the pass.
-            seam: 4,
+            seam: 2,
             refine: 4.0,
             lift: 0.0,
         },
@@ -975,7 +986,7 @@ pub const CASES: &[Case] = &[
             golden: 6,
             // The smear's own figure: the budget crosses pieces by exact copies,
             // so what remains is the loop's ordinary f16 seam behaviour.
-            seam: 12,
+            seam: 2,
             // Calibrated against this brush's own control, not the smear's: at
             // four times the smear's flow the *uncapped* loop already moves
             // 0.25% of the viewport under refinement (measured at opacity 1),
@@ -1017,7 +1028,7 @@ pub const CASES: &[Case] = &[
             golden: 6,
             // The opacity case's figure: the lane carries the same claims however
             // the stroke is cut, so this bound is about f16 stores, not the pass.
-            seam: 4,
+            seam: 2,
             // A pressure ramp on a curve: what moves under a finer fit is the
             // fitted pressure curve, which here is also the ceiling — the
             // `curve` case's fit at the `pressure_ramp` case's attribute.
@@ -1046,7 +1057,7 @@ pub const CASES: &[Case] = &[
         tol: Tol {
             golden: 6,
             // The smear's own figure, for `wet_opacity`'s reason.
-            seam: 12,
+            seam: 2,
             refine: 4.0,
             lift: 0.0,
         },
@@ -1081,7 +1092,7 @@ pub const CASES: &[Case] = &[
             // sums whether the stroke was cut or not (§6.12), so the pieces'
             // render is the whole's and this bound is about f16 stores, not the
             // pass.
-            seam: 4,
+            seam: 2,
             // `taper` fits this same recording at 4.0; the fit's answer to its
             // tolerance is the fit's, whichever pass renders the curve.
             refine: 4.0,
@@ -1115,7 +1126,7 @@ pub const CASES: &[Case] = &[
             // `f32` tiles by exact copy, and the tail resamples the same base through
             // the same composed field the whole render does. The swept figure's
             // headroom, for the f16 store of the resample alone.
-            seam: 4,
+            seam: 2,
             // The field is a flow integrated one contraction step per segment
             // (`budget::liquify_len`); refitting four times finer takes smaller steps
             // of the same profile, so what moves is the dragged edges' last texel,
