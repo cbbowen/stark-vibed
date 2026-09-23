@@ -59,6 +59,7 @@ use crate::gpu::registry::Registry;
 use crate::gpu::scratch::ScratchPool;
 use crate::gpu::substrate::Substrate;
 use crate::peer::Peers;
+use crate::presence::PresenceTx;
 use crate::projection::{Memo, Revision};
 use crate::view::ViewTransform;
 use observe::{GuideKey, ShownKey};
@@ -154,6 +155,14 @@ pub struct Engine {
     /// sent. Off by default: a second contour over the artwork is a cost paid on every
     /// frame you look at it, for a fact that is occasionally useful.
     show_peer_selections: bool,
+    /// The half of this client published to collaborators (§17.4): the name, the
+    /// cursor, and the latch that decides when a frame goes out.
+    ///
+    /// Beside [`peers`](Self::peers) rather than inside the session, because the two
+    /// are the ends of one channel and sat at different depths: what crosses from the
+    /// session is the active layer, the gesture ordinal and
+    /// [`Session::live`](crate::session::Session::live), handed over per publish.
+    presence: PresenceTx,
     /// Everyone else in the session (§17.4). Empty when solo.
     peers: Peers,
     /// The presence clock: the newest instant a caller has handed in, in seconds on

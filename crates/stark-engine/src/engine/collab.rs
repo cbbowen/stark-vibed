@@ -99,7 +99,7 @@ impl Engine {
             true
         });
         self.authoring.actor = actor;
-        self.session.adopt_identity(identity);
+        self.presence.adopt_identity(identity);
         self.authoring.outbox = Some(Vec::new());
         true
     }
@@ -141,7 +141,7 @@ impl Engine {
             true
         });
         self.authoring.actor = actor;
-        self.session.adopt_identity(identity);
+        self.presence.adopt_identity(identity);
         self.resync_counters(&file.actions);
         self.authoring.outbox = Some(Vec::new());
         // Whatever the replayed log left the document on.
@@ -237,11 +237,16 @@ impl Engine {
     /// mutable borrow, no roster rebuild, and above all no write to the signal the
     /// engine lives in, which would re-render every component that reads it.
     ///
-    /// Conservative in the same direction as
-    /// [`Session::publish_due`](crate::session::Session::publish_due): it may say yes
+    /// Conservative in the same direction as `PresenceTx::publish_due`: it may say yes
     /// where the drain then finds nothing, never the reverse.
     pub fn presence_due(&self, now: f64) -> bool {
-        self.peers.expiry_due(now) || (self.is_shared() && self.session.publish_due(now))
+        self.peers.expiry_due(now)
+            || (self.is_shared()
+                && self.presence.publish_due(
+                    now,
+                    self.session.active_layer(),
+                    self.session.is_gesturing(),
+                ))
     }
 
     /// A counter that changes whenever the peer roster does, so a frontend can tell
@@ -264,18 +269,28 @@ impl Engine {
         if repaint {
             self.mark_live_stale();
         }
-        let frame = self
-            .is_shared()
-            .then(|| self.session.publish(self.now))
-            .flatten();
+        let frame = self.is_shared().then(|| self.publish(self.now)).flatten();
         PresenceTick { frame, repaint }
+    }
+
+    /// What this client has to say about itself right now, if the latch says anything
+    /// (§17.5). **The one place the two halves of presence meet**: the session says
+    /// what is being dragged out and where it is aimed, the publisher decides what of
+    /// that the wire has not already been told.
+    fn publish(&mut self, now: f64) -> Option<PeerFrame> {
+        self.presence.publish(
+            now,
+            self.session.active_layer(),
+            self.session.gesture_ordinal(),
+            self.session.live(),
+        )
     }
 
     /// The farewell frame, so peers drop this client at once instead of waiting out
     /// [`PEER_TIMEOUT`](stark_model::peer::PEER_TIMEOUT). Send it before tearing the
     /// transport down.
     pub fn leaving_presence(&mut self) -> PeerFrame {
-        self.session.publish_leaving()
+        self.presence.publish_leaving(self.session.active_layer())
     }
 
     /// Integrate presence published by `actor`, whose identity comes from the

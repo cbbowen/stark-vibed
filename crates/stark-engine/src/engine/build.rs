@@ -209,6 +209,7 @@ impl Engine {
             session: crate::session::Session::new(ROOT_LAYER),
             view: ViewTransform::identity(viewport),
             show_peer_selections: false,
+            presence: crate::presence::PresenceTx::new(),
             peers: Peers::new(),
             now: 0.0,
             preview: Default::default(),

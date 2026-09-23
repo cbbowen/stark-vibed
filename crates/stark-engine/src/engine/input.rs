@@ -300,8 +300,8 @@ impl Engine {
                     self.mark_live_stale();
                 }
             }
-            PeerCommand::SetCursor(pos) => self.session.set_cursor(pos),
-            PeerCommand::SetName(name) => self.session.set_name(name),
+            PeerCommand::SetCursor(pos) => self.presence.set_cursor(pos),
+            PeerCommand::SetName(name) => self.presence.set_name(&name),
         }
     }
 

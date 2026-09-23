@@ -236,7 +236,7 @@ impl PeerFrame {
                 // rest of the session.
                 .filter(|name| !name.is_empty()),
             active_layer: self.active_layer,
-            // The sender filters this too, and says why (`Session::set_cursor`) —
+            // The sender filters this too, and says why (`PresenceTx::set_cursor`) —
             // but the sender is not the end facing the wire.
             cursor: self.cursor.filter(|p| p.is_finite()),
             gesture: self.gesture.map(GestureFrame::sanitized),

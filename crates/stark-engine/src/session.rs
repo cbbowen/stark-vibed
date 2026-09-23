@@ -8,9 +8,10 @@
 //! **The hand, not the eye**: the pan/zoom view is per-client state too, but nothing
 //! here reads it, so it is the engine's field and [`crate::view`]'s type.
 //!
-//! Three of its subjects have a file of their own: the shape gesture ([`shape`]),
-//! the hover mark ([`hover`]), and the half published to collaborators
-//! ([`crate::presence`]).
+//! Two of its subjects have a file of their own: the shape gesture ([`shape`]) and
+//! the hover mark ([`hover`]). **Nothing here is about the wire**: what a gesture
+//! puts on it is `presence`'s, and all the session owes that side is
+//! [`live`](Session::live).
 
 #[cfg(test)]
 mod fixtures;
@@ -24,14 +25,11 @@ use crate::command::InputSample;
 use crate::command::Tool;
 use crate::gesture::{GestureView, LiveGesture};
 use crate::path::{InputTolerance, PathFitter, frozen_spans_for};
-use crate::peer::Identity;
-use crate::presence::PresenceTx;
 use crate::tow::{Tow, TowString};
 use stark_model::document::Scaffold;
 use stark_model::document::{ActorId, BrushParams, GuideId, LayerId, ShapeAction, StrokeRecord};
 use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
-use stark_model::peer::PeerFrame;
 use stark_model::sanitize::{at_least_zero, clamp01};
 
 use hover::HoverStroke;
@@ -167,9 +165,11 @@ pub struct Session {
     /// ([`start_selection`](Self::start_selection)). While the brush paints, the
     /// frontend keeps this equal to the paint effect's own color.
     color: [f32; 3],
-    /// Published to peers (§17.4) beside the `presence` half, and read on this
+    /// Published to peers (§17.4) beside the [`PresenceTx`] half, and read on this
     /// side as well, so it is the session's own rather than the publisher's: the
     /// wire is *told* it at publish time.
+    ///
+    /// [`PresenceTx`]: crate::presence::PresenceTx
     active_layer: LayerId,
     /// What the next shape gesture does with the region it encloses (§6.8,
     /// §18.0.4) — one of the four ways to combine it into the
@@ -212,12 +212,6 @@ pub struct Session {
     /// on purpose**: two could collide, and a collision revives a cached head —
     /// including one still holding a cancelled stroke's paint.
     gesture_ordinal: u64,
-
-    /// The half of this session published to collaborators (§17.4): the name, the
-    /// cursor, and the latch that decides when a frame goes out.
-    /// [`active_layer`](Self::active_layer) and the in-flight gesture ride the frame
-    /// too, and are handed over at publish time; everything else here is private.
-    presence: PresenceTx,
 }
 
 impl Session {
@@ -233,7 +227,6 @@ impl Session {
             visible_guides: std::collections::HashSet::new(),
             hand: Hand::Idle,
             gesture_ordinal: 0,
-            presence: PresenceTx::new(),
         }
     }
 
@@ -364,65 +357,16 @@ impl Session {
             .filter(|g| self.visible_guides.contains(&g.id))
     }
 
-    // --- the published half (§17.4) -------------------------------------------
-    //
-    // Delegated to `PresenceTx`, which holds the name, the cursor and the latch.
-    // What only the session knows — the active layer, the gesture in flight and its
-    // ordinal — is handed over per call.
-
-    /// Set the display name the user chose. **Sticky**: hosting or joining a session
-    /// mints this client a new actor id, and
-    /// [`adopt_identity`](Self::adopt_identity) will not overwrite a name set
-    /// here. Setting it empty gives the choice back, and peers resume showing the
-    /// id-derived default.
-    pub(crate) fn set_name(&mut self, name: String) {
-        self.presence.set_name(&name);
-    }
-
-    /// Where this client's pointer is, or `None` when it is off the canvas.
-    /// **Filtered**, because this one goes on the wire and the guide rays are
-    /// drawn through it (§20.9): a non-finite position is refused into `None`.
-    pub(crate) fn set_cursor(&mut self, at: Option<Vec2>) {
-        self.presence.set_cursor(at);
-    }
-
-    /// Where this client's pointer is.
-    pub fn cursor(&self) -> Option<Vec2> {
-        self.presence.cursor()
-    }
-
-    /// Adopt the identity a session has given this client: the run counter every
-    /// published frame carries, and the id-derived name as a default — unless the
-    /// user has chosen one ([`set_name`](Self::set_name)).
-    pub(crate) fn adopt_identity(&mut self, identity: Identity) {
-        self.presence.adopt_identity(identity);
-    }
-
-    /// The publishable half of this session, if anything a peer would care about has
-    /// changed since the last call — otherwise `None`. A latch rather than a queue,
-    /// and the delta is computed at drain time; see `PresenceTx::publish` (§17.5).
-    pub fn publish(&mut self, now: f64) -> Option<PeerFrame> {
-        let live = self.live();
-        self.presence
-            .publish(now, self.active_layer, self.gesture_ordinal, live)
-    }
-
-    /// Whether [`publish`](Self::publish) could produce a frame — conservative, so
-    /// an idle session costs the pump nothing: it may say yes where `publish` then
-    /// returns `None`, but never no where `publish` would have produced a frame.
-    pub(crate) fn publish_due(&self, now: f64) -> bool {
-        let in_gesture = matches!(self.hand, Hand::Stroking(_) | Hand::Dragging(_));
-        self.presence
-            .publish_due(now, self.active_layer, in_gesture)
-    }
-
-    /// The farewell frame: one publish that removes this client from every peer's
-    /// roster at once, rather than making them wait out [`PEER_TIMEOUT`](stark_model::peer::PEER_TIMEOUT).
-    pub(crate) fn publish_leaving(&mut self) -> PeerFrame {
-        self.presence.publish_leaving(self.active_layer)
-    }
-
     // --- the gesture in flight (§6.2, §6.8) -------------------------------------
+
+    /// Whether a **gesture** is being dragged out — a stroke or a shape drag, and not
+    /// a hover, which commits nothing and publishes nothing.
+    ///
+    /// The whole of what the publish latch (§17.5) asks of the hand: a live gesture's
+    /// path grows every move, so its frame always differs from the last one sent.
+    pub(crate) fn is_gesturing(&self) -> bool {
+        matches!(self.hand, Hand::Stroking(_) | Hand::Dragging(_))
+    }
 
     /// **What this client is dragging out, and how much of it is settled** — the one
     /// thing the session says about a gesture (§17.4). The wire reads it

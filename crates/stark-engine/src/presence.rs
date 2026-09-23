@@ -16,8 +16,9 @@
 //!
 //! [`PresenceTx`] is the frame around the gesture: the name, the cursor, and the
 //! latch that decides when a [`PeerFrame`] goes out at all (§17.4, §17.5). It holds
-//! the [`GestureTx`], so the whole sending half is one value a session owns; the
-//! receiving half of the *frame* is [`Peers::merge`](crate::peer::Peers::merge).
+//! the [`GestureTx`], so the whole sending half is one value the engine owns beside
+//! the roster; the receiving half of the *frame* is
+//! [`Peers::merge`](crate::peer::Peers::merge).
 //!
 //! The wire *types* stay in [`crate::peer`]. What lives here is the state that
 //! interprets them.
@@ -70,7 +71,8 @@ impl GestureTx {
 
     /// Encode the gesture `live` for the wire, advancing the watermarks.
     ///
-    /// `live` is the session's own answer (`Session::live`) — the gesture and how many
+    /// `live` is the session's own answer
+    /// ([`Session::live`](crate::session::Session::live)) — the gesture and how many
     /// of its leading control points are final (§6.2) — so the wire reads the same
     /// value the preview fold draws rather than a second window onto the fitter.
     ///
@@ -189,6 +191,7 @@ impl Published {
 ///
 /// The active layer and the gesture in flight ride every frame too, but they are the
 /// session's own facts and arrive as arguments rather than as a second copy here.
+/// `Engine` holds both and is where they meet.
 pub(crate) struct PresenceTx {
     /// This client's display name; empty until it is set, in which case peers fall
     /// back to [`default_name`]. Private because it has an invariant `name_chosen`
@@ -826,6 +829,17 @@ mod tests {
         }
     }
 
+    /// The two halves of presence, put together the way `Engine` puts them: what the
+    /// session is dragging out and where it is aimed, handed to the publisher.
+    fn publish(tx: &mut PresenceTx, session: &Session, now: f64) -> Option<PeerFrame> {
+        tx.publish(
+            now,
+            session.active_layer(),
+            session.gesture_ordinal(),
+            session.live(),
+        )
+    }
+
     /// The invariant that binds the two halves, exercised across a lossy channel.
     ///
     /// Drives a real [`Session`] with pointer samples, publishes on a tick, and pushes
@@ -846,6 +860,7 @@ mod tests {
         for seed in 0..64u64 {
             let mut rng = Lcg(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
             let mut session = Session::new(LayerId::ROOT);
+            let mut tx = PresenceTx::new();
             let mut peers = Peers::new();
             let actor = ActorId(1);
             let mut inflight: Vec<PeerFrame> = Vec::new();
@@ -869,7 +884,7 @@ mod tests {
                         f32::from(gesture as u16) * 10.0 + (t * 0.7).sin() * 12.0,
                     )));
                     now += 0.033;
-                    if let Some(frame) = session.publish(now) {
+                    if let Some(frame) = publish(&mut tx, &session, now) {
                         // 25% loss, plus the occasional duplicate and a one-tick delay
                         // — everything a flood mesh is allowed to do to presence.
                         if !rng.chance(64) {
@@ -888,7 +903,7 @@ mod tests {
                 }
                 session.end_gesture();
                 now += 0.033;
-                if let Some(frame) = session.publish(now) {
+                if let Some(frame) = publish(&mut tx, &session, now) {
                     inflight.push(frame);
                 }
                 for frame in inflight.drain(..) {
@@ -1065,12 +1080,13 @@ mod tests {
     /// one hash over the whole run.
     fn published_gestures() -> (Vec<String>, String) {
         let mut session = Session::new(LayerId::ROOT);
+        let mut tx = PresenceTx::new();
         let mut now = 0.0;
         let mut shape = Vec::new();
         let mut payload = blake3::Hasher::new();
         let mut tick = |session: &mut Session, shape: &mut Vec<String>| {
             now += 0.033;
-            let Some(frame) = session.publish(now) else {
+            let Some(frame) = publish(&mut tx, session, now) else {
                 return;
             };
             payload.update(format!("{:?}", frame.gesture).as_bytes());

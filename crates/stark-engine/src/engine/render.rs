@@ -295,11 +295,13 @@ impl Engine {
         let guide_scenes: Vec<GuideScene> = match chrome {
             Chrome::Hidden => Vec::new(),
             // The document holds the guides and the session holds whose eye is shut
-            // (§20.5), combined once in `Session::shown_guides`. The cursor is the
-            // session's too and for the same reason — per-client, so the rays drawn
-            // through every guide are handed in rather than known to a camera (§20.9).
+            // (§20.5), combined once in `Session::shown_guides`. The cursor is
+            // per-client for the same reason — the rays drawn through every guide are
+            // handed in rather than known to a camera (§20.9) — and is the one the
+            // wire carries, so what a peer sees the guides through is what this client
+            // does.
             Chrome::Shown => {
-                let cursor = self.session.cursor();
+                let cursor = self.presence.cursor();
                 self.session
                     .shown_guides(&doc)
                     .map(|g| g.camera.scene(cursor))
