@@ -28,7 +28,7 @@ pub use state::{CanvasBounds, DEFAULT_SUBSTRATE_COLOR};
 
 pub(crate) use apply::{ApplyCtx, PreparedStroke};
 pub(crate) use guides::Guide;
-pub(crate) use layer::{CompositeParams, Layer, LayerContent};
+pub(crate) use layer::{CompositeParams, Layer, LayerContent, PaintTiles};
 pub(crate) use selection::Selection;
 pub(crate) use state::{DEFAULT_SUBSTRATE, DocState};
 pub(crate) use timeline::{LinearTimeline, ReplicatedTimeline, Step, Stepped, Timeline};

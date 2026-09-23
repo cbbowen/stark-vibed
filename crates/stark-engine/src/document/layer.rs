@@ -97,10 +97,10 @@ pub struct PaintTiles {
     /// base resampled through its field, and the next liquify stroke composes into
     /// that rather than resampling it again.
     ///
-    /// Only a liquify stroke writes it ([`Layer::with_painted`]); every other paint
-    /// edit carries it forward unchanged ([`Layer::with_tiles`]), which is what
-    /// keeps a paint stroke commuting with a liquify stroke beyond its reach
-    /// (§12.6, `document::liquify`).
+    /// Only a liquify stroke replaces it; every other paint edit carries it forward
+    /// unchanged ([`with_map`](Self::with_map)), which is what keeps a paint stroke
+    /// commuting with a liquify stroke beyond its reach (§12.6,
+    /// `document::liquify`).
     liquify: Option<Rc<LiquifyRun>>,
 }
 
@@ -112,7 +112,11 @@ static TILE_REVISION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 impl PaintTiles {
     /// The tiles, with their extent and their revision derived once, and the liquify
     /// run they are composed through — `None` for a picture no run stands behind.
-    fn new(map: TileMap, liquify: Option<Rc<LiquifyRun>>) -> Self {
+    ///
+    /// **What a stroke render answers with**, which is why it is reachable from the
+    /// renderer at all: a render lands a whole paint value on the layer rather than a
+    /// map and a run the fold has to pair up again ([`Layer::with_painted`]).
+    pub(crate) fn new(map: TileMap, liquify: Option<Rc<LiquifyRun>>) -> Self {
         Self {
             bounds: CanvasBounds::of_tiles(map.keys()),
             // `Relaxed` is the whole requirement: this is asked for a *distinct*
@@ -126,6 +130,27 @@ impl PaintTiles {
     /// The sparse tile map itself.
     pub fn map(&self) -> &TileMap {
         &self.map
+    }
+
+    /// These tiles with `map` in their place, composed through the same liquify run —
+    /// what every edit but a liquify stroke lands (§6.13).
+    ///
+    /// **The identity case keeps the revision.** [`new`](Self::new) mints a fresh
+    /// [`revision`](Self::revision) and every thumbnail in the layer panel is keyed on
+    /// it (§14.6), so a caller that hands back the map it was given would re-render all
+    /// of them to show the same picture — which a merge with a neutral filter, *defined*
+    /// as leaving the destination's texels alone (§14.11.7), does exactly, as does a
+    /// stroke range that reached no tile.
+    ///
+    /// `ptr_eq` rather than a comparison: the map is persistent, so sharing a root is
+    /// exactly "these are the same tiles". Two maps that are equal without sharing a
+    /// root still mint — the safe direction, costing a re-render rather than a stale
+    /// thumbnail.
+    pub(crate) fn with_map(&self, map: TileMap) -> Self {
+        if self.map.ptr_eq(&map) {
+            return self.clone();
+        }
+        Self::new(map, self.liquify.clone())
     }
 
     /// The liquify run these tiles are composed through (§6.13), if any.
@@ -423,14 +448,29 @@ impl Layer {
         }
     }
 
-    /// This layer's painted tiles, or `None` if it holds none — an `Option` rather
-    /// than an empty map, so a matte or a filter cannot silently read as an empty
-    /// paint layer.
-    pub fn tiles(&self) -> Option<&TileMap> {
+    /// This layer's paint — its tiles, their extent, their revision and the liquify
+    /// run they are composed through — or `None` if it holds none.
+    ///
+    /// **The one test for "is there paint here"**, and an `Option` rather than an empty
+    /// [`PaintTiles`] so a matte or a filter cannot silently read as an empty paint
+    /// layer.
+    ///
+    /// **The refusal is the point.** A matte has no tile map, so a stroke, a fill or a
+    /// transform aimed at one is turned away rather than swallowed or magically
+    /// rasterized (§15.7) — and turned away in the *engine*, not only in the frontend,
+    /// which is what keeps replay and peers agreeing about a log that happens to contain
+    /// such an action. An absent layer reads the same way.
+    pub fn paint(&self) -> Option<&PaintTiles> {
         match &self.content {
-            LayerContent::Paint(tiles) => Some(tiles.map()),
+            LayerContent::Paint(tiles) => Some(tiles),
             LayerContent::Matte { .. } | LayerContent::Filter(_) => None,
         }
+    }
+
+    /// This layer's painted tile map, or `None` if it holds none — [`paint`](Self::paint)
+    /// for a caller that wants only the map.
+    pub fn tiles(&self) -> Option<&TileMap> {
+        self.paint().map(PaintTiles::map)
     }
 
     /// The extent of this layer's **own** painted tiles, already derived
@@ -440,10 +480,8 @@ impl Layer {
     /// make the document's bounds unbounded and break both "frame to content" and
     /// export's no-frame fallback (§15.6).
     pub fn bounds(&self) -> CanvasBounds {
-        match &self.content {
-            LayerContent::Paint(tiles) => tiles.bounds,
-            LayerContent::Matte { .. } | LayerContent::Filter(_) => CanvasBounds::default(),
-        }
+        self.paint()
+            .map_or_else(CanvasBounds::default, |t| t.bounds)
     }
 
     /// A number that changes exactly when this layer's own painted tiles do
@@ -453,10 +491,7 @@ impl Layer {
     /// color, a filter's is nothing at all, and neither has a picture of its own to
     /// cache.
     pub fn content_revision(&self) -> Option<u64> {
-        match &self.content {
-            LayerContent::Paint(tiles) => Some(tiles.revision()),
-            LayerContent::Matte { .. } | LayerContent::Filter(_) => None,
-        }
+        self.paint().map(PaintTiles::revision)
     }
 
     /// The matte region this layer fills, if it is a matte.
@@ -524,50 +559,33 @@ impl Layer {
         }
     }
 
-    /// The same layer with its painted tiles replaced. A no-op on anything with no
-    /// tiles to replace — and on a map that is the one already there.
+    /// The same layer holding `paint` instead — **what a render lands** (§6.2, §6.13),
+    /// since a render answers with a whole [`PaintTiles`] and so carries the liquify
+    /// run it composed through rather than leaving the fold to pair one up.
     ///
-    /// **The identity case keeps the revision.** `PaintTiles::new` mints a fresh
-    /// [`PaintTiles::revision`] and every thumbnail in the layer panel is keyed on it
-    /// (§14.6), so a caller that hands back the map it was given would re-render all
-    /// of them to show the same picture — which a merge with a neutral filter,
-    /// *defined* as leaving the destination's texels alone (§14.11.7), does exactly.
-    ///
-    /// `ptr_eq` rather than a comparison: the map is persistent, so sharing a root is
-    /// exactly "these are the same tiles". Two maps that are equal without sharing a
-    /// root still mint — the safe direction, costing a re-render rather than a stale
-    /// thumbnail.
-    ///
-    /// **The liquify run rides along untouched** (§6.13): only
-    /// [`with_painted`](Self::with_painted) replaces it, which is what lets a paint
-    /// edit commute with a liquify stroke beyond its reach (§12.6). Whether the run
-    /// it leaves is stale is the next liquify stroke's question, answered by tile
-    /// identity ([`LiquifyRun::is_fresh`]).
-    pub(crate) fn with_tiles(&self, tiles: TileMap) -> Self {
+    /// A no-op on anything with no paint to replace: a stroke aimed at a matte or a
+    /// filter is refused (§15.7, §21.4).
+    pub(crate) fn with_painted(&self, paint: PaintTiles) -> Self {
         match &self.content {
-            LayerContent::Paint(current) if current.map().ptr_eq(&tiles) => self.clone(),
-            LayerContent::Paint(current) => Self {
-                content: LayerContent::Paint(PaintTiles::new(tiles, current.liquify.clone())),
+            LayerContent::Paint(_) => Self {
+                content: LayerContent::Paint(paint),
                 ..self.clone()
             },
             LayerContent::Matte { .. } | LayerContent::Filter(_) => self.clone(),
         }
     }
 
-    /// The same layer with its painted tiles replaced **and its liquify run set** —
-    /// what a liquify stroke's render lands (§6.13). `run` is the run the new tiles
-    /// are composed through; `None` says the render was not a liquify stroke's and
-    /// the run in place stays, which is [`with_tiles`](Self::with_tiles) exactly.
-    pub(crate) fn with_painted(&self, tiles: TileMap, run: Option<Rc<LiquifyRun>>) -> Self {
-        match run {
-            Some(run) => match &self.content {
-                LayerContent::Paint(_) => Self {
-                    content: LayerContent::Paint(PaintTiles::new(tiles, Some(run))),
-                    ..self.clone()
-                },
-                LayerContent::Matte { .. } | LayerContent::Filter(_) => self.clone(),
-            },
-            None => self.with_tiles(tiles),
+    /// The same layer with its painted tiles replaced and its liquify run carried
+    /// forward, revision and all ([`PaintTiles::with_map`]) — every paint edit but a
+    /// liquify stroke's.
+    ///
+    /// Carrying the run is what lets a paint edit commute with a liquify stroke beyond
+    /// its reach (§12.6). Whether the run it leaves is stale is the next liquify
+    /// stroke's question, answered by tile identity ([`LiquifyRun::is_fresh`]).
+    pub(crate) fn with_tiles(&self, tiles: TileMap) -> Self {
+        match self.paint() {
+            Some(current) => self.with_painted(current.with_map(tiles)),
+            None => self.clone(),
         }
     }
 
@@ -575,28 +593,20 @@ impl Layer {
     /// undo patch's restore of the run alone (§12.6, `patch::PatchOp::LiquifyRun`).
     /// A no-op on anything without tiles, and on the run already there.
     pub(crate) fn with_liquify_run(&self, run: Option<Rc<LiquifyRun>>) -> Self {
-        match &self.content {
-            LayerContent::Paint(current) if LiquifyRun::same(current.liquify(), run.as_ref()) => {
-                self.clone()
-            }
-            LayerContent::Paint(current) => Self {
-                content: LayerContent::Paint(PaintTiles {
-                    liquify: run,
-                    ..current.clone()
-                }),
-                ..self.clone()
-            },
-            LayerContent::Matte { .. } | LayerContent::Filter(_) => self.clone(),
+        match self.paint() {
+            Some(current) if LiquifyRun::same(current.liquify(), run.as_ref()) => self.clone(),
+            Some(current) => self.with_painted(PaintTiles {
+                liquify: run,
+                ..current.clone()
+            }),
+            None => self.clone(),
         }
     }
 
     /// The liquify run this layer's picture is composed through (§6.13), or `None`
     /// for a layer with no tiles or no run.
     pub fn liquify_run(&self) -> Option<&Rc<LiquifyRun>> {
-        match &self.content {
-            LayerContent::Paint(tiles) => tiles.liquify(),
-            LayerContent::Matte { .. } | LayerContent::Filter(_) => None,
-        }
+        self.paint().and_then(PaintTiles::liquify)
     }
 
     /// Whether this layer carries any others — i.e. whether it is a **group**

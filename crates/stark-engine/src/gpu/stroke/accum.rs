@@ -311,10 +311,10 @@ pub(super) fn land_tiles(
     let mut carry = capture.then(|| prior.map_or_else(ParcelTiles::new, |p| p.tiles.clone()));
     let mut ring = Ring::default();
     // The copy-on-write map being built. The pristine fallback is read out of
-    // `scene.base` rather than out of this: they start equal, but this one accumulates
+    // `scene.base()` rather than out of this: they start equal, but this one accumulates
     // the piece's own output, and a tile re-derived from that is exactly the
     // compounding the pristine handle rules out.
-    let mut map = scene.base.clone();
+    let mut map = scene.base().clone();
     let mut dirty = Vec::with_capacity(sweep.draws.coords().len());
 
     for (i, coord) in sweep.draws.coords().iter().enumerate() {
@@ -327,7 +327,7 @@ pub(super) fn land_tiles(
         let resumed = prior.and_then(|p| p.tiles.get(coord));
         let pristine = match resumed {
             Some(t) => t.pristine.clone(),
-            None => scene.base.get(coord).cloned(),
+            None => scene.base().get(coord).cloned(),
         };
         if pristine.is_none() && land.effect == ParcelEffect::Erase {
             continue;

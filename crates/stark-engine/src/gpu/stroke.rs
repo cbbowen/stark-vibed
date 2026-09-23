@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 use crate::assets::AssetStore;
 use crate::colorspace::ColorSpace;
+use crate::document::PaintTiles;
 use crate::document::liquify::LiquifyRun;
 use crate::document::selection::Selection;
 use crate::gpu::channels::Zeroes;
@@ -190,11 +191,10 @@ pub(crate) struct StrokeScene<'a> {
     /// ([`render_range`](StrokeRenderer::render_range)), and the paths are handed
     /// the resolved tip ([`ResolvedRange`]).
     pub(crate) assets: &'a AssetStore,
-    /// The layer's committed tiles: what the stroke composites over.
-    pub(crate) base: &'a TileMap,
-    /// The liquify run those tiles are composed through (§6.13), if the layer has
-    /// one — what a liquify stroke composes into, and what every other path ignores.
-    pub(crate) liquify: Option<&'a Rc<LiquifyRun>>,
+    /// The layer's committed paint: the tiles the stroke composites over, and the
+    /// liquify run they are composed through (§6.13) — one value, because a render
+    /// answers with one ([`PaintTiles`]).
+    pub(crate) paint: &'a PaintTiles,
     /// The selection in force, which gates the deposit (§6.8).
     pub(crate) selection: &'a Selection,
     /// The canvas substrate the document was on when this stroke was made (§6.4) —
@@ -207,23 +207,30 @@ pub(crate) struct StrokeScene<'a> {
     pub(crate) substrate: &'a crate::gpu::substrate::SubstrateMap,
 }
 
-/// What a stroke render leaves on the layer: the tiles, and — for a liquify stroke —
-/// the run they are composed through (§6.13). `None` from every other path, which the
-/// fold reads as "keep the run in place" ([`Layer::with_painted`]).
-///
-/// [`Layer::with_painted`]: crate::document::Layer::with_painted
-pub(crate) struct Painted {
-    pub(crate) tiles: TileMap,
-    pub(crate) liquify: Option<Rc<LiquifyRun>>,
-}
+impl<'a> StrokeScene<'a> {
+    /// The layer's committed tiles: what the stroke composites over.
+    pub(in crate::gpu::stroke) fn base(&self) -> &'a TileMap {
+        self.paint.map()
+    }
 
-impl Painted {
-    /// Tiles from a path that leaves the run alone.
-    pub(crate) fn plain(tiles: TileMap) -> Self {
-        Self {
-            tiles,
-            liquify: None,
-        }
+    /// The liquify run those tiles are composed through (§6.13), if the layer has
+    /// one — what a liquify stroke composes into, and what every other path ignores.
+    pub(in crate::gpu::stroke) fn liquify(&self) -> Option<&'a Rc<LiquifyRun>> {
+        self.paint.liquify()
+    }
+
+    /// The paint a path that wrote `tiles` and left the run alone leaves on the layer —
+    /// **every path but liquify's** ([`PaintTiles::with_map`], which keeps the revision
+    /// where a range reached no tile at all).
+    fn plain(&self, tiles: TileMap) -> PaintTiles {
+        self.paint.with_map(tiles)
+    }
+
+    /// The paint the layer already holds, for a path that drew nothing — refused,
+    /// deferred, or handed an empty range. Keeps the revision, so a preview that draws
+    /// nothing re-renders no thumbnail (§14.6).
+    fn untouched(&self) -> PaintTiles {
+        self.paint.clone()
     }
 }
 
@@ -288,7 +295,7 @@ impl StrokeRenderer {
     /// receives the mask's fraction of whatever the stroke did there) and is what
     /// makes a feathered selection fade a stroke out instead of scaling its optical
     /// depth, which for an opaque brush would barely fade at all (§6.8).
-    pub(crate) fn render(&self, scene: StrokeScene<'_>, rec: &StrokeRecord) -> Painted {
+    pub(crate) fn render(&self, scene: StrokeScene<'_>, rec: &StrokeRecord) -> PaintTiles {
         self.render_range(scene, rec, StrokeSpans::whole(rec), None)
             .0
     }
@@ -326,7 +333,7 @@ impl StrokeRenderer {
         rec: &StrokeRecord,
         spans: StrokeSpans,
         tool: Option<&ToolState>,
-    ) -> (Painted, StrokeCarry) {
+    ) -> (PaintTiles, StrokeCarry) {
         // Every stroke render, live tail or commit, on either path — the row the two
         // path rows below are read against. Its *count* is the one number that says
         // how much of this is the live preview: a gesture renders its tail on every
@@ -337,10 +344,7 @@ impl StrokeRenderer {
         // Refused before anything is flattened or walked, from the record alone, so a
         // live tail, its commit, a replay and every peer refuse it alike (§12.1).
         if self.refuses(rec) {
-            return (
-                Painted::plain(scene.base.clone()),
-                StrokeCarry::unchanged(spans.dist()),
-            );
+            return (scene.untouched(), StrokeCarry::unchanged(spans.dist()));
         }
         // Which path the stroke takes — and how finely it flattens — is decided from
         // the record, never from the piece in hand. A live tail and the commit that
@@ -356,10 +360,7 @@ impl StrokeRenderer {
             // which is still where the stroke has got to — nothing was drawn, so the
             // arc clock did not move. The variant is what stops a caller freezing the
             // range on the strength of that: see `Progress::Deferred`.
-            return (
-                Painted::plain(scene.base.clone()),
-                StrokeCarry::deferred(spans.dist()),
-            );
+            return (scene.untouched(), StrokeCarry::deferred(spans.dist()));
         };
         let plan = StrokePlan::of(&rec.brush, tip.rise);
         // What the plan cost, said before the range is flattened so an empty range
@@ -397,10 +398,7 @@ impl StrokeRenderer {
             // A warp lays no paint of its own, so the fallback has nothing to draw
             // and nothing to flatten.
             if rec.brush.liquify().is_some() {
-                return (
-                    Painted::plain(scene.base.clone()),
-                    StrokeCarry::unchanged(spans.dist()),
-                );
+                return (scene.untouched(), StrokeCarry::unchanged(spans.dist()));
             }
         }
         // Both halves of "is this range resuming, and will it be resumed" — read once
@@ -420,10 +418,7 @@ impl StrokeRenderer {
         // exactly as it found it: "unchanged" says the caller keeps the state it
         // passed in rather than paying for a copy of it.
         if segments.is_empty() {
-            return (
-                Painted::plain(scene.base.clone()),
-                StrokeCarry::unchanged(end_dist),
-            );
+            return (scene.untouched(), StrokeCarry::unchanged(end_dist));
         }
         let range = ResolvedRange {
             rec,
@@ -434,9 +429,9 @@ impl StrokeRenderer {
             end_dist,
             resume,
         };
-        // Only the liquify path lands a run; every other path's tiles ride out
-        // with `None`, which the fold reads as "the run in place stays" (§6.13).
-        let plain = |(tiles, carry): (TileMap, StrokeCarry)| (Painted::plain(tiles), carry);
+        // Only the liquify path lands a run of its own; every other path's tiles ride
+        // out composed through the one the layer already held (§6.13).
+        let plain = |(tiles, carry): (TileMap, StrokeCarry)| (scene.plain(tiles), carry);
         match plan.path {
             StrokePath::Loop { dynamics } => plain(self.render_dynamic(scene, range, dynamics)),
             StrokePath::Liquify => self.render_liquify(scene, range),

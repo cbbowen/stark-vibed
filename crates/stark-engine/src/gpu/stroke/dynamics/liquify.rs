@@ -37,13 +37,14 @@ use super::super::budget::{
 };
 use super::super::region::{chunk_segments_within, sweep_tiles};
 use super::super::segments::Segment;
-use super::super::{Painted, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene};
+use super::super::{ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene};
 use super::plan::{Plan, WarpStep, liquify_plan};
 use super::region::{
     LOOP_USAGE, Piece, REGION_WRITES, RegionBox, RegionChannels, RegionRun, composite_tiles,
     region_selection, slice_region,
 };
 use super::trio::{Life, Trio};
+use crate::document::PaintTiles;
 use crate::document::liquify::LiquifyRun;
 use crate::gpu::desc;
 use crate::gpu::scratch::{Key, LeasedSlots, LeasedTex};
@@ -85,7 +86,7 @@ impl StrokeRenderer {
         &self,
         scene: StrokeScene<'_>,
         range: ResolvedRange<'_>,
-    ) -> (Painted, StrokeCarry) {
+    ) -> (PaintTiles, StrokeCarry) {
         crate::timing::span!("stroke.dynamics");
         let ResolvedRange {
             rec,
@@ -99,8 +100,8 @@ impl StrokeRenderer {
         // the picture otherwise (`document::liquify`).
         let within = liquify_reads(rec);
         let kept = within.count() <= MAX_RUN_TILES;
-        let mut run = match scene.liquify {
-            Some(run) if kept && run.is_fresh(scene.base, within) => (**run).clone(),
+        let mut run = match scene.liquify() {
+            Some(run) if kept && run.is_fresh(scene.base(), within) => (**run).clone(),
             _ => LiquifyRun::default(),
         };
         // Recorded for **every** tile of the declared reach rather than for the tiles
@@ -109,7 +110,7 @@ impl StrokeRenderer {
         // build the same run, and a later paint inside the reach is caught by the same
         // identities on all of them (§12.6).
         if kept {
-            record_base(&mut run, scene.base, within);
+            record_base(&mut run, scene.base(), within);
         }
         let walk = ReachWalk::over(&run, segments, rec);
         // The coverage prefix the follow reads (§6.13), resolved beside the tip's
@@ -120,7 +121,7 @@ impl StrokeRenderer {
             .as_ref()
             .expect("a liquify brush resolves its coverage prefix (tips::resolve)");
         let mut draw = LiquifyDraw::new(self, scene, &range, run, warp_prefix);
-        let mut map = scene.base.clone();
+        let mut map = scene.base().clone();
         let pieces = chunk_segments_within(segments, &[], LIQUIFY_REGION_BUDGET_DIM, &walk.cuts);
         for piece in pieces {
             // A piece the walk re-bases at starts a run afresh from the picture the
@@ -150,13 +151,9 @@ impl StrokeRenderer {
         // A run past the tile cap is not kept: the tiles ride out under the identity,
         // and the next stroke resamples the picture as this one did.
         let run = if kept { run } else { LiquifyRun::default() };
-        (
-            Painted {
-                tiles: map,
-                liquify: Some(Rc::new(run)),
-            },
-            carry,
-        )
+        // The run rides out with the tiles it composed: the paint a layer holds
+        // *is* that pair (§6.13).
+        (PaintTiles::new(map, Some(Rc::new(run))), carry)
     }
 }
 

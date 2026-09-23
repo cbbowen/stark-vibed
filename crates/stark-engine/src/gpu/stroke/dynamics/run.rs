@@ -328,7 +328,7 @@ impl StrokeRenderer {
         let capture = resume.capture;
 
         let mut run = DynamicsRun::new(self, scene, range, dynamics);
-        let mut map = scene.base.clone();
+        let mut map = scene.base().clone();
         // The bleed cadence's firings for the whole range (§6.2), computed once and
         // sliced per piece: the chunker must measure every piece **with its windows**,
         // since a window can reach back a quantum before the segment it fires after —

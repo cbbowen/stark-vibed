@@ -137,7 +137,7 @@ impl StrokeRenderer {
         // `erase.wesl` — its resolve would live there, and nothing gates an eraser
         // today (`budget::supersample_scale`).
         let Some(draws) = SweepDraws::new(self, &mut scope, &range, substrate, 1) else {
-            return reaches_nothing(scope, scene.base, end_dist);
+            return reaches_nothing(scope, scene.base(), end_dist);
         };
 
         // The stroke's ceiling, once per *call*: `StrokeConstants` resolved it with

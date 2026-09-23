@@ -321,9 +321,8 @@ impl StrokeRenderer {
         // A change that moves this row has moved something shared — tile
         // acquisition, the scope — rather than the loop.
         crate::timing::span!("stroke.swept");
-        let StrokeScene {
-            base, substrate, ..
-        } = scene;
+        let StrokeScene { substrate, .. } = scene;
+        let base = scene.base();
         let ResolvedRange {
             consts: k,
             end_dist,

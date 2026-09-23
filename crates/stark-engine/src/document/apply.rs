@@ -4,7 +4,6 @@
 //! renderers, the tile pool and the canvas substrates, so it lives here. The two
 //! halves meet at [`Materialize`], with [`DocState`] as the state (§2).
 
-use std::rc::Rc;
 use std::sync::Arc;
 
 use crate::gpu::substrate::Substrate;
@@ -16,7 +15,7 @@ use stark_model::document::{
 use stark_model::geom::{IVec2, TileRect};
 
 use super::guides::Guide;
-use super::layer::PropValue;
+use super::layer::{Layer, PaintTiles, PropValue};
 use super::liquify::LiquifyRun;
 use super::selection::Selection;
 use super::state::DocState;
@@ -124,35 +123,31 @@ impl ApplyCtx {
 /// Kept for one push rather than cached: the tiles hold every fresh tile the stroke
 /// wrote, so a slot that outlived its commit would pin a stroke's worth of GPU memory.
 pub(crate) struct PreparedStroke {
-    /// The record the tiles are a render of — compared whole, because the commit
+    /// The record the paint is a render of — compared whole, because the commit
     /// re-derives its record from the fitter at pen-up and sanitizes it on the way
     /// in, and either step disagreeing with what was previewed means the preview was
     /// of a different stroke.
     pub(crate) rec: stark_model::document::StrokeRecord,
-    /// The layer's tiles the render read as its base.
-    pub(crate) base: crate::gpu::tile::TileMap,
-    /// The liquify run the render read beside them (§6.13) — part of the base a
-    /// liquify stroke composes through, so part of what the offer is checked against.
-    pub(crate) base_run: Option<Rc<LiquifyRun>>,
-    /// The layer's tiles with the stroke on them: `base` with a fresh handle at
-    /// every tile the stroke reached.
-    pub(crate) tiles: crate::gpu::tile::TileMap,
-    /// The run the render left (§6.13): a liquify stroke's, or `None` for every
-    /// other effect, which leaves the run in place
-    /// ([`Layer::with_painted`](super::layer::Layer::with_painted)).
-    pub(crate) liquify: Option<Rc<LiquifyRun>>,
+    /// The layer's paint the render read as its base — the tiles it composited over
+    /// and the liquify run it composed through (§6.13), which is what the offer is
+    /// checked against.
+    pub(crate) base: PaintTiles,
+    /// The layer's paint with the stroke on it: `base` with a fresh handle at every
+    /// tile the stroke reached, and the run the render left.
+    pub(crate) painted: PaintTiles,
 }
 
 impl PreparedStroke {
-    /// Whether these tiles are the render of `rec` over `base` and `run` — the
-    /// fold's half of the check described on the type.
-    fn is_render_of(
-        &self,
-        rec: &stark_model::document::StrokeRecord,
-        base: &crate::gpu::tile::TileMap,
-        run: Option<&Rc<LiquifyRun>>,
-    ) -> bool {
-        self.base.ptr_eq(base) && LiquifyRun::same(self.base_run.as_ref(), run) && self.rec == *rec
+    /// Whether this is the render of `rec` over `base` — the fold's half of the check
+    /// described on the type.
+    ///
+    /// The map by pointer and the run by identity, not the revision: what has to match
+    /// is the *tiles the render read*, and a paint value re-minted over the same map
+    /// (a run restored by an undo patch) is the same base.
+    fn is_render_of(&self, rec: &stark_model::document::StrokeRecord, base: &PaintTiles) -> bool {
+        self.base.map().ptr_eq(base.map())
+            && LiquifyRun::same(self.base.liquify(), base.liquify())
+            && self.rec == *rec
     }
 }
 
@@ -208,7 +203,7 @@ pub(crate) fn fill_onto(
     op: &FillOp,
     frame: IVec2,
 ) -> Option<DocState> {
-    let base = paint_base(state, layer)?;
+    let base = state.layer(layer)?.tiles()?;
     let gate = ctx.author_gate(state, actor, frame, stark_model::document::fill_rect(op));
     let tiles = ctx.fill.apply(&ctx.pool, base, &gate, op)?;
     // A fill leaves the liquify run in place (§6.13).
@@ -231,7 +226,7 @@ pub(crate) fn transform_onto(
     map: &TransformMap,
     frame: IVec2,
 ) -> Option<DocState> {
-    let base = paint_base(state, layer)?;
+    let base = state.layer(layer)?.tiles()?;
     let (tiles, moved) =
         ctx.transform
             .apply(&ctx.pool, base, &state.selection_of(actor), map, frame)?;
@@ -273,15 +268,11 @@ fn stroke_apply(
     if ctx.stroke.refuses(rec) {
         return state;
     }
-    let Some(target) = state.layer(rec.layer) else {
+    let Some(base) = state.layer(rec.layer).and_then(Layer::paint) else {
         return state;
     };
-    let Some(base) = target.tiles() else {
-        return state;
-    };
-    let run = target.liquify_run();
-    let (tiles, liquify) = match ctx.prepared.take_if(|p| p.is_render_of(rec, base, run)) {
-        Some(prepared) => (prepared.tiles, prepared.liquify),
+    let painted = match ctx.prepared.take_if(|p| p.is_render_of(rec, base)) {
+        Some(prepared) => prepared.painted,
         // The gate and the substrate are resolved only here: a pen-up that takes the
         // preview's tiles on a translated layer would otherwise pay for a mask shift.
         None => {
@@ -294,21 +285,19 @@ fn stroke_apply(
                 rec.translation,
                 stark_model::document::stroke_rect(rec),
             );
-            let painted = ctx.stroke.render(
+            ctx.stroke.render(
                 crate::gpu::stroke::StrokeScene {
                     pool: &ctx.pool,
                     assets: &ctx.assets,
-                    base,
-                    liquify: run,
+                    paint: base,
                     selection: &gate,
                     substrate: &substrate,
                 },
                 rec,
-            );
-            (painted.tiles, painted.liquify)
+            )
         }
     };
-    state.map_layer(rec.layer, |l| l.with_painted(tiles, liquify))
+    state.map_layer(rec.layer, |l| l.with_painted(painted))
 }
 
 /// The body of [`ActionKind::PlaceImage`] (§23): the layer `add` mints — by exactly
@@ -377,7 +366,7 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
         tracing::warn!("merge down no longer names this destination; ignored");
         return state;
     }
-    let Some(lower) = paint_base(&state, dest) else {
+    let Some(lower) = state.layer(dest).and_then(Layer::tiles) else {
         return state;
     };
     // What the survivor's tiles become, and what its params become — `None` for
@@ -421,7 +410,7 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
         } => {
             // Both sides are paint that carries nothing — `plan` said so — so the
             // tile map is there to be read.
-            let Some(upper) = paint_base(&state, source) else {
+            let Some(upper) = state.layer(source).and_then(Layer::tiles) else {
                 return state;
             };
             // The source restated in the destination's frame (§14.12), by the
@@ -476,7 +465,7 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
 
 /// Whether a float of `layer` by `actor`, at the frame `frame`, would cut anything
 /// (§16.12) — every refusal [`float_apply`] makes of the source and the selection: a
-/// layer holding no paint ([`paint_base`]), a universal selection (nothing is
+/// layer holding no paint ([`Layer::tiles`]), a universal selection (nothing is
 /// *selected*; moving everything is `TranslateLayers`), and an empty or oversized cut
 /// (`plan_float`). What the command asks before it spends an action.
 pub(crate) fn float_cut_offered(
@@ -487,7 +476,9 @@ pub(crate) fn float_cut_offered(
 ) -> bool {
     let selection = state.selection_of(actor);
     !selection.is_universal()
-        && paint_base(state, layer)
+        && state
+            .layer(layer)
+            .and_then(Layer::tiles)
             .is_some_and(|base| plan_float(base, &selection, frame).is_some())
 }
 
@@ -517,7 +508,7 @@ fn float_apply(
         return declined(state, "float names a child the document already holds");
     }
     let selection = state.selection_of(actor);
-    let cut = paint_base(&state, layer).and_then(|base| {
+    let cut = state.layer(layer).and_then(Layer::tiles).and_then(|base| {
         ctx.transform
             .float(&ctx.pool, base, &selection, translation)
     });
@@ -535,18 +526,6 @@ fn float_apply(
         .map_layer(layer, |l| l.with_tiles(remaining))
         .insert_float(layer, lifted)
         .with_selection(actor, Selection::everything())
-}
-
-/// The tiles `layer` paints into, or `None` if it has none — the gate every action
-/// that lays or moves paint passes through first.
-///
-/// **The refusal is the point.** A matte has no tile map, so a stroke, a fill or a
-/// transform aimed at one is turned away rather than swallowed or magically
-/// rasterized (§15.7) — and turned away *here*, in the engine, not only in the
-/// frontend, which is what keeps replay and peers agreeing about a log that happens
-/// to contain such an action. An absent layer reads the same way.
-fn paint_base(state: &DocState, layer: LayerId) -> Option<&crate::gpu::tile::TileMap> {
-    state.layer(layer).and_then(|l| l.tiles())
 }
 
 /// [`DocState`] is what this crate folds a log into (§2, §5): a persistent map of
