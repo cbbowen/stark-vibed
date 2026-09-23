@@ -264,12 +264,12 @@ impl Engine {
     /// `repaint` reports whether the expiry changed the canvas — a caller that drops
     /// that bit leaves a stale stroke on screen until something else forces a paint.
     pub fn take_presence(&mut self, now: f64) -> PresenceTick {
-        self.now = now.max(self.now);
-        let repaint = self.peers.tick(self.now).canvas();
+        let now = self.peers.advance(now);
+        let repaint = self.peers.tick(now).canvas();
         if repaint {
             self.mark_live_stale();
         }
-        let frame = self.is_shared().then(|| self.publish(self.now)).flatten();
+        let frame = self.is_shared().then(|| self.publish(now)).flatten();
         PresenceTick { frame, repaint }
     }
 
@@ -305,16 +305,15 @@ impl Engine {
     /// per remote pointer move.
     ///
     /// Dated by `now`, the **caller's** clock — the same one it hands
-    /// [`take_presence`](Self::take_presence) — folded into [`Self::now`] so the
-    /// engine's clock stays monotonic. Dating by `self.now` alone would assume the pump
-    /// advances it every tick, and the pump skips `take_presence` on a tick with nothing
-    /// to publish: on a client that is only *watching*, every frame merged in between
-    /// would age a whole [`HEARTBEAT`](stark_model::peer::HEARTBEAT) at once when the
-    /// expiry finally ran, taking down live gestures whose frames arrive thirty times a
-    /// second.
+    /// [`take_presence`](Self::take_presence) — folded into the roster's clock so it
+    /// stays monotonic (`Peers::advance`). Reading that clock without advancing it would
+    /// assume the pump moves it every tick, and the pump skips `take_presence` on a tick
+    /// with nothing to publish: on a client that is only *watching*, every frame merged
+    /// in between would age a whole [`HEARTBEAT`](stark_model::peer::HEARTBEAT) at once
+    /// when the expiry finally ran, taking down live gestures whose frames arrive thirty
+    /// times a second.
     pub fn merge_presence(&mut self, actor: ActorId, frame: PeerFrame, now: f64) -> bool {
-        self.now = now.max(self.now);
-        let now = self.now;
+        let now = self.peers.advance(now);
         if actor == self.actor() {
             // Our own frame, echoed back by a flood transport. The local session is
             // the authority on this client; taking it back off the wire would fight

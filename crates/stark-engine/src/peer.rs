@@ -214,6 +214,9 @@ pub(crate) struct Peers {
     /// Bumped on every change, so a caller notices the roster moved without rebuilding
     /// and comparing a projection of it once per pump tick.
     revision: u64,
+    /// The presence clock: the newest instant a caller has handed in, in seconds on a
+    /// monotonic scale (see [`advance`](Self::advance)).
+    now: f64,
 }
 
 impl Peers {
@@ -224,6 +227,21 @@ impl Peers {
     /// A counter that changes whenever anything in the roster does.
     pub(crate) fn revision(&self) -> u64 {
         self.revision
+    }
+
+    /// Take `now` as the current instant and answer the clock — every expiry and every
+    /// arriving frame is dated by what this returns.
+    ///
+    /// **By `max`, so the clock never steps backwards**: it comes from the frontend's
+    /// publish cadence, `stark-engine` owning no clock source of its own, and one that
+    /// went back would un-expire a peer that had already gone.
+    ///
+    /// Here rather than on the engine because this is the value the roster is *measured
+    /// against* ([`tick`](Self::tick), [`expiry_due`](Self::expiry_due)), and nothing
+    /// else reads it.
+    pub(crate) fn advance(&mut self, now: f64) -> f64 {
+        self.now = now.max(self.now);
+        self.now
     }
 
     /// Integrate a frame published by `actor`, reporting what it moved.
@@ -569,6 +587,17 @@ mod tests {
         let stroke = peer.live_stroke().expect("the head starts a stroke");
         assert_eq!(stroke.brush, ordinary);
         assert_eq!(stroke.start, 0.25);
+    }
+
+    /// The clock a peer is expired against only ever goes forward, whatever the pump
+    /// hands in: a frontend's `now` that stepped back would un-expire a peer that had
+    /// already gone (§17.5).
+    #[test]
+    fn the_presence_clock_never_steps_backwards() {
+        let mut peers = Peers::new();
+        assert_eq!(peers.advance(1.5), 1.5);
+        assert_eq!(peers.advance(0.25), 1.5, "a backward step is ignored");
+        assert_eq!(peers.advance(2.0), 2.0);
     }
 
     #[test]

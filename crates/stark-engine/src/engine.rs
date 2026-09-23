@@ -165,15 +165,9 @@ pub struct Engine {
     /// session is the active layer, the gesture ordinal and
     /// [`Session::live`](crate::session::Session::live), handed over per publish.
     presence: PresenceTx,
-    /// Everyone else in the session (§17.4). Empty when solo.
+    /// Everyone else in the session (§17.4), and the presence clock they are expired
+    /// against ([`Peers::advance`](crate::peer::Peers::advance)). Empty when solo.
     peers: Peers,
-    /// The presence clock: the newest instant a caller has handed in, in seconds on
-    /// a monotonic scale. Advanced by `max` — a clock that steps backwards must not
-    /// un-expire a peer.
-    ///
-    /// The engine owns no clock *source*, so expiry, publishing and the timestamping
-    /// of arriving frames all read this one value.
-    now: f64,
     /// What is being *shown* over the committed document, and the caches that make
     /// showing it affordable: the unlogged drag in flight, the fold of every
     /// in-flight gesture, the settled head of each live stroke, and the epoch that
