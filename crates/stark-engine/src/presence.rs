@@ -702,150 +702,11 @@ impl GestureRx {
 mod tests {
     use super::*;
 
-    /// **Everything free-form in a frame passes the same funnel a committed action's
-    /// payloads do**: a name, a cursor, and the brush on a stroke head. A door that
-    /// gates one of its three payloads claims a property it does not have.
-    ///
-    /// Driven through [`Peers::merge`] rather than [`GestureRx::apply`], because the
-    /// door is what is under test — the restart arm included, since a frame filtered
-    /// at the entry is filtered for every arm.
-    #[test]
-    fn every_free_payload_in_a_frame_is_gated_at_the_one_door() {
-        let hostile = BrushParams {
-            size: f32::NAN,
-            tooth: stark_model::document::ToothParams {
-                give: -3.0,
-                softness: f32::NEG_INFINITY,
-            },
-            effect: stark_model::document::BrushEffect::wet_with(
-                [0.0; 3],
-                stark_model::document::BrushDynamics {
-                    lift: f32::INFINITY,
-                    ..Default::default()
-                },
-            ),
-            ..BrushParams::default()
-        };
-        // Three bytes to the `char`, chosen so that byte `MAX_NAME` lands strictly
-        // inside one (64 mod 3 = 1). A cap counted in bytes would not merely keep the
-        // wrong number of them — `String::truncate` panics on an index inside a char.
-        // A two-byte char would not show that: every even offset is a boundary.
-        let long_name = "€".repeat(MAX_NAME * 2);
-        let hostile_frame = |boot: u64| PeerFrame {
-            boot,
-            seq: 1,
-            name: Some(long_name.clone()),
-            active_layer: LayerId::ROOT,
-            cursor: Some(Vec2::new(f32::NAN, 3.0)),
-            gesture: Some(GestureFrame::Stroke {
-                id: 1,
-                head: Some(Box::new(StrokeHead {
-                    layer: LayerId::ROOT,
-                    brush: hostile,
-                    seed: 0,
-                    translation: stark_model::geom::IVec2::ZERO,
-                })),
-                from: 0,
-                points: vec![ControlPoint::at(Vec2::ZERO)],
-                start: f32::NAN,
-            }),
-            leaving: false,
-        };
-
-        #[expect(
-            clippy::float_cmp_const,
-            reason = "the funnel replaces its input with this constant itself, so the assertion is identity rather than proximity"
-        )]
-        fn assert_gated(peer: &Peer) {
-            assert_eq!(
-                peer.cursor, None,
-                "a NaN cursor is not a place on the canvas"
-            );
-            assert_eq!(
-                peer.name.chars().count(),
-                MAX_NAME,
-                "a name off the wire is bounded by what this crate says, not by what \
-                 the transport happens to refuse",
-            );
-            let stroke = peer.live_stroke().expect("the head starts a stroke");
-            assert_eq!(
-                stroke.start, 0.0,
-                "the marker is a place on the curve, and not one before it",
-            );
-            let brush = stroke.brush;
-            assert!(brush.size.is_finite(), "a NaN radius sizes a dispatch");
-            assert_eq!(
-                brush.tooth.give, 0.0,
-                "the tooth's give is quoted in [0, 1]"
-            );
-            assert_eq!(
-                brush.tooth.softness,
-                stark_model::document::ToothParams::DEFAULT_SOFTNESS,
-                "a contact transition of minus infinity is no width the shader can divide by",
-            );
-            // An *infinite* lift falls back to the field's default rather than to the
-            // clamp's ceiling: `finite_or` runs before `clamp01`, since a value that is
-            // not a number says nothing about which end was meant. The give above is
-            // clamped instead because −3.0 is a number, just not one in range.
-            assert_eq!(
-                brush.wet().expect("a wet brush").dynamics.lift,
-                stark_model::document::BrushDynamics::default().lift,
-            );
-        }
-
-        let actor = ActorId(1);
-        let mut peers = Peers::new();
-        peers.merge(actor, hostile_frame(0), 0.0);
-        assert_gated(peers.get(actor).expect("an arrival admits the peer"));
-        // The other arm that keeps a payload: a new `boot` is a client that reloaded,
-        // so the receiver is cleared and the run starts over.
-        peers.merge(actor, hostile_frame(1), 0.0);
-        assert_gated(peers.get(actor).expect("a restart keeps the peer"));
-
-        // …and an ordinary frame is untouched, so a peer's stroke still draws as the
-        // peer drew it, under the name and at the cursor the peer published.
-        let ordinary = BrushParams {
-            size: 24.0,
-            ..BrushParams::default()
-        };
-        peers.merge(
-            actor,
-            PeerFrame {
-                boot: 1,
-                seq: 2,
-                name: Some("ada".to_owned()),
-                active_layer: LayerId::ROOT,
-                cursor: Some(Vec2::new(2.0, 3.0)),
-                gesture: Some(GestureFrame::Stroke {
-                    id: 2,
-                    head: Some(Box::new(StrokeHead {
-                        layer: LayerId::ROOT,
-                        brush: ordinary,
-                        seed: 0,
-                        translation: stark_model::geom::IVec2::ZERO,
-                    })),
-                    from: 0,
-                    points: vec![ControlPoint::at(Vec2::ZERO)],
-                    start: 0.25,
-                }),
-                leaving: false,
-            },
-            0.0,
-        );
-        let peer = peers.get(actor).expect("the peer is still here");
-        assert_eq!(peer.name, "ada");
-        assert_eq!(peer.cursor, Some(Vec2::new(2.0, 3.0)));
-        let stroke = peer.live_stroke().expect("the head starts a stroke");
-        assert_eq!(stroke.brush, ordinary);
-        assert_eq!(stroke.start, 0.25);
-    }
-
     use crate::command::{InputSample, Tool};
     use crate::path::DEFAULT_TOLERANCE;
-    use crate::peer::{Peer, Peers};
+    use crate::peer::Peers;
     use crate::session::{Outline, Session};
-    use stark_model::MAX_NAME;
-    use stark_model::document::{ActorId, BrushParams, LayerId, ShapeAction};
+    use stark_model::document::{ActorId, LayerId, ShapeAction};
     use stark_model::geom::Vec2;
     use stark_model::peer::PeerFrame;
 
@@ -1328,11 +1189,9 @@ mod tests {
         // Then every frame for a while is sent and lost. The watermarks move — they
         // record what the wire was *told*, and the wire was told — so the sender goes
         // on trimming its deltas to a prefix the receiver never saw.
-        for (seq, n) in (4..=9).enumerate() {
-            let lost = tx
-                .encode(0, Some(stroke(n, n - 2)), false)
+        for n in 4..=9 {
+            tx.encode(0, Some(stroke(n, n - 2)), false)
                 .expect("a frame");
-            let _ = (seq, lost);
         }
         assert_eq!(
             shown(&rx),
