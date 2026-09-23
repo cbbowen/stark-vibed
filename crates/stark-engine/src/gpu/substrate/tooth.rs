@@ -166,9 +166,10 @@ pub(super) fn pack_substrate(height: &[u8], w: u32, h: u32, tile_px: f32) -> Vec
 
 /// A separable, wrapping Gaussian blur of a height map into [0, 1] floats.
 ///
-/// Kernels are built and normalized in the same order on every machine, so two peers
-/// blurring one substrate land on the same floats: the substrate is a replay input like
-/// any other (§6.4).
+/// Kernels are built and normalized in the same order on every machine, and the
+/// exponential is [`detmath`](crate::detmath)'s rather than the host libm's, so two
+/// peers blurring one substrate land on the same floats: the substrate is a replay input
+/// like any other (§6.4, §12.1).
 fn blur(height: &[u8], w: u32, h: u32, sigma_x: f32, sigma_y: f32) -> Vec<f32> {
     /// Gaussian weights out to 3σ, normalized to sum to 1. A non-positive σ has
     /// nothing to blur and returns the identity kernel; a σ far under a texel reaches
@@ -179,7 +180,7 @@ fn blur(height: &[u8], w: u32, h: u32, sigma_x: f32, sigma_y: f32) -> Vec<f32> {
             return vec![1.0];
         }
         let mut k: Vec<f32> = (-r..=r)
-            .map(|i| (-0.5 * (i as f32 / sigma).powi(2)).exp())
+            .map(|i| crate::detmath::exp(-0.5 * (i as f32 / sigma).powi(2)))
             .collect();
         let total: f32 = k.iter().sum();
         for weight in &mut k {
