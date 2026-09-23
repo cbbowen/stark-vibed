@@ -107,27 +107,33 @@ stark/
 │   │   │   ├── assets.rs       # the content-addressed asset store (§6.6)
 │   │   │   ├── noise.rs        # tileable 2-D noise tiles for color dynamics (§6.2)
 │   │   │   ├── image.rs        # RgbaImage (readback / export)
-│   │   │   ├── gpu/
-│   │   │   │   ├── context.rs   # device/queue wrapper, capabilities
-│   │   │   │   ├── tile.rs      # TilePool, CoW tile handles, channel set (§6.1)
-│   │   │   │   ├── registry.rs  # frontend-provided resources: bytes + live object
-│   │   │   │   ├── stroke/      # the brush engine / stroke rasterizer (§6.2)
-│   │   │   │   ├── composite/   # compositing + the media/lighting pass (§6.3)
-│   │   │   │   ├── environment/ # HDR environment maps for IBL (§6.3)
-│   │   │   │   ├── substrate/   # canvas substrate: the grain's relief (§6.4)
-│   │   │   │   ├── selection.rs # selection-mask rasterization (§6.8)
-│   │   │   │   ├── fill.rs      # region fill: a paint parcel through a mask (§6.8)
-│   │   │   │   ├── transform.rs # the parcel / combine / mask passes (§16.5)
-│   │   │   │   ├── pigment.rs   # the Mixbox LUT (§6.7)
-│   │   │   │   └── readback.rs  # GPU→CPU texture readback (export, goldens)
+│   │   │   └── gpu/
+│   │   │       ├── context.rs   # device/queue wrapper, capabilities
+│   │   │       ├── tile.rs      # TilePool, CoW tile handles, channel set (§6.1)
+│   │   │       ├── registry.rs  # frontend-provided resources: bytes + live object
+│   │   │       ├── stroke/      # the brush engine / stroke rasterizer (§6.2)
+│   │   │       ├── composite/   # compositing + the media/lighting pass (§6.3)
+│   │   │       ├── environment/ # HDR environment maps for IBL (§6.3)
+│   │   │       ├── substrate/   # canvas substrate: the grain's relief (§6.4)
+│   │   │       ├── selection.rs # selection-mask rasterization (§6.8)
+│   │   │       ├── fill.rs      # region fill: a paint parcel through a mask (§6.8)
+│   │   │       ├── transform.rs # the parcel / combine / mask passes (§16.5)
+│   │   │       ├── pigment.rs   # the Mixbox LUT (§6.7)
+│   │   │       └── readback.rs  # GPU→CPU texture readback (export, goldens)
+│   │   └── tests/
+│   │       └── golden/         # scripted command sequences + reference PNGs (§9)
+│   ├── stark-stroke/           # the stroke's CPU geometry — no wgpu at all
+│   │   ├── src/
+│   │   │   ├── input.rs        # InputSample: one pointer report, as it arrived
 │   │   │   ├── path/           # fit.rs, flatten.rs, arc.rs — three subjects the one
 │   │   │   │                   # file's own banners already named (§6.2). The root
 │   │   │   │                   # keeps what belongs to none of them: the span
 │   │   │   │                   # arithmetic both ends ask in terms of
 │   │   │   ├── assist/         # recognize.rs, adjust.rs, realize.rs (§6.9), likewise
+│   │   │   ├── tow.rs          # the towed tip: stroke smoothing (§6.11)
+│   │   │   ├── detmath.rs      # the deterministic series the replay path uses (§12.1)
 │   │   │   └── spline.rs       # clamped cardinal cubic B-spline + least-squares
-│   │   └── tests/
-│   │       └── golden/         # scripted command sequences + reference PNGs (§9)
+│   │   └── benches/path.rs     # the fit and the flattener, per sample (§7.1)
 │   ├── stark-assetid/          # what a content id *is* — usable from a build script
 │   ├── stark-shaders/          # WESL sources + build.rs (wesl link/compile)
 │   ├── stark-testdata/         # recorded pen input + asset paths; dev-only (§9)
@@ -180,6 +186,16 @@ the compositor, and the controller that drives them (`Session`, the command tier
 §4). It depends on `stark-model`; the model depends on none of them. The split is
 this document's founding sentence made structural — pixels are a cached function of
 the log, so the log does not know what a pixel is.
+
+**`stark-stroke` is the geometry that comes before either**: what a pointer trace
+becomes on its way to a `StrokeRecord` — the fit, the flattener, the arc-length map,
+the spline solve, the shape assist, the towed tip, and the deterministic series the
+replay path uses instead of libm (§12.1). It names no wgpu type, which is the whole
+of the argument for the split: an edit to the fit compiled the engine's 60k lines
+and a GPU device before its own tests could run, and now compiles neither. It
+depends on `stark-model` and nothing else of ours, and the engine re-exports what a
+frontend names — `stark_engine::path`, `InputSample`, `TowString`, `Assisted` — so
+the boundary is invisible from above.
 
 **The boundary is visible in the type names, and was before the crates existed**: an
 **id** is in the log and a **resource** is in the engine. `AssetId`/`AssetStore`,

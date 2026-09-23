@@ -71,6 +71,19 @@ crates/
                    the one that is *not* split, since nothing §20 derives from
                    a camera needs a pixel (§20.5)
     io.rs          the save format, which *is* the action log (§8)
+  stark-stroke/    the stroke's CPU geometry: what a pointer trace becomes on its
+                   way to a `StrokeRecord`. The least-squares B-spline fit and the
+                   adaptive flattener (§6.2), the shape assist (§6.9), the towed tip
+                   (§6.11), the arc-length map, the spline solve — the only place
+                   nalgebra is named — and `detmath`, the deterministic series the
+                   **post-record** stages use in place of libm so a replay and a peer
+                   agree to the bit (§12.1). `InputSample` is here too, because the
+                   geometry is the only thing that consumes one. Names no wgpu type,
+                   which is the whole argument for the crate: an edit to the fit used
+                   to compile the engine's 60k lines and open a GPU device before its
+                   own tests could run, and now compiles neither. `path::fingerprint`
+                   is its `STARK_GOLDEN_EXACT` — blake3 over the fitted and flattened
+                   bits of six recorded strokes
   stark-engine/    the derived view — no UI, no windowing; compiles to wasm
     document/      DocState, the timeline, and the fold that fills them
     gpu/           tile pool, stroke renderer, compositor, readback
@@ -149,13 +162,15 @@ crates/
 vendor/            third-party, EXCLUDED from the workspace
 ```
 
-**Dependencies point one way: frontend → chrome → engine → model.** `stark-net`
-depends on the model *only* — it moves logs and assets and never names an engine type,
-which is what the split bought (§2). Which side a type belongs on has a
+**Dependencies point one way: frontend → chrome → engine → stroke → model.**
+`stark-net` depends on the model *only* — it moves logs and assets and never names an
+engine type, which is what the split bought (§2). Which side a type belongs on has a
 mechanical answer: if it is `Serialize` it is a fact about the document and
 lives in the model; if it holds a tile it is a cache and lives in the engine.
 `AssetId`/`AssetStore`, `SubstrateId`/`SubstrateMap`, `LayerId`/`Layer`,
-`Action`/`DocState` are all the same pair.
+`Action`/`DocState` are all the same pair. `stark-stroke` sits between the last two
+by the same test read the other way: it holds no tile, so it is not the engine's,
+and it is not saved, so it is not the model's.
 
 The one crack in that: large image assets live in
 `stark-dioxus-frontend/assets/` because Dioxus's `asset!` rejects paths outside
