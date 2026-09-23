@@ -45,12 +45,7 @@ impl CanvasBounds {
 
     /// The extent spanning every tile in `coords` — empty for none.
     pub(crate) fn of_tiles<'a>(coords: impl Iterator<Item = &'a TileCoord>) -> Self {
-        Self(coords.fold(TileRect::EMPTY, |rect, c| {
-            rect.union(TileRect {
-                min: (c.x, c.y),
-                max: (c.x, c.y),
-            })
-        }))
+        Self(coords.copied().collect())
     }
 
     /// The extent spanning both — the **join** that makes a document's extent the

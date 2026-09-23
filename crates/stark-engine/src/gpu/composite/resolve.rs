@@ -99,7 +99,7 @@ pub(super) fn attachment_bytes(
     blur: bool,
 ) -> u64 {
     let trio = formats.bytes_per_px();
-    let resolve = u64::from(target_format.block_copy_size(None).unwrap_or(0));
+    let resolve = u64::from(crate::gpu::desc::texel_bytes(target_format));
     trio + resolve + scratch.bytes_per_px(trio) + if blur { blur_bytes_per_px() } else { 0 }
 }
 
@@ -115,7 +115,7 @@ pub(super) fn attachment_bytes(
 /// `blur.wesl` would otherwise leave this budget counting the old one.
 fn blur_bytes_per_px() -> u64 {
     use stark_shaders::mirror::blur::decl as bd;
-    let of = |f: wgpu::TextureFormat| u64::from(f.block_copy_size(None).unwrap_or(0));
+    let of = |f: wgpu::TextureFormat| u64::from(crate::gpu::desc::texel_bytes(f));
     let (light, aux) = (
         of(bd::DST_LIGHT.storage_format()),
         of(bd::DST_AUX.storage_format()),
