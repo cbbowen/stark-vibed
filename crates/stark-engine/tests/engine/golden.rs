@@ -13,8 +13,7 @@ use crate::common::palette::{GREEN, RED};
 use crate::common::*;
 use stark_engine::command::Tool;
 
-use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_engine::command::{DocCommand, InputSample, ViewCommand};
 #[cfg(feature = "mixbox")]
 use stark_model::ColorSpaceId;
 use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape, PaintEffect};
@@ -137,16 +136,15 @@ fn golden_bristle_stroke() {
     engine.process(ViewCommand::set_brush(brush));
 
     // A horizontal stroke; the worn-bristle mask should break up its coverage.
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(Vec2::new(-90.0, 0.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    engine.process(GestureCommand::To {
-        sample: InputSample::at(Vec2::new(90.0, 0.0)),
-    });
-    engine.process(GestureCommand::End);
+    Gesture::new(Tool::Brush)
+        .drive(
+            &mut engine,
+            [
+                InputSample::at(Vec2::new(-90.0, 0.0)),
+                InputSample::at(Vec2::new(90.0, 0.0)),
+            ],
+        )
+        .end();
 
     let img = engine.render_to_image();
     assert_golden("bristle_stroke", &img, 6);
@@ -178,16 +176,15 @@ fn golden_canvas_substrate() {
     // Per radius (§6.2): 0.3 over a 60px tip is the 0.005 per canvas px this was.
     brush.drain = 0.3;
     engine.process(ViewCommand::set_brush(brush));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(Vec2::new(-95.0, 0.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    engine.process(GestureCommand::To {
-        sample: InputSample::at(Vec2::new(95.0, 0.0)),
-    });
-    engine.process(GestureCommand::End);
+    Gesture::new(Tool::Brush)
+        .drive(
+            &mut engine,
+            [
+                InputSample::at(Vec2::new(-95.0, 0.0)),
+                InputSample::at(Vec2::new(95.0, 0.0)),
+            ],
+        )
+        .end();
 
     let img = engine.render_to_image();
     assert_golden("linen_substrate", &img, 6);

@@ -767,19 +767,14 @@ fn a_toothed_live_preview_matches_the_commit() {
             Vec2::new(t * 22.0 - 60.0, (t * 1.1).sin() * 30.0)
         })
         .collect();
-    let mut it = path.iter();
-    engine.process(stark_engine::command::GestureCommand::Start {
-        tool: stark_engine::command::Tool::Brush,
-        sample: stark_engine::command::InputSample::at(*it.next().unwrap()),
-        tolerance: stark_engine::path::DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    for &p in it {
-        engine.process(stark_engine::command::GestureCommand::To {
-            sample: stark_engine::command::InputSample::at(p),
-        });
-    }
-    engine.process(stark_engine::command::GestureCommand::End);
+    Gesture::new(stark_engine::command::Tool::Brush)
+        .drive(
+            &mut engine,
+            path.iter()
+                .copied()
+                .map(stark_engine::command::InputSample::at),
+        )
+        .end();
     assert_eq!(
         engine.strokes_reused(),
         1,
@@ -844,19 +839,14 @@ fn a_toothed_smear_previews_as_it_commits() {
             Vec2::new(t * 24.0 - 130.0, (t * 1.3).sin() * 26.0)
         })
         .collect();
-    let mut it = path.iter();
-    engine.process(stark_engine::command::GestureCommand::Start {
-        tool: stark_engine::command::Tool::Brush,
-        sample: stark_engine::command::InputSample::at(*it.next().unwrap()),
-        tolerance: stark_engine::path::DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    for &p in it {
-        engine.process(stark_engine::command::GestureCommand::To {
-            sample: stark_engine::command::InputSample::at(p),
-        });
-    }
-    engine.process(stark_engine::command::GestureCommand::End);
+    Gesture::new(stark_engine::command::Tool::Brush)
+        .drive(
+            &mut engine,
+            path.iter()
+                .copied()
+                .map(stark_engine::command::InputSample::at),
+        )
+        .end();
     assert_eq!(
         engine.strokes_reused(),
         2,
@@ -901,12 +891,9 @@ fn a_substrate_arriving_mid_stroke_is_the_one_its_commit_bites() {
             Vec2::new(t * 40.0 - 120.0, (t * 1.3).sin() * 26.0)
         })
         .collect();
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(path[0]),
-        tolerance: stark_engine::path::DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush)
+        .tolerance(stark_engine::path::DEFAULT_TOLERANCE)
+        .press(&mut engine, InputSample::at(path[0]));
     for &p in &path[1..] {
         engine.process(GestureCommand::To {
             sample: InputSample::at(p),

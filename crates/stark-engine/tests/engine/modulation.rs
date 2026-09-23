@@ -12,7 +12,6 @@ use crate::common::palette::RED;
 use crate::common::*;
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::document::{
     BrushDynamics, BrushEffect, BrushModulations, BrushParams, BrushShape, ModSource, Modulation,
     PaintModulations, WetEffect, WetModulations,
@@ -49,12 +48,7 @@ fn stroke_pen(engine: &mut stark_engine::Engine, b: BrushParams, points: &[Vec2]
     engine.process(ViewCommand::set_brush(b));
     let mut it = points.iter();
     let first = *it.next().expect("at least one point");
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: sample(first),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(engine, sample(first));
     for &p in it {
         engine.process(GestureCommand::To { sample: sample(p) });
     }

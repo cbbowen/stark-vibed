@@ -198,16 +198,12 @@ fn the_mark_is_what_committing_the_prediction_would_land() {
     // hover banked nothing that could have advanced it, and without the window,
     // which would otherwise become the gesture's run-up (see above).
     engine.process(ViewCommand::PreviewHover(None));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(B),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    engine.process(GestureCommand::To {
-        sample: InputSample::at(Vec2::new(REACH, 0.0)),
-    });
-    engine.process(GestureCommand::End);
+    Gesture::new(Tool::Brush)
+        .drive(
+            &mut engine,
+            [InputSample::at(B), InputSample::at(Vec2::new(REACH, 0.0))],
+        )
+        .end();
     let committed = engine.render_to_image();
     assert_images(
         &hovered,
@@ -231,12 +227,7 @@ fn a_real_gesture_takes_the_mark_down() {
 
     // Press elsewhere: the mark at the origin must vanish while the gesture at
     // y = 80 previews.
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(Vec2::new(-30.0, 80.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(Vec2::new(-30.0, 80.0)));
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(30.0, 80.0)),
     });
@@ -580,12 +571,7 @@ fn the_run_up_is_evidence_never_paint() {
         engine.process(report(Vec2::new(-80.0 + 4.0 * i as f32, 0.0)));
     }
     // ...then the press at the origin, dragging on to +40.
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(B),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(B));
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(40.0, 0.0)),
     });
@@ -633,12 +619,7 @@ fn a_click_after_a_watched_approach_commits_nothing() {
     let rev = engine.observe().doc_revision;
 
     hover_ab(&mut engine);
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(B),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(B));
     engine.process(GestureCommand::End);
 
     assert_images(

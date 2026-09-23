@@ -499,16 +499,15 @@ fn a_stroke_lands_under_the_pen_on_a_turned_canvas() {
     // Two screen points, mapped to canvas the way the frontend maps a pointer.
     let view = engine.view();
     let (a, b) = (Vec2::new(60.0, 128.0), Vec2::new(196.0, 128.0));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(view.screen_to_canvas(a)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    engine.process(GestureCommand::To {
-        sample: InputSample::at(view.screen_to_canvas(b)),
-    });
-    engine.process(GestureCommand::End);
+    Gesture::new(Tool::Brush)
+        .drive(
+            &mut engine,
+            [
+                InputSample::at(view.screen_to_canvas(a)),
+                InputSample::at(view.screen_to_canvas(b)),
+            ],
+        )
+        .end();
 
     // It has to come back out along the line the pen drew, on screen.
     let img = engine.render_to_image();
@@ -732,12 +731,7 @@ fn a_live_stroke_reaches_a_cached_frame() {
     let blank = engine.render_to_image();
 
     engine.process(ViewCommand::set_brush(brush([0.9, 0.1, 0.1], 8.0)));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(Vec2::new(30.0, 30.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(Vec2::new(30.0, 30.0)));
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(60.0, 60.0)),
     });
@@ -773,12 +767,7 @@ fn live_and_committed_do_not_share_a_cached_list() {
     let view = engine.view();
 
     engine.process(ViewCommand::set_brush(brush([0.9, 0.1, 0.1], 8.0)));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(Vec2::new(30.0, 30.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(Vec2::new(30.0, 30.0)));
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(110.0, 110.0)),
     });

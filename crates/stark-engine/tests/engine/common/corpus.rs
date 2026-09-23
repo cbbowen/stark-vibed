@@ -23,7 +23,7 @@
 use stark_engine::Engine;
 use stark_engine::Extent2;
 use stark_engine::command::Tool;
-use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
+use stark_engine::command::{DocCommand, InputSample, ViewCommand};
 use stark_model::document::{BrushParams, BrushShape, ModSource, Modulation, OrientationSource};
 use stark_model::geom::Vec2;
 
@@ -186,17 +186,11 @@ impl Case {
         rope: f32,
     ) {
         engine.process(ViewCommand::set_brush(b));
-        let (first, rest) = samples.split_first().expect("a case draws something");
-        engine.process(GestureCommand::Start {
-            tool: Tool::Brush,
-            sample: *first,
-            tolerance,
-            rope,
-        });
-        for s in rest {
-            engine.process(GestureCommand::To { sample: *s });
-        }
-        engine.process(GestureCommand::End);
+        super::Gesture::new(Tool::Brush)
+            .tolerance(tolerance)
+            .rope(rope)
+            .drive(engine, samples.iter().copied())
+            .end();
     }
 }
 

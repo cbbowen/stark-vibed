@@ -194,12 +194,7 @@ fn check_the_stroke_as_it_is_drawn(
     let reused_before = engine.strokes_reused();
 
     engine.process(ViewCommand::set_brush(brush));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: *first,
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(engine, *first);
 
     let stride = rest.len().div_ceil(CHECKPOINTS).max(1);
     for (i, s) in rest.iter().enumerate() {

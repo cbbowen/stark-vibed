@@ -17,8 +17,7 @@
 use crate::common::*;
 use stark_assetid::Picture;
 use stark_engine::command::Tool;
-use stark_engine::command::{DocCommand, Edit, GestureCommand, InputSample, ViewCommand};
-use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_engine::command::{DocCommand, Edit, InputSample, ViewCommand};
 use stark_engine::{MediaParams, RgbaImage};
 use stark_model::document::BrushDynamics;
 use stark_model::geom::{IVec2, Vec2};
@@ -57,16 +56,15 @@ fn render_shifted(shift: Vec2) -> RgbaImage {
     let mut b = brush(RED, 28.0);
     b.jitter = 0.0;
     engine.process(ViewCommand::set_brush(b));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(shift + Vec2::new(-50.0, -50.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    engine.process(GestureCommand::To {
-        sample: InputSample::at(shift + Vec2::new(50.0, 50.0)),
-    });
-    engine.process(GestureCommand::End);
+    Gesture::new(Tool::Brush)
+        .drive(
+            &mut engine,
+            [
+                InputSample::at(shift + Vec2::new(-50.0, -50.0)),
+                InputSample::at(shift + Vec2::new(50.0, 50.0)),
+            ],
+        )
+        .end();
 
     // Center the view on `shift` (Pan: center -= delta/zoom, at zoom 1), then
     // magnify 2× about the viewport center so the canvas point under the center
@@ -207,16 +205,15 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
     let mut field = brush(RED, 60.0);
     field.jitter = 0.0;
     engine.process(ViewCommand::set_brush(field));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(shift + Vec2::new(-60.0, -60.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    engine.process(GestureCommand::To {
-        sample: InputSample::at(shift + Vec2::new(60.0, 60.0)),
-    });
-    engine.process(GestureCommand::End);
+    Gesture::new(Tool::Brush)
+        .drive(
+            &mut engine,
+            [
+                InputSample::at(shift + Vec2::new(-60.0, -60.0)),
+                InputSample::at(shift + Vec2::new(60.0, 60.0)),
+            ],
+        )
+        .end();
 
     // The smudge under test, through the same 4-tile corner.
     let mut smudge = brush(RED, 28.0);
@@ -231,16 +228,15 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
         },
     );
     engine.process(ViewCommand::set_brush(smudge));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(shift + Vec2::new(-50.0, -50.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    engine.process(GestureCommand::To {
-        sample: InputSample::at(shift + Vec2::new(50.0, 50.0)),
-    });
-    engine.process(GestureCommand::End);
+    Gesture::new(Tool::Brush)
+        .drive(
+            &mut engine,
+            [
+                InputSample::at(shift + Vec2::new(-50.0, -50.0)),
+                InputSample::at(shift + Vec2::new(50.0, 50.0)),
+            ],
+        )
+        .end();
 
     let center_px = Vec2::new(SIZE.width as f32 * 0.5, SIZE.height as f32 * 0.5);
     engine.process(ViewCommand::Pan { delta: -shift });

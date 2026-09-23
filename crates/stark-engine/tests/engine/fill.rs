@@ -15,7 +15,6 @@ use crate::common::*;
 use stark_engine::RgbaImage;
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, Edit, GestureCommand, InputSample, ViewCommand};
-use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::Srgb;
 use stark_model::document::{
     BrushDynamics, BrushEffect, BrushParams, FillOp, SelectionMode, SelectionShape, ShapeAction,
@@ -51,16 +50,9 @@ fn arm_fill(engine: &mut stark_engine::Engine, color: [f32; 3]) {
 /// what a user actually does.
 fn drag_fill(engine: &mut stark_engine::Engine, min: Vec2, max: Vec2) {
     arm_fill(engine, RED);
-    engine.process(GestureCommand::Start {
-        tool: Tool::SelectRect,
-        sample: InputSample::at(min),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    engine.process(GestureCommand::To {
-        sample: InputSample::at(max),
-    });
-    engine.process(GestureCommand::End);
+    Gesture::new(Tool::SelectRect)
+        .drive(engine, [InputSample::at(min), InputSample::at(max)])
+        .end();
 }
 
 #[test]
@@ -333,16 +325,15 @@ fn a_selecting_gesture_still_disarms_the_tool() {
     engine.process(ViewCommand::SetShapeAction(ShapeAction::Select(
         SelectionMode::Replace,
     )));
-    engine.process(GestureCommand::Start {
-        tool: Tool::SelectRect,
-        sample: InputSample::at(Vec2::new(-30.0, -30.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    engine.process(GestureCommand::To {
-        sample: InputSample::at(Vec2::new(30.0, 30.0)),
-    });
-    engine.process(GestureCommand::End);
+    Gesture::new(Tool::SelectRect)
+        .drive(
+            &mut engine,
+            [
+                InputSample::at(Vec2::new(-30.0, -30.0)),
+                InputSample::at(Vec2::new(30.0, 30.0)),
+            ],
+        )
+        .end();
 
     assert_eq!(engine.observe().tool, Tool::Brush);
     assert!(engine.observe().has_selection);
@@ -354,12 +345,7 @@ fn the_drag_previews_the_paint_it_will_commit() {
         return;
     };
     arm_fill(&mut engine, RED);
-    engine.process(GestureCommand::Start {
-        tool: Tool::SelectRect,
-        sample: InputSample::at(Vec2::new(-40.0, -40.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::SelectRect).press(&mut engine, InputSample::at(Vec2::new(-40.0, -40.0)));
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(40.0, 40.0)),
     });
@@ -389,12 +375,7 @@ fn the_preview_does_not_accumulate_as_the_drag_grows() {
         return;
     };
     arm_fill(&mut engine, RED);
-    engine.process(GestureCommand::Start {
-        tool: Tool::SelectRect,
-        sample: InputSample::at(Vec2::new(-40.0, -40.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::SelectRect).press(&mut engine, InputSample::at(Vec2::new(-40.0, -40.0)));
     // Fifty moves over the same box. Each rebuilds the preview from the committed
     // base rather than glazing over the last one, so the fiftieth must read the
     // same as the first — otherwise dragging slowly would deposit more paint than

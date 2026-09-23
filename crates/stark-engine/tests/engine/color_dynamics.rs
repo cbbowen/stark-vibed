@@ -11,7 +11,6 @@
 use crate::common::*;
 use stark_engine::command::Tool;
 use stark_engine::command::{GestureCommand, InputSample, ViewCommand};
-use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::document::{BrushParams, ColorDynamics, NoiseKind};
 use stark_model::geom::Vec2;
 
@@ -207,12 +206,7 @@ fn jittered_live_preview_matches_commit() {
 
     live.process(ViewCommand::set_brush(jb));
     let mut it = S_CURVE.iter();
-    live.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(*it.next().unwrap()),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut live, InputSample::at(*it.next().unwrap()));
     for &p in it {
         live.process(GestureCommand::To {
             sample: InputSample::at(p),

@@ -8,8 +8,7 @@ use crate::common::palette::{GREEN_SOFT, RED_SOFT};
 use crate::common::*;
 use stark_engine::Engine;
 use stark_engine::command::Tool;
-use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_engine::path::DEFAULT_TOLERANCE;
+use stark_engine::command::{DocCommand, InputSample, ViewCommand};
 #[cfg(feature = "mixbox")]
 use stark_model::ColorSpaceId;
 use stark_model::SubstrateId;
@@ -260,16 +259,15 @@ fn brush_assets_survive_save_load() {
     let mut brush = brush(RED_SOFT, 60.0);
     brush.shape = BrushShape::Stamp(id);
     original.process(ViewCommand::set_brush(brush));
-    original.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(Vec2::new(-70.0, 0.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    original.process(GestureCommand::To {
-        sample: InputSample::at(Vec2::new(70.0, 0.0)),
-    });
-    original.process(GestureCommand::End);
+    Gesture::new(Tool::Brush)
+        .drive(
+            &mut original,
+            [
+                InputSample::at(Vec2::new(-70.0, 0.0)),
+                InputSample::at(Vec2::new(70.0, 0.0)),
+            ],
+        )
+        .end();
     let before = original.render_to_image();
 
     let bytes = original.save_bytes().expect("serialize");

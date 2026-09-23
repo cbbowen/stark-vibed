@@ -16,7 +16,6 @@ use crate::common::*;
 use stark_engine::RgbaImage;
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, Edit, GestureCommand, InputSample, ViewCommand};
-use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::Srgb;
 use stark_model::document::BrushDynamics;
 use stark_model::document::{
@@ -43,16 +42,9 @@ fn rect(min: Vec2, max: Vec2) -> SelectionShape {
 /// against the selection it is drawn over (`session::against_selection`).
 fn marquee(engine: &mut stark_engine::Engine, action: ShapeAction, min: Vec2, max: Vec2) {
     engine.process(ViewCommand::SetShapeAction(action));
-    engine.process(GestureCommand::Start {
-        tool: Tool::SelectRect,
-        sample: InputSample::at(min),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    engine.process(GestureCommand::To {
-        sample: InputSample::at(max),
-    });
-    engine.process(GestureCommand::End);
+    Gesture::new(Tool::SelectRect)
+        .drive(engine, [InputSample::at(min), InputSample::at(max)])
+        .end();
 }
 
 /// A stroke that saturates its parcel over the core in one pass — flow high, no
@@ -401,12 +393,7 @@ fn a_selection_gesture_commits_the_same_op_it_previewed() {
         return;
     };
     // Drag a rectangular marquee, then paint through it.
-    engine.process(GestureCommand::Start {
-        tool: Tool::SelectRect,
-        sample: InputSample::at(BOX_MIN),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::SelectRect).press(&mut engine, InputSample::at(BOX_MIN));
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(-20.0, 0.0)),
     });
@@ -496,12 +483,7 @@ fn a_click_with_a_marquee_selects_nothing() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(GestureCommand::Start {
-        tool: Tool::SelectRect,
-        sample: InputSample::at(Vec2::ZERO),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::SelectRect).press(&mut engine, InputSample::at(Vec2::ZERO));
     engine.process(GestureCommand::End);
     assert!(
         !engine.observe().has_selection,
@@ -523,12 +505,7 @@ fn drawing_a_selection_disarms_the_tool() {
         return;
     };
     for tool in [Tool::SelectRect, Tool::SelectEllipse, Tool::SelectLasso] {
-        engine.process(GestureCommand::Start {
-            tool,
-            sample: InputSample::at(BOX_MIN),
-            tolerance: DEFAULT_TOLERANCE,
-            rope: 0.0,
-        });
+        Gesture::new(tool).press(&mut engine, InputSample::at(BOX_MIN));
         // A marquee spans the drag's two corners; a lasso needs a traced interior.
         let path: &[Vec2] = if tool == Tool::SelectLasso {
             &[
@@ -567,31 +544,26 @@ fn a_stroke_after_a_selection_paints_rather_than_reselecting() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    engine.process(GestureCommand::Start {
-        tool: Tool::SelectRect,
-        sample: InputSample::at(BOX_MIN),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    engine.process(GestureCommand::To {
-        sample: InputSample::at(BOX_MAX),
-    });
-    engine.process(GestureCommand::End);
+    Gesture::new(Tool::SelectRect)
+        .drive(
+            &mut engine,
+            [InputSample::at(BOX_MIN), InputSample::at(BOX_MAX)],
+        )
+        .end();
 
     // Drive the next gesture with whatever tool the engine now reports, exactly as a
     // frontend does — no explicit switch back to the brush anywhere.
     engine.process(ViewCommand::set_brush(brush(RED, 14.0)));
     let tool = engine.observe().tool;
-    engine.process(GestureCommand::Start {
-        tool,
-        sample: InputSample::at(Vec2::new(-30.0, 0.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    engine.process(GestureCommand::To {
-        sample: InputSample::at(Vec2::new(30.0, 0.0)),
-    });
-    engine.process(GestureCommand::End);
+    Gesture::new(tool)
+        .drive(
+            &mut engine,
+            [
+                InputSample::at(Vec2::new(-30.0, 0.0)),
+                InputSample::at(Vec2::new(30.0, 0.0)),
+            ],
+        )
+        .end();
 
     let img = engine.render_to_image();
     assert!(

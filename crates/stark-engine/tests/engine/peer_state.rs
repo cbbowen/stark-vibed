@@ -13,14 +13,13 @@
 use crate::common::collab::{pair, snap, sync};
 use crate::common::palette::{GREEN_SOFT, RED};
 use crate::common::{
-    Lead, MARGIN_FLAT, Probe, assert_images, assert_images_differ, engine_or_skip, leads, paint,
-    texel,
+    Gesture, Lead, MARGIN_FLAT, Probe, assert_images, assert_images_differ, engine_or_skip, leads,
+    paint, texel,
 };
 use stark_engine::command::Tool;
 use stark_engine::command::{
     DocCommand, Edit, GestureCommand, InputSample, PeerCommand, ViewCommand,
 };
-use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Engine, RgbaImage};
 use stark_model::Srgb;
 use stark_model::document::{
@@ -335,12 +334,7 @@ fn a_peers_live_stroke_previews_and_the_commit_matches_it() {
     // A draws, publishing as it goes; B reassembles and previews.
     let brush = crate::common::brush(RED, 12.0);
     a.process(stark_engine::command::ViewCommand::set_brush(brush));
-    a.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(CROSSING[0]),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut a, InputSample::at(CROSSING[0]));
     let mut now = 0.0;
     let pump = |a: &mut Engine, b: &mut Engine, now: &mut f64| {
         *now += 0.05;
@@ -414,12 +408,7 @@ fn a_brush_from_the_frontend_is_held_like_one_from_a_peer() {
         ),
         ..BrushParams::default()
     }));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(CROSSING[0]),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(CROSSING[0]));
 
     let frame = engine
         .take_presence(0.05)
@@ -472,12 +461,7 @@ fn a_slow_receiver_pump_keeps_a_live_stroke_alive() {
     };
 
     a.process(ViewCommand::set_brush(crate::common::brush(RED, 12.0)));
-    a.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(CROSSING[0]),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut a, InputSample::at(CROSSING[0]));
 
     // One long stroke, drawn well past B's pump gap. Wavy, so the fitter keeps
     // emitting control points — a straight line fits in two knots forever and
@@ -628,12 +612,7 @@ fn a_settled_head_does_not_outlive_its_gesture() {
     assert_eq!(engine.live_head_count(), 0, "nobody is drawing yet");
 
     // This client starts a stroke...
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(CROSSING[0]),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(CROSSING[0]));
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(0.0, 40.0)),
     });
@@ -685,12 +664,7 @@ fn is_green(img: &RgbaImage, canvas: Vec2) -> bool {
 /// Draw this client's live stroke along `points`, and leave the pointer down.
 fn start_live_stroke(engine: &mut Engine, color: [f32; 3], points: [Vec2; 2]) {
     engine.process(ViewCommand::set_brush(crate::common::brush(color, 12.0)));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(points[0]),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(engine, InputSample::at(points[0]));
     for i in 1..=8 {
         let t = i as f32 / 8.0;
         engine.process(GestureCommand::To {
@@ -977,12 +951,7 @@ fn a_peers_stroke_on_their_new_substrate_shows_under_a_held_drag() {
     b.process(ViewCommand::set_brush(crate::common::brush(
         GREEN_SOFT, 12.0,
     )));
-    b.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(line[0]),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut b, InputSample::at(line[0]));
     let mut now = 0.0;
     for i in 1..=8 {
         let t = i as f32 / 8.0;
@@ -1122,12 +1091,7 @@ fn presence_due_never_hides_a_frame() {
     for _ in 0..10 {
         step(&mut engine, &mut now, &mut idle_ticks);
     }
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(CROSSING[0]),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(CROSSING[0]));
     for i in 0..10 {
         engine.process(GestureCommand::To {
             sample: InputSample::at(CROSSING[0] + (CROSSING[1] - CROSSING[0]) * (i as f32 / 10.0)),

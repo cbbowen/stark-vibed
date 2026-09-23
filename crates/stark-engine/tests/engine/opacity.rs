@@ -676,12 +676,9 @@ fn cut_profile(b: BrushParams, half: f32, fine: bool) -> Option<Vec<f64>> {
         )
     };
     engine.process(ViewCommand::set_brush(b));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(samples[0]),
-        tolerance,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush)
+        .tolerance(tolerance)
+        .press(&mut engine, InputSample::at(samples[0]));
     for &p in &samples[1..] {
         engine.process(GestureCommand::To {
             sample: InputSample::at(p),

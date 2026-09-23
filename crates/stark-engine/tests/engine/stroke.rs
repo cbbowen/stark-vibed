@@ -69,12 +69,7 @@ fn live_preview_shows_stroke_before_commit() {
     };
     // Build an in-flight stroke without ending it.
     engine.process(ViewCommand::set_brush(brush(RED, 40.0)));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(Vec2::new(-30.0, 0.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(Vec2::new(-30.0, 0.0)));
     engine.process(GestureCommand::To {
         sample: InputSample::at(Vec2::new(30.0, 0.0)),
     });
@@ -98,12 +93,7 @@ fn tinting_the_live_tail_does_not_change_what_commits() {
         .map(|i| Vec2::new(i as f32 * 2.0 - 60.0, (i as f32 * 0.1).sin() * 20.0))
         .collect();
     let mut it = path.iter();
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(*it.next().unwrap()),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(*it.next().unwrap()));
     for &p in it {
         engine.process(GestureCommand::To {
             sample: InputSample::at(p),
@@ -417,12 +407,7 @@ fn a_click_paints_nothing_and_commits_nothing() {
         // banked a `SetSubstrateColor`, so "nothing committed" is a revision that
         // did not move, never an undo stack that is empty.
         let rev = engine.observe().doc_revision;
-        engine.process(GestureCommand::Start {
-            tool: Tool::Brush,
-            sample: InputSample::at(Vec2::ZERO),
-            tolerance: DEFAULT_TOLERANCE,
-            rope: 0.0,
-        });
+        Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(Vec2::ZERO));
         engine.process(GestureCommand::End);
         assert_images(
             &before,
@@ -450,12 +435,7 @@ fn a_click_paints_nothing_and_commits_nothing() {
 fn draw_long_stroke(engine: &mut Engine) {
     engine.process(ViewCommand::set_brush(brush(RED, 14.0)));
     let mut it = long_wave().into_iter();
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(it.next().unwrap()),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(engine, InputSample::at(it.next().unwrap()));
     for p in it {
         engine.process(GestureCommand::To {
             sample: InputSample::at(p),
@@ -763,12 +743,7 @@ fn measure_per_move_growth(b: BrushParams) -> Option<(f64, f64)> {
         })
         .collect();
     let mut it = path.iter();
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(*it.next().unwrap()),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(*it.next().unwrap()));
     let (mut early, mut late) = (0.0f64, 0.0f64);
     let (mut ne, mut nl) = (0u32, 0u32);
     for (i, &p) in it.enumerate() {
@@ -970,12 +945,9 @@ fn swept_cut(b: BrushParams, half: f32, step: Option<f32>) -> Option<(f64, Vec<f
         ),
     };
     engine.process(ViewCommand::set_brush(b));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(samples[0]),
-        tolerance,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush)
+        .tolerance(tolerance)
+        .press(&mut engine, InputSample::at(samples[0]));
     for &p in &samples[1..] {
         engine.process(GestureCommand::To {
             sample: InputSample::at(p),

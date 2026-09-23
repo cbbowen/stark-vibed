@@ -7,7 +7,6 @@ use crate::common::palette::{GREEN, RED};
 use crate::common::*;
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::document::{
     BrushDynamics, BrushEffect, BrushParams, BrushShape, LayerId, OrientationSource,
 };
@@ -576,12 +575,7 @@ fn golden_self_smear() {
     );
     // Down through the bar, loop around, and back across its own trail.
     engine.process(ViewCommand::set_brush(b));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(Vec2::new(-40.0, -70.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(Vec2::new(-40.0, -70.0)));
     for &(x, y) in &[(-40.0, 60.0), (20.0, 70.0), (40.0, 0.0), (-70.0, 10.0)] {
         engine.process(GestureCommand::To {
             sample: InputSample::at(Vec2::new(x, y)),
@@ -760,12 +754,7 @@ fn a_conservative_smear_does_not_mint_paint_however_long_it_runs() {
         },
     );
     engine.process(ViewCommand::set_brush(smear));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(Vec2::new(-70.0, 0.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(Vec2::new(-70.0, 0.0)));
     for i in 1..=240 {
         let t = i as f32;
         engine.process(GestureCommand::To {
@@ -989,16 +978,9 @@ fn a_stretched_tips_lift_share_does_not_depend_on_its_drain() {
                 tilt,
                 ..InputSample::default()
             };
-            engine.process(GestureCommand::Start {
-                tool: Tool::Brush,
-                sample: sample(-300.0),
-                tolerance: DEFAULT_TOLERANCE,
-                rope: 0.0,
-            });
-            engine.process(GestureCommand::To {
-                sample: sample(300.0),
-            });
-            engine.process(GestureCommand::End);
+            Gesture::new(Tool::Brush)
+                .drive(&mut engine, [sample(-300.0), sample(300.0)])
+                .end();
             let h = total_height(&engine, LayerId::ROOT);
             engine.process(DocCommand::Undo);
             h
@@ -1050,16 +1032,9 @@ fn a_stretched_tips_steady_columns_hold_what_it_minted() {
             };
             // 100 radii, and the widest tip is 16 radii long: the window below starts 32
             // radii into the stroke and is finished 32 before the pen lifts.
-            engine.process(GestureCommand::Start {
-                tool: Tool::Brush,
-                sample: sample(-500.0),
-                tolerance: DEFAULT_TOLERANCE,
-                rope: 0.0,
-            });
-            engine.process(GestureCommand::To {
-                sample: sample(500.0),
-            });
-            engine.process(GestureCommand::End);
+            Gesture::new(Tool::Brush)
+                .drive(&mut engine, [sample(-500.0), sample(500.0)])
+                .end();
             let window: f64 = column_height(&engine, LayerId::ROOT, -100..100)
                 .iter()
                 .sum();
@@ -1730,12 +1705,10 @@ fn a_bleeding_stroke_previews_as_it_commits() {
         })
         .collect();
     let mut it = path.iter();
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(*it.next().expect("a first sample")),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(
+        &mut engine,
+        InputSample::at(*it.next().expect("a first sample")),
+    );
     for &p in it {
         engine.process(GestureCommand::To {
             sample: InputSample::at(p),
@@ -2140,12 +2113,7 @@ fn a_bleeding_strokes_preview_is_its_commit() {
         })
         .collect();
     let (first, rest) = samples.split_first().expect("samples");
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: *first,
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut engine, *first);
     for s in rest {
         engine.process(GestureCommand::To { sample: *s });
     }
@@ -2373,12 +2341,7 @@ fn a_wet_stroke_near_the_origin_replays_bit_for_bit() {
             )
         })
         .collect();
-    live.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(path[0]),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut live, InputSample::at(path[0]));
     for &p in &path[1..] {
         live.process(GestureCommand::To {
             sample: InputSample::at(p),

@@ -15,7 +15,6 @@
 use crate::common::palette::RED;
 use crate::common::*;
 use stark_engine::command::{GestureCommand, InputSample, Tool, ViewCommand};
-use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Engine, RgbaImage};
 use stark_model::document::{BrushEffect, BrushParams, BrushShape, LayerId, LiquifyEffect};
 use stark_model::geom::{TileCoord, Vec2};
@@ -494,12 +493,7 @@ fn a_drag_that_rebases_mid_stroke_replays_bit_for_bit() {
     live.process(ViewCommand::SetFastCommit(false));
     stripes(&mut live, -150.0, 25);
     live.process(ViewCommand::set_brush(liquify_brush(24.0, 1.0)));
-    live.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(path[0]),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut live, InputSample::at(path[0]));
     for &p in &path[1..] {
         live.process(GestureCommand::To {
             sample: InputSample::at(p),

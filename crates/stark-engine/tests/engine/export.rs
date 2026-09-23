@@ -12,7 +12,6 @@ use stark_engine::command::Tool;
 use stark_engine::command::{
     DocCommand, Edit, GestureCommand, InputSample, PeerCommand, ViewCommand,
 };
-use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Background, Engine, ExportScale, Rendered, RgbaImage};
 use stark_model::Srgb;
 use stark_model::document::LayerId;
@@ -254,16 +253,15 @@ fn export_omits_the_selection_outline() {
     );
 
     // A marquee well inside the frame, so its outline would land in the export.
-    engine.process(GestureCommand::Start {
-        tool: Tool::SelectRect,
-        sample: InputSample::at(Vec2::new(-30.0, -20.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    engine.process(GestureCommand::To {
-        sample: InputSample::at(Vec2::new(30.0, 20.0)),
-    });
-    engine.process(GestureCommand::End);
+    Gesture::new(Tool::SelectRect)
+        .drive(
+            &mut engine,
+            [
+                InputSample::at(Vec2::new(-30.0, -20.0)),
+                InputSample::at(Vec2::new(30.0, 20.0)),
+            ],
+        )
+        .end();
     assert!(
         engine.observe().has_selection,
         "the marquee should have taken"
@@ -698,12 +696,7 @@ fn committed_renders_omit_the_in_flight_stroke() {
     );
 
     // A stroke *held down* across the middle of the frame: nothing is committed yet.
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(WIDE[0]),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(WIDE[0]));
     engine.process(GestureCommand::To {
         sample: InputSample::at(WIDE[1]),
     });
@@ -764,12 +757,7 @@ fn doc_revision_tracks_commits_and_not_gestures() {
     };
     let at_rest = engine.observe().doc_revision;
 
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(WIDE[0]),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(WIDE[0]));
     for i in 1..8 {
         engine.process(GestureCommand::To {
             sample: InputSample::at(Vec2::new(-110.0 + 30.0 * i as f32, 0.0)),

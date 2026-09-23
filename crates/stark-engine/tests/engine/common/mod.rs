@@ -309,47 +309,115 @@ pub fn picture_png(w: u32, h: u32, pixels: Vec<u8>) -> Vec<u8> {
     .expect("a well-formed picture")
 }
 
+/// A gesture about to be made: which tool, and the two dials the press carries.
+///
+/// **The one place `GestureCommand::Start`'s fields are named.** They were spelled
+/// out at every site that opened a gesture, which made a new field on the press a
+/// fifty-file edit — and made the two dials invisible, since a site that wanted the
+/// default wrote it out beside one that did not.
+///
+/// The defaults are the frontend's: [`DEFAULT_TOLERANCE`] and no rope. A test that
+/// varies one says which, and says nothing about the other.
+#[derive(Clone, Copy)]
+#[must_use]
+pub struct Gesture {
+    tool: Tool,
+    tolerance: f32,
+    rope: f32,
+}
+
+impl Gesture {
+    pub fn new(tool: Tool) -> Self {
+        Self {
+            tool,
+            tolerance: DEFAULT_TOLERANCE,
+            rope: 0.0,
+        }
+    }
+
+    /// The input tolerance the path is fitted to (§6.2) — the frontend's
+    /// smoothness dial.
+    pub fn tolerance(mut self, tolerance: f32) -> Self {
+        self.tolerance = tolerance;
+        self
+    }
+
+    /// The towed tip's string, in canvas px (§6.2): the mark follows this far
+    /// behind the pointer rather than at it.
+    pub fn rope(mut self, rope: f32) -> Self {
+        self.rope = rope;
+        self
+    }
+
+    /// Press at the first sample and carry the rest, leaving the gesture open.
+    pub fn drive<'e>(
+        self,
+        engine: &'e mut Engine,
+        samples: impl IntoIterator<Item = InputSample>,
+    ) -> Live<'e> {
+        let mut it = samples.into_iter();
+        let first = it.next().expect("a gesture presses somewhere");
+        self.press(engine, first);
+        let mut live = Live { engine };
+        for s in it {
+            live.to(s);
+        }
+        live
+    }
+
+    /// Press at `sample` and hand the engine straight back — for a test that has
+    /// its own work to do between the reports.
+    pub fn press(self, engine: &mut Engine, sample: InputSample) {
+        engine.process(GestureCommand::Start {
+            tool: self.tool,
+            sample,
+            tolerance: self.tolerance,
+            rope: self.rope,
+        });
+    }
+}
+
+/// A gesture in flight, holding the engine it is being made on.
+pub struct Live<'e> {
+    engine: &'e mut Engine,
+}
+
+impl Live<'_> {
+    /// One more report.
+    pub fn to(&mut self, sample: InputSample) -> &mut Self {
+        self.engine.process(GestureCommand::To { sample });
+        self
+    }
+
+    /// Lift the pen, committing the stroke.
+    pub fn end(self) {
+        self.engine.process(GestureCommand::End);
+    }
+}
+
 /// Paint and commit a stroke through `points` with an explicit brush.
 pub fn stroke_with(engine: &mut Engine, b: BrushParams, points: &[Vec2]) {
     engine.process(ViewCommand::set_brush(b));
-    let mut it = points.iter();
-    let first = *it.next().expect("at least one point");
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(first),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    for &p in it {
-        engine.process(GestureCommand::To {
-            sample: InputSample::at(p),
-        });
-    }
-    engine.process(GestureCommand::End);
+    Gesture::new(Tool::Brush)
+        .drive(engine, points.iter().copied().map(InputSample::at))
+        .end();
 }
 
 /// [`stroke_with`], each point pressed at its own pressure — for a claim about
 /// what the pen does *along* one stroke, where every other stroke here is
 /// pressed home throughout.
 pub fn stroke_pressed(engine: &mut Engine, b: BrushParams, points: &[(Vec2, f32)]) {
-    let sample = |&(pos, pressure): &(Vec2, f32)| InputSample {
-        pos,
-        pressure,
-        ..InputSample::default()
-    };
     engine.process(ViewCommand::set_brush(b));
-    let mut it = points.iter();
-    let first = sample(it.next().expect("at least one point"));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: first,
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    for p in it {
-        engine.process(GestureCommand::To { sample: sample(p) });
-    }
-    engine.process(GestureCommand::End);
+    Gesture::new(Tool::Brush)
+        .drive(
+            engine,
+            points.iter().map(|&(pos, pressure)| InputSample {
+                pos,
+                pressure,
+                ..InputSample::default()
+            }),
+        )
+        .end();
 }
 
 /// Paint and commit a stroke through the given canvas points with `color`.

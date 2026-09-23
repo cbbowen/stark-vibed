@@ -10,7 +10,6 @@ use crate::common::palette::RED_SOFT;
 use crate::common::*;
 use stark_engine::command::Tool;
 use stark_engine::command::{GestureCommand, InputSample, ViewCommand};
-use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::MAX_SHAPE_DIM;
 use stark_model::document::{BrushShape, OrientationSource};
 use stark_model::geom::Vec2;
@@ -72,16 +71,15 @@ fn a_capped_shape_paints_and_survives_save_load() {
     let mut brush = brush(RED_SOFT, 60.0);
     brush.shape = BrushShape::Stamp(id);
     original.process(ViewCommand::set_brush(brush));
-    original.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(Vec2::new(-70.0, 0.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
-    original.process(GestureCommand::To {
-        sample: InputSample::at(Vec2::new(70.0, 0.0)),
-    });
-    original.process(GestureCommand::End);
+    Gesture::new(Tool::Brush)
+        .drive(
+            &mut original,
+            [
+                InputSample::at(Vec2::new(-70.0, 0.0)),
+                InputSample::at(Vec2::new(70.0, 0.0)),
+            ],
+        )
+        .end();
     let before = original.render_to_image();
 
     let bytes = original.save_bytes().expect("serialize");
@@ -141,16 +139,15 @@ fn the_pen_bake_paints_what_the_follow_stroke_bake_does_at_zero_angle() {
         b.make_wet().dynamics.lift = 0.6;
         b.make_wet().dynamics.deposit = 0.6;
         engine.process(ViewCommand::set_brush(b));
-        engine.process(GestureCommand::Start {
-            tool: Tool::Brush,
-            sample: InputSample::at(Vec2::new(-70.0, 0.0)),
-            tolerance: DEFAULT_TOLERANCE,
-            rope: 0.0,
-        });
-        engine.process(GestureCommand::To {
-            sample: InputSample::at(Vec2::new(70.0, 0.0)),
-        });
-        engine.process(GestureCommand::End);
+        Gesture::new(Tool::Brush)
+            .drive(
+                engine,
+                [
+                    InputSample::at(Vec2::new(-70.0, 0.0)),
+                    InputSample::at(Vec2::new(70.0, 0.0)),
+                ],
+            )
+            .end();
         let img = engine.render_to_image();
         engine.process(stark_engine::command::DocCommand::Undo);
         img
@@ -245,12 +242,7 @@ fn a_brush_shape_arriving_mid_stroke_is_drawn_by_its_commit() {
     let mut b = brush(RED_SOFT, 24.0);
     b.shape = BrushShape::Stamp(id);
     engine.process(ViewCommand::set_brush(b));
-    engine.process(GestureCommand::Start {
-        tool: Tool::Brush,
-        sample: InputSample::at(Vec2::new(-70.0, 0.0)),
-        tolerance: DEFAULT_TOLERANCE,
-        rope: 0.0,
-    });
+    Gesture::new(Tool::Brush).press(&mut engine, InputSample::at(Vec2::new(-70.0, 0.0)));
     for i in 1..=8 {
         engine.process(GestureCommand::To {
             sample: InputSample::at(Vec2::new(-70.0 + 17.5 * i as f32, 0.0)),
