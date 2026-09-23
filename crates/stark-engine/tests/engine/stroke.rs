@@ -701,20 +701,16 @@ fn stroke_spans_multiple_tiles_via_cow() {
 ///
 /// # The view is one tile, and that is the measurement
 ///
-/// The readback composites the **whole viewport**, and what that costs is a property
-/// of the picture, not of the move — so a viewport wide enough to hold the stroke
-/// puts the cost of *showing* a filling canvas inside a per-move number and calls it
-/// stroke work. It is not a small term: against a 1280×800 view this measured 1.6 ms
-/// early and 3.4 ms late, every millisecond of the difference in `render.composite`
-/// and the GPU behind it, while `stroke.range` and `stroke.swept` stood at 0.24 ms
-/// and 0.21 ms from the first move to the last. Three controls say so outright —
-/// with the pointer *standing still* the same readback went 1.3 ms → 11.1 ms over
-/// the same stroke; it stayed at 11.1 ms after the gesture had ended, with nothing
-/// in flight at all; and laying solid paint over those same 22 tiles (33 tiles
-/// afterwards) took it back to 1.4 ms. What the compositor is answering to there is
-/// how much *paint edge* is in view — a fatter brush over the same region, or the
-/// same region crossed once instead of five times, is as cheap as bare canvas — and
-/// that belongs to a test about compositing.
+/// The readback renders, copies out and blocking-maps the **whole viewport**, so what
+/// it costs is a property of the view and not of the move — and a viewport wide enough
+/// to hold the stroke puts that whole term inside a per-move number and calls it stroke
+/// work. Against a 1280×800 view this measured 1.6 ms early and 3.4 ms late while
+/// `stroke.range` and `stroke.swept` stood at 0.24 ms and 0.21 ms from the first move
+/// to the last. Little of it is *compositing*: the same frame into a target the caller
+/// keeps costs ~0.2 ms. The rest is the copy, and — until the probe kept its target —
+/// the viewport-sized attachments every call allocated and destroyed, which cost
+/// whatever the state the stroke had left the GPU allocator in made of them
+/// (`Engine::render_to_image`).
 ///
 /// So the viewport is [`common::SIZE`](crate::common::SIZE), about one tile, while
 /// the stroke still runs ±590 px across it: the frame is a real frame with paint in
@@ -722,8 +718,7 @@ fn stroke_spans_multiple_tiles_via_cow() {
 /// left in the number is the fit, the fold, the stroke render and the GPU time
 /// behind it. The readback stays, for the reason it was added — `process` only
 /// queues, and the blocking map waits on everything the move submitted — and it is
-/// about half of what is measured (0.55 ms per move, against 0.29 ms of fold and
-/// stroke render).
+/// ~0.18 ms of the ~0.47 ms a swept move measures.
 ///
 /// **Answers `None` where there is no GPU**, rather than a pair — and the difference
 /// is the whole reason this does not build its own device. It used to, and returned
@@ -781,8 +776,8 @@ fn per_move_cost_does_not_grow_with_stroke_length() {
         };
         // Still loose, because this is a wall-clock measurement on a shared machine —
         // but 1.6 rather than the 2.0 it was, because the viewport no longer spends
-        // most of the budget on compositing a filling canvas (see above). Five
-        // consecutive solo runs measured 0.91–0.96x swept and 1.06–1.10x on the loop,
+        // most of the budget on a readback that grows with the view (see above). Five
+        // consecutive solo runs measured 0.82–1.08x swept and 1.04–1.11x on the loop,
         // and the pure CPU rows behind them — `stroke.range`, `stroke.swept`,
         // `stroke.dynamics`, which carry no readback at all — agree at 1.04–1.12x. The
         // loop's few per cent is `LoopCarry`'s per-tile maps, which every capturing

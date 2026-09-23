@@ -9,6 +9,8 @@
 //! (`Engine::presented`); the fields being disjoint, the borrow checker now allows what
 //! was always true.
 
+#[cfg(not(target_arch = "wasm32"))]
+use super::render::ProbeTarget;
 use super::render::Rendered;
 use crate::colorspace::ColorSpace;
 use crate::document::DocState;
@@ -56,6 +58,10 @@ pub(super) struct Presenter {
     /// The largest of the engine's three memos, and the only one whose value is not a
     /// projection — see [`draw_list`](Self::draw_list).
     draw_cache: Memo<DrawKey, Arc<[CompositeGroup]>>,
+    /// What the suite's two readbacks render through, kept between them — see
+    /// [`ProbeTarget`] for why the parking is sound here and nowhere else.
+    #[cfg(not(target_arch = "wasm32"))]
+    probe: ProbeTarget,
 }
 
 impl Presenter {
@@ -67,7 +73,26 @@ impl Presenter {
             compositor,
             pipeline,
             draw_cache: Memo::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            probe: ProbeTarget::default(),
         }
+    }
+
+    /// The probe's kept target, **taken out** for the render that uses it;
+    /// [`keep_probe`](Self::keep_probe) puts it back (§9).
+    ///
+    /// Taken rather than borrowed because a frame borrows the whole engine, so the
+    /// attachments it draws into cannot be reached through a field of it at the same
+    /// time. Losing it to a panic mid-render costs the next call one allocation and
+    /// nothing else.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn take_probe(&mut self) -> ProbeTarget {
+        std::mem::take(&mut self.probe)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn keep_probe(&mut self, probe: ProbeTarget) {
+        self.probe = probe;
     }
 
     /// [`DrawList`], **memoized**: the draw list for `key`, built afresh or taken from

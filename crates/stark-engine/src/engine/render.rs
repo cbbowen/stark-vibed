@@ -174,6 +174,91 @@ fn offscreen_target(
     })
 }
 
+/// The usage every offscreen target on this path is made with: drawn into, then copied
+/// out.
+const OFFSCREEN_USAGE: wgpu::TextureUsages =
+    wgpu::TextureUsages::RENDER_ATTACHMENT.union(wgpu::TextureUsages::COPY_SRC);
+
+/// What the two [`Probe`](crate::testing::Probe) readbacks render through, **kept
+/// across calls** (§9): pass A's attachments and the texture they resolve into.
+///
+/// **Why the memory is parked here and not inside [`Offscreen`].** `Offscreen`'s
+/// bargain is that a one-shot must not be parked — an 8192-px export's attachments are
+/// half a gigabyte, and leaving them resident for the session is worse than paying for
+/// them twice. The probes are the opposite case: a suite calls them ~1000 times at one
+/// steady viewport, and building the accumulator trio afresh each time costs an order
+/// of magnitude more than the frame it then composites. Keeping it *behind the probe*
+/// settles the two at once, and it is sound only there: these are `testing`-only entry
+/// points, so the parked memory belongs to a test harness and no app path can reach it.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+pub(super) struct ProbeTarget {
+    /// Pass A's attachments, kept unconditionally: a
+    /// [`Compositor`](crate::gpu::composite::Compositor) resizes its own on a change of
+    /// target, and follows a colour-space rebuild.
+    attachments: Offscreen,
+    target: Option<ProbeTexture>,
+}
+
+/// The kept readback target, with the two things that invalidate it.
+#[cfg(not(target_arch = "wasm32"))]
+struct ProbeTexture {
+    format: wgpu::TextureFormat,
+    size: Extent2,
+    texture: wgpu::Texture,
+    view: wgpu::TextureView,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl ProbeTarget {
+    /// The attachments, the target and its view, ready for a `size` render into
+    /// `format` — the target rebuilt if and only if one of those two has moved, which
+    /// is all that can make it wrong.
+    ///
+    /// Three borrows off one `&mut self` because a render needs the attachments
+    /// mutably while it draws into the view beside them.
+    fn parts(
+        &mut self,
+        gpu: &GpuContext,
+        format: wgpu::TextureFormat,
+        size: Extent2,
+    ) -> (&mut Offscreen, &wgpu::Texture, &wgpu::TextureView) {
+        let Self {
+            attachments,
+            target,
+        } = self;
+        if target
+            .as_ref()
+            .is_none_or(|t| t.format != format || t.size != size)
+        {
+            *target = None;
+        }
+        let kept = target.get_or_insert_with(|| {
+            let texture =
+                offscreen_target(gpu, "stark probe target", format, size, OFFSCREEN_USAGE);
+            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            ProbeTexture {
+                format,
+                size,
+                texture,
+                view,
+            }
+        });
+        (attachments, &kept.texture, &kept.view)
+    }
+}
+
+/// Which display a probe's frame is composited for — the only thing the two differ in
+/// beyond the format they read (§6.5).
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Copy, Clone)]
+enum ProbeDisplay {
+    /// SDR whatever the screen is showing, as any export is (§15.6).
+    Export,
+    /// The screen's own display, which for the half-float read is the whole point.
+    Screen,
+}
+
 /// How much of the viewport [`Engine::show_piece`] leaves clear around the piece, as
 /// a fraction of each axis on each side. Not zero, unlike the fit an *export* makes:
 /// a piece flush with all four window edges reads as one that carries on past them.
@@ -339,12 +424,13 @@ impl Engine {
     /// export path, read back blocking. WebGPU has no blocking poll (`gpu::readback`).
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn render_to_image(&mut self) -> RgbaImage {
-        // One render per call, so nothing is kept: the attachments are allocated here
-        // and dropped with this `Offscreen`.
-        let (target, size) =
-            self.render_offscreen(&mut Offscreen::default(), RenderSpec::screen(self.view));
-        let pixels = crate::gpu::readback::read_rgba8_blocking(&self.shared.gpu, &target, size);
-        RgbaImage::from_target_bytes(size.width, size.height, pixels, target.format())
+        // 8-bit whatever the screen is (§15.6): the compositor renders an 8-bit target
+        // SDR, so this format and `ProbeDisplay::Export` together are what make it one.
+        let format = crate::gpu::composite::export_format(self.shared.target_format);
+        self.probe_frame(format, ProbeDisplay::Export, |gpu, target, size| {
+            let pixels = crate::gpu::readback::read_rgba8_blocking(gpu, target, size);
+            RgbaImage::from_target_bytes(size.width, size.height, pixels, format)
+        })
     }
 
     /// [`Probe::render_to_floats`](crate::testing::Probe::render_to_floats): the
@@ -357,28 +443,42 @@ impl Engine {
             wgpu::TextureFormat::Rgba16Float,
             "render_to_floats reads a half-float screen, and this engine presents to {format:?}",
         );
-        let view = self.view;
-        let size = view.viewport;
-        let target = offscreen_target(
-            &self.shared.gpu,
-            "stark hdr probe target",
-            format,
-            size,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        );
-        let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
-        self.render_view(
-            &target_view,
-            RenderSpec::screen(view),
-            // The screen's own display, which is the whole of what this reads back.
-            Attachments::Surface(&mut Offscreen::default()),
-        );
-        crate::gpu::readback::read_rgba16f_blocking(&self.shared.gpu, &target, size)
+        self.probe_frame(format, ProbeDisplay::Screen, |gpu, target, size| {
+            crate::gpu::readback::read_rgba16f_blocking(gpu, target, size)
+        })
     }
 
-    /// Render through an explicit view into an offscreen texture, ready to be read
-    /// back. Split out so the blocking and async readbacks share every step but
-    /// the wait.
+    /// The two probes' shared body: the screen's own frame — same view, same
+    /// background, same chrome — into the [`ProbeTarget`] kept on the presenter, then
+    /// `read` over it (§9).
+    ///
+    /// The target comes out of the presenter and goes back in around the render, since
+    /// that render borrows the engine whole
+    /// ([`take_probe`](super::presenter::Presenter::take_probe)).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn probe_frame<T>(
+        &mut self,
+        format: wgpu::TextureFormat,
+        display: ProbeDisplay,
+        read: impl FnOnce(&GpuContext, &wgpu::Texture, Extent2) -> T,
+    ) -> T {
+        let spec = RenderSpec::screen(self.view);
+        let size = spec.view.viewport;
+        let mut kept = self.presenter.take_probe();
+        let (attachments, target, target_view) = kept.parts(&self.shared.gpu, format, size);
+        let attachments = match display {
+            ProbeDisplay::Export => Attachments::Export(attachments),
+            ProbeDisplay::Screen => Attachments::Surface(attachments),
+        };
+        self.render_view(target_view, spec, attachments);
+        let out = read(&self.shared.gpu, target, size);
+        self.presenter.keep_probe(kept);
+        out
+    }
+
+    /// Render through an explicit view into a freshly allocated offscreen texture,
+    /// ready to be read back — an export's half of what
+    /// [`probe_frame`](Self::probe_frame) does with a kept one.
     fn render_offscreen(
         &mut self,
         into: &mut Offscreen,
@@ -392,7 +492,7 @@ impl Engine {
             "stark export target",
             crate::gpu::composite::export_format(self.shared.target_format),
             size,
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            OFFSCREEN_USAGE,
         );
         let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
         // The caller's attachments, not the substrate's — see [`Attachments`].
