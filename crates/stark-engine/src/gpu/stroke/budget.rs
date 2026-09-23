@@ -518,8 +518,12 @@ pub(super) fn lambda(axis: f32) -> f32 {
 
 /// `ln(1 − axis) ≤ 0`, clamped away from −∞ — the shared core of [`lambda`] and of
 /// the transfer magnitude [`exchange_travel`] prices.
+///
+/// [`detmath`](crate::detmath)'s logarithm rather than the host's (§12.1): this decides
+/// [`exchange_travel`], so it decides how many segments a stroke is cut into. A libm that
+/// rounded the other way would cut a peer's stroke differently.
 fn ln_keep(axis: f32) -> f32 {
-    (1.0 - axis.clamp(0.0, 1.0)).max(1e-9).ln().max(-20.0)
+    crate::detmath::ln((1.0 - axis.clamp(0.0, 1.0)).max(1e-9)).max(-20.0)
 }
 
 /// How far the tool may travel per segment, in radii — [`RESERVOIR_EXCHANGE_STEP`]
