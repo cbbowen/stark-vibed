@@ -12,8 +12,13 @@ use stark_model::document::StrokeRecord;
 use stark_model::geom::{TILE_APRON, TILE_TEX, TileCoord, Vec2};
 use stark_shaders::mirror::integrate::binding as ib;
 use stark_shaders::mirror::integrate::decl as id;
+use stark_shaders::mirror::stamp::fs_levels as fl;
 use stark_shaders::mirror::stamp_common::binding as sc;
 use stark_shaders::mirror::stamp_common::decl as sd;
+// The deposit's `@location`s, from `stamp_common.wesl`'s own `FsOut` (§6.10): the
+// parcel's lanes, the sweep's color targets and the integrate's bindings are all this
+// one numbering.
+use stark_shaders::mirror::stamp_common::fs_out as fo;
 use stark_shaders::{EntryPoint, Lane, Stages};
 
 use crate::gpu::tile::{SCRATCH_AUX_FORMAT, TileMap};
@@ -84,14 +89,19 @@ impl SweepPass {
 }
 
 /// One pipeline over the sweep's layouts: which build of `stamp.wesl` it runs, which of
-/// that build's fragment entry points (the vertex stage is always `vs_main`), and the
-/// color targets at that entry point's `@location`s.
+/// that build's fragment entry points (the vertex stage is always `vs_main`), and what
+/// this pass has to attach at each of the output struct's `@location`s.
+///
+/// `by_location` is the *whole* declaration's worth, not this row's: which of those
+/// locations the row writes is the entry point's own answer, and
+/// [`desc::targets_for`] takes it. So neither axis — the residual or the ceiling lane —
+/// reaches this table.
 struct SweepRow {
     pass: SweepPass,
     label: &'static str,
     lane: Lane,
     fs: fn(&stark_shaders::Stamp) -> EntryPoint,
-    targets: fn(&ChannelFormats) -> Vec<Option<wgpu::ColorTargetState>>,
+    by_location: fn(&ChannelFormats) -> Vec<Option<wgpu::ColorTargetState>>,
 }
 
 impl SweepRow {
@@ -111,14 +121,14 @@ const SWEEPS: [SweepRow; 5] = [
         label: "stark sweep pipeline",
         lane: Lane::Plain,
         fs: |s| s.fs_main,
-        targets: |f| deposit_targets(f, Lane::Plain),
+        by_location: deposit_by_location,
     },
     SweepRow {
         pass: SweepPass::DepositCeiling,
         label: "stark sweep ceiling pipeline",
         lane: Lane::Ceiling,
         fs: |s| s.fs_main,
-        targets: |f| deposit_targets(f, Lane::Ceiling),
+        by_location: deposit_by_location,
     },
     // Over the plain build: `fs_levels` is not `@if(ceiling)`-gated, since it writes
     // nothing but the lane.
@@ -127,21 +137,25 @@ const SWEEPS: [SweepRow; 5] = [
         label: "stark sweep levels pipeline",
         lane: Lane::Plain,
         fs: |s| s.fs_levels,
-        targets: |_| vec![ceiling_target()],
+        by_location: |_| {
+            let mut by_location = vec![None; fl::LEVELS + 1];
+            by_location[fl::LEVELS] = ceiling_target();
+            by_location
+        },
     },
     SweepRow {
         pass: SweepPass::Erase,
         label: "stark erase sweep pipeline",
         lane: Lane::Plain,
         fs: |s| s.fs_erase,
-        targets: |_| super::erase::sweep_targets(Lane::Plain),
+        by_location: |_| super::erase::sweep_by_location(),
     },
     SweepRow {
         pass: SweepPass::EraseCeiling,
         label: "stark erase sweep ceiling pipeline",
         lane: Lane::Ceiling,
         fs: |s| s.fs_erase,
-        targets: |_| super::erase::sweep_targets(Lane::Ceiling),
+        by_location: |_| super::erase::sweep_by_location(),
     },
 ];
 
@@ -156,17 +170,24 @@ const _: () = {
     }
 };
 
-/// The deposit's targets (§6.1, §6.7): the channel trio as a deposit lands it, into a
-/// *scratch* parcel whose aux is the wide [`SCRATCH_AUX_FORMAT`]. The ceiling lane sits
-/// at location 3 whether or not the space has a residual at 2, so the plain list stops
-/// short of it and the ceiling list carries the hole (`accum::MAX_LANES`).
-fn deposit_targets(formats: &ChannelFormats, lane: Lane) -> Vec<Option<wgpu::ColorTargetState>> {
-    let mut targets = formats.deposit_targets(SCRATCH_AUX_FORMAT).to_vec();
-    match lane {
-        Lane::Plain => targets.truncate(formats.count()),
-        Lane::Ceiling => targets.push(ceiling_target()),
-    }
-    targets
+/// What the deposit has to attach at each of `FsOut`'s `@location`s (§6.1, §6.7): the
+/// channel trio as a deposit lands it — into a *scratch* parcel whose aux is the wide
+/// [`SCRATCH_AUX_FORMAT`] — and the ceiling lane above it.
+///
+/// One list for both builds. The residual is `None` at [`fo::RESID`] in a space with
+/// none, and [`desc::targets_for`] drops the ceiling for a stroke whose opacity the pen
+/// does not drive, so neither is a count decided here (`accum::MAX_LANES`).
+fn deposit_by_location(formats: &ChannelFormats) -> Vec<Option<wgpu::ColorTargetState>> {
+    let mut by_location = formats.deposit_targets(SCRATCH_AUX_FORMAT).to_vec();
+    // `ChannelFormats` lays the trio out at the locations every pass over a tile's
+    // channels writes them at, which is where the lane above them begins.
+    assert_eq!(
+        by_location.len(),
+        fo::CEILING,
+        "the channel trio does not end where `FsOut`'s ceiling lane begins",
+    );
+    by_location.push(ceiling_target());
+    by_location
 }
 
 /// The pipelines that rasterize a stroke's swept extent ([`SWEEPS`]), built once, and
@@ -228,7 +249,7 @@ impl SweepKit {
                     buffers: &[Some(stark_shaders::mirror::stamp::segment_instance_layout(
                         wgpu::VertexStepMode::Instance,
                     ))],
-                    targets: &(row.targets)(&formats),
+                    targets: &desc::targets_for(fs, &(row.by_location)(&formats)),
                 },
             )
         });
@@ -389,12 +410,12 @@ impl StrokeRenderer {
             },
             |l: &Landing<'_>| {
                 let parcel = Targets {
-                    color: l.parcel.lane(COLOR),
-                    aux: l.parcel.lane(AUX),
-                    resid: l.base.resid.is_some().then(|| l.parcel.lane(RESID)),
+                    color: l.parcel.lane(fo::COLOR),
+                    aux: l.parcel.lane(fo::AUX),
+                    resid: l.base.resid.is_some().then(|| l.parcel.lane(fo::RESID)),
                 };
                 let ceiling = if k.ceiling_lane {
-                    l.parcel.lane(CEILING)
+                    l.parcel.lane(fo::CEILING)
                 } else {
                     &self.zeroes.aux
                 };
@@ -416,29 +437,23 @@ pub(super) fn reaches_nothing(
     (base.clone(), StrokeCarry::unchanged(dist))
 }
 
-/// The deposit parcel's lanes: the index is the shader's own `@location` in
-/// `stamp.wesl`, so the ceiling is at 3 with or without a residual at 2. [`parcel_keys`]
-/// fills them by these names, which keeps the attach order and the bind order one list
-/// ([`ParcelLanes`](super::accum::ParcelLanes)).
-const COLOR: usize = 0;
-const AUX: usize = 1;
-const RESID: usize = 2;
-const CEILING: usize = 3;
-
 /// The lanes' pool keys at the lanes' own indices — `None` at one this stroke does
-/// not carry. A space with no residual under a pen-driven ceiling leaves [`RESID`]
+/// not carry. A space with no residual under a pen-driven ceiling leaves `RESID`
 /// a hole between two lanes it does carry (§6.7, §6.2), and the parcel attaches
 /// exactly that.
+///
+/// The indices are [`FsOut`](fo)'s own, so the attach order, the bind order and the
+/// shader's `@location`s are one list ([`ParcelLanes`](super::accum::ParcelLanes)).
 fn parcel_keys(
     color: wgpu::TextureFormat,
     resid: Option<wgpu::TextureFormat>,
     ceiling_lane: bool,
 ) -> LaneKeys {
     let mut keys = LaneKeys::default();
-    keys[COLOR] = Some(parcel_key(color));
-    keys[AUX] = Some(parcel_key(SCRATCH_AUX_FORMAT));
-    keys[RESID] = resid.map(parcel_key);
-    keys[CEILING] = ceiling_lane.then(|| parcel_key(CEILING_FORMAT));
+    keys[fo::COLOR] = Some(parcel_key(color));
+    keys[fo::AUX] = Some(parcel_key(SCRATCH_AUX_FORMAT));
+    keys[fo::RESID] = resid.map(parcel_key);
+    keys[fo::CEILING] = ceiling_lane.then(|| parcel_key(CEILING_FORMAT));
     keys
 }
 

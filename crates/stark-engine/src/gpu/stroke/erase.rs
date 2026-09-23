@@ -18,9 +18,10 @@
 //! pipelines, and the one decision that is this pass's — a tile the layer does not
 //! have is nothing to erase ([`ParcelEffect::Erase`]).
 
-use stark_shaders::Lane;
 use stark_shaders::mirror::erase::binding as eb;
 use stark_shaders::mirror::erase::decl as ed;
+// The erase sweep's `@location`s, from `stamp.wesl`'s own `FsErase` (§6.10).
+use stark_shaders::mirror::stamp::fs_erase as fe;
 
 use crate::colorspace::ColorSpace;
 use crate::gpu::desc;
@@ -37,18 +38,6 @@ use crate::gpu::scratch::Key;
 /// is enough because the interesting range is a few times `OPAQUE_MASS`, and by the
 /// time accumulation outruns its mantissa the survival `exp(−m)` has reached zero.
 const ACCUM_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R16Float;
-
-/// The parcel's lanes: this pass rasterizes one number per texel where the deposit
-/// rasterizes the channel trio, with the ceiling lane — the coverage the stroke has
-/// claimed, each segment's share at its own ceiling — beside it under a pen-driven
-/// opacity (§6.2). [`parcel_keys`] fills them by these names, which keeps the attach
-/// order and the bind order one list ([`ParcelLanes`](super::accum::ParcelLanes)).
-const MASS: usize = 0;
-const CEILING: usize = 1;
-/// The moment of the whole mass over the pen's factor — the lane's companion,
-/// which the deposit keeps in its aux's spare channel and this pass, whose
-/// accumulator has none, keeps in a lane of its own.
-const MOMENT: usize = 2;
 
 /// The accumulator's pool key — [`lane_key`]'s usages, at this pass's own format
 /// and label.
@@ -69,26 +58,35 @@ fn moment_key() -> Key {
 
 /// The lanes' pool keys at the lanes' own indices: the mass always, and under a
 /// pen-driven ceiling the two beside it (§6.2) — the same sweep the deposit takes,
-/// at the shader's own locations.
+/// at `FsErase`'s own `@location`s, which keeps the attach order and the bind order
+/// one list ([`ParcelLanes`](super::accum::ParcelLanes)).
+///
+/// This pass rasterizes one number per texel where the deposit rasterizes the channel
+/// trio, and the mass's *moment* over the pen's factor — which the deposit keeps in its
+/// aux's spare channel — needs a lane of its own here, the accumulator having none.
 fn parcel_keys(ceiling_lane: bool) -> LaneKeys {
     let mut keys = LaneKeys::default();
-    keys[MASS] = Some(accum_key());
-    keys[CEILING] = ceiling_lane.then(ceiling_key);
-    keys[MOMENT] = ceiling_lane.then(moment_key);
+    keys[fe::MASS] = Some(accum_key());
+    keys[fe::CEILING] = ceiling_lane.then(ceiling_key);
+    keys[fe::MOMENT] = ceiling_lane.then(moment_key);
     keys
 }
 
-/// The erase sweep's targets, at `stamp.wesl::fs_erase`'s own locations
+/// What the erase sweep has to attach at each of `FsErase`'s `@location`s
 /// ([`SweepKit`](super::swept::SweepKit)): the transparency mass, additive across
 /// overlapping segment quads and, through the load, across the pieces of a live
-/// stroke — and under a pen-driven ceiling the lane and the mass's moment beside it,
-/// additive like the deposit's (`swept::ceiling_target`, §6.2).
-pub(super) fn sweep_targets(lane: Lane) -> Vec<Option<wgpu::ColorTargetState>> {
-    let mass = desc::blended_target(ACCUM_FORMAT, Some(wgpu::BlendState::ADDITIVE));
-    match lane {
-        Lane::Plain => vec![mass],
-        Lane::Ceiling => vec![mass.clone(), super::swept::ceiling_target(), mass],
-    }
+/// stroke — and the ceiling lane and the mass's moment beside it, additive like the
+/// deposit's (`swept::ceiling_target`, §6.2).
+///
+/// One list for both builds: [`desc::targets_for`] keeps the two above the mass only
+/// for a stroke whose opacity the pen drives, which is the build that declares them.
+pub(super) fn sweep_by_location() -> Vec<Option<wgpu::ColorTargetState>> {
+    let mass = || desc::blended_target(ACCUM_FORMAT, Some(wgpu::BlendState::ADDITIVE));
+    let mut by_location = vec![None; fe::MOMENT + 1];
+    by_location[fe::MASS] = mass();
+    by_location[fe::CEILING] = super::swept::ceiling_target();
+    by_location[fe::MOMENT] = mass();
+    by_location
 }
 
 /// The erase's landing pass (`erase.wesl`): the pristine tile, the stroke's accumulated
@@ -178,19 +176,19 @@ impl StrokeRenderer {
                     .group(device, "stark erase bg", |b| match b {
                         eb::BASE_COLOR => wgpu::BindingResource::TextureView(l.base.color),
                         eb::BASE_AUX => wgpu::BindingResource::TextureView(l.base.aux),
-                        eb::ACCUM => wgpu::BindingResource::TextureView(l.parcel.lane(MASS)),
+                        eb::ACCUM => wgpu::BindingResource::TextureView(l.parcel.lane(fe::MASS)),
                         eb::SELECTION => wgpu::BindingResource::TextureView(l.mask),
                         eb::E => opacity.window(),
                         eb::BASE_RESID => wgpu::BindingResource::TextureView(
                             l.base.resid.expect("a residual build has one"),
                         ),
                         eb::CEILING => wgpu::BindingResource::TextureView(if k.ceiling_lane {
-                            l.parcel.lane(CEILING)
+                            l.parcel.lane(fe::CEILING)
                         } else {
                             &self.zeroes.aux
                         }),
                         eb::MOMENT => wgpu::BindingResource::TextureView(if k.ceiling_lane {
-                            l.parcel.lane(MOMENT)
+                            l.parcel.lane(fe::MOMENT)
                         } else {
                             &self.zeroes.aux
                         }),

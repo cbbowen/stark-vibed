@@ -249,6 +249,18 @@ pub(crate) fn lit(n: u32) -> proc_macro2::Literal {
     proc_macro2::Literal::usize_unsuffixed(n as usize)
 }
 
+/// `SegmentInstance` as `segment_instance`, for an item named after a WESL struct.
+pub(crate) fn snake_case(name: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in name.char_indices() {
+        if c.is_uppercase() && i > 0 {
+            out.push('_');
+        }
+        out.extend(c.to_lowercase());
+    }
+    out
+}
+
 /// A WGSL identifier as a Rust one, raw-escaped where the two languages disagree
 /// about what is a keyword (`type`, `ref`, `become`, …).
 pub(crate) fn ident(name: &str) -> proc_macro2::Ident {

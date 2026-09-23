@@ -607,17 +607,50 @@ pub(crate) fn render_pipeline(device: &wgpu::Device, p: RenderPipe<'_>) -> wgpu:
     })
 }
 
+/// The color targets `fs` writes, out of what the pass has to offer at each
+/// `@location`.
+///
+/// **A short target list is silent.** WebGPU discards a fragment output with no target,
+/// so a pass that stops one entry early loses that lane with nothing to say so. The
+/// counts were sliced by hand against whichever flag decided them — `[..2 +
+/// usize::from(has_resid)]`, a `truncate`, a `match` on the ceiling axis — one per pass
+/// and one per build of it. The entry point states its own `@location`s (§6.10), so the
+/// list is built from those instead of checked against them afterwards.
+///
+/// `by_location` is indexed by `@location`, `None` where the pass has nothing for one —
+/// which is also the shape `wgpu` wants back, a fragment state's array being indexed by
+/// location. So a hole survives: a space with no residual at 2 under a ceiling at 3
+/// attaches `[color, aux, None, ceiling]`, and [`targets_agree`] then holds by
+/// construction.
+///
+/// # Panics
+/// If `fs` writes a location `by_location` offers nothing for — the silent loss, said
+/// out loud at the one place that can still see both halves.
+pub(crate) fn targets_for(
+    fs: EntryPoint,
+    by_location: &[Option<wgpu::ColorTargetState>],
+) -> Vec<Option<wgpu::ColorTargetState>> {
+    // Ascending, so the last is the highest; a hole below it is a location this entry
+    // point does not write.
+    let width = fs.targets.last().map_or(0, |&at| at as usize + 1);
+    let mut out = vec![None; width];
+    for &at in fs.targets {
+        let at = at as usize;
+        let state = by_location.get(at).cloned().flatten().unwrap_or_else(|| {
+            panic!(
+                "`{}` writes `@location({at})`, which this pass offers no color target for",
+                fs.name,
+            )
+        });
+        out[at] = Some(state);
+    }
+    out
+}
+
 /// Fail unless `targets` carries a state at exactly the `@location`s `fs` writes.
 ///
-/// **A short target list is silent.** WebGPU discards a fragment output with no
-/// target, so a pass that stops one entry early loses that lane with nothing to say
-/// so — and the lists here are sliced by hand against the residual and the ceiling
-/// (`swept`, `erase`), which is where the count comes from. The entry point knows its
-/// own `@location`s (§6.10), so the two are compared rather than one trusted.
-///
-/// A `None` in the middle is a hole the space does not have (a residual at location 2
-/// with the ceiling at 3), and the shader writes no location there either — so the
-/// comparison is over the positions that carry a state, not over the length.
+/// [`targets_for`] satisfies this by construction; what is left for it to catch is a
+/// list assembled any other way.
 fn targets_agree(label: &str, fs: EntryPoint, targets: &[Option<wgpu::ColorTargetState>]) {
     let attached: Vec<u32> = targets
         .iter()

@@ -1,9 +1,10 @@
 //! Rust mirrors of what the host writes and the shader reads (§6.10, §7).
 //!
-//! Four kinds, each generated from the WESL declaration that decides how it is read:
+//! Five kinds, each generated from the WESL declaration that decides how it is read:
 //! the **uniform structs** ([`structs`]), the **constants** both sides compute with
-//! ([`consts`]), the **`@binding` declarations** ([`bindings`]), and the
-//! **per-instance vertex records** a vertex entry point takes ([`vertex`]).
+//! ([`consts`]), the **`@binding` declarations** ([`bindings`]), the **per-instance
+//! vertex records** a vertex entry point takes ([`vertex`]), and the **`@location`s** a
+//! fragment entry point's output struct writes ([`targets`]).
 //!
 //! Every one of them is half of a pair the compiler cannot see across. A hand-written
 //! Rust half is a second declaration with its own copy of what the lanes mean, and
@@ -18,6 +19,7 @@
 mod bindings;
 mod consts;
 mod structs;
+mod targets;
 mod vertex;
 
 use std::path::Path;
@@ -25,9 +27,21 @@ use std::path::Path;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use wesl::eval::{Context, Type, ty_eval_ty};
-use wesl::syntax::TypeExpression;
+use wesl::syntax::{Attribute, ExpressionNode, StructMember, TypeExpression};
 
 use crate::tree::Module;
+
+/// The `@location` a struct member declares, when it declares one.
+///
+/// Read by both halves of the boundary: a vertex record's members are the attributes the
+/// host's buffer is laid out for ([`vertex`]), and a fragment output's are its color
+/// attachments ([`targets`]).
+fn location_of(m: &StructMember) -> Option<&ExpressionNode> {
+    m.attributes.iter().find_map(|a| match &**a {
+        Attribute::Location(e) => Some(e),
+        _ => None,
+    })
+}
 
 /// The WGSL type a `var<uniform>` names, resolved against the module that declares it.
 ///
@@ -69,7 +83,8 @@ pub(crate) fn generate(modules: &[Module], dest: &Path) {
 /// The generated file's text, from an already-parsed tree.
 ///
 /// **Discovered, not listed.** Every `@binding`, every `const` with a Rust spelling,
-/// and every struct a `var<uniform>` names is mirrored, for every module in the tree.
+/// every struct a `var<uniform>` names and every struct a `@fragment` returns is
+/// mirrored, for every module in the tree.
 /// That is the rule the four hand-kept lists this replaces were converging on: a list
 /// makes "the host transcribed something the shader already says" an instance to
 /// notice rather than a class that cannot arise, and it was already half-kept — the
@@ -90,6 +105,10 @@ fn mirrors(modules: &[Module]) -> String {
     // What discovery could not spell, in the order it was reached.
     let mut skipped: Vec<String> = Vec::new();
 
+    // The one fact no module states about itself: which of its structs a `@fragment`
+    // somewhere returns, since that somewhere is routinely another file (`targets`).
+    let returned = targets::returned(modules);
+
     for m in modules {
         let (consts, skips) = consts::emit(m);
         skipped.extend(skips);
@@ -99,6 +118,7 @@ fn mirrors(modules: &[Module]) -> String {
         skipped.extend(skips);
         push(&mut items, &m.rust, uniforms);
         push(&mut items, &m.rust, vertex::emit(m));
+        push(&mut items, &m.rust, targets::emit(m, &returned));
     }
 
     let items = items.iter().map(|(module, items)| {
@@ -834,6 +854,97 @@ fn vs_main(@location(0) at: vec2<f32>) -> @builtin(position) vec4<f32> {
             "struct VsIn { @builtin(vertex_index) vi: u32 }\n\
              @vertex\nfn vs_main(in: VsIn) -> @builtin(position) vec4<f32> {\n\
              \x20   return vec4<f32>(f32(in.vi));\n}\n",
+        );
+        assert_eq!(out, "");
+    }
+
+    /// A fragment output's `@location`s, which the host used to spell as its own `usize`
+    /// constants. The gated member is the point: its location is fixed whether or not the
+    /// build declares it, so the lane above it does not slide down into the hole.
+    #[test]
+    fn a_fragment_output_mirrors_its_locations() {
+        let out = generated(
+            r"
+struct FsOut {
+    // The channels, premultiplied.
+    @location(0) color: vec4<f32>,
+    @if(resid) @location(2) resid: vec4<f32>,
+    @if(ceiling) @location(3) ceiling: vec4<f32>,
+}
+
+@fragment
+fn fs_main() -> FsOut {
+    var out: FsOut;
+    out.color = vec4<f32>(1.0);
+    return out;
+}
+",
+        );
+        assert_eq!(
+            out,
+            r"/// Host mirrors of what `probe.wesl` declares.
+pub mod probe {
+    /** The color attachment each member of `FsOut` writes, from `probe.wesl`'s own
+ `@location`s — a position in a target or attachment list, which is the only shape
+ a fragment location reaches the host in.
+
+ `@if`-gated members are here too: a location is fixed whether or not a build
+ declares the member.*/
+    pub mod fs_out {
+        /// The channels, premultiplied.
+        pub const COLOR: usize = 0;
+        pub const RESID: usize = 2;
+        pub const CEILING: usize = 3;
+    }
+}
+",
+        );
+    }
+
+    /// `stamp.wesl`'s shape: the entry point is in one module and the struct it returns in
+    /// another, so the mirror lands under the module that *declares* the locations.
+    #[test]
+    fn an_imported_fragment_output_mirrors_under_the_module_that_declares_it() {
+        let out = past_header(&mirrors(&[
+            Module::parse(
+                "probe_common",
+                "struct FsOut {\n    @location(0) color: vec4<f32>,\n}\n",
+            ),
+            Module::parse(
+                "probe",
+                "@fragment\nfn fs_main() -> FsOut {\n\
+                 \x20   var out: FsOut;\n    out.color = vec4<f32>(1.0);\n    return out;\n}\n",
+            ),
+        ]));
+        assert!(out.contains("pub mod probe_common {"), "{out}");
+        assert!(out.contains("pub const COLOR: usize = 0;"), "{out}");
+        assert!(!out.contains("pub mod probe {"), "{out}");
+    }
+
+    /// A `@vertex`'s output carries `@location`s too, and they are interpolated varyings
+    /// rather than attachments. Nothing returns one from a fragment, so nothing mirrors it.
+    #[test]
+    fn a_vertex_output_is_not_a_fragment_output() {
+        let out = generated(
+            r"
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
+    var out: VsOut;
+    out.pos = vec4<f32>(f32(vi));
+    out.uv = vec2<f32>(0.0);
+    return out;
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(in.uv, 0.0, 1.0);
+}
+",
         );
         assert_eq!(out, "");
     }

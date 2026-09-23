@@ -3,12 +3,14 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use wesl::eval::{Type, ty_eval_ty};
-use wesl::syntax::{Attribute, ExpressionNode, Function, GlobalDeclaration, Struct, StructMember};
+use wesl::syntax::{Attribute, Function, GlobalDeclaration, Struct};
 
 use crate::docs::doc_lines;
 use crate::eval::{const_u32, is_gated, module_context};
-use crate::layout::{Field, ident, lit, rust_ty};
+use crate::layout::{Field, ident, lit, rust_ty, snake_case};
 use crate::tree::Module;
+
+use super::location_of;
 
 /// Emit the record every `@vertex` entry point of `m` takes, where it takes one.
 ///
@@ -256,14 +258,6 @@ fn from_struct(m: &Module, entry: &str, s: &Struct) -> TokenStream {
     }
 }
 
-/// The `@location` a struct member declares, when it declares one.
-fn location_of(m: &StructMember) -> Option<&ExpressionNode> {
-    m.attributes.iter().find_map(|a| match &**a {
-        Attribute::Location(e) => Some(e),
-        _ => None,
-    })
-}
-
 /// The `wgpu::VertexFormat` for `ty`, and the bytes it occupies.
 ///
 /// Deliberately narrower than [`rust_ty`]: a vertex format is a closed set, and a
@@ -294,17 +288,4 @@ fn vertex_format(ty: &Type) -> Option<(TokenStream, u32)> {
 /// A `u64` literal — what `wgpu::VertexAttribute::offset` is typed as.
 fn lit_u64(n: u32) -> proc_macro2::Literal {
     proc_macro2::Literal::u64_suffixed(n.into())
-}
-
-/// `SegmentInstance` as `segment_instance`, for the constant and function named after
-/// a generated struct.
-fn snake_case(name: &str) -> String {
-    let mut out = String::new();
-    for (i, c) in name.char_indices() {
-        if c.is_uppercase() && i > 0 {
-            out.push('_');
-        }
-        out.extend(c.to_lowercase());
-    }
-    out
 }

@@ -176,8 +176,8 @@ struct FsOut {
     // like the aux, since every one of the four is a sum over segments. What the
     // integrate reads off it is the largest ceiling any paint at the texel asked
     // for, averaged over the texel (`claimed_coverage`). Only the variant a
-    // pen-driven ceiling builds carries it; location 3 whether or not there is a
-    // residual, so the host's lane index is the shader's.
+    // pen-driven ceiling builds carries it, at location 3 whether or not there is
+    // a residual at 2.
     @if(ceiling) @location(3) ceiling: vec4<f32>,
 }
 
