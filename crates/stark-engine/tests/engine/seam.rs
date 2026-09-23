@@ -285,12 +285,7 @@ fn apron_mismatch(engine: &stark_engine::Engine) -> (f32, f32, usize) {
     use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord};
 
     let layer = LayerId::ROOT;
-    let coords: Vec<TileCoord> = engine
-        .document()
-        .layer(layer)
-        .and_then(|l| l.tiles())
-        .map(|t| t.keys().copied().collect())
-        .unwrap_or_default();
+    let coords = layer_tiles(engine, layer);
     let (lo, hi) = (TILE_APRON, TILE_APRON + TILE_SIZE);
     let at = |row: u32, col: u32| (row * TILE_TEX + col) as usize;
     // Counted and handed back, because a run whose tiles are not adjacent compares no

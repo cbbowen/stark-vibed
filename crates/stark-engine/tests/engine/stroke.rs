@@ -25,7 +25,6 @@ use crate::common::*;
 use stark_engine::Engine;
 use stark_engine::command::Tool;
 use stark_engine::command::{DocCommand, GestureCommand, InputSample, ViewCommand};
-use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::document::BrushParams;
 use stark_model::geom::Vec2;
 
@@ -925,45 +924,6 @@ fn a_long_strokes_working_scratch_does_not_grow_with_its_length() {
 /// `step = None` delivers the two endpoints at the brush's own budget — a segment
 /// about a radius long; `Some(s)` reports the pen every `s` px at the finest fit
 /// tolerance, which cuts a segment about every px.
-fn swept_cut(b: BrushParams, half: f32, step: Option<f32>) -> Option<(f64, Vec<f64>)> {
-    use stark_engine::path::MIN_TOLERANCE;
-    use stark_model::document::LayerId;
-
-    let mut engine = engine_or_skip()?;
-    let (samples, tolerance): (Vec<Vec2>, f32) = match step {
-        Some(s) => {
-            // Ending at exactly `+half`, like the coarse delivery: a truncated last
-            // step shortens the fine run's end cap, which is a deficit in the same
-            // direction as the one being measured and of the same order at radius 40.
-            let n = (2.0 * half / s).ceil() as usize;
-            let at = |i: usize| Vec2::new((-half + i as f32 * s).min(half), 0.0);
-            ((0..=n).map(at).collect(), MIN_TOLERANCE)
-        }
-        None => (
-            vec![Vec2::new(-half, 0.0), Vec2::new(half, 0.0)],
-            DEFAULT_TOLERANCE,
-        ),
-    };
-    engine.process(ViewCommand::set_brush(b));
-    Gesture::new(Tool::Brush)
-        .tolerance(tolerance)
-        .press(&mut engine, InputSample::at(samples[0]));
-    for &p in &samples[1..] {
-        engine.process(GestureCommand::To {
-            sample: InputSample::at(p),
-        });
-    }
-    engine.process(GestureCommand::End);
-    // Folded whole, so the live preview's own head/tail cut is not what is measured.
-    engine.process(DocCommand::Undo);
-    engine.process(DocCommand::Redo);
-    let band = (half / 2.0) as i32;
-    Some((
-        total_height(&engine, LayerId::ROOT),
-        column_height(&engine, LayerId::ROOT, -band..band),
-    ))
-}
-
 /// **How far a swept stroke's weight may move with the number of segments** (§6.2).
 ///
 /// The deposit is additive in τ, so the *same* run cut finely and coarsely must lay the
@@ -997,7 +957,7 @@ fn a_swept_strokes_weight_holds_across_the_cut_to_the_f16_bound() {
         // tip dry, which is a real taper the two cuts would integrate differently.
         b.drain = 0.0;
         let half = 2.0 * radius;
-        let Some((coarse, cols)) = swept_cut(b, half, None) else {
+        let Some((coarse, cols)) = cut_run(b, half, None) else {
             return;
         };
         assert!(
@@ -1009,7 +969,8 @@ fn a_swept_strokes_weight_holds_across_the_cut_to_the_f16_bound() {
         // limitation was quoted at. They do not agree with each other — where the knots
         // fall decides which increments vanish — so the bound has to cover both.
         for step in [1.0, 0.39] {
-            let (fine, fine_cols) = swept_cut(b, half, Some(step)).expect("the adapter answered");
+            let (fine, fine_cols) =
+                cut_run(b, half, Some(step)).expect("the adapter answered once already");
             let drift = (fine - coarse) / coarse;
             let (col, worst) = cols
                 .iter()

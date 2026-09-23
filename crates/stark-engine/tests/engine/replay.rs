@@ -273,12 +273,7 @@ fn a_stroke_record_reaching_past_the_cap_is_refused_whole() {
     let before = engine.render_to_image();
     let layer = engine.observe().active_layer;
     let tiles_of = |e: &stark_engine::Engine| -> Vec<_> {
-        let mut keys: Vec<_> = e
-            .document()
-            .layer(layer)
-            .and_then(|l| l.tiles())
-            .map(|t| t.keys().copied().collect())
-            .unwrap_or_default();
+        let mut keys = layer_tiles(e, layer);
         keys.sort();
         keys
     };

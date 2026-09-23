@@ -428,12 +428,7 @@ fn stripes(engine: &mut Engine, x0: f32, count: u16) {
 /// `None` when they agree, else how many tiles differ and the first that does.
 fn tiles_differ(a: &Engine, b: &Engine, layer: LayerId) -> Option<String> {
     let keys = |e: &Engine| -> Vec<TileCoord> {
-        let mut k: Vec<TileCoord> = e
-            .document()
-            .layer(layer)
-            .and_then(|l| l.tiles())
-            .map(|t| t.keys().copied().collect())
-            .unwrap_or_default();
+        let mut k = layer_tiles(e, layer);
         k.sort();
         k
     };

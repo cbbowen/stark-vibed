@@ -2210,12 +2210,7 @@ fn a_wet_deposit_never_stores_an_opacity_over_one() {
         .collect();
     stroke_with(&mut engine, b, &run);
 
-    let coords: Vec<_> = engine
-        .document()
-        .layer(LayerId::ROOT)
-        .and_then(|l| l.tiles())
-        .map(|t| t.keys().copied().collect::<Vec<_>>())
-        .unwrap_or_default();
+    let coords = layer_tiles(&engine, LayerId::ROOT);
     assert!(!coords.is_empty(), "the stroke laid no tiles");
     // Apron included: a texel over 1 is a defect wherever it sits, and the apron is
     // some neighbour's interior (§6.4).
@@ -2247,12 +2242,7 @@ fn tiles_differ(
     layer: LayerId,
 ) -> Option<String> {
     let keys = |e: &stark_engine::Engine| -> Vec<stark_model::geom::TileCoord> {
-        let mut k: Vec<_> = e
-            .document()
-            .layer(layer)
-            .and_then(|l| l.tiles())
-            .map(|t| t.keys().copied().collect())
-            .unwrap_or_default();
+        let mut k = layer_tiles(e, layer);
         k.sort();
         k
     };

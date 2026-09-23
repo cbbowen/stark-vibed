@@ -625,6 +625,72 @@ pub fn whole_render(engine: &mut Engine) -> RgbaImage {
 /// commit against a replay.
 pub const SEAM_LEVELS: u8 = 4;
 
+/// The coordinates of the tiles `layer` holds in the **committed** document.
+///
+/// Empty where it holds none, which *is* the answer for bare canvas: a tile that was
+/// never minted is not a tile of zeroes. The order is the map's; a caller comparing
+/// two of these sorts them.
+pub fn layer_tiles(engine: &Engine, layer: LayerId) -> Vec<stark_model::geom::TileCoord> {
+    engine
+        .document()
+        .layer(layer)
+        .and_then(|l| l.tiles())
+        .map(|t| t.keys().copied().collect())
+        .unwrap_or_default()
+}
+
+/// One straight run along `y = 0` from `−half` to `+half`, delivered coarsely or
+/// finely, folded whole, measured, and taken back off the canvas.
+///
+/// `step` of `None` is the two reports a hand makes of a straight run, fitted at
+/// [`DEFAULT_TOLERANCE`]: the brush's own budget cuts it, about a radius a segment.
+/// `Some(s)` reports every `s` canvas px and fits at `MIN_TOLERANCE`, which cuts a
+/// segment about every px. **The last report lands on `+half` either way** — a
+/// truncated final step would shorten the fine run's end cap, a deficit in the same
+/// direction as what the callers here measure and of the same order.
+///
+/// The stroke is folded whole before it is read, so the live preview's own head/tail
+/// cut is not what is measured.
+///
+/// **An engine of its own, and that is not thrift forgone.** The deposit jitter is
+/// keyed on the stroke's seed, which is the document clock at the press (§6.2) — so
+/// two deliveries on one engine jitter differently and stop cancelling, while two on
+/// engines of their own cancel exactly. Measured, comparing a coarse delivery with a
+/// fine one at a 40 px tip: the mid-band column moves 0.27% on a shared engine
+/// against a bound of 0.10%, and 0.00% on engines of their own. A caller wanting one
+/// engine for a table of these would have to turn the jitter off, which is a
+/// different measurement.
+///
+/// Answers the layer's total height and the height down each column of the middle
+/// half of the run (§6.1), or `None` where there is no adapter and skipping is
+/// permitted.
+pub fn cut_run(b: BrushParams, half: f32, step: Option<f32>) -> Option<(f64, Vec<f64>)> {
+    let mut engine = engine_or_skip()?;
+    let (samples, tolerance): (Vec<Vec2>, f32) = match step {
+        Some(s) => {
+            let n = (2.0 * half / s).ceil() as usize;
+            let at = |i: usize| Vec2::new((-half + i as f32 * s).min(half), 0.0);
+            ((0..=n).map(at).collect(), stark_engine::path::MIN_TOLERANCE)
+        }
+        None => (
+            vec![Vec2::new(-half, 0.0), Vec2::new(half, 0.0)],
+            DEFAULT_TOLERANCE,
+        ),
+    };
+    engine.process(ViewCommand::set_brush(b));
+    Gesture::new(Tool::Brush)
+        .tolerance(tolerance)
+        .drive(&mut engine, samples.into_iter().map(InputSample::at))
+        .end();
+    engine.process(DocCommand::Undo);
+    engine.process(DocCommand::Redo);
+    let band = (half / 2.0) as i32;
+    Some((
+        total_height(&engine, LayerId::ROOT),
+        column_height(&engine, LayerId::ROOT, -band..band),
+    ))
+}
+
 /// The total **height** on `layer` — the channel §6.1 says is conserved, summed off
 /// the tiles themselves rather than inferred from how dark the render came out.
 ///
@@ -636,17 +702,9 @@ pub const SEAM_LEVELS: u8 = 4;
 /// The committed document, so a caller mid-gesture is asking about the state before
 /// the live tail.
 pub fn total_height(engine: &Engine, layer: LayerId) -> f64 {
-    let Some(coords) = engine
-        .document()
-        .layer(layer)
-        .and_then(|l| l.tiles())
-        .map(|t| t.keys().copied().collect::<Vec<_>>())
-    else {
-        return 0.0;
-    };
     let lo = TILE_APRON as usize;
     let hi = lo + TILE_SIZE as usize;
-    coords
+    layer_tiles(engine, layer)
         .iter()
         .filter_map(|c| engine.tile_channels(layer, *c))
         .map(|ch| {
@@ -663,13 +721,7 @@ pub fn total_height(engine: &Engine, layer: LayerId) -> f64 {
 /// stroke.
 pub fn column_height(engine: &Engine, layer: LayerId, xs: std::ops::Range<i32>) -> Vec<f64> {
     let mut cols = vec![0.0f64; xs.len()];
-    let coords: Vec<_> = engine
-        .document()
-        .layer(layer)
-        .and_then(|l| l.tiles())
-        .map(|t| t.keys().copied().collect())
-        .unwrap_or_default();
-    for coord in coords {
+    for coord in layer_tiles(engine, layer) {
         let ch = engine
             .tile_channels(layer, coord)
             .expect("a listed tile reads back");
