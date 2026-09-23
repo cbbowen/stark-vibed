@@ -12,6 +12,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::assets::AssetStore;
+use crate::detmath;
 use crate::gpu::context::GpuContext;
 use crate::gpu::desc;
 use stark_model::document::{BrushParams, BrushShape, ColorDynamics, NoiseKind};
@@ -150,7 +151,7 @@ impl TipCache {
                 // The coverage prefix a liquify follow reads (§6.13) is the one place
                 // the tip is wanted *as* a coverage: a follow is a fraction of how long
                 // the tip covered a texel, which saturates exactly as a coverage does.
-                let cov: Vec<f32> = depth.iter().map(|&k| 1.0 - (-k).exp()).collect();
+                let cov: Vec<f32> = depth.iter().map(|&k| 1.0 - detmath::exp(-k)).collect();
                 let warp = build_prefix(
                     &self.ctx,
                     ROUND_RES,
@@ -397,7 +398,10 @@ impl RoundProfile {
         // dial position should mean.
         let soft = 1.0 - hardness;
         let peak = SOFT_PEAK_DEPTH
-            * (super::budget::TAU_PER_PASS / SOFT_PEAK_DEPTH).powf(1.0 - soft.powf(SOFT_FALLOFF));
+            * detmath::pow(
+                super::budget::TAU_PER_PASS / SOFT_PEAK_DEPTH,
+                1.0 - detmath::pow(soft, SOFT_FALLOFF),
+            );
         let want = SOFT_SHOULDER * (1.0 - hardness);
         // Scanned rather than bisected, in two passes. The shoulder rises with `p`,
         // turns over, and falls again: below the turn the profile opens from a disc into
@@ -407,7 +411,7 @@ impl RoundProfile {
         // started nearest, and the turn moves with the peak, so it cannot be a constant.
         // Geometric steps, so the resolution is even in the ratio rather than crowded at
         // the hard end.
-        let steps = ((P_MAX / P_MIN).ln() / SCAN_RATIO.ln()) as u32;
+        let steps = (detmath::ln(P_MAX / P_MIN) / detmath::ln(SCAN_RATIO)) as u32;
         let at = |i: u32| P_MIN * SCAN_RATIO.powi(i as i32);
         let mut turn = 0;
         for i in 0..=steps {
@@ -444,13 +448,13 @@ impl RoundProfile {
             return 0.0;
         }
         let rim = 2.0 / ROUND_RES as f32;
-        self.k0 * (1.0 - r * r).max(rim).powf(self.p - 0.5)
+        self.k0 * detmath::pow((1.0 - r * r).max(rim), self.p - 0.5)
     }
 
     /// The tip's coverage at `r`: `1 − exp(−κ(r))`. What the mask and the rise read —
     /// never the prefix, which integrates [`depth_at`](Self::depth_at) itself.
     fn coverage_at(&self, r: f32) -> f32 {
-        1.0 - (-self.depth_at(r)).exp()
+        1.0 - detmath::exp(-self.depth_at(r))
     }
 
     /// The profile this tip sweeps to at `y` radii off the centreline, for a pass at
@@ -458,7 +462,7 @@ impl RoundProfile {
     #[cfg(test)]
     pub(super) fn profile_at(&self, y: f32) -> f32 {
         let peak = self.k0 * 2.0 * cos_power_integral(self.p);
-        1.0 - (-peak * (1.0 - y * y).max(0.0).powf(self.p)).exp()
+        1.0 - detmath::exp(-peak * detmath::pow((1.0 - y * y).max(0.0), self.p))
     }
 }
 
@@ -484,7 +488,7 @@ fn cos_power_integral(p: f32) -> f32 {
     const N: usize = 4096;
     let step = std::f32::consts::FRAC_PI_2 / N as f32;
     (0..N)
-        .map(|i| (((i as f32 + 0.5) * step).cos()).powf(2.0 * p))
+        .map(|i| detmath::pow(detmath::cos_quadrant((i as f32 + 0.5) * step), 2.0 * p))
         .sum::<f32>()
         * step
 }
@@ -493,13 +497,13 @@ fn cos_power_integral(p: f32) -> f32 {
 /// profile's **own** peak, since a soft tip's peak is under 0.9 and a fixed 90% would
 /// be unreachable. Closed form, so [`RoundProfile::of`] can scan it.
 fn shoulder_of(peak: f32, p: f32) -> f32 {
-    let top = 1.0 - (-peak).exp();
+    let top = 1.0 - detmath::exp(-peak);
     let y_at = |f: f32| -> f32 {
-        let t = -(1.0 - f * top).ln();
+        let t = -detmath::ln(1.0 - f * top);
         if t >= peak {
             0.0
         } else {
-            (1.0 - (t / peak).powf(1.0 / p)).max(0.0).sqrt()
+            (1.0 - detmath::pow(t / peak, 1.0 / p)).max(0.0).sqrt()
         }
     };
     y_at(0.1) - y_at(0.9)
@@ -749,9 +753,9 @@ mod tests {
             for a in [1.0f32, 0.5, 0.25] {
                 for row in RES / 2..RES {
                     let y = (row as f32 + 0.5) / RES as f32 * 2.0 - 1.0;
-                    let laid = 1.0 - (-a * swept_tau(&depth, RES, row)).exp();
+                    let laid = 1.0 - detmath::exp(-a * swept_tau(&depth, RES, row));
                     // The profile at strength `a` is the same shape at depth `a·T`.
-                    let want = 1.0 - (1.0 - profile.profile_at(y)).powf(a);
+                    let want = 1.0 - detmath::pow(1.0 - profile.profile_at(y), a);
                     // Two claims, not one loose one. Over the **body** of the profile
                     // the bake is a reading of the closed form and is held to a
                     // few thousandths. The **outer tenth** is where the disc's own edge and
