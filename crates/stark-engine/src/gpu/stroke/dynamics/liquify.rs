@@ -38,16 +38,17 @@ use super::super::budget::{
 use super::super::region::{chunk_segments_within, sweep_tiles};
 use super::super::segments::Segment;
 use super::super::{Painted, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene};
-use super::plan::{WarpStep, liquify_plan};
+use super::plan::{Plan, WarpStep, liquify_plan};
 use super::region::{
-    LOOP_USAGE, REGION_WRITES, RegionBox, RegionChannels, RegionRun, composite_tiles,
+    LOOP_USAGE, Piece, REGION_WRITES, RegionBox, RegionChannels, RegionRun, composite_tiles,
     region_selection, slice_region,
 };
 use super::trio::{Life, Trio};
 use crate::document::liquify::LiquifyRun;
 use crate::gpu::desc;
-use crate::gpu::scratch::{Key, LeasedTex};
+use crate::gpu::scratch::{Key, LeasedSlots, LeasedTex};
 use crate::gpu::tile::{AllocSource, FIELD_FORMAT, TileMap};
+use stark_shaders::mirror::dynamics_common::Stamp;
 use stark_shaders::mirror::dynamics_common::binding as sb;
 use stark_shaders::mirror::liquify::binding as lb;
 use stark_shaders::mirror::liquify::decl as ld;
@@ -296,224 +297,49 @@ impl<'a> LiquifyDraw<'a> {
         let Some(piece) = self.region.open(base, segments, &[]) else {
             return base.clone();
         };
-        let RegionBox {
-            origin: region_origin,
-            w,
-            h,
-        } = piece.bbox();
+        let bbox = piece.bbox();
         let r = self.region.r;
-        let kernels = &r.dynamics.warp;
-        let device = &r.ctx.device;
-        let resid = r.color_space.has_resid();
-
-        // ---- The base composite: the run's base under the region, grown by the
-        // margin so every `x + d(x)` lands inside it. The margin is whole texels, and
-        // clamped so the composite fits a texture — which a brush this app can build
-        // never reaches (`max_tip_reach`), but a record from elsewhere might.
+        // The base composite's margin, in whole texels, and clamped so the composite
+        // fits a texture — which a brush this app can build never reaches
+        // (`max_tip_reach`), but a record from elsewhere might.
         let margin = (margin.ceil() as u32 + LIQUIFY_BASE_SLACK)
-            .min((MAX_REGION_DIM.saturating_sub(w.max(h))) / 2);
-        let (bw, bh) = (w + 2 * margin, h + 2 * margin);
-        let base_origin = region_origin - Vec2::splat(margin as f32);
-        let base_tiles = tiles_over(base_origin, bw, bh);
-        // What the composite draws: the run's base where the run has read the tile,
-        // the layer's own tile where it has not (a run past the tile cap records
-        // nothing, and reads the picture).
-        let mut base_map = TileMap::new();
-        for c in &base_tiles {
-            let tile = match self.run.base_at(*c) {
-                Some(t) => t.cloned(),
-                None => base.get(c).cloned(),
-            };
-            if let Some(t) = tile {
-                base_map = base_map.insert(*c, t);
-            }
-        }
-        let base_usage =
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING;
-        // A region composite's destination, so the region's own formats
-        // ([`REGION_WRITES`]) — it is only ever sampled, and a sampled declaration
-        // names no format for it to take instead.
-        let base_region = Trio::take(
-            &mut self.region.scope,
-            Life::Piece,
-            (bw, bh),
-            base_usage,
-            REGION_WRITES,
-            [
-                "stark liquify base color",
-                "stark liquify base aux",
-                "stark liquify base resid",
-            ],
-            resid,
-        );
-        {
-            crate::timing::span!("stroke.region");
-            composite_tiles(
-                r,
-                &mut self.region.scope,
-                &base_map,
-                &base_tiles,
-                RegionBox {
-                    origin: base_origin,
-                    w: bw,
-                    h: bh,
-                },
-                base_region.targets(),
-            );
-        }
-
-        // ---- The region: the resample's targets, fully written by `warp_apply`, and
-        // the field over it — cleared to the identity, then the run's field tiles laid
-        // in, clipped to the region.
-        let region_usage = LOOP_USAGE | wgpu::TextureUsages::COPY_SRC;
+            .min((MAX_REGION_DIM.saturating_sub(bbox.w.max(bbox.h))) / 2);
+        let under = self.composite_base(base, bbox, margin);
+        // The resample's targets, fully written by `warp_apply`.
         let region = Trio::take(
             &mut self.region.scope,
             Life::Piece,
-            (w, h),
-            region_usage,
+            (bbox.w, bbox.h),
+            LOOP_USAGE | wgpu::TextureUsages::COPY_SRC,
             REGION_WRITES,
             [
                 "stark liquify region color",
                 "stark liquify region aux",
                 "stark liquify region resid",
             ],
-            resid,
+            r.color_space.has_resid(),
         );
-        let LeasedTex {
-            tex: field_tex,
-            view: field,
-        } = self.region.scope.take_piece(Key {
-            size: (w, h),
-            // The tiles the field is cut into are `FIELD_FORMAT`, and a copy between
-            // two formats is not a copy; `field_w` is what the composition writes it
-            // through.
-            format: FIELD_FORMAT,
-            usage: LOOP_USAGE
-                | wgpu::TextureUsages::RENDER_ATTACHMENT
-                | wgpu::TextureUsages::COPY_SRC
-                | wgpu::TextureUsages::COPY_DST,
-            label: "stark liquify region field",
-        });
-        self.region
-            .scope
-            .encoder()
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark liquify field clear"),
-                color_attachments: &[Some(desc::attach(&field, desc::CLEAR))],
-                ..Default::default()
-            });
-        for c in piece.halo() {
-            let Some(tile) = self.run.field_at(*c) else {
-                continue;
-            };
-            // The tile's block on the canvas, clipped to the region rect.
-            let block_lo = c.origin() - Vec2::splat(TILE_APRON as f32);
-            let block_hi = block_lo + Vec2::splat(TILE_TEX as f32);
-            let region_hi = region_origin + Vec2::new(w as f32, h as f32);
-            let lo = block_lo.max(region_origin);
-            let hi = block_hi.min(region_hi);
-            if lo.x >= hi.x || lo.y >= hi.y {
-                continue;
-            }
-            let src = lo - block_lo;
-            let dst = lo - region_origin;
-            let extent = hi - lo;
-            tile.copy_block_out(
-                self.region.scope.encoder(),
-                wgpu::Origin3d {
-                    x: src.x as u32,
-                    y: src.y as u32,
-                    z: 0,
-                },
-                &field_tex,
-                wgpu::Origin3d {
-                    x: dst.x as u32,
-                    y: dst.y as u32,
-                    z: 0,
-                },
-                wgpu::Extent3d {
-                    width: extent.x as u32,
-                    height: extent.y as u32,
-                    depth_or_array_layers: 1,
-                },
-            );
-        }
+        let field = self.lay_field(&piece, bbox);
         let selection = self.region.scene.selection;
-        let sel_mask = region_selection(
-            r,
-            &mut self.region.scope,
-            selection,
-            piece.halo(),
-            piece.bbox(),
-        );
+        let sel_mask = region_selection(r, &mut self.region.scope, selection, piece.halo(), bbox);
 
-        // ---- The plan, the scratch it sizes, and the groups that name it.
-        let (plan, stamps, bind) = {
-            crate::timing::span!("stroke.plan");
-            let ctx = self.region.plan_ctx(region_origin);
-            let plan = liquify_plan(&ctx, segments, [margin as i32, margin as i32], (w, h));
-            let under_field = self
-                .region
-                .scope
-                .take_piece(Key {
-                    size: (plan.dsize, plan.dsize),
-                    format: ld::UNDER_FIELD_W.storage_format(),
-                    usage: LOOP_USAGE,
-                    label: "stark liquify under field",
-                })
-                .view;
-            let stamps = self.region.upload(&plan.slots);
-            let params = stamps.window();
-            fn view(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
-                wgpu::BindingResource::TextureView(v)
-            }
-            let snapshot = kernels.snapshot_field.group(
-                device,
-                "stark liquify snapshot field bg",
-                |s| match s {
-                    sb::ST => params.clone(),
-                    lb::FIELD => view(&field),
-                    lb::UNDER_FIELD_W => view(&under_field),
-                    other => unreachable!("snapshot_field reads no binding {other}"),
-                },
-            );
-            let warp = kernels
-                .warp
-                .group(device, "stark liquify warp bg", |s| match s {
-                    sb::ST => params.clone(),
-                    lb::UNDER_FIELD => view(&under_field),
-                    lb::FIELD_W => view(&field),
-                    sb::SEL_MASK => view(&sel_mask),
-                    other => unreachable!("warp reads no binding {other}"),
-                });
-            let apply = kernels
-                .apply
-                .group(device, "stark liquify warp apply bg", |s| match s {
-                    sb::ST => params.clone(),
-                    lb::FIELD => view(&field),
-                    lb::BASE_COLOR => view(&base_region.color.view),
-                    lb::BASE_AUX => view(&base_region.aux.view),
-                    lb::BASE_RESID => view(base_region.resid_view().expect("a residual build")),
-                    sb::REGION_COLOR_W => view(&region.color.view),
-                    sb::REGION_AUX_W => view(&region.aux.view),
-                    sb::REGION_RESID_W => view(region.resid_view().expect("a residual build")),
-                    other => unreachable!("warp_apply reads no binding {other}"),
-                });
-            (
-                plan,
-                stamps,
-                Bindings {
-                    snapshot,
-                    warp,
-                    apply,
-                },
-            )
-        };
+        let (plan, stamps, bind) = self.bind(
+            segments,
+            bbox,
+            margin,
+            PieceTargets {
+                field: &field.view,
+                under: &under,
+                region: &region,
+                sel_mask: &sel_mask,
+            },
+        );
 
         // ---- The kernels, in order: per segment, the field's snapshot then the
         // composition; then the one resample.
         {
             crate::timing::span!("stroke.loop");
+            let kernels = &r.dynamics.warp;
             let mut pass = self.region.loop_pass("stark liquify field");
             for (i, dsp) in plan.slots.iter().enumerate() {
                 let off = stamps.offset(i);
@@ -539,11 +365,10 @@ impl<'a> LiquifyDraw<'a> {
         }
         // ---- Slice the picture and the field back into tiles, and record both.
         crate::timing::span!("stroke.writeback");
-        let pool = self.region.scene.pool;
         let new_map = slice_region(
             r,
             &mut self.region.scope,
-            pool,
+            self.region.scene.pool,
             base,
             &piece,
             RegionChannels {
@@ -552,24 +377,220 @@ impl<'a> LiquifyDraw<'a> {
                 resid_tex: region.resid_tex(),
             },
         );
+        self.write_field(&piece, &field.tex, &new_map, reach);
+        new_map
+    }
+
+    /// The base composite (§6.13): the run's base under the region, grown by `margin`
+    /// px on every side so every `x + d(x)` the resample follows lands inside it.
+    ///
+    /// What it draws is the run's base where the run has read the tile and the layer's
+    /// own tile where it has not — a run past the tile cap records nothing, and reads
+    /// the picture.
+    fn composite_base(&mut self, base: &TileMap, bbox: RegionBox, margin: u32) -> Trio {
+        let r = self.region.r;
+        let grown = RegionBox {
+            origin: bbox.origin - Vec2::splat(margin as f32),
+            w: bbox.w + 2 * margin,
+            h: bbox.h + 2 * margin,
+        };
+        let tiles = tiles_over(grown.origin, grown.w, grown.h);
+        let mut map = TileMap::new();
+        for c in &tiles {
+            let tile = match self.run.base_at(*c) {
+                Some(t) => t.cloned(),
+                None => base.get(c).cloned(),
+            };
+            if let Some(t) = tile {
+                map = map.insert(*c, t);
+            }
+        }
+        // A region composite's destination, so the region's own formats
+        // ([`REGION_WRITES`]) — it is only ever sampled, and a sampled declaration
+        // names no format for it to take instead.
+        let into = Trio::take(
+            &mut self.region.scope,
+            Life::Piece,
+            (grown.w, grown.h),
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            REGION_WRITES,
+            [
+                "stark liquify base color",
+                "stark liquify base aux",
+                "stark liquify base resid",
+            ],
+            r.color_space.has_resid(),
+        );
+        crate::timing::span!("stroke.region");
+        composite_tiles(
+            r,
+            &mut self.region.scope,
+            &map,
+            &tiles,
+            grown,
+            into.targets(),
+        );
+        into
+    }
+
+    /// The field over the region: cleared to the identity, then the run's own field
+    /// tiles laid in, each clipped to the region rect (§6.13).
+    fn lay_field(&mut self, piece: &Piece, bbox: RegionBox) -> LeasedTex {
+        let RegionBox { origin, w, h } = bbox;
+        let field = self.region.scope.take_piece(Key {
+            size: (w, h),
+            // The tiles the field is cut into are `FIELD_FORMAT`, and a copy between
+            // two formats is not a copy; `field_w` is what the composition writes it
+            // through.
+            format: FIELD_FORMAT,
+            usage: LOOP_USAGE
+                | wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
+            label: "stark liquify region field",
+        });
+        self.region
+            .scope
+            .encoder()
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stark liquify field clear"),
+                color_attachments: &[Some(desc::attach(&field.view, desc::CLEAR))],
+                ..Default::default()
+            });
+        let region_hi = origin + Vec2::new(w as f32, h as f32);
+        for c in piece.halo() {
+            let Some(tile) = self.run.field_at(*c) else {
+                continue;
+            };
+            // The tile's block on the canvas, clipped to the region rect.
+            let block_lo = c.origin() - Vec2::splat(TILE_APRON as f32);
+            let block_hi = block_lo + Vec2::splat(TILE_TEX as f32);
+            let lo = block_lo.max(origin);
+            let hi = block_hi.min(region_hi);
+            if lo.x >= hi.x || lo.y >= hi.y {
+                continue;
+            }
+            tile.copy_block_out(
+                self.region.scope.encoder(),
+                texel_origin(lo - block_lo),
+                &field.tex,
+                texel_origin(lo - origin),
+                texel_extent(hi - lo),
+            );
+        }
+        field
+    }
+
+    /// The piece's plan, its uniform slots, and the three groups its kernels dispatch
+    /// with — the field snapshot's scratch, which the plan sizes, among them.
+    fn bind(
+        &mut self,
+        segments: &[Segment],
+        bbox: RegionBox,
+        margin: u32,
+        over: PieceTargets<'_>,
+    ) -> (Plan<WarpStep>, LeasedSlots<Stamp>, Bindings) {
+        crate::timing::span!("stroke.plan");
+        let PieceTargets {
+            field,
+            under,
+            region,
+            sel_mask,
+        } = over;
+        let r = self.region.r;
+        let device = &r.ctx.device;
+        let kernels = &r.dynamics.warp;
+        let ctx = self.region.plan_ctx(bbox.origin);
+        let plan = liquify_plan(
+            &ctx,
+            segments,
+            [margin as i32, margin as i32],
+            (bbox.w, bbox.h),
+        );
+        let under_field = self
+            .region
+            .scope
+            .take_piece(Key {
+                size: (plan.dsize, plan.dsize),
+                format: ld::UNDER_FIELD_W.storage_format(),
+                usage: LOOP_USAGE,
+                label: "stark liquify under field",
+            })
+            .view;
+        let stamps = self.region.upload(&plan.slots);
+        let params = stamps.window();
+        fn view(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
+            wgpu::BindingResource::TextureView(v)
+        }
+        let snapshot =
+            kernels
+                .snapshot_field
+                .group(device, "stark liquify snapshot field bg", |s| match s {
+                    sb::ST => params.clone(),
+                    lb::FIELD => view(field),
+                    lb::UNDER_FIELD_W => view(&under_field),
+                    other => unreachable!("snapshot_field reads no binding {other}"),
+                });
+        let warp = kernels
+            .warp
+            .group(device, "stark liquify warp bg", |s| match s {
+                sb::ST => params.clone(),
+                lb::UNDER_FIELD => view(&under_field),
+                lb::FIELD_W => view(field),
+                sb::SEL_MASK => view(sel_mask),
+                other => unreachable!("warp reads no binding {other}"),
+            });
+        let apply = kernels
+            .apply
+            .group(device, "stark liquify warp apply bg", |s| match s {
+                sb::ST => params.clone(),
+                lb::FIELD => view(field),
+                lb::BASE_COLOR => view(&under.color.view),
+                lb::BASE_AUX => view(&under.aux.view),
+                lb::BASE_RESID => view(under.resid_view().expect("a residual build")),
+                sb::REGION_COLOR_W => view(&region.color.view),
+                sb::REGION_AUX_W => view(&region.aux.view),
+                sb::REGION_RESID_W => view(region.resid_view().expect("a residual build")),
+                other => unreachable!("warp_apply reads no binding {other}"),
+            });
+        (
+            plan,
+            stamps,
+            Bindings {
+                snapshot,
+                warp,
+                apply,
+            },
+        )
+    }
+
+    /// Cut the composed field into tiles and record each of them in the run beside the
+    /// picture `painted` sliced out, under the bound `reach` gives it (§6.13).
+    fn write_field(
+        &mut self,
+        piece: &Piece,
+        field: &wgpu::Texture,
+        painted: &TileMap,
+        reach: &BTreeMap<TileCoord, f32>,
+    ) {
+        let pool = self.region.scene.pool;
         let mut displaced = Vec::with_capacity(piece.tiles.len());
         for coord in &piece.tiles {
-            let field_tile = pool.acquire_tex(FIELD_FORMAT, AllocSource::LiquifyField);
-            field_tile.copy_into(
+            let tile = pool.acquire_tex(FIELD_FORMAT, AllocSource::LiquifyField);
+            tile.copy_into(
                 self.region.scope.encoder(),
-                &field_tex,
+                field,
                 piece.block_origin(*coord),
             );
-            let picture = new_map
+            let picture = painted
                 .get(coord)
                 .cloned()
                 .expect("the slice wrote every covered tile");
             let bound = reach.get(coord).copied().unwrap_or(0.0);
-            displaced.push(self.run.record_written(*coord, picture, field_tile, bound));
+            displaced.push(self.run.record_written(*coord, picture, tile, bound));
         }
         // The halo copy above read the field tiles these replace.
         self.region.scope.hold(displaced);
-        new_map
     }
 
     /// Close the draw: hand the region machinery what is owed a submit, and hand back
@@ -586,6 +607,35 @@ struct Bindings {
     snapshot: wgpu::BindGroup,
     warp: wgpu::BindGroup,
     apply: wgpu::BindGroup,
+}
+
+/// What one liquify piece's kernels read and write (§6.13): the field they compose,
+/// the pristine base they resample *from*, the region they resample *into*, and the
+/// selection the composition is gated by.
+struct PieceTargets<'p> {
+    field: &'p wgpu::TextureView,
+    under: &'p Trio,
+    region: &'p Trio,
+    sel_mask: &'p wgpu::TextureView,
+}
+
+/// A canvas-px offset as a copy's texel origin, and a canvas-px size as its extent.
+/// Integral by construction: every corner measured here is a tile block's corner or a
+/// region rect's, and both sit on the texel grid.
+fn texel_origin(v: Vec2) -> wgpu::Origin3d {
+    wgpu::Origin3d {
+        x: v.x as u32,
+        y: v.y as u32,
+        z: 0,
+    }
+}
+
+fn texel_extent(v: Vec2) -> wgpu::Extent3d {
+    wgpu::Extent3d {
+        width: v.x as u32,
+        height: v.y as u32,
+        depth_or_array_layers: 1,
+    }
 }
 
 /// Every tile whose texture block overlaps the box at `origin` of extent `w × h`,
