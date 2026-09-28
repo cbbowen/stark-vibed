@@ -284,3 +284,78 @@ impl ColorSpace for MixboxColorSpace {
         Pigment::Mixbox
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every id this crate knows about. The `match` is what keeps it complete: a variant
+    /// added to [`ColorSpaceId`] makes it non-exhaustive, so the list cannot go stale
+    /// without the compiler saying so.
+    fn every_id() -> Vec<ColorSpaceId> {
+        let ids = vec![ColorSpaceId::Oklab, ColorSpaceId::Mixbox];
+        for id in &ids {
+            match id {
+                ColorSpaceId::Oklab | ColorSpaceId::Mixbox => {}
+            }
+        }
+        ids
+    }
+
+    /// The claim [`available`]'s doc makes: it and [`make`] read one thing, so a space
+    /// `make` cannot build is one this reports unavailable. A build carries or does not
+    /// carry Mixbox, and no test knows which — what is asserted is that the two answers
+    /// agree either way.
+    #[test]
+    fn available_answers_for_exactly_what_can_be_built() {
+        for id in every_id() {
+            assert_eq!(
+                available(id),
+                make(id).is_some(),
+                "{id:?}: `available` and `make` disagree about this build"
+            );
+        }
+    }
+
+    #[test]
+    fn oklab_is_in_every_build() {
+        assert!(available(ColorSpaceId::Oklab));
+        assert!(make(ColorSpaceId::Oklab).is_some());
+    }
+
+    /// The `mixbox` feature is the whole of what decides it (§6.7) — the licence claim
+    /// rests on a build without the feature carrying none of that code, so a build
+    /// answering `true` here without it would be the first sign.
+    #[test]
+    fn mixbox_is_available_exactly_when_it_is_compiled() {
+        assert_eq!(
+            available(ColorSpaceId::Mixbox),
+            cfg!(feature = "mixbox"),
+            "the id's availability parted from the feature that provides it"
+        );
+    }
+
+    #[test]
+    fn the_pickers_list_is_the_available_ids_in_order() {
+        let listed: Vec<ColorSpaceId> = all_available().collect();
+        let expected: Vec<ColorSpaceId> =
+            every_id().into_iter().filter(|id| available(*id)).collect();
+        assert_eq!(listed, expected);
+    }
+
+    /// `pigment` is declared rather than derived from `has_resid` (see the trait), and
+    /// the two agree for both spaces there are — so *that* is what is asserted, of
+    /// whichever spaces this build carries. A pass built for a residual it does not get,
+    /// or the reverse, is a picture nobody would read as this.
+    #[test]
+    fn the_shader_build_a_space_reads_agrees_with_its_residual() {
+        for id in every_id() {
+            let Some(space) = make(id) else { continue };
+            assert_eq!(
+                space.has_resid(),
+                space.pigment() == Pigment::Mixbox,
+                "{id:?}: the residual and the shader build it asks for disagree"
+            );
+        }
+    }
+}

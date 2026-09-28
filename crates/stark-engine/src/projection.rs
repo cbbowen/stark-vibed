@@ -168,3 +168,98 @@ impl Revision {
         self.0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// A memo and a build that says how many times it ran.
+    fn counting() -> (Memo<u32, String>, Cell<usize>) {
+        (Memo::default(), Cell::new(0))
+    }
+
+    fn build_for(runs: &Cell<usize>, key: u32) -> impl FnOnce() -> String + use<'_> {
+        move || {
+            runs.set(runs.get() + 1);
+            format!("built from {key}")
+        }
+    }
+
+    #[test]
+    fn a_key_that_has_not_moved_is_not_rebuilt() {
+        let (memo, runs) = counting();
+        assert_eq!(memo.get_or_build(7, build_for(&runs, 7)), "built from 7");
+        assert_eq!(memo.get_or_build(7, build_for(&runs, 7)), "built from 7");
+        assert_eq!(runs.get(), 1, "the second get rebuilt for an unmoved key");
+    }
+
+    /// **The failure this type's doc calls silent**: a key missing a term hands back an
+    /// answer built from the other one, and nothing downstream can tell.
+    #[test]
+    fn a_key_that_moved_is_rebuilt() {
+        let (memo, runs) = counting();
+        assert_eq!(memo.get_or_build(1, build_for(&runs, 1)), "built from 1");
+        assert_eq!(memo.get_or_build(2, build_for(&runs, 2)), "built from 2");
+        assert_eq!(runs.get(), 2);
+    }
+
+    /// One slot, not a map: a key that comes back after another has been through finds
+    /// nothing. Worth stating, because the three keys in the engine are counters that
+    /// only ever move forward, and a cache that quietly held two answers would make a
+    /// key that went backwards look sound.
+    #[test]
+    fn only_the_last_key_is_held() {
+        let (memo, runs) = counting();
+        memo.get_or_build(1, build_for(&runs, 1));
+        memo.get_or_build(2, build_for(&runs, 2));
+        memo.get_or_build(1, build_for(&runs, 1));
+        assert_eq!(
+            runs.get(),
+            3,
+            "a returning key was served from a second slot"
+        );
+    }
+
+    /// A build is arbitrary engine code, and the draw-list build reads the engine the
+    /// memo hangs off. Reading *this* memo while filling it must not panic, which is
+    /// what releasing the borrow before the build buys.
+    #[test]
+    fn a_build_may_read_the_memo_it_is_filling() {
+        let memo: Memo<u32, String> = Memo::default();
+        memo.get_or_build(1, || "first".to_string());
+        let nested = memo.get_or_build(2, || memo.get_or_build(1, || unreachable!()));
+        assert_eq!(nested, "first");
+    }
+
+    #[test]
+    fn a_bumped_revision_differs_from_every_earlier_one() {
+        let mut r = Revision::default();
+        let before = r;
+        r.bump();
+        assert_ne!(before, r);
+        assert_eq!(r.get(), before.get() + 1);
+    }
+
+    /// Wrapping is the documented choice, so it is the tested one: a key's job is to
+    /// differ from what it was last compared against, and the bump at the end of the
+    /// range must still do that rather than panic in a release-mode-only way.
+    #[test]
+    fn a_revision_wraps_rather_than_overflowing() {
+        let mut r = Revision(u64::MAX);
+        r.bump();
+        assert_eq!(r.get(), 0);
+    }
+
+    #[test]
+    fn a_shared_projection_is_equal_by_pointer_and_by_value() {
+        let a: Projected<u8> = vec![1, 2, 3].into();
+        let shared = a.clone();
+        let rebuilt: Projected<u8> = (1..=3).collect();
+        assert_eq!(a, shared, "a clone shares, so it cannot differ");
+        assert_eq!(a, rebuilt, "a rebuild that changed nothing is still equal");
+        assert_ne!(a, vec![1, 2, 4].into());
+        assert_eq!(&*a, &[1, 2, 3], "derefs to the slice it holds");
+        assert!(Projected::<u8>::default().is_empty());
+    }
+}
