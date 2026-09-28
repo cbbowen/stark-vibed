@@ -16,8 +16,8 @@ use std::sync::{Arc, Mutex};
 use stark_model::AssetId;
 use stark_model::document::OrientationSource;
 
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc;
+use crate::device::context::GpuContext;
+use crate::device::desc;
 use crate::unpoisoned;
 
 use super::budget::WARP_CONTRACTION;
@@ -474,7 +474,7 @@ pub(crate) fn build_depth_r16(
 ) -> wgpu::TextureView {
     let halves: Vec<u16> = depth
         .iter()
-        .map(|&k| crate::gpu::half::f32_to_f16(k))
+        .map(|&k| crate::device::half::f32_to_f16(k))
         .collect();
     desc::texture_with_data(
         ctx,

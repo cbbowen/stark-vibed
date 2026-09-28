@@ -299,7 +299,7 @@ pub struct ObservableState {
     /// memory, so a frontend told this can still write the file: it should stop
     /// dispatching and offer to save, and must not keep painting, since nothing past
     /// this point reaches a pixel.
-    pub gpu_failure: Option<Arc<crate::gpu::context::DeviceFailure>>,
+    pub gpu_failure: Option<Arc<crate::device::context::DeviceFailure>>,
 }
 
 impl Engine {

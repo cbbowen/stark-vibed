@@ -14,8 +14,8 @@
 //! bridges the lee sides. It is baked here, once, so nothing at draw time recomputes a
 //! filter.
 
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc;
+use crate::device::context::GpuContext;
+use crate::device::desc;
 use stark_model::{SubstrateId, SubstrateScale};
 
 mod import;

@@ -4,15 +4,15 @@
 //! local actor's selection draws as marching ants; a peer's draws as a flat line in
 //! their own color, so the two never read as the same thing.
 
+use crate::device::context::GpuContext;
+use crate::device::desc::{self, Bindings, RenderPipe};
 use crate::document::selection::Selection;
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc::{self, Bindings, RenderPipe};
 use stark_shaders::Stages;
 use stark_shaders::mirror::overlay::binding as ob;
 use stark_shaders::mirror::overlay::decl as od;
 use stark_shaders::mirror::view::decl as vd;
 
-use crate::gpu::uniforms::InstanceStream;
+use crate::device::uniforms::InstanceStream;
 
 /// Per-mask-tile instance of the outline pass: where the tile is, and how to draw
 /// its contour. `tint.a == 0` selects the local actor's black/white marching ants;

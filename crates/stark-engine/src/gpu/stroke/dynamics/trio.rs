@@ -1,8 +1,8 @@
 //! The loop's working **channel trio** (§6.1, §6.7): colour, aux, and the residual a
 //! pigment space adds, checked out of the scratch pool as one thing.
 //!
-//! [`Channels`](crate::gpu::channels::Channels) is the same trio over pooled *tiles*.
-//! This one is over [`scratch`](crate::gpu::scratch) leases, because everything here is
+//! [`Channels`](crate::device::channels::Channels) is the same trio over pooled *tiles*.
+//! This one is over [`scratch`](crate::device::scratch) leases, because everything here is
 //! storage-written working memory at a region's size rather than a tile's, and its
 //! format is the shader's rather than the tile pool's.
 //!
@@ -14,8 +14,8 @@
 
 use stark_shaders::Binding;
 
-use crate::gpu::channels::Targets;
-use crate::gpu::scratch::{Key, LeasedTex, SubmitScope};
+use crate::device::channels::Targets;
+use crate::device::scratch::{Key, LeasedTex, SubmitScope};
 
 /// How long a trio's leases live: to the end of the run, or to the submit of the piece
 /// being recorded ([`SubmitScope::take_run`], [`SubmitScope::take_piece`]).

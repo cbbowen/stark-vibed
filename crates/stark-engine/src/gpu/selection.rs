@@ -20,10 +20,10 @@ use rpds::HashTrieMap;
 use stark_model::document::SelectionMode;
 use std::sync::{Arc, OnceLock};
 
+use crate::device::context::GpuContext;
+use crate::device::desc;
+use crate::device::tile::mask_tex_origin;
 use crate::document::selection::Selection;
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc;
-use crate::gpu::tile::mask_tex_origin;
 use crate::view::Extent2;
 use stark_model::document::{SelectionOp, SelectionShape};
 use stark_model::geom::{TILE_TEX, TileCoord, Vec2};
@@ -69,8 +69,8 @@ use stark_shaders::mirror::selection as sel;
 use stark_shaders::mirror::selection::binding as sb;
 use stark_shaders::mirror::selection::decl as sd;
 
-use crate::gpu::scratch::{BufKey, Key, LeasedTex, ScratchPool, SubmitScope};
-use crate::gpu::tile::{AllocSource, MASK_FORMAT, TilePool};
+use crate::device::scratch::{BufKey, Key, LeasedTex, ScratchPool, SubmitScope};
+use crate::device::tile::{AllocSource, MASK_FORMAT, TilePool};
 
 // Generated from the two shaders' own declarations (§6.7). `selection.wesl` and
 // `slice.wesl` both call theirs `Params`, which is why the mirrors are namespaced by
@@ -429,7 +429,7 @@ impl SelectionRenderer {
         &self,
         pool: &TilePool,
         prev: &Selection,
-        base: HashTrieMap<TileCoord, crate::gpu::tile::MaskHandle>,
+        base: HashTrieMap<TileCoord, crate::device::tile::MaskHandle>,
         coords: &[TileCoord],
         shape: RasterShape<'_>,
     ) -> Selection {
@@ -536,7 +536,7 @@ impl SelectionRenderer {
 /// the handle, and the constant — which no pool owns — with its view.
 pub(crate) enum MaskSource {
     /// The selection's own tile at this coordinate.
-    Tile(crate::gpu::tile::MaskHandle),
+    Tile(crate::device::tile::MaskHandle),
     /// The constant coverage that reigns outside its tile set ([`Selection::outside`]).
     Constant(wgpu::TextureView),
 }

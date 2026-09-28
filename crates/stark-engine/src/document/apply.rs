@@ -19,9 +19,9 @@ use super::layer::{Layer, PaintTiles, PropValue};
 use super::liquify::LiquifyRun;
 use super::selection::Selection;
 use super::state::DocState;
+use crate::device::tile::TilePool;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::stroke::StrokeRenderer;
-use crate::gpu::tile::TilePool;
 use crate::gpu::transform::plan::plan_float;
 
 /// Side-channel passed through [`Materialize::fold`]: the GPU resources needed to
@@ -47,7 +47,7 @@ pub struct ApplyCtx {
     /// keeps only what the next log names, and a sibling starts empty.
     pub(crate) pictures: crate::pictures::PictureStore,
     /// The device, so a canvas substrate can be built here on demand.
-    pub(crate) gpu: crate::gpu::context::GpuContext,
+    pub(crate) gpu: crate::device::context::GpuContext,
     /// The canvas substrates and the bytes registered for them (§6.4).
     ///
     /// Here rather than only beside the compositor, because the **deposit reads it**:

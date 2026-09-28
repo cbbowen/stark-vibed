@@ -12,10 +12,10 @@
 use super::Engine;
 use super::presenter::{Attachments, DrawKey};
 use crate::Result;
+use crate::device::context::GpuContext;
 use crate::document::DocState;
 use crate::error::{ExportError, Produces};
 use crate::gpu::composite::{CompositeScene, Offscreen, Output, SelectionOutline};
-use crate::gpu::context::GpuContext;
 use crate::image::RgbaImage;
 use crate::view::{Extent2, ViewTransform};
 use stark_model::document::{GuideScene, LayerId};
@@ -428,7 +428,7 @@ impl Engine {
         // SDR, so this format and `ProbeDisplay::Export` together are what make it one.
         let format = crate::gpu::composite::export_format(self.shared.target_format);
         self.probe_frame(format, ProbeDisplay::Export, |gpu, target, size| {
-            let pixels = crate::gpu::readback::read_rgba8_blocking(gpu, target, size);
+            let pixels = crate::device::readback::read_rgba8_blocking(gpu, target, size);
             RgbaImage::from_target_bytes(size.width, size.height, pixels, format)
         })
     }
@@ -444,7 +444,7 @@ impl Engine {
             "render_to_floats reads a half-float screen, and this engine presents to {format:?}",
         );
         self.probe_frame(format, ProbeDisplay::Screen, |gpu, target, size| {
-            crate::gpu::readback::read_rgba16f_blocking(gpu, target, size)
+            crate::device::readback::read_rgba16f_blocking(gpu, target, size)
         })
     }
 
@@ -667,7 +667,7 @@ impl Engine {
         let gpu = self.shared.gpu.clone();
         let format = target.format();
         Ok(async move {
-            let pixels = crate::gpu::readback::read_rgba8(&gpu, &target, size).await?;
+            let pixels = crate::device::readback::read_rgba8(&gpu, &target, size).await?;
             Ok(RgbaImage::from_target_bytes(
                 size.width,
                 size.height,

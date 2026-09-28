@@ -14,8 +14,8 @@ use super::super::incremental::Reservoir;
 use super::super::{StrokeConstants, StrokeRenderer};
 use super::region::LOOP_USAGE;
 use super::trio::{Life, Trio};
-use crate::gpu::desc;
-use crate::gpu::scratch::{Kept, Key, SubmitScope};
+use crate::device::desc;
+use crate::device::scratch::{Kept, Key, SubmitScope};
 
 /// Resolution (texels per side) of the stamp loop's tool reservoir (§6.2).
 /// Brush-local, so carried color detail is ~radius/32 canvas px — plenty for smeared

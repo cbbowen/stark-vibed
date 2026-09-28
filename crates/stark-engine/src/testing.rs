@@ -19,19 +19,19 @@ use crate::RgbaImage;
 use crate::view::Extent2;
 use crate::{Engine, Result};
 
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::device::tile::TileChannels;
+/// The recycling tile pool (§6.1) and the tag `acquire_tex` demands of a caller, for
+/// the one integration test that drives a pool directly (`tests/engine/reset.rs`, whose
+/// claim is about what a reset releases). The pool's own behaviour is tested where it
+/// lives, in `gpu::tile`.
+pub use crate::device::tile::{AllocSource, TilePool};
 pub use crate::document::audit::undeclared;
 pub use crate::document::guides::Guide;
 pub use crate::document::layer::{CompositeParams, Layer, LayerContent, PropValue};
 pub use crate::document::state::DocState;
 pub use crate::document::timeline::TimelineStats;
 pub use crate::gesture::{GestureView, LiveGesture};
-#[cfg(not(target_arch = "wasm32"))]
-pub use crate::gpu::tile::TileChannels;
-/// The recycling tile pool (§6.1) and the tag `acquire_tex` demands of a caller, for
-/// the one integration test that drives a pool directly (`tests/engine/reset.rs`, whose
-/// claim is about what a reset releases). The pool's own behaviour is tested where it
-/// lives, in `gpu::tile`.
-pub use crate::gpu::tile::{AllocSource, TilePool};
 pub use crate::session::{Outline, Session};
 
 /// An engine on a headless device, in the default color space.

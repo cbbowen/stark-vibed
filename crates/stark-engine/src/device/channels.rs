@@ -10,9 +10,9 @@
 //! color space and carries it, so a trio cannot be built half-residual.
 
 use crate::colorspace::ColorSpace;
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc;
-use crate::gpu::tile::{AllocSource, TexHandle, TilePairHandle, TilePool};
+use crate::device::context::GpuContext;
+use crate::device::desc;
+use crate::device::tile::{AllocSource, TexHandle, TilePairHandle, TilePool};
 
 /// A tile's color channels, in every space (§6.1, §6.7): the latent premultiplied by
 /// per-unit opacity. The tile pool is sized for this and [`TILE_AUX_FORMAT`], so a
@@ -61,7 +61,7 @@ impl ChannelFormats {
     /// The one place the residual's *size* is counted, so a budget over viewport-sized
     /// attachments (`composite::resolve`) cannot silently assume the colorimetric space.
     pub(crate) fn bytes_per_px(&self) -> u64 {
-        let of = |f: wgpu::TextureFormat| u64::from(crate::gpu::desc::texel_bytes(f));
+        let of = |f: wgpu::TextureFormat| u64::from(crate::device::desc::texel_bytes(f));
         of(self.color) + of(self.aux) + self.resid.map_or(0, of)
     }
 
@@ -145,7 +145,7 @@ impl Channels {
     /// is returned to the caller and becomes a tile of the document, so its life is the
     /// document's and not the recording's.
     pub(crate) fn scratch(
-        scope: &mut crate::gpu::scratch::SubmitScope,
+        scope: &mut crate::device::scratch::SubmitScope,
         pool: &TilePool,
         formats: ChannelFormats,
         source: AllocSource,
@@ -264,7 +264,7 @@ impl Zeroes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpu::tile::SCRATCH_AUX_FORMAT;
+    use crate::device::tile::SCRATCH_AUX_FORMAT;
 
     /// A deposit lands the residual in the color's format and by the color's blend, at
     /// location 2 exactly where the space has one; the aux is the caller's, additive.

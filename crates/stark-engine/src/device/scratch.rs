@@ -28,7 +28,7 @@
 //!
 //! [`SubmitScope`] is also what the renderers that rewrite whole tiles record
 //! through — the transform, the merge, the fill, the selection. Those four take
-//! their working tiles from [`TilePool`](crate::gpu::tile::TilePool) rather than from
+//! their working tiles from [`TilePool`](crate::device::tile::TilePool) rather than from
 //! here; what they get from this type is the ordering, and the leased buffers their
 //! per-operation uniforms are staged into ([`SubmitScope::run_slots`]).
 //!
@@ -56,14 +56,14 @@ use std::sync::{Arc, Mutex};
 ///
 /// 256 bounds the blended merge's transient scratch at roughly 150 MB and its
 /// command buffers at about a thousand render passes. Like
-/// [`MAX_RELEASE_PER_EPOCH`](crate::gpu::tile) it is **a bound on a cost that has
+/// [`MAX_RELEASE_PER_EPOCH`](crate::device::tile) it is **a bound on a cost that has
 /// not been measured**: raising it costs memory and lowers the submit count, and the
 /// honest way to change it is to measure and say so.
 pub(crate) const FLUSH_TILES: usize = 256;
 
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc;
-use crate::gpu::uniforms::{Slot, stage_slots};
+use crate::device::context::GpuContext;
+use crate::device::desc;
+use crate::device::uniforms::{Slot, stage_slots};
 use stark_model::geom::TILE_TEX;
 
 use crate::unpoisoned;
@@ -169,7 +169,7 @@ impl BufKey {
     /// buckets.
     fn bucket(&self) -> u64 {
         self.size
-            .max(crate::gpu::uniforms::UNIFORM_SLOT)
+            .max(crate::device::uniforms::UNIFORM_SLOT)
             .next_power_of_two()
     }
 
@@ -189,7 +189,7 @@ impl BufKey {
 }
 
 /// A texture checkout: the texture and the whole-texture view onto it, pooled together
-/// for the same reason the tile pool's are ([`Pooled`](crate::gpu::tile)): every
+/// for the same reason the tile pool's are ([`Pooled`](crate::device::tile)): every
 /// checkout wants that same view.
 #[derive(Clone)]
 pub(crate) struct LeasedTex {
@@ -522,7 +522,7 @@ pub(crate) struct SubmitScope {
 }
 
 /// The scopes open on this thread, counted in a debug build — what
-/// [`TilePool::release_idle`](crate::gpu::tile::TilePool::release_idle) asserts is
+/// [`TilePool::release_idle`](crate::device::tile::TilePool::release_idle) asserts is
 /// zero, since a free-list texture may be named by an open scope's unsubmitted
 /// encoder.
 ///
@@ -814,7 +814,7 @@ impl SubmitScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpu::tile::{AllocSource, TilePool};
+    use crate::device::tile::{AllocSource, TilePool};
     use crate::testing::context_or_skip;
 
     const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;

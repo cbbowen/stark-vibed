@@ -58,7 +58,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::{Arc, Mutex};
 
-use crate::gpu::context::GpuContext;
+use crate::device::context::GpuContext;
 use stark_model::DocError;
 
 /// How many bytes of built objects a store holds before it evicts the least recently

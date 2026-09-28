@@ -17,7 +17,7 @@
 
 use stark_shaders::{Binding, EntryPoint};
 
-use crate::gpu::context::GpuContext;
+use crate::device::context::GpuContext;
 
 /// The vendored LUT image (git submodule; CC BY-NC 4.0).
 ///
@@ -94,9 +94,9 @@ impl PigmentLut {
             height: LUT_DIM,
             depth_or_array_layers: 1,
         };
-        let texture = crate::gpu::desc::texture_with_data(
+        let texture = crate::device::desc::texture_with_data(
             ctx,
-            &crate::gpu::desc::sampled_texture(
+            &crate::device::desc::sampled_texture(
                 "stark pigment lut",
                 wgpu::TextureFormat::Rgba8Unorm,
                 size,

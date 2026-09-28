@@ -38,7 +38,7 @@ use std::rc::Rc;
 
 use rpds::HashTrieMap;
 
-use crate::gpu::tile::{TexHandle, TileMap, TilePairHandle};
+use crate::device::tile::{TexHandle, TileMap, TilePairHandle};
 use stark_model::geom::{TileCoord, TileRect};
 
 /// The state a sequence of liquify strokes composes through — see the module.

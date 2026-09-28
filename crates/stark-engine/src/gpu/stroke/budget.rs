@@ -62,14 +62,14 @@ pub(super) const REGION_BUDGET_DIM: u32 = 2048;
 /// offers drawn along its facing axis, ~500 MB for the same brush at 45°, where an
 /// axis-aligned box around a long diagonal tip is at its worst. Transient, freed per
 /// piece.
-pub(super) const MAX_REGION_DIM: u32 = crate::gpu::context::MAX_TEXTURE_DIM_2D;
+pub(super) const MAX_REGION_DIM: u32 = crate::device::context::MAX_TEXTURE_DIM_2D;
 
 // A region is a texture, so the ceiling may never be set past what the device was asked
 // for. Asserted rather than left to the derivation above, because replacing that
 // derivation with a literal would surface only as a `create_texture` validation error
 // from inside the render path.
 const _: () = assert!(
-    MAX_REGION_DIM <= crate::gpu::context::MAX_TEXTURE_DIM_2D,
+    MAX_REGION_DIM <= crate::device::context::MAX_TEXTURE_DIM_2D,
     "a region would not fit the texture limit the device was asked for",
 );
 // And the chunker's target has to sit inside the ceiling it aims below, or every
@@ -218,7 +218,7 @@ fn axes(b: &BrushParams) -> stark_model::document::BrushDynamics {
 /// draw for a brush settled like `b`** (§6.2). A brush past it loses its dynamics
 /// altogether ([`StrokePath::TipTooLarge`](super::path::StrokePath::TipTooLarge)), because
 /// the region is a single texture bounded by
-/// [`MAX_TEXTURE_DIM_2D`](crate::gpu::context::MAX_TEXTURE_DIM_2D) and one tip has
+/// [`MAX_TEXTURE_DIM_2D`](crate::device::context::MAX_TEXTURE_DIM_2D) and one tip has
 /// to fit inside it whole.
 ///
 /// **This is a limit an editor is expected to clamp against, not one a stroke is

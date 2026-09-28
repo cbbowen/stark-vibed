@@ -11,9 +11,9 @@
 
 use std::borrow::Cow;
 
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc;
-use crate::gpu::half::f32_to_f16;
+use crate::device::context::GpuContext;
+use crate::device::desc;
+use crate::device::half::f32_to_f16;
 
 mod hdr;
 

@@ -4,7 +4,7 @@
 //! **Both halves are discovered.** What the tree declares comes from
 //! [`stark_shaders::every_build`], generated the way the rest of the mirror is; what the
 //! engine builds is recorded as it builds it, through the one funnel every pipeline
-//! crosses ([`desc::Module::declares`](super::desc)). So this file holds neither a list
+//! crosses ([`desc::Module::declares`](crate::device::desc)). So this file holds neither a list
 //! of pipelines nor a list of shaders — it held both, ~400 lines of them, and a
 //! hand-written list is exactly as good as whoever last edited it.
 //!
@@ -13,7 +13,7 @@
 
 use std::collections::BTreeSet;
 
-use crate::gpu::desc::record::{Built, Recording};
+use crate::device::desc::record::{Built, Recording};
 
 /// One entry point an artifact declares that no pipeline builds, and why.
 struct Unbuilt {
@@ -71,7 +71,7 @@ fn declared() -> BTreeSet<Built> {
 /// the *build* rather than about a script of gestures. A pass that became lazy would
 /// show up below as `unbuilt`, and the answer then is to provoke it here — not to
 /// excuse it in [`UNBUILT`], which is for what is compiled and genuinely never run.
-fn built(ctx: &crate::gpu::context::GpuContext) -> BTreeSet<Built> {
+fn built(ctx: &crate::device::context::GpuContext) -> BTreeSet<Built> {
     let mut out = BTreeSet::new();
     for space in crate::colorspace::all_available() {
         let recording = Recording::open();
@@ -97,7 +97,7 @@ fn built(ctx: &crate::gpu::context::GpuContext) -> BTreeSet<Built> {
 /// into the place the next mistake hides.
 #[test]
 fn every_entry_point_declared_is_built_into_some_pipeline() {
-    let headless = pollster::block_on(crate::gpu::context::GpuContext::headless());
+    let headless = pollster::block_on(crate::device::context::GpuContext::headless());
     let Some(ctx) = crate::testing::or_skip(headless, "GPU tests") else {
         return;
     };

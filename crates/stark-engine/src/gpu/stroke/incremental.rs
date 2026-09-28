@@ -18,7 +18,7 @@ use stark_model::document::StrokeRecord;
 use stark_model::geom::TileCoord;
 
 use super::accum::{ParcelCarry, ParcelEffect};
-use crate::gpu::scratch::Kept;
+use crate::device::scratch::Kept;
 
 /// A stroke's carried state at a cut point (§6.2) — what its path threads between
 /// pieces that does not already live on the canvas. Which kind it holds cannot

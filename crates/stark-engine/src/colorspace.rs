@@ -79,9 +79,9 @@ pub(crate) struct Latent {
 /// [`TILE_AUX_FORMAT`]) and the blends a deposit lands by
 /// ([`ChannelFormats::deposit_targets`]).
 ///
-/// [`TILE_COLOR_FORMAT`]: crate::gpu::channels::TILE_COLOR_FORMAT
-/// [`TILE_AUX_FORMAT`]: crate::gpu::channels::TILE_AUX_FORMAT
-/// [`ChannelFormats::deposit_targets`]: crate::gpu::channels::ChannelFormats::deposit_targets
+/// [`TILE_COLOR_FORMAT`]: crate::device::channels::TILE_COLOR_FORMAT
+/// [`TILE_AUX_FORMAT`]: crate::device::channels::TILE_AUX_FORMAT
+/// [`ChannelFormats::deposit_targets`]: crate::device::channels::ChannelFormats::deposit_targets
 pub(crate) trait ColorSpace {
     fn id(&self) -> ColorSpaceId;
 

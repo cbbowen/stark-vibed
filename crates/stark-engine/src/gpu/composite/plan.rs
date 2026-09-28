@@ -14,7 +14,7 @@
 
 use std::ops::Range;
 
-use crate::gpu::tile::TilePairHandle;
+use crate::device::tile::TilePairHandle;
 use crate::view::ViewTransform;
 
 use super::blend::{BlendUniform, ScratchNeeds, blend_uniform};

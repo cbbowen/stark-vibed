@@ -11,7 +11,7 @@ use stark_model::document::{MAX_SELECTION_TILES, SelectionMode, SelectionOp};
 use stark_model::geom::{TILE_APRON, TileCoord, Vec2, tiles_covering};
 
 use super::state::CanvasBounds;
-use crate::gpu::tile::{MaskHandle, MaskMap};
+use crate::device::tile::{MaskHandle, MaskMap};
 
 /// The document's selection: a sparse coverage mask plus the coverage that reigns
 /// everywhere it has no tile (§6.8).

@@ -27,10 +27,10 @@
 use std::sync::Arc;
 
 use crate::colorspace::ColorSpace;
-use crate::gpu::channels::{ChannelFormats, Channels};
-use crate::gpu::context::GpuContext;
-use crate::gpu::half::f32_to_f16;
-use crate::gpu::tile::{AllocSource, TileMap, TilePool};
+use crate::device::channels::{ChannelFormats, Channels};
+use crate::device::context::GpuContext;
+use crate::device::half::f32_to_f16;
+use crate::device::tile::{AllocSource, TileMap, TilePool};
 use stark_assetid::Picture;
 use stark_model::Srgb;
 use stark_model::document::image_tiles;
@@ -237,7 +237,7 @@ fn write_half4(out: &mut [u8], v: [f32; 4]) {
 mod tests {
     use super::*;
     use crate::colorspace::OkLabColorSpace;
-    use crate::gpu::half::f16_to_f32;
+    use crate::device::half::f16_to_f32;
 
     /// The default space, which is the one every test here reasons in.
     fn texel_of(rgba: [u8; 4]) -> Texel {
@@ -257,7 +257,7 @@ mod tests {
     /// second half this would pass just as well if the hazard were imaginary.
     #[test]
     fn a_distant_tile_addresses_the_image_exactly() {
-        use crate::gpu::tile::mask_tex_origin;
+        use crate::device::tile::mask_tex_origin;
         use stark_model::geom::TileCoord;
 
         // Far enough out that a tile origin needs more than the 24 bits of mantissa an

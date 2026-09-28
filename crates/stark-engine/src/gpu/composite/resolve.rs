@@ -7,8 +7,8 @@
 
 use super::blend::ScratchNeeds;
 use super::display::Transfer;
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc::{self, Bindings};
+use crate::device::context::GpuContext;
+use crate::device::desc::{self, Bindings};
 use crate::view::Extent2;
 use stark_shaders::Stages;
 use stark_shaders::mirror::resolve::binding as rb;
@@ -93,13 +93,13 @@ pub(super) fn supersample(size: Extent2, zoom: f32, max_dim: u32, bytes_per_px: 
 /// [`blur_bytes_per_px`] on its own — which is what keeps a blurred frame from also
 /// being a heavily supersampled one.
 pub(super) fn attachment_bytes(
-    formats: crate::gpu::channels::ChannelFormats,
+    formats: crate::device::channels::ChannelFormats,
     target_format: wgpu::TextureFormat,
     scratch: &ScratchNeeds,
     blur: bool,
 ) -> u64 {
     let trio = formats.bytes_per_px();
-    let resolve = u64::from(crate::gpu::desc::texel_bytes(target_format));
+    let resolve = u64::from(crate::device::desc::texel_bytes(target_format));
     trio + resolve + scratch.bytes_per_px(trio) + if blur { blur_bytes_per_px() } else { 0 }
 }
 
@@ -115,7 +115,7 @@ pub(super) fn attachment_bytes(
 /// `blur.wesl` would otherwise leave this budget counting the old one.
 fn blur_bytes_per_px() -> u64 {
     use stark_shaders::mirror::blur::decl as bd;
-    let of = |f: wgpu::TextureFormat| u64::from(crate::gpu::desc::texel_bytes(f));
+    let of = |f: wgpu::TextureFormat| u64::from(crate::device::desc::texel_bytes(f));
     let (light, aux) = (
         of(bd::DST_LIGHT.storage_format()),
         of(bd::DST_AUX.storage_format()),
@@ -260,7 +260,7 @@ impl Supersampled {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpu::channels::ChannelFormats;
+    use crate::device::channels::ChannelFormats;
     use crate::gpu::composite::blend::Level::{self, Swap, SwapIso};
 
     /// The device this policy is written against: the `downlevel_webgl2` floor's

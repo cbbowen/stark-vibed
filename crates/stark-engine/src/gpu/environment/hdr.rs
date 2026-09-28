@@ -51,7 +51,7 @@ pub(super) fn decode_hdr(bytes: &[u8]) -> Result<(Vec<[f32; 3]>, u32, u32), Stri
     // The image becomes one texture (`Environment::from_equirect`), which can be
     // neither empty nor past the device's limit — and the header alone sizes the
     // allocation below, so it is bounded before a byte of the body is read.
-    let max = crate::gpu::context::MAX_TEXTURE_DIM_2D;
+    let max = crate::device::context::MAX_TEXTURE_DIM_2D;
     if w == 0 || h == 0 || w > max || h > max {
         return Err(format!(
             "hdr: a {w}x{h} image is not 1..={max} texels a side"
@@ -185,7 +185,7 @@ fn rgbe_to_linear(rgbe: [u8; 4]) -> [f32; 3] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpu::context::MAX_TEXTURE_DIM_2D;
+    use crate::device::context::MAX_TEXTURE_DIM_2D;
 
     #[test]
     fn decodes_bundled_studio_hdr() {

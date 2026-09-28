@@ -2,17 +2,17 @@
 //! made of three (§6.1, §6.7).
 //!
 //! The third ownership beside `channels.rs`'s pooled
-//! [`Channels`](super::super::channels::Channels) and borrowed [`Targets`]: the one
+//! [`Channels`](crate::device::channels::Channels) and borrowed [`Targets`]: the one
 //! whose members free their memory when they are replaced.
 
 use crate::view::Extent2;
 
-use super::super::channels::{ChannelFormats, Targets};
+use crate::device::channels::{ChannelFormats, Targets};
 
 /// A viewport-sized offscreen render target — pass A's channels, the blend
 /// scratch, the supersampled target, the focal blur's planes — that **returns its
 /// memory when it is replaced** rather than merely releasing its handle
-/// ([`gpu::scratch`](crate::gpu::scratch)).
+/// ([`gpu::scratch`](crate::device::scratch)).
 ///
 /// These are the largest allocations the application makes: a whole set is rebuilt
 /// whenever the target changes size or the zoom crosses a supersampling threshold

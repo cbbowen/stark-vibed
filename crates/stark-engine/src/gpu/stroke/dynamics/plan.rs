@@ -424,7 +424,7 @@ const _: () = assert!(
 ///
 /// For the scratch pool's sake alone: the raw maximum drifts a few texels per fold as
 /// the tail's geometry evolves, which would make nearly every checkout a miss
-/// ([`ScratchPool`](crate::gpu::scratch)). The round-up moves no pixel — stores and
+/// ([`ScratchPool`](crate::device::scratch)). The round-up moves no pixel — stores and
 /// reads are gated by the slot rects and the sweep test, and the texels it adds fall
 /// outside both.
 const SNAPSHOT_QUANTUM: u32 = 64;

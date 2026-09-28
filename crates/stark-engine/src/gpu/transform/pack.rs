@@ -9,7 +9,7 @@ use stark_shaders::mirror::transform::{
 };
 
 use super::plan::{FragMap, GatedKind, GatedMap, SourceUnit};
-use crate::gpu::tile::mask_tex_origin;
+use crate::device::tile::mask_tex_origin;
 
 /// The rect-scoped map a gated pass draws **through** (§16.8, §16.9): the pieces, the
 /// shared inverse homography a perspective carries (a warp's cells carry their own

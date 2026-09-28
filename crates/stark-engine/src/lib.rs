@@ -32,8 +32,10 @@
 //!   per-client state replay does need, so it lives in [`document::DocState`]
 //!   keyed by [`ActorId`](stark_model::document::ActorId) instead (§17.3). What
 //!   either side has in *flight* is named once, in `gesture`.
-//! - [`gpu`] — the tile pool, the stroke renderer, compositing and the media
-//!   pass (§6).
+//! - [`device`] — the wgpu context and what it hands out: the tile pool, the scratch
+//!   pool, the channel set (§6.1). A tier below [`document`], so the state a log folds
+//!   into can hold a tile handle without naming a renderer (§2).
+//! - [`gpu`] — the passes: the stroke renderer, compositing and the media pass (§6).
 //! - [`path`] — pointer samples fitted to a cubic B-spline (`spline`), then
 //!   flattened adaptively into the segments the brush sweeps along (§6.2).
 //! - `stark-model`'s `io` — the save format, which *is* the action log (§8).
@@ -67,6 +69,7 @@
 pub(crate) mod assets;
 pub(crate) mod colorspace;
 pub mod command;
+pub(crate) mod device;
 pub mod document;
 pub(crate) mod engine;
 pub(crate) mod error;
@@ -145,6 +148,7 @@ pub mod testing;
 
 pub use assist::Assisted;
 pub use colorspace::{all_available, available};
+pub use device::{DeviceFailure, FailureKind, GpuContext, GpuHealth};
 pub use engine::{
     Background, DEFAULT_FAST_COMMIT, DEFAULT_HISTORY_BUDGET, Engine, EngineShared, ExportPlan,
     ExportScale, GuideInfo, Guides, LayerInfo, Layers, MatteInfo, ObservableState, PickOptions,
@@ -152,8 +156,7 @@ pub use engine::{
 };
 pub use error::{EngineError, ExportError, Produces, Result};
 pub use gpu::{
-    DeviceFailure, EnvironmentId, FailureKind, GpuContext, GpuHealth, MediaParams, Offscreen,
-    Output, Transfer, max_stretch, max_tip_reach,
+    EnvironmentId, MediaParams, Offscreen, Output, Transfer, max_stretch, max_tip_reach,
 };
 pub use image::RgbaImage;
 pub use peer::{Identity, Peer};

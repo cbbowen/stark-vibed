@@ -32,10 +32,10 @@ use std::sync::Arc;
 
 use stark_model::geom::TileCoord;
 
-use crate::gpu::channels::Targets;
-use crate::gpu::desc;
-use crate::gpu::scratch::{Kept, Key, LeasedTex, SubmitScope};
-use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle};
+use crate::device::channels::Targets;
+use crate::device::desc;
+use crate::device::scratch::{Kept, Key, LeasedTex, SubmitScope};
+use crate::device::tile::{AllocSource, TileMap, TilePairHandle};
 
 use super::incremental::{Carried, Resume};
 use super::swept::SweepDraws;

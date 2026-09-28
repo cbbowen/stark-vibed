@@ -9,9 +9,9 @@
 //! [`read_rgba8_blocking`] is for the golden tests, which are native by construction,
 //! and is compiled out on wasm.
 
+use crate::device::context::GpuContext;
+use crate::device::half::f16_to_f32;
 use crate::error::{EngineError, Result};
-use crate::gpu::context::GpuContext;
-use crate::gpu::half::f16_to_f32;
 use crate::view::Extent2;
 
 /// A texel of `texture`, in bytes.

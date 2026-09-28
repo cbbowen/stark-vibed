@@ -21,13 +21,13 @@
 use std::sync::Arc;
 
 use crate::colorspace::ColorSpace;
-use crate::gpu::channels::Zeroes;
-use crate::gpu::channels::{ChannelFormats, Channels, Targets};
+use crate::device::channels::Zeroes;
+use crate::device::channels::{ChannelFormats, Channels, Targets};
+use crate::device::context::GpuContext;
+use crate::device::desc;
+use crate::device::scratch::{LeasedSlots, ScratchPool, SubmitScope};
+use crate::device::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
 use crate::gpu::composite::{BlendPass, BlendUniform, FilterDraw, FilterPass, FilterUniform};
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc;
-use crate::gpu::scratch::{LeasedSlots, ScratchPool, SubmitScope};
-use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
 use crate::view::ViewTransform;
 use stark_model::document::BlendMode;
 

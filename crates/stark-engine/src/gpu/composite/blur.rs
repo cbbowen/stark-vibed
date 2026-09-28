@@ -54,9 +54,9 @@
 
 use std::ops::Range;
 
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc::{self, Bindings};
-use crate::gpu::uniforms::UniformSlots;
+use crate::device::context::GpuContext;
+use crate::device::desc::{self, Bindings};
+use crate::device::uniforms::UniformSlots;
 use crate::view::{Extent2, ViewTransform};
 use stark_model::document::{Aperture as DocAperture, FocalBlur};
 use stark_model::geom::Vec2;

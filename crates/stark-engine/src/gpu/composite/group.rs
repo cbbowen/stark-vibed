@@ -6,8 +6,8 @@
 //! whether a group can tell itself apart from no group at all.
 
 use crate::colorspace::ColorSpace;
+use crate::device::tile::TilePairHandle;
 use crate::document::CompositeParams;
-use crate::gpu::tile::TilePairHandle;
 use stark_model::document::{
     ChromaticAberration, ColorAdjust, Filter, FocalBlur, GradientAxis, GradientParcel, MatteRegion,
     Parcel,

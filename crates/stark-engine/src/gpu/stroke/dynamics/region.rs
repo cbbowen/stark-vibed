@@ -31,11 +31,11 @@ use super::super::segments::{BleedFire, Segment};
 use super::super::{ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
 use super::kit::{LoopPass, Prefix};
 use super::plan::{LoopDispatch, PlanCtx};
-use crate::gpu::channels::{TILE_AUX_FORMAT, Targets};
+use crate::device::channels::{TILE_AUX_FORMAT, Targets};
+use crate::device::desc;
+use crate::device::scratch::{BufKey, Key, LeasedSlots, LeasedTex, SubmitScope};
+use crate::device::tile::{AllocSource, TileMap};
 use crate::gpu::composite::view_uniform;
-use crate::gpu::desc;
-use crate::gpu::scratch::{BufKey, Key, LeasedSlots, LeasedTex, SubmitScope};
-use crate::gpu::tile::{AllocSource, TileMap};
 // The region composite runs `composite.wesl`, so it draws that shader's own
 // per-instance record (§6.10) rather than a second `#[repr(C)]` copy of it declared
 // here under a different name.
@@ -246,7 +246,7 @@ impl<'a> RegionRun<'a> {
     }
 
     /// The plan's uniforms, one dynamic-offset slot each — slots being how a uniform
-    /// varies across the dispatches of one pass ([`crate::gpu::uniforms`]).
+    /// varies across the dispatches of one pass ([`crate::device::uniforms`]).
     ///
     /// Leased on the *piece*, like the region it works on: nothing past this piece's
     /// own submission reads it, so holding it for the whole run would make a long
@@ -416,7 +416,7 @@ pub(super) fn region_selection(
     let view = scope
         .take_piece(Key {
             size: (w, h),
-            format: crate::gpu::tile::MASK_FORMAT,
+            format: crate::device::tile::MASK_FORMAT,
             usage: crate::gpu::selection::SelectionRenderer::REGION_MASK_USAGE,
             label: "stark selection region mask",
         })
@@ -443,7 +443,7 @@ pub(super) fn region_selection(
 pub(super) fn slice_region(
     r: &StrokeRenderer,
     scope: &mut SubmitScope,
-    pool: &crate::gpu::tile::TilePool,
+    pool: &crate::device::tile::TilePool,
     base: &TileMap,
     piece: &Piece,
     from: RegionChannels<'_>,

@@ -193,7 +193,7 @@ impl Presenter {
     /// The device's own limit rather than a literal, because there is no one number —
     /// the frontend requests `wgpu::Limits::default()` while the headless device asks
     /// only for the engine's own minimums
-    /// ([`MAX_TEXTURE_DIM_2D`](crate::gpu::context::MAX_TEXTURE_DIM_2D)), so any literal
+    /// ([`MAX_TEXTURE_DIM_2D`](crate::device::context::MAX_TEXTURE_DIM_2D)), so any literal
     /// agrees with one of them and not the other.
     pub(super) fn max_dim(&self) -> u32 {
         self.pipeline.max_dim()

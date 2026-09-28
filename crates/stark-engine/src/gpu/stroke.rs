@@ -27,13 +27,13 @@ use std::sync::Arc;
 
 use crate::assets::AssetStore;
 use crate::colorspace::ColorSpace;
+use crate::device::channels::Zeroes;
+use crate::device::context::GpuContext;
+use crate::device::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
 use crate::document::PaintTiles;
 use crate::document::liquify::LiquifyRun;
 use crate::document::selection::Selection;
-use crate::gpu::channels::Zeroes;
-use crate::gpu::context::GpuContext;
 use crate::gpu::selection::SelectionRenderer;
-use crate::gpu::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
 use crate::noise::NOISE_TILE_PX;
 use crate::unpoisoned;
 use stark_model::Srgb;
@@ -54,8 +54,8 @@ mod tips;
 // through it (`assets::AssetStore::mask_views`).
 pub(crate) mod volume;
 
-use crate::gpu::desc;
-use crate::gpu::scratch::ScratchPool;
+use crate::device::desc;
+use crate::device::scratch::ScratchPool;
 use budget::MAX_REGION_DIM;
 use dynamics::{DynamicsKit, build_dynamics_kit};
 use incremental::Resume;
@@ -446,7 +446,7 @@ impl StrokeRenderer {
     /// Acquire a persistent tile: the document's channel trio, with the residual
     /// exactly where the color space has one (§6.7).
     fn acquire_tile(&self, pool: &TilePool, source: AllocSource) -> TilePairHandle {
-        use crate::gpu::channels::{ChannelFormats, Channels};
+        use crate::device::channels::{ChannelFormats, Channels};
         Channels::acquire(pool, ChannelFormats::of(self.color_space.as_ref()), source).into_tile()
     }
 

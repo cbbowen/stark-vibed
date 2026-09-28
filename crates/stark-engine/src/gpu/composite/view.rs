@@ -9,9 +9,9 @@
 //! per-target half (what this render is looking at, and the groups over it).
 
 use super::display::Transfer;
-use crate::gpu::desc::Bindings;
-use crate::gpu::tile::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE};
-use crate::gpu::uniforms::UniformSlots;
+use crate::device::desc::Bindings;
+use crate::device::tile::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE};
+use crate::device::uniforms::UniformSlots;
 use crate::view::ViewTransform;
 use stark_model::geom::TILE_SIZE;
 use stark_shaders::mirror::view::binding as vb;

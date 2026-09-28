@@ -13,8 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::assets::AssetStore;
 use crate::detmath;
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc;
+use crate::device::context::GpuContext;
+use crate::device::desc;
 use stark_model::document::{BrushParams, BrushShape, ColorDynamics, NoiseKind};
 
 use super::volume::{

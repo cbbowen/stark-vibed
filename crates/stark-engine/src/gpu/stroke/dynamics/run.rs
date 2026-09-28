@@ -10,8 +10,8 @@
 
 use std::sync::Arc;
 
-use crate::gpu::desc;
-use crate::gpu::tile::TileMap;
+use crate::device::desc;
+use crate::device::tile::TileMap;
 
 use super::super::incremental::{Carried, LoopCarry, LoopTiles};
 use super::super::region::chunk_segments;
@@ -27,7 +27,7 @@ use super::region::{
 };
 use super::tool::{BRUSH_RES, ToolPingPong};
 use super::trio::{Life, Trio};
-use crate::gpu::scratch::{BufKey, Key, LeasedSlots, LeasedTex, SubmitScope};
+use crate::device::scratch::{BufKey, Key, LeasedSlots, LeasedTex, SubmitScope};
 use stark_shaders::mirror::stamp::SegmentInstance;
 use stark_shaders::mirror::stamp_common::SWEEP_VERTS;
 /// The label on the loop's compute pass, which the ceiling lane's render pass cuts in

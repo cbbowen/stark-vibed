@@ -6,13 +6,13 @@
 //! so a run that interleaves them changes only the pipeline and the vertex buffer.
 
 use crate::colorspace::ColorSpace;
-use crate::gpu::channels::{ChannelFormats, Targets};
-use crate::gpu::desc::{self, Bindings, RenderPipe};
+use crate::device::channels::{ChannelFormats, Targets};
+use crate::device::desc::{self, Bindings, RenderPipe};
 use stark_shaders::Stages;
 use stark_shaders::mirror::matte::decl as md;
 use stark_shaders::mirror::view::decl as vd;
 
-use crate::gpu::uniforms::{InstanceStream, UniformSlots};
+use crate::device::uniforms::{InstanceStream, UniformSlots};
 
 use super::plan::Draw;
 
@@ -47,7 +47,7 @@ impl TilePass {
     /// group over its own channels ([`TilePairHandle::composite_bg`]), and the stamp
     /// loop binds that same group.
     ///
-    /// [`TilePairHandle::composite_bg`]: crate::gpu::tile::TilePairHandle::composite_bg
+    /// [`TilePairHandle::composite_bg`]: crate::device::tile::TilePairHandle::composite_bg
     pub(super) fn new(
         device: &wgpu::Device,
         color_space: &dyn ColorSpace,

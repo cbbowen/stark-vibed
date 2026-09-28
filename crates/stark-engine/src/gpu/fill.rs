@@ -16,19 +16,19 @@
 //! Like the other renderers this holds only immutable GPU objects, so it is cheap to
 //! `Clone` and rides in the `Action::Context` (§5).
 
-use crate::gpu::tile::TilePairHandle;
+use crate::device::tile::TilePairHandle;
 use std::sync::Arc;
 
 use crate::colorspace::ColorSpace;
+use crate::device::channels::Zeroes;
+use crate::device::channels::{ChannelFormats, Channels};
+use crate::device::context::GpuContext;
+use crate::device::desc;
+use crate::device::scratch::ScratchPool;
+use crate::device::tile::mask_tex_origin;
+use crate::device::tile::{AllocSource, TileMap, TilePool};
 use crate::document::selection::Selection;
-use crate::gpu::channels::Zeroes;
-use crate::gpu::channels::{ChannelFormats, Channels};
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc;
-use crate::gpu::scratch::ScratchPool;
 use crate::gpu::selection::SelectionRenderer;
-use crate::gpu::tile::mask_tex_origin;
-use crate::gpu::tile::{AllocSource, TileMap, TilePool};
 use stark_model::document::{FillOp, GradientAxis, Parcel};
 use stark_model::document::{SelectionMode, SelectionOp, SelectionShape};
 

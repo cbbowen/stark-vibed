@@ -26,20 +26,20 @@
 //! immutable GPU objects, so it is cheap to `Clone` and rides in the
 //! `Action::Context` (§5).
 
-use crate::gpu::tile::TilePairHandle;
+use crate::device::tile::TilePairHandle;
 use std::collections::BTreeMap;
 
 use rpds::HashTrieMap;
 
 use crate::colorspace::ColorSpace;
+use crate::device::channels::Zeroes;
+use crate::device::channels::{ChannelFormats, Channels};
+use crate::device::context::GpuContext;
+use crate::device::desc;
+use crate::device::scratch::{LeasedSlots, ScratchPool, SubmitScope};
+use crate::device::tile::{AllocSource, MASK_FORMAT, TileMap, TilePool};
 use crate::document::selection::Selection;
-use crate::gpu::channels::Zeroes;
-use crate::gpu::channels::{ChannelFormats, Channels};
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc;
-use crate::gpu::scratch::{LeasedSlots, ScratchPool, SubmitScope};
 use crate::gpu::selection::{MaskSource, SelectionRenderer, outside_clear};
-use crate::gpu::tile::{AllocSource, MASK_FORMAT, TileMap, TilePool};
 use stark_model::document::TransformMap;
 use stark_model::geom::{Affine2, TileCoord, TileRect, Vec2};
 use stark_shaders::mirror::transform::binding as t;
@@ -486,7 +486,7 @@ impl TransformRenderer {
             "stark selection shift quads",
             &uniforms,
         );
-        let mut tiles: HashTrieMap<TileCoord, crate::gpu::tile::MaskHandle> = HashTrieMap::new();
+        let mut tiles: HashTrieMap<TileCoord, crate::device::tile::MaskHandle> = HashTrieMap::new();
         for (coord, sources) in &rewrites {
             let dst = pool.acquire_mask(AllocSource::TransformMask);
             self.render_mask(&mut scope, selection, &mut quads, sources, &dst);
@@ -678,7 +678,7 @@ impl TransformRenderer {
         );
 
         // The mask, carried under the canvas affine (pure Replace — §16.1).
-        let mut mask_tiles: HashTrieMap<TileCoord, crate::gpu::tile::MaskHandle> =
+        let mut mask_tiles: HashTrieMap<TileCoord, crate::device::tile::MaskHandle> =
             HashTrieMap::new();
         for (dest, sources) in &mask_plan.rewrites {
             let dst = pool.acquire_mask(AllocSource::TransformMask);
@@ -944,7 +944,7 @@ impl TransformRenderer {
         g: &Gated<'_>,
         pieces: &mut Group<'_, GatedUniform>,
         rewrite: &(TileCoord, Vec<usize>),
-        dst: &crate::gpu::tile::MaskHandle,
+        dst: &crate::device::tile::MaskHandle,
     ) {
         let (dest, unit_idxs) = (rewrite.0, &rewrite.1);
         // The residue reads the destination's *old* coverage — a real tile or
@@ -1052,7 +1052,7 @@ impl TransformRenderer {
         selection: &Selection,
         quads: &mut Group<'_, QuadUniform>,
         sources: &[TileCoord],
-        dst: &crate::gpu::tile::MaskHandle,
+        dst: &crate::device::tile::MaskHandle,
     ) {
         let mut draws: Vec<Draw> = Vec::with_capacity(sources.len());
         for src in sources {

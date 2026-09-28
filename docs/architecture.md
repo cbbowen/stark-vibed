@@ -107,9 +107,16 @@ stark/
 │   │   │   ├── assets.rs       # the content-addressed asset store (§6.6)
 │   │   │   ├── noise.rs        # tileable 2-D noise tiles for color dynamics (§6.2)
 │   │   │   ├── image.rs        # RgbaImage (readback / export)
-│   │   │   └── gpu/
-│   │   │       ├── context.rs   # device/queue wrapper, capabilities
-│   │   │       ├── tile.rs      # TilePool, CoW tile handles, channel set (§6.1)
+│   │   │   ├── device/         # the device and what it hands out — below document/
+│   │   │   │   ├── context.rs   # device/queue wrapper, capabilities
+│   │   │   │   ├── tile.rs      # TilePool, CoW tile handles, channel set (§6.1)
+│   │   │   │   ├── scratch.rs   # transient textures and the submit scope
+│   │   │   │   ├── desc.rs      # wgpu descriptor / bind-group helpers
+│   │   │   │   ├── channels.rs  # which channels a trio carries (§6.7)
+│   │   │   │   ├── uniforms.rs  # the uniform slots and the instance stream
+│   │   │   │   ├── readback.rs  # GPU→CPU texture readback (export, goldens)
+│   │   │   │   └── half.rs      # f16 ↔ f32
+│   │   │   └── gpu/            # the passes; they name device/, it names no pass
 │   │   │       ├── registry.rs  # frontend-provided resources: bytes + live object
 │   │   │       ├── stroke/      # the brush engine / stroke rasterizer (§6.2)
 │   │   │       ├── composite/   # compositing + the media/lighting pass (§6.3)
@@ -118,8 +125,7 @@ stark/
 │   │   │       ├── selection.rs # selection-mask rasterization (§6.8)
 │   │   │       ├── fill.rs      # region fill: a paint parcel through a mask (§6.8)
 │   │   │       ├── transform.rs # the parcel / combine / mask passes (§16.5)
-│   │   │       ├── pigment.rs   # the Mixbox LUT (§6.7)
-│   │   │       └── readback.rs  # GPU→CPU texture readback (export, goldens)
+│   │   │       └── pigment.rs   # the Mixbox LUT (§6.7)
 │   │   └── tests/
 │   │       └── golden/         # scripted command sequences + reference PNGs (§9)
 │   ├── stark-stroke/           # the stroke's CPU geometry — no wgpu at all

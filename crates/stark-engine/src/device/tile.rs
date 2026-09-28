@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use strum::{EnumCount, VariantArray};
 
-use crate::gpu::context::GpuContext;
+use crate::device::context::GpuContext;
 use crate::unpoisoned;
 use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 
@@ -378,7 +378,7 @@ impl TexHandle {
     /// Panics unless `bytes` is exactly one block.
     pub(crate) fn write_block(&self, queue: &wgpu::Queue, bytes: &[u8]) {
         let dst = self.0.texture();
-        let row = crate::gpu::desc::texel_bytes(dst.format()) * TILE_TEX;
+        let row = crate::device::desc::texel_bytes(dst.format()) * TILE_TEX;
         assert_eq!(
             bytes.len() as u32,
             row * TILE_TEX,
@@ -519,8 +519,8 @@ impl TilePairHandle {
     /// `wgpu::Texture`s and a tile hands none out ([`TexHandle`]); what leaves this
     /// call is the decoded texels. `readback` keeps the row-padding arithmetic.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn read_channels(&self, ctx: &crate::gpu::context::GpuContext) -> TileChannels {
-        use crate::gpu::readback::{decode_rgba16f, read_one_blocking};
+    pub(crate) fn read_channels(&self, ctx: &crate::device::context::GpuContext) -> TileChannels {
+        use crate::device::readback::{decode_rgba16f, read_one_blocking};
         let block = crate::view::Extent2::new(TILE_TEX, TILE_TEX);
         let read = |tex: &wgpu::Texture, lanes: u32| {
             // The formats named, not their byte sizes: the decode is `f16` pairs, and
@@ -728,7 +728,7 @@ impl PoolInner {
     /// texture whose last handle drops while an unsubmitted encoder still names its
     /// view reaches this free list early. Reuse alone makes that wrong pixels, which
     /// the consumers' submit scopes prevent
-    /// ([`SubmitScope`](crate::gpu::scratch::SubmitScope)); `destroy()` makes it a
+    /// ([`SubmitScope`](crate::device::scratch::SubmitScope)); `destroy()` makes it a
     /// *dangling view*, handed to the next bind group.
     ///
     /// An epoch is [`TRIM_INTERVAL`] acquires and an encoder spans one operation, so a
@@ -827,7 +827,7 @@ const MAX_RELEASE_PER_EPOCH: usize = 256;
 /// answer is counted at zero — it is telemetry, and telemetry degrading is the right
 /// failure for telemetry.
 ///
-/// [`bytes_per_texel`]: crate::gpu::readback
+/// [`bytes_per_texel`]: crate::device::readback
 fn texture_bytes(format: wgpu::TextureFormat) -> u64 {
     let texel = format.block_copy_size(None).unwrap_or(0) as u64;
     texel * TILE_TEX as u64 * TILE_TEX as u64
@@ -1002,7 +1002,7 @@ impl TilePool {
     pub fn release_idle(&self) {
         #[cfg(debug_assertions)]
         assert_eq!(
-            crate::gpu::scratch::open_scopes(),
+            crate::device::scratch::open_scopes(),
             0,
             "idle textures released while a scope on this thread is still recording",
         );

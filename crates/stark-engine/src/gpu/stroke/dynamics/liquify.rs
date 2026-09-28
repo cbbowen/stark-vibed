@@ -44,11 +44,11 @@ use super::region::{
     region_selection, slice_region,
 };
 use super::trio::{Life, Trio};
+use crate::device::desc;
+use crate::device::scratch::{Key, LeasedSlots, LeasedTex};
+use crate::device::tile::{AllocSource, FIELD_FORMAT, TileMap};
 use crate::document::PaintTiles;
 use crate::document::liquify::LiquifyRun;
-use crate::gpu::desc;
-use crate::gpu::scratch::{Key, LeasedSlots, LeasedTex};
-use crate::gpu::tile::{AllocSource, FIELD_FORMAT, TileMap};
 use stark_shaders::mirror::dynamics_common::Stamp;
 use stark_shaders::mirror::dynamics_common::binding as sb;
 use stark_shaders::mirror::liquify::binding as lb;

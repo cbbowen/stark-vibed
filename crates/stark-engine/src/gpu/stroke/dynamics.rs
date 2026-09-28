@@ -8,7 +8,7 @@
 //!
 //! [`plan`] decides what to dispatch and touches no GPU, [`kit`] builds the objects
 //! it is dispatched with, and [`run`] records it — checking its working textures out
-//! of the stroke-level [`scratch`](crate::gpu::scratch) pool. Whether a stroke comes
+//! of the stroke-level [`scratch`](crate::device::scratch) pool. Whether a stroke comes
 //! here at all is [`StrokePlan::of`](super::path::StrokePlan::of)'s answer.
 
 mod bleed;

@@ -15,8 +15,8 @@ use stark_model::geom::{
     Affine2, TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, TileRect, Vec2, tile_box, tiles_of,
 };
 
+use crate::device::tile::TileMap;
 use crate::document::selection::Selection;
-use crate::gpu::tile::TileMap;
 
 /// How the author's selection stands over one populated tile.
 #[derive(Copy, Clone, PartialEq, Eq)]

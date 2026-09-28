@@ -24,15 +24,15 @@ use stark_shaders::mirror::erase::decl as ed;
 use stark_shaders::mirror::stamp::fs_erase as fe;
 
 use crate::colorspace::ColorSpace;
-use crate::gpu::desc;
-use crate::gpu::tile::TileMap;
+use crate::device::desc;
+use crate::device::tile::TileMap;
 
 use super::accum::{
     LandStep, Landing, LaneKeys, Lanes, ParcelEffect, SweepStep, land_tiles, lane_key,
 };
 use super::swept::{SweepDraws, SweepPass, landing_pipeline, reaches_nothing};
 use super::{ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene};
-use crate::gpu::scratch::Key;
+use crate::device::scratch::Key;
 
 /// The accumulator's format: one channel — the transparency mass — additive. f16
 /// is enough because the interesting range is a few times `OPAQUE_MASS`, and by the

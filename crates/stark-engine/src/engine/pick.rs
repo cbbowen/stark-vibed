@@ -325,7 +325,8 @@ impl Engine {
             let nothing = |n: usize| vec![None; n];
             let colors = trace.colors();
             let size = trace.size;
-            let Ok(texel_sets) = crate::gpu::readback::read_many_rgba16f(&gpu, &colors, size).await
+            let Ok(texel_sets) =
+                crate::device::readback::read_many_rgba16f(&gpu, &colors, size).await
             else {
                 return nothing(colors.len());
             };
@@ -335,7 +336,7 @@ impl Engine {
             let resid_sets = if resid_refs.is_empty() {
                 None
             } else {
-                match crate::gpu::readback::read_many_rgba16f(&gpu, &resid_refs, size).await {
+                match crate::device::readback::read_many_rgba16f(&gpu, &resid_refs, size).await {
                     Ok(sets) => Some(sets),
                     // Not `None`: that means "this space has no residual", and taking
                     // it here would report a pigment color as though its residual were
@@ -562,7 +563,7 @@ impl Engine {
             // "nothing under the pointer" is the honest answer for a device that
             // can no longer be read — the eyedropper's stance, for its reason:
             // `ObservableState::gpu_failure` is what *reports* the failure.
-            let Ok(sets) = crate::gpu::readback::read_many_rgba16f(&gpu, &colors, size).await
+            let Ok(sets) = crate::device::readback::read_many_rgba16f(&gpu, &colors, size).await
             else {
                 return None;
             };

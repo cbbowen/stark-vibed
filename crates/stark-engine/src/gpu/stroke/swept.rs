@@ -6,8 +6,8 @@
 use std::ops::Range;
 
 use crate::colorspace::ColorSpace;
-use crate::gpu::channels::{ChannelFormats, Targets};
-use crate::gpu::desc;
+use crate::device::channels::{ChannelFormats, Targets};
+use crate::device::desc;
 use stark_model::document::StrokeRecord;
 use stark_model::geom::{TILE_APRON, TILE_TEX, TileCoord, Vec2};
 use stark_shaders::mirror::integrate::binding as ib;
@@ -21,7 +21,7 @@ use stark_shaders::mirror::stamp_common::decl as sd;
 use stark_shaders::mirror::stamp_common::fs_out as fo;
 use stark_shaders::{EntryPoint, Lane, Stages};
 
-use crate::gpu::tile::{SCRATCH_AUX_FORMAT, TileMap};
+use crate::device::tile::{SCRATCH_AUX_FORMAT, TileMap};
 
 use super::accum::{
     LandStep, Landing, LaneKeys, Lanes, ParcelEffect, SweepStep, land_tiles, lane_key,
@@ -29,7 +29,7 @@ use super::accum::{
 use super::region::tiles_with_segments;
 use super::segments::{Segment, SegmentInstance};
 use super::{ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene};
-use crate::gpu::scratch::{BufKey, Key, LeasedSlots, SubmitScope};
+use crate::device::scratch::{BufKey, Key, LeasedSlots, SubmitScope};
 use crate::gpu::substrate::SubstrateMap;
 
 // A segment's centreline is an arc rather than a chord (§6.2), so its swept geometry is

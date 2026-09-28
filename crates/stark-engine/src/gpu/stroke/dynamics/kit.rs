@@ -6,9 +6,9 @@
 //! with its renderer and live in an `Action::Context` (§5).
 
 use crate::colorspace::ColorSpace;
-use crate::gpu::channels::{ChannelFormats, TILE_AUX_FORMAT, TILE_COLOR_FORMAT};
-use crate::gpu::desc;
-use crate::gpu::tile::SCRATCH_AUX_FORMAT;
+use crate::device::channels::{ChannelFormats, TILE_AUX_FORMAT, TILE_COLOR_FORMAT};
+use crate::device::desc;
+use crate::device::tile::SCRATCH_AUX_FORMAT;
 use stark_shaders::mirror::dynamics::decl as d;
 use stark_shaders::mirror::dynamics_common::decl as sd;
 use stark_shaders::mirror::slice::decl as sld;
@@ -275,7 +275,7 @@ pub(in crate::gpu::stroke) struct DynamicsKit {
 /// Build the brush-dynamics stamp-loop kit (§6.2, §6.13): the region composite, the
 /// loop's compute pipelines — the warp among them — and the region→tile slice.
 pub(in crate::gpu::stroke) fn build_dynamics_kit(
-    ctx: &crate::gpu::context::GpuContext,
+    ctx: &crate::device::context::GpuContext,
     color_space: &dyn ColorSpace,
     composite_tile_bgl: desc::Bindings,
 ) -> DynamicsKit {

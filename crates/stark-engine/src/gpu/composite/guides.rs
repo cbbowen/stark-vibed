@@ -6,15 +6,15 @@
 //! variants, so an absent element is a zeroed slot rather than a second pipeline.
 
 use super::display::Transfer;
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc::{self, Bindings};
+use crate::device::context::GpuContext;
+use crate::device::desc::{self, Bindings};
 use crate::view::ViewTransform;
 use stark_model::document::GuideScene;
 use stark_shaders::Stages;
 use stark_shaders::mirror::guides::binding as gb;
 use stark_shaders::mirror::guides::decl as gd;
 
-use crate::gpu::uniforms::UniformSlots;
+use crate::device::uniforms::UniformSlots;
 
 // Generated from `guides.wesl`'s own declaration — pass D, the drawing guides
 // (§20.4, §6.7).

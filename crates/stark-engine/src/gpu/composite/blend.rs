@@ -10,11 +10,11 @@ use super::attachment::Trio;
 use std::sync::OnceLock;
 
 use crate::colorspace::ColorSpace;
-use crate::gpu::channels::{ChannelFormats, Targets};
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc::{self, Bindings};
+use crate::device::channels::{ChannelFormats, Targets};
+use crate::device::context::GpuContext;
+use crate::device::desc::{self, Bindings};
+use crate::device::uniforms::UniformSlots;
 use crate::gpu::pigment::PigmentLut;
-use crate::gpu::uniforms::UniformSlots;
 use crate::view::Extent2;
 use stark_model::document::BlendMode;
 use stark_shaders::Stages;

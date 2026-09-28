@@ -11,20 +11,20 @@ use super::{Authoring, Engine, EngineShared, ROOT_LAYER};
 use crate::Result;
 use crate::assets::AssetStore;
 use crate::colorspace::ColorSpace;
+use crate::device::channels::Zeroes;
+use crate::device::context::GpuContext;
+use crate::device::scratch::ScratchPool;
+use crate::device::tile::TilePool;
 use crate::document::{ApplyCtx, DEFAULT_SUBSTRATE, DocState};
-use crate::gpu::channels::Zeroes;
 use crate::gpu::composite::ViewSettings;
 use crate::gpu::composite::{BlendPass, Compositor, CompositorPipeline, FilterPass};
-use crate::gpu::context::GpuContext;
 use crate::gpu::environment::{Environment, EnvironmentId};
 use crate::gpu::fill::FillRenderer;
 use crate::gpu::merge::MergeRenderer;
 use crate::gpu::registry::Registry;
-use crate::gpu::scratch::ScratchPool;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::stroke::StrokeRenderer;
 use crate::gpu::substrate::{Substrate, SubstrateMap};
-use crate::gpu::tile::TilePool;
 use crate::gpu::transform::TransformRenderer;
 use crate::peer::Peers;
 use crate::pictures::PictureStore;
@@ -392,7 +392,7 @@ fn build_gpu(b: GpuBuild<'_>) -> GpuBuilt {
     } = b;
     // The tile channels' formats; the pool unions in its own (`TilePool::new`), so none
     // can be forgotten here.
-    let formats = crate::gpu::channels::ChannelFormats::of(cs.as_ref());
+    let formats = crate::device::channels::ChannelFormats::of(cs.as_ref());
     let pool = TilePool::new(
         gpu.clone(),
         [formats.color, formats.aux]

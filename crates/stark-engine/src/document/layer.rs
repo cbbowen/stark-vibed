@@ -27,7 +27,7 @@ use stark_model::geom::IVec2;
 
 use super::liquify::LiquifyRun;
 use super::state::CanvasBounds;
-use crate::gpu::tile::TileMap;
+use crate::device::tile::TileMap;
 
 /// How something — a layer together with everything it carries, or a composited
 /// group — **meets what lies beneath it** (§14.4.3).

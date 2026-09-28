@@ -37,13 +37,13 @@ mod view;
 use std::sync::Arc;
 
 use crate::colorspace::{ColorSpace, Latent};
-use crate::gpu::channels::{ChannelFormats, Targets};
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc;
+use crate::device::channels::{ChannelFormats, Targets};
+use crate::device::context::GpuContext;
+use crate::device::desc;
+use crate::device::tile::TilePairHandle;
+use crate::device::uniforms::{InstanceStream, UniformSlots};
 use crate::gpu::environment::Environment;
 use crate::gpu::substrate::SubstrateMap;
-use crate::gpu::tile::TilePairHandle;
-use crate::gpu::uniforms::{InstanceStream, UniformSlots};
 use crate::view::{Extent2, ViewTransform};
 use attachment::{Attachment, Trio};
 

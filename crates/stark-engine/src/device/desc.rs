@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use stark_shaders::{EntryPoint, Stages};
 
-use crate::gpu::context::GpuContext;
+use crate::device::context::GpuContext;
 
 // ---- bind group layouts ---------------------------------------------------------
 
@@ -332,7 +332,7 @@ const MAX_ATTACHMENTS: usize = 4;
 
 /// The color attachments of one render pass, **every one cleared** unless the pass
 /// draws over what they hold ([`Self::loaded`]) — a channel trio (from
-/// [`Targets`](crate::gpu::channels::Targets)), one target (from a `&TextureView`), or
+/// [`Targets`](crate::device::channels::Targets)), one target (from a `&TextureView`), or
 /// one target cleared to a value that means something ([`Self::cleared_to`]).
 ///
 /// A fixed array rather than a `Vec`: one is built per pass, and a pass per tile is

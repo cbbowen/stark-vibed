@@ -7,9 +7,9 @@
 use super::attachment::Trio;
 use super::display::Output;
 use crate::colorspace::{ColorSpace, Latent};
-use crate::gpu::channels::{ChannelFormats, Targets};
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc::{self, Bindings};
+use crate::device::channels::{ChannelFormats, Targets};
+use crate::device::context::GpuContext;
+use crate::device::desc::{self, Bindings};
 use crate::gpu::environment::Environment;
 use crate::gpu::substrate::SubstrateMap;
 use crate::view::{Extent2, ViewTransform};

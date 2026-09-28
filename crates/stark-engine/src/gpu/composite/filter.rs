@@ -9,14 +9,14 @@
 //! slot per pass, and the "the pass computes the whole result" pipeline.
 //!
 //! [`ScratchLevel`]: super::blend::ScratchLevel
-//! [`UniformSlots`]: crate::gpu::uniforms::UniformSlots
+//! [`UniformSlots`]: crate::device::uniforms::UniformSlots
 
 use crate::colorspace::ColorSpace;
-use crate::gpu::channels::Targets;
-use crate::gpu::context::GpuContext;
-use crate::gpu::desc::{self, Bindings};
+use crate::device::channels::Targets;
+use crate::device::context::GpuContext;
+use crate::device::desc::{self, Bindings};
+use crate::device::uniforms::UniformSlots;
 use crate::gpu::pigment::PigmentLut;
-use crate::gpu::uniforms::UniformSlots;
 use crate::view::ViewTransform;
 use stark_shaders::Stages;
 use stark_shaders::mirror::filter::binding as fm;
@@ -93,7 +93,7 @@ impl FilterPass {
         pigment: Option<PigmentLut>,
     ) -> Self {
         let device = &ctx.device;
-        let formats = crate::gpu::channels::ChannelFormats::of(color_space);
+        let formats = crate::device::channels::ChannelFormats::of(color_space);
         let filter = color_space.filter_shader();
         let shader = desc::Module::new(device, "stark filter", filter);
         // One layout for all three fragment entry points below, so the accumulator's

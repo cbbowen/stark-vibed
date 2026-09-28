@@ -16,8 +16,8 @@
 use std::collections::hash_map::{Entry, HashMap};
 use std::sync::{Arc, Mutex};
 
+use crate::device::context::GpuContext;
 use crate::error::Result;
-use crate::gpu::context::GpuContext;
 use crate::gpu::stroke::volume::{self, Lazy, ResolvedTip, VolumeCache};
 use crate::unpoisoned;
 

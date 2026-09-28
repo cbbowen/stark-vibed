@@ -57,12 +57,12 @@ pub use render::{Background, ExportPlan, ExportScale, Rendered};
 use crate::Result;
 use crate::colorspace::ColorSpace;
 use crate::command::InputCommand;
+use crate::device::context::GpuContext;
+use crate::device::scratch::ScratchPool;
 use crate::document::{ApplyCtx, DocState};
 use crate::gpu::composite::ViewSettings;
-use crate::gpu::context::GpuContext;
 use crate::gpu::environment::EnvironmentId;
 use crate::gpu::registry::Registry;
-use crate::gpu::scratch::ScratchPool;
 use crate::gpu::substrate::Substrate;
 use crate::peer::Peers;
 use crate::presence::PresenceTx;
@@ -298,7 +298,7 @@ impl Engine {
     /// that holds the engine and has no projection to hand. The collaboration pump is
     /// that caller: it services peer traffic without taking an observation each time
     /// (§17.5), and must stop applying anything once the device has died.
-    pub fn gpu_failure(&self) -> Option<crate::gpu::context::DeviceFailure> {
+    pub fn gpu_failure(&self) -> Option<crate::device::context::DeviceFailure> {
         self.shared.gpu.health().failure()
     }
 
