@@ -27,8 +27,8 @@ pub fn write_png(path: &std::path::Path, img: &stark_engine::RgbaImage) {
 /// report was unreproducible here for that reason alone.
 ///
 /// It is a bill and not a fetch: the engine refuses to replay a document whose content
-/// is still outstanding (`stark_model::DocError::MissingContent`), so anything left unpaid here
-/// substrates at the load rather than in the pixels.
+/// is still outstanding (`stark_model::DocError::MissingContent`), so anything left
+/// unpaid here surfaces at the load rather than in the pixels.
 pub fn settle(engine: &mut stark_engine::Engine, file: &stark_model::DocumentFile) {
     for need in engine.unresolved_content(file) {
         // The id says which store the bytes belong in, so the lookup needs no kind —

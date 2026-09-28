@@ -14,17 +14,11 @@ use stark_model::geom::Vec2;
 
 /// A brush with the given [`BrushDynamics`].
 fn dyn_brush(color: [f32; 3], radius: f32, dynamics: BrushDynamics) -> BrushParams {
-    BrushParams {
-        effect: BrushEffect::wet_with(color, dynamics),
-        ..brush(color, radius)
-    }
+    brush(color, radius).wet(dynamics)
 }
 
-// Channel-dominance predicates — see tests/engine/stroke.rs for why dominance (not
-// saturation) and why the 60-level margin.
-/// Lit bare paper reads warm enough to pass the suite's default margin, so this
-/// file's "is there paint here?" is asked at [`MARGIN_LIT`] — see
-/// `dynamics_wet_field_stays_paper`, which asserts that precondition directly.
+// Channel-dominance predicates — see tests/engine/stroke.rs for why dominance rather
+// than saturation, and [`MARGIN_LIT`] for why 60 where most of the suite asks 30.
 fn is_red(c: [u8; 4]) -> bool {
     leads(rgb(c), Lead::Red, MARGIN_LIT)
 }
@@ -657,8 +651,7 @@ fn a_carrying_stroke_reads_as_one_continuous_mark() {
         return;
     };
     // A slab to load the tool from, then a smear that drags it out across the canvas.
-    let mut slab = brush(GREEN, 70.0);
-    slab.drain = 0.0;
+    let slab = brush(GREEN, 70.0).undrained();
     stroke_with(
         &mut engine,
         slab,
@@ -1442,9 +1435,7 @@ fn a_bleed_trail_across_an_edge_has_no_step_in_it() {
     };
     // A hard-edged bar to smear off: the ghosts this is looking for are copies of its
     // edge, so the edge has to be sharp enough that a copy of it would be obvious.
-    let mut bar = brush(RED, 60.0);
-    bar.shape = BrushShape::Round { hardness: 1.0 };
-    bar.drain = 0.0;
+    let bar = brush(RED, 60.0).hard(1.0).undrained();
     stroke_with(
         &mut engine,
         bar,
@@ -1745,9 +1736,7 @@ fn a_smear_that_transfers_nothing_leaves_the_canvas_alone() {
         let Some(mut engine) = engine_or_skip() else {
             return;
         };
-        let mut field = brush(RED, 200.0);
-        field.drain = 0.0;
-        field.paint_mut().expect("a paint brush").flow = 0.02;
+        let field = brush(RED, 200.0).undrained().flow(0.02);
         stroke_with(
             &mut engine,
             field,
@@ -1836,8 +1825,7 @@ fn the_settle_leaves_no_crease_across_the_last_stamp() {
     // steeply the tip's own optical depth falls at the shoulder.
     let paint = [0.5, 0.0, 0.0];
     let hard = BrushShape::Round { hardness: 0.95 };
-    let mut bed = brush(paint, 256.0);
-    bed.drain = 0.0;
+    let mut bed = brush(paint, 256.0).undrained();
     bed.shape = hard;
     bed.paint_mut().expect("a paint brush").flow = 2.0;
     stroke_with(
@@ -2051,16 +2039,14 @@ fn a_bleeding_strokes_preview_is_its_commit() {
     // Two long parallel bands with a hard color step between them — structure for
     // the diffusion to move, everywhere along the stroke.
     for (color, y) in [(GREEN, -22.0f32), ([0.95, 0.85, 0.1], 22.0)] {
-        let mut b = brush(color, 26.0);
-        b.drain = 0.0;
+        let b = brush(color, 26.0).undrained();
         stroke_with(&mut engine, b, &[Vec2::new(-620.0, y), Vec2::new(620.0, y)]);
     }
 
     // Pure lateral diffusion: no source, no vertical exchange — the loop runs for
     // the bleed alone, so every visible difference is the flux. At the neutral
     // flow, so the stated axis is the effective diffusivity.
-    let mut b = brush([0.0, 0.0, 0.0], 120.0);
-    b.drain = 0.0;
+    let mut b = brush([0.0, 0.0, 0.0], 120.0).undrained();
     b.make_wet().flow = 1.0;
     b.make_wet().dynamics.add = 0.0;
     b.make_wet().dynamics.bleed = 1.0;

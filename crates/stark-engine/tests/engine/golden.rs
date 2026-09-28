@@ -42,10 +42,7 @@ fn golden_studio_environment() {
         height_strength: 1.0,
         ..Default::default()
     }));
-    let mut b = brush(RED, 34.0);
-    b.shape = BrushShape::Round { hardness: 0.55 };
-    b.drain = 0.0;
-    b.paint_mut().expect("a paint brush").flow = 1.2;
+    let mut b = brush(RED, 34.0).hard(0.55).undrained().flow(1.2);
     for (color, y) in [
         ([1.0, 0.35, 0.2], -60.0),
         ([0.2, 0.4, 0.9], 0.0),

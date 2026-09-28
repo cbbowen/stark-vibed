@@ -857,8 +857,7 @@ const CARRY_DRAG: &[Vec2] = &[Vec2::new(0.0, -60.0), Vec2::new(0.0, 40.0)];
 /// anything it deposits it first picked up (§6.2).
 #[cfg(feature = "mixbox")]
 fn carrying_brush() -> BrushParams {
-    let mut b = brush([0.0, 0.0, 0.0], 26.0);
-    b.drain = 0.0;
+    let mut b = brush([0.0, 0.0, 0.0], 26.0).undrained();
     let w = b.make_wet();
     w.flow = 1.0;
     w.dynamics.add = 0.0;

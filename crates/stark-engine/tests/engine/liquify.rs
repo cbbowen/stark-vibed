@@ -22,9 +22,7 @@ use stark_model::geom::{TileCoord, Vec2};
 /// A liquify brush of the given strength — no pigment (the effect carries none),
 /// no drain, no jitter, so a test's claim is about the warp alone.
 fn liquify_brush(radius: f32, strength: f32) -> BrushParams {
-    let mut b = brush(RED, radius);
-    b.drain = 0.0;
-    b.jitter = 0.0;
+    let mut b = brush(RED, radius).undrained().unjittered();
     b.effect = BrushEffect::Liquify(LiquifyEffect {
         strength,
         ..LiquifyEffect::default()
@@ -34,9 +32,7 @@ fn liquify_brush(radius: f32, strength: f32) -> BrushParams {
 
 /// A red band laid without jitter — what the guard test below drags across.
 fn flat_band(engine: &mut Engine, radius: f32, from: Vec2, to: Vec2) {
-    let mut b = brush(RED, radius);
-    b.drain = 0.0;
-    b.jitter = 0.0;
+    let b = brush(RED, radius).undrained().unjittered();
     replay_with(engine, b, &[from, to]);
 }
 
@@ -133,10 +129,7 @@ fn a_liquify_drag_carries_an_edge_downstream() {
     };
     // A hard-shouldered band ending near x = 20 (the endpoint plus the tip's
     // reach), so the probe just past it starts as bare paper.
-    let mut lay = brush(RED, 40.0);
-    lay.drain = 0.0;
-    lay.jitter = 0.0;
-    lay.shape = BrushShape::Round { hardness: 0.9 };
+    let lay = brush(RED, 40.0).undrained().unjittered().hard(0.9);
     replay_with(
         &mut engine,
         lay,
@@ -153,8 +146,7 @@ fn a_liquify_drag_carries_an_edge_downstream() {
 
     // A hard tip, so most of its extent sits on the profile's plateau and the
     // follow approaches the travel itself (§6.13).
-    let mut b = liquify_brush(30.0, 1.0);
-    b.shape = BrushShape::Round { hardness: 0.9 };
+    let b = liquify_brush(30.0, 1.0).hard(0.9);
     stroke_with(
         &mut engine,
         b,
@@ -226,8 +218,7 @@ fn a_run_of_short_drags_keeps_an_edge_as_sharp_as_one_drag() {
     for e in [&mut once, &mut many] {
         flat_fill(e, Vec2::new(-110.0, -60.0), Vec2::new(-20.0, 60.0));
     }
-    let mut b = liquify_brush(24.0, 1.0);
-    b.shape = BrushShape::Round { hardness: 0.8 };
+    let b = liquify_brush(24.0, 1.0).hard(0.8);
     let before = edge_width(&once.render_to_image(), 0.0, -60, 60);
     // One drag of 40 px…
     stroke_with(&mut once, b, &[Vec2::new(-30.0, 0.0), Vec2::new(10.0, 0.0)]);
@@ -324,10 +315,7 @@ fn disc_png(size: u32) -> Vec<u8> {
 /// the fixture the edge-carrying tests drag: the probe just past its end starts
 /// as bare paper, and the band reaches well upstream of any tip.
 fn band_to_twenty(engine: &mut Engine) {
-    let mut lay = brush(RED, 40.0);
-    lay.drain = 0.0;
-    lay.jitter = 0.0;
-    lay.shape = BrushShape::Round { hardness: 0.9 };
+    let lay = brush(RED, 40.0).undrained().unjittered().hard(0.9);
     replay_with(
         engine,
         lay,
@@ -393,8 +381,7 @@ fn a_coarser_quality_carries_the_core_the_same_distance() {
     let end_at = |quality: f32| -> Option<i32> {
         let mut engine = engine_or_skip()?;
         band_to_twenty(&mut engine);
-        let mut b = liquify_brush(30.0, 1.0);
-        b.shape = BrushShape::Round { hardness: 0.8 };
+        let mut b = liquify_brush(30.0, 1.0).hard(0.8);
         b.liquify_mut().expect("a liquify brush").quality = quality;
         stroke_with(
             &mut engine,

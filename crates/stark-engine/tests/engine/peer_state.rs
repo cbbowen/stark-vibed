@@ -45,13 +45,9 @@ fn select_left(engine: &mut Engine) {
     )));
 }
 
-/// Whether the pixel at a canvas point reads as paint rather than bare paper. The
-/// substrate is a neutral near-white, so a strongly red-dominant pixel is paint.
-///
-/// The thirteenth copy of the suite's dominance predicate, and the last: it read
-/// `r - g > 40 && r - b > 40` by hand while [`is_green`] — whose doc calls itself this
-/// one's mirror — had already been converted, so the two were a mirror only until
-/// somebody moved the margin.
+/// Whether the pixel at a canvas point reads as this file's red paint rather than as
+/// bare paper — the mirror of [`is_green`], at the same margin, so a test that asks one
+/// about actor A's stroke and the other about actor B's is asking one question.
 fn is_painted(img: &RgbaImage, canvas: Vec2) -> bool {
     leads(texel(img, canvas), Lead::Red, MARGIN_FLAT)
 }
@@ -655,8 +651,8 @@ fn a_settled_head_does_not_outlive_its_gesture() {
 const LOWER: [Vec2; 2] = [Vec2::new(20.0, 40.0), Vec2::new(110.0, 40.0)];
 const UPPER: [Vec2; 2] = [Vec2::new(20.0, 80.0), Vec2::new(110.0, 80.0)];
 
-/// Whether the pixel reads as the green of [`stroking`]'s brush, the mirror of
-/// [`is_painted`] for the other actor's color.
+/// [`is_painted`] for the other actor's color — the green of [`stroking`]'s brush, and
+/// of the one [`start_live_stroke`] is handed for a live peer.
 fn is_green(img: &RgbaImage, canvas: Vec2) -> bool {
     leads(texel(img, canvas), Lead::Green, MARGIN_FLAT)
 }

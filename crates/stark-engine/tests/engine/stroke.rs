@@ -129,8 +129,7 @@ fn tinting_the_live_tail_does_not_change_what_commits() {
 /// its one-way load switched off, since the default `drain` runs a stroke dry a few
 /// hundred px in and would leave the far end of the band bare.
 fn long_band(engine: &mut Engine, points: &[Vec2]) {
-    let mut b = brush([0.1, 0.9, 0.2], 30.0);
-    b.drain = 0.0;
+    let b = brush([0.1, 0.9, 0.2], 30.0).undrained();
     stroke_with(engine, b, points);
 }
 
@@ -165,8 +164,7 @@ fn a_stroke_too_wide_for_one_region_still_moves_paint() {
         "the undercoat did not land, so there is nothing to scrape"
     );
 
-    let mut scrape = brush([0.0, 0.0, 0.0], 22.0);
-    scrape.drain = 0.0;
+    let mut scrape = brush([0.0, 0.0, 0.0], 22.0).undrained();
     let w = scrape.make_wet();
     w.flow = 1.0;
     w.dynamics.add = 0.0;
@@ -820,16 +818,13 @@ fn per_move_cost_does_not_grow_with_stroke_length() {
 /// centreline. Before the resolve this measured ~0.2 px and fails the floor.
 #[test]
 fn a_heavy_hard_strokes_visible_edge_spans_a_px() {
-    use stark_model::document::{BrushShape, LayerId};
+    use stark_model::document::LayerId;
     use stark_shaders::mirror::paint_common::OPACITY_K;
 
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let mut b = brush(RED, 12.0);
-    b.shape = BrushShape::Round { hardness: 1.0 };
-    b.drain = 0.0;
-    b.paint_mut().expect("a paint brush").flow = 2.5;
+    let b = brush(RED, 12.0).hard(1.0).undrained().flow(2.5);
 
     // Eight horizontal strokes, each 30 px apart plus an eighth of a px: stacking
     // their rims by distance-to-centreline samples one profile at 1/8 px. The
@@ -891,7 +886,6 @@ fn a_heavy_hard_strokes_visible_edge_spans_a_px() {
 /// than a byte count that depends on the formats.
 #[test]
 fn a_long_strokes_working_scratch_does_not_grow_with_its_length() {
-    use stark_model::document::BrushShape;
     use stark_model::geom::TILE_SIZE;
 
     let Some(mut engine) = engine_or_skip() else {
@@ -899,11 +893,8 @@ fn a_long_strokes_working_scratch_does_not_grow_with_its_length() {
     };
     // The heavy hard tip `a_heavy_hard_strokes_visible_edge_spans_a_px` measures,
     // which supersamples; and a soft half-opacity wash, which does not.
-    let mut hard = brush(RED, 12.0);
-    hard.shape = BrushShape::Round { hardness: 1.0 };
-    hard.paint_mut().expect("a paint brush").flow = 2.5;
-    let mut half = brush(RED, 12.0);
-    half.shape = BrushShape::Round { hardness: 0.0 };
+    let hard = brush(RED, 12.0).hard(1.0).flow(2.5);
+    let mut half = brush(RED, 12.0).hard(0.0);
     half.effect.set_opacity(0.5);
 
     // A replay along one tile row, `tiles` tiles long.

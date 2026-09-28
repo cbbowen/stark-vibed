@@ -21,8 +21,7 @@ use stark_model::geom::Vec2;
 /// A test brush with no `drain`: the run-dry falloff is the one *other* thing that
 /// varies along a stroke, and these tests are about what varies across one.
 fn plain(radius: f32) -> BrushParams {
-    let mut b = brush(RED, radius);
-    b.drain = 0.0;
+    let mut b = brush(RED, radius).undrained();
     // And no deposit jitter: this file's claims are bit-equalities across two
     // *strokes*, and the jitter is per-stroke-seeded by design (§6.2).
     b.jitter = 0.0;

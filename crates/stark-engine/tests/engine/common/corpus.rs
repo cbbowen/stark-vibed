@@ -27,7 +27,7 @@ use stark_engine::command::{DocCommand, InputSample, ViewCommand};
 use stark_model::document::{BrushParams, BrushShape, ModSource, Modulation, OrientationSource};
 use stark_model::geom::Vec2;
 
-use super::{SIZE, brush, engine_or_skip_sized, replay_with};
+use super::{SIZE, TestBrush, brush, engine_or_skip_sized, replay_with};
 
 // Not the palette's: every corpus golden was blessed on this red (§9).
 const RED: [f32; 3] = [0.86, 0.16, 0.12];
@@ -99,12 +99,12 @@ pub struct Case {
     pub what: &'static str,
     /// Viewport. The default [`SIZE`] unless the mark is too big to fit it.
     pub view: Extent2,
-    /// Everything the canvas needs before the stroke — substrate, undercoat, substrate,
-    /// media params, imported assets — returning the brush to paint with.
+    /// Everything the canvas needs before the stroke — substrate, undercoat, media
+    /// params, imported assets — returning the brush to paint with.
     ///
     /// One closure rather than a pile of `Option` fields: what a case needs laid down
     /// first is usually inseparable from the brush that will work on it (a smear needs
-    /// something to smear; a toothed tip needs a substrate with a substrate), and splitting
+    /// something to smear; a toothed tip needs a substrate with relief), and splitting
     /// them invites a case that asks for one without the other.
     ///
     /// The `Vec2` is where the case is being drawn — added to **every canvas
@@ -243,8 +243,7 @@ fn undercoat(engine: &mut Engine, at: Vec2) {
         ([0.1, 0.9, 0.2], (-110.0, -40.0), (110.0, -10.0)),
         ([0.95, 0.85, 0.1], (-90.0, 50.0), (100.0, 20.0)),
     ] {
-        let mut b = brush(color, 26.0);
-        b.drain = 0.0;
+        let b = brush(color, 26.0).undrained();
         replay_with(
             engine,
             b,
@@ -452,11 +451,7 @@ pub const CASES: &[Case] = &[
                than any axis layered over it, and every other case can be read as this \
                plus one thing.",
         view: SIZE,
-        prepare: |_, _| {
-            let mut b = brush(RED, 40.0);
-            b.drain = 0.0;
-            b
-        },
+        prepare: |_, _| brush(RED, 40.0).undrained(),
         path: || at(&[(-95.0, 0.0), (0.0, 0.0), (95.0, 0.0)]),
         // Zero, and it means it: a straight line is fitted exactly at any tolerance,
         // so refitting it four times finer leaves the curve where it was and moves
@@ -475,11 +470,7 @@ pub const CASES: &[Case] = &[
                then flatten into swept arcs. The only cover for `max_arc_curvature` \
                and for the corner-preserving half of the angle bound.",
         view: SIZE,
-        prepare: |_, _| {
-            let mut b = brush(RED, 18.0);
-            b.drain = 0.0;
-            b
-        },
+        prepare: |_, _| brush(RED, 18.0).undrained(),
         path: || {
             at(&[
                 (-90.0, 40.0),
@@ -503,11 +494,7 @@ pub const CASES: &[Case] = &[
                formula has this stroke's sample spacing, and the fitter's freeze cadence \
                answers to spacing.",
         view: SIZE,
-        prepare: |_, _| {
-            let mut b = brush(RED, 16.0);
-            b.drain = 0.0;
-            b
-        },
+        prepare: |_, _| brush(RED, 16.0).undrained(),
         path: || centred(stark_testdata::HAIRPIN_STROKE),
         tol: Tol {
             golden: 6,
@@ -538,11 +525,7 @@ pub const CASES: &[Case] = &[
                drawing as a staircase of radii; sweeping it over ×0.125…×8 once left \
                every committed golden bit-identical, because nothing pressed the pen.",
         view: SIZE,
-        prepare: |_, _| {
-            let mut b = brush(RED, 46.0);
-            b.drain = 0.0;
-            b
-        },
+        prepare: |_, _| brush(RED, 46.0).undrained(),
         path: || {
             (0..=60)
                 .map(|i| {
@@ -599,10 +582,7 @@ pub const CASES: &[Case] = &[
                baked into a span too early leaves a pinch that is never redrawn.",
         view: SIZE,
         prepare: |_, _| {
-            let mut b = brush(RED, 16.0);
-            b.shape = BrushShape::Round { hardness: 0.756 };
-            b.drain = 0.0;
-            b.paint_mut().expect("a paint brush").flow = 1.0;
+            let mut b = brush(RED, 16.0).hard(0.756).undrained().flow(1.0);
             b.start_taper_length = 4.0;
             b.end_taper_length = 9.0;
             b
@@ -694,8 +674,7 @@ pub const CASES: &[Case] = &[
         view: SIZE,
         prepare: |e, _| {
             linen_substrate(e);
-            let mut b = smear_brush(45.0);
-            b.shape = BrushShape::Round { hardness: 0.756 };
+            let mut b = smear_brush(45.0).hard(0.756);
             b.tooth.give = 0.1;
             // Named, not inherited: what the *default* softness is set to is taste —
             // which tool the app opens on — and this golden is a claim about the tooth
@@ -769,8 +748,7 @@ pub const CASES: &[Case] = &[
         view: SIZE,
         prepare: |e, at| {
             undercoat(e, at);
-            let mut b = brush(RED, 30.0);
-            b.drain = 0.0;
+            let mut b = brush(RED, 30.0).undrained();
             let w = b.make_wet();
             w.flow = 1.0;
             w.dynamics.add = 0.0;
@@ -801,9 +779,7 @@ pub const CASES: &[Case] = &[
             // A thick field to smear, laid flat so the smear's own structure is what
             // shows. Wider than the tip that will work it, so the mark stays inside it.
             // Replayed, as `undercoat` is and for its reason.
-            let mut lay = brush([0.0, 0.0, 0.0], 260.0);
-            lay.paint_mut().expect("a paint brush").flow = 1.5;
-            lay.drain = 0.0;
+            let mut lay = brush([0.0, 0.0, 0.0], 260.0).flow(1.5).undrained();
             // Hard, and said here rather than inherited from `brush`: "laid flat" is
             // this case's whole premise — the smear's own structure is what it reads —
             // and a field carrying the shared helper's shoulder puts a gradient under
@@ -814,8 +790,7 @@ pub const CASES: &[Case] = &[
                 lay,
                 &[at + Vec2::new(-260.0, 0.0), at + Vec2::new(260.0, 0.0)],
             );
-            let mut b = smear_brush(250.0);
-            b.shape = BrushShape::Round { hardness: 0.756 };
+            let mut b = smear_brush(250.0).hard(0.756);
             let w = b.make_wet();
             w.dynamics.add = 0.0;
             w.dynamics.lift = 0.9;
@@ -851,8 +826,7 @@ pub const CASES: &[Case] = &[
             height: 256,
         },
         prepare: |e, at| {
-            let mut lay = brush([0.1, 0.9, 0.2], 30.0);
-            lay.drain = 0.0;
+            let lay = brush([0.1, 0.9, 0.2], 30.0).undrained();
             let band: Vec<Vec2> = (0..220)
                 .map(|i| {
                     let t = i as f32 / 219.0;
@@ -925,9 +899,7 @@ pub const CASES: &[Case] = &[
                covariance of subsample alphas wherever the pointer happened to cut.",
         view: SIZE,
         prepare: |_, _| {
-            let mut b = brush(RED, 10.0);
-            b.shape = BrushShape::Round { hardness: 1.0 };
-            b.drain = 0.0;
+            let mut b = brush(RED, 10.0).hard(1.0).undrained();
             // Inside the gate with margin (0.5 > 0.42 at a shoulderless px ramp),
             // interior coverage saturated (w ≈ 0.97) — but deliberately not
             // heavier. The resolve hands a hard stroke's rim a real 1 px slope of
@@ -1112,8 +1084,7 @@ pub const CASES: &[Case] = &[
         view: SIZE,
         prepare: |e, at| {
             undercoat(e, at);
-            let mut b = brush(RED, 30.0);
-            b.drain = 0.0;
+            let mut b = brush(RED, 30.0).undrained();
             b.effect = stark_model::document::BrushEffect::Liquify(
                 stark_model::document::LiquifyEffect::default(),
             );

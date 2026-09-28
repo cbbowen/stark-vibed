@@ -309,6 +309,84 @@ pub fn brush(color: [f32; 3], radius: f32) -> BrushParams {
     }
 }
 
+/// The handful of edits the suite makes to [`brush`]'s starting point, named.
+///
+/// `brush` is deliberately a brush somebody could paint with rather than a neutral
+/// one — it loads, it dithers, its tip is soft — and so almost every test that measures
+/// something takes one thing back off it. Fifty-odd sites wrote `b.drain = 0.0` to do
+/// that, which says what it sets and not what it is for.
+///
+/// Consuming builders rather than `&mut self` setters, so a brush a test never mutates
+/// again does not have to be `mut` to be adjusted once.
+pub trait TestBrush {
+    /// No one-way load (§6.2). `brush` quotes `drain` per radius, so a stroke of a few
+    /// hundred px runs dry partway along and the far end of a band is bare — which is
+    /// right for a brush and wrong for anything measuring the band.
+    #[must_use]
+    fn undrained(self) -> Self;
+
+    /// No per-stamp colour dither (§6.2) — what any check comparing two renders of the
+    /// *same* stroke texel by texel needs, since the dither is seeded per stroke.
+    #[must_use]
+    fn unjittered(self) -> Self;
+
+    /// A round tip of `hardness`: 1.0 for an edge sharp enough that a copy of it would
+    /// be obvious, 0.0 for one whose falloff covers the whole reach (§6.6).
+    #[must_use]
+    fn hard(self, hardness: f32) -> Self;
+
+    /// The effect's overall rate, whichever effect is in force
+    /// ([`BrushEffect::set_flow`](stark_model::document::BrushEffect::set_flow)).
+    #[must_use]
+    fn flow(self, flow: f32) -> Self;
+
+    /// The same brush as a **wet** one with these axes (§6.2), at the neutral flow.
+    ///
+    /// Through `BrushEffect::wet_with` rather than `make_wet`, which would carry the
+    /// paint effect's flow across instead of pinning it to 1: the axes are quoted at
+    /// the neutral pass, so a test that states them means them.
+    #[must_use]
+    fn wet(self, dynamics: stark_model::document::BrushDynamics) -> Self;
+}
+
+impl TestBrush for BrushParams {
+    fn undrained(self) -> Self {
+        Self { drain: 0.0, ..self }
+    }
+
+    fn unjittered(self) -> Self {
+        Self {
+            jitter: 0.0,
+            ..self
+        }
+    }
+
+    fn hard(self, hardness: f32) -> Self {
+        Self {
+            shape: BrushShape::Round { hardness },
+            ..self
+        }
+    }
+
+    fn flow(mut self, flow: f32) -> Self {
+        self.effect.set_flow(flow);
+        self
+    }
+
+    fn wet(self, dynamics: stark_model::document::BrushDynamics) -> Self {
+        // Spelled out because `BrushParams::wet` is the inherent getter and `wet` is
+        // also this trait's method: same receiver, different arity.
+        let color = BrushParams::paint(&self)
+            .map(|p| p.color)
+            .or_else(|| BrushParams::wet(&self).map(|w| w.color))
+            .expect("a paint or wet brush to make wet");
+        Self {
+            effect: stark_model::document::BrushEffect::wet_with(color, dynamics),
+            ..self
+        }
+    }
+}
+
 /// A substrate of hard vertical stripes, 2048 texels wide — two map texels per canvas px
 /// at natural scale, so which of a canvas px's two texels a path reads decides whether a
 /// stripe's shoulder gates it. An odd period puts both parities on a shoulder (§6.4).
@@ -1141,12 +1219,14 @@ pub const MARGIN: i32 = 30;
 /// colors that has to fail the test for the other one.
 pub const MARGIN_FLAT: i32 = 40;
 
-/// The separation needed where **lit bare paper reads warm on its own**.
+/// The separation asked for by the files that probe **lit** paint at a point.
 ///
-/// The media/lighting pass (§6.5) tints the substrate towards the light, which is
-/// enough to carry unpainted paper past [`MARGIN`] on red — `dynamics.rs` asserts
-/// exactly that as its own precondition. It is a property of the render, not of the
-/// tests, so the numbers are both right and the suite needs both.
+/// Wide on purpose, and not because the substrate under it is warm: under the reference
+/// light (§6.3) [`PAPER`] is achromatic and carries no dominance at all, while the
+/// suite's red paint dominates by ~210 and [`BG`] by ~180. What 60 buys is that these
+/// files state the separation that matters rather than the one that just passes — a
+/// warm light, which is one view setting away, would push a neutral substrate to ~33
+/// levels of false dominance on its own.
 pub const MARGIN_LIT: i32 = 60;
 
 /// Whether a pixel reads as the suite's red paint rather than as canvas, at [`MARGIN`].

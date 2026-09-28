@@ -53,8 +53,7 @@ fn render_shifted(shift: Vec2) -> RgbaImage {
     // and the deposit jitter with it: its gate is keyed to the canvas texel (§6.2),
     // so it too is deliberately not translation invariant and would differ between
     // the shifted renders.
-    let mut b = brush(RED, 28.0);
-    b.jitter = 0.0;
+    let b = brush(RED, 28.0).unjittered();
     engine.process(ViewCommand::set_brush(b));
     Gesture::new(Tool::Brush)
         .drive(
@@ -202,8 +201,7 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
     // A wide base field along the diagonal, fully containing the smudge's path.
     // Jitter off on both brushes here, by `render_shifted`'s argument: the gate is
     // canvas-anchored (§6.2) and this test compares shifted renders.
-    let mut field = brush(RED, 60.0);
-    field.jitter = 0.0;
+    let field = brush(RED, 60.0).unjittered();
     engine.process(ViewCommand::set_brush(field));
     Gesture::new(Tool::Brush)
         .drive(
@@ -216,8 +214,7 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
         .end();
 
     // The smudge under test, through the same 4-tile corner.
-    let mut smudge = brush(RED, 28.0);
-    smudge.jitter = 0.0;
+    let mut smudge = brush(RED, 28.0).unjittered();
     smudge.effect = stark_model::document::BrushEffect::wet_with(
         RED,
         BrushDynamics {
@@ -263,7 +260,7 @@ fn apron_makes_dynamics_writeback_seamless_under_zoom() {
     // The two runs' *regions* differ in size (the corner stroke spans more tiles),
     // so the pickup's normalized-coordinate bilinear samples (`world / rdim`)
     // round differently at ~1 ulp; through f16 storage and the exaggerated relief
-    // lighting that substrates as a broad, imperceptible (≤ a few levels) residual
+    // lighting that surfaces as a broad, imperceptible (≤ a few levels) residual
     // over the smudged area — not a seam. A real missing halo is a *contiguous
     // band* of tens of levels along every boundary, so gate on the significantly-
     // different area instead of the any-difference area.
@@ -489,8 +486,7 @@ fn a_stroke_far_from_the_origin_keeps_its_aprons() {
 /// A brush whose mark is a pure function of canvas position: no deposit jitter, whose
 /// gate is keyed to the canvas texel (§6.2), and no tooth, which reads the substrate.
 fn flat_brush(color: [f32; 3], radius: f32) -> stark_model::document::BrushParams {
-    let mut b = brush(color, radius);
-    b.jitter = 0.0;
+    let mut b = brush(color, radius).unjittered();
     b.tooth.give = 1.0;
     b
 }

@@ -28,8 +28,7 @@ use stark_model::geom::Vec2;
 /// dial and not a half-built fringe — the erase suite's construction, laying
 /// instead of removing.
 fn washed(opacity: f32, radius: f32) -> BrushParams {
-    let mut b = brush(RED, radius);
-    b.paint_mut().expect("a paint brush").flow = 2.5;
+    let mut b = brush(RED, radius).flow(2.5);
     b.effect.set_opacity(opacity);
     b.drain = 0.0;
     b
@@ -286,8 +285,7 @@ fn scrubbing_the_loop_cannot_pass_the_dial() {
 #[test]
 fn a_charged_glob_at_half_opacity_is_the_half_charge_glob() {
     let glob = |charge: f32, opacity: f32| {
-        let mut b = brush(RED, 24.0);
-        b.drain = 0.0;
+        let mut b = brush(RED, 24.0).undrained();
         let d = &mut b.make_wet().dynamics;
         d.add = 0.0;
         d.deposit = 0.6;
