@@ -19,6 +19,19 @@ flate2 = { workspace = true }
 # genuinely needs: an action is a statement about positions on the canvas.
 glam = { workspace = true }
 thiserror = { workspace = true }
+# fdlibm in Rust, for `color`'s power and cube root (§12.1): the same source on every
+# target, which the host libm behind `f32::powf`/`cbrt` is not — and those two decide the
+# color a tile is written with. MIT, so unlike Mixbox it constrains no build.
+#
+# Default features, and the guarantee does not rest on them. The `arch` feature does
+# substitute hardware instructions, but only for the thirteen functions
+# `select_implementation!` covers — 0.2.16: ceil, exp, exp10, exp10f, exp2, exp2f, expf,
+# fabs, floor, fma, rint, sqrt, trunc — and neither `powf.rs` nor `cbrtf.rs` is among them
+# or names `arch` at all. `cbrtf` calls nothing; `powf` calls `fabsf`, `scalbnf` and
+# `sqrtf`, which are respectively exact, not dispatched, and correctly rounded on every
+# path. Nor would turning the feature off state anything: mixbox, core_maths and
+# num-traits all take libm's defaults, so unification enables `arch` regardless.
+libm = "0.2"
 # `Materialize`/`Logged` (`fold`) and `Footprint`'s `Centralizer` impl live here
 # rather than beside `DocState`, because the orphan rule puts them where `Action`
 # is — which is also where they belong: the model owns *that* an action folds over

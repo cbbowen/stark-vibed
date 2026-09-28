@@ -9877,6 +9877,7 @@ dependencies = [
  "flate2",
  "glam 0.33.6",
  "history",
+ "libm",
  "serde",
  "stark-assetid",
  "stark-testdata",

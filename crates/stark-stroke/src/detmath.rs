@@ -22,19 +22,26 @@
 //! correctly-rounded operation is as reproducible as a narrow one, and the trigonometric
 //! kernels want the headroom.
 //!
-//! **What is still on libm and writes a tile**: the color conversion, and nothing else.
-//! `stark_model::color` takes the sRGB transfer through `f32::powf` and Oklab's cube root
-//! through `cbrt`, and `ColorSpace::rgb_to_latent` is how every stroke's brush color,
-//! every fill parcel and every texel of a placed image reaches a tile. **It cannot be
-//! closed from here**: `stark-model` is upstream of this crate (§2), so it needs either
-//! the routines moved down or the `libm` *crate* — fdlibm in Rust, bit-portable by
-//! construction, which is already what the vendored mixbox runs the identical transfer
-//! through.
+//! **Nothing on a host libm writes a tile any more.** The last one was the color
+//! conversion, and it could not be closed from here — `stark-model` is upstream of this
+//! crate (§2). It is closed in `stark_model::color` instead, by the **`libm` crate**:
+//! fdlibm in Rust, bit-portable because it is the same source on every target, which is
+//! what the vendored mixbox already ran the identical sRGB transfer through. So every
+//! stroke's brush color, every fill parcel and every texel of a placed image now reaches
+//! a tile the same way on every platform.
 //!
 //! **Still on libm but deciding a composited frame rather than a stored tile**: the focal
 //! blur's axis (`gpu/composite/blur.rs` — its `atan2` could be [`atan2`] today), the
 //! chromatic aberration's spread (`gpu/composite/filter.rs`) and the environment
 //! convolution's direction (`gpu/environment.rs`).
+//!
+//! **What this list cannot reach is the GPU's own transcendentals**, and one of them does
+//! decide a stored tile: `lib/color.wesl`'s `linear_srgb_to_oklab` runs a `pow` for its
+//! cube root, and `merge` writes tiles through the blend pass that calls it (§15). WGSL
+//! specifies no rounding for `pow`, so that is not a libm question and no host choice
+//! closes it — which is the same fact `STARK_SKIP_GOLDEN` exists for, a golden being
+//! blessed on one adapter. Named here so "nothing writes a tile" is not read wider than
+//! the host it is about.
 //!
 //! Four things that look like remainders and are not. `powi` is not a libm call: a
 //! runtime exponent lowers to `compiler_builtins`' `__powisf2`, which is binary

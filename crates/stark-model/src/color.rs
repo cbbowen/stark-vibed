@@ -10,6 +10,14 @@
 //! Oklab transform after Björn Ottosson. The light space
 //! ([`linear_to_light`]/[`light_to_linear`], §18.0.4) is part of the same shader
 //! library and is here for the same reason.
+//!
+//! The two library transcendentals here — the sRGB transfer's power, Oklab's cube root
+//! — go through the **`libm` crate** rather than `f32`'s methods: every stroke's brush
+//! color, every fill parcel and every texel of a placed image reaches a *stored tile*
+//! through them, and a host libm is not specified to the bit, so two peers on different
+//! platforms would store different color (§12.1). `libm` is fdlibm in Rust, the same
+//! source on every target. `stark_stroke::detmath` is that same fix for the stroke's
+//! geometry and is out of reach from here — the model is below it (§2).
 
 use std::ops::Deref;
 
@@ -101,7 +109,7 @@ pub fn srgb_to_linear(c: f32) -> f32 {
     let lin = if a <= 0.04045 {
         a / 12.92
     } else {
-        ((a + 0.055) / 1.055).powf(2.4)
+        libm::powf((a + 0.055) / 1.055, 2.4)
     };
     lin.copysign(c)
 }
@@ -113,7 +121,7 @@ pub fn linear_to_srgb(c: f32) -> f32 {
     let enc = if a <= 0.003_130_8 {
         12.92 * a
     } else {
-        1.055 * a.powf(1.0 / 2.4) - 0.055
+        1.055 * libm::powf(a, 1.0 / 2.4) - 0.055
     };
     enc.copysign(c)
 }
@@ -181,9 +189,9 @@ pub fn linear_srgb_to_oklab(rgb: [f32; 3]) -> [f32; 3] {
     let m = 0.211_903_5 * r + 0.680_699_5 * g + 0.107_396_96 * b;
     let s = 0.088_302_46 * r + 0.281_718_85 * g + 0.629_978_7 * b;
 
-    let l_ = l.cbrt();
-    let m_ = m.cbrt();
-    let s_ = s.cbrt();
+    let l_ = libm::cbrtf(l);
+    let m_ = libm::cbrtf(m);
+    let s_ = libm::cbrtf(s);
 
     [
         0.210_454_26 * l_ + 0.793_617_8 * m_ - 0.004_072_047 * s_,
@@ -323,6 +331,33 @@ mod tests {
         a.iter().zip(b).all(|(x, y)| (x - y).abs() <= eps)
     }
 
+    /// **Nothing here names an `f32` transcendental**: the conversions decide a stored
+    /// color, and a host libm rounds as its platform pleases (§12.1).
+    ///
+    /// Asked of the source rather than of a value because the two answers differ by an
+    /// ulp on a tenth of the domain, and by two on a third of the cube root's: a golden
+    /// is adapter-specific and CI compares no pixels at all, so nothing else would
+    /// notice a cube root coming back. `sqrt`, `powi` and the arithmetic operators are
+    /// absent from the list because IEEE-754 already pins them.
+    ///
+    /// The needle is assembled rather than written, so that this list is not itself the
+    /// thing the search finds.
+    #[test]
+    fn the_conversions_name_no_host_transcendental() {
+        let src = include_str!("color.rs");
+        for name in [
+            "powf", "cbrt", "exp", "exp2", "ln", "log", "log2", "log10", "sin", "cos", "tan",
+            "atan2", "hypot",
+        ] {
+            let call = format!(".{name}(");
+            assert!(
+                !src.contains(&call),
+                "`{call}` in color.rs — a stored color cannot be decided by the host's libm; \
+                 call `libm::` instead (§12.1)"
+            );
+        }
+    }
+
     /// The transfer is the sRGB curve on `[0, 1]`, bit for bit — every golden was
     /// blessed through it — and odd past it, so an extended value round-trips.
     #[test]
@@ -331,7 +366,7 @@ mod tests {
             let want = if c <= 0.04045 {
                 c / 12.92
             } else {
-                ((c + 0.055f32) / 1.055).powf(2.4)
+                libm::powf((c + 0.055f32) / 1.055, 2.4)
             };
             assert_eq!(srgb_to_linear(c), want);
         }
