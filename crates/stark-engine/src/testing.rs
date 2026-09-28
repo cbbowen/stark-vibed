@@ -130,10 +130,9 @@ fn allowed_to_skip() -> bool {
 /// `None` for a permitted skip, and a panic otherwise. `what` names what is being
 /// skipped, for the message.
 ///
-/// The *blocking* and the caching stay with each caller — `pollster` is a
-/// dev-dependency and has no business in the shipped crate — so what is shared here
-/// is the judgement and not the plumbing. Every harness must route through it, or one
-/// of them grows a silent skip.
+/// The blocking stays with the caller — `pollster` is a dev-dependency and has no
+/// business in the shipped crate — so what is shared here is the judgement and not the
+/// plumbing. Every harness must route through it, or one of them grows a silent skip.
 pub fn or_skip<T, E: std::fmt::Display>(built: std::result::Result<T, E>, what: &str) -> Option<T> {
     match built {
         Ok(t) => Some(t),
@@ -147,28 +146,22 @@ pub fn or_skip<T, E: std::fmt::Display>(built: std::result::Result<T, E>, what: 
 
 /// The one GPU context a test binary builds, kept for that binary's life.
 ///
-/// **The caching is here; the blocking is still the caller's.** `build` runs at most
-/// once, and `pollster` stays a dev-dependency of the suite rather than a dependency
-/// of the shipped crate — which is the split the module note above draws, with the
-/// cache moved across it and the plumbing left where it was.
+/// **The caching is here; the blocking is still the caller's** — `pollster` is a
+/// dev-dependency of the suite, not of the shipped crate, so `build` is passed in.
 ///
-/// What moving it buys is the crate the static is *proved* in.
+/// **It lives in this crate because the recursion limit is a crate property.**
 /// `OnceLock<Option<GpuContext>>: Sync` unfolds through wgpu's dispatch enum and
-/// wgpu-core's `Global` deeply enough to outrun the default recursion limit, and the
-/// limit is a **crate** property: this crate raises it once (`lib.rs`), where every
-/// test crate that shares the cache would have had to raise its own, and the next one
-/// would have to remember.
+/// wgpu-core's `Global` deeply enough to outrun the default limit; this crate raises
+/// it once (`lib.rs`), where every test crate sharing the cache would have to raise
+/// its own and the next one would have to remember.
 ///
-/// Still one device per test *binary*, which is what it was when `tests/engine/common` held
-/// the lock: a static in a linked rlib is per-binary, and each test target is its own
-/// binary. What that means for a test — a shared device and driver shader cache, but
-/// its own pool, renderers and document — `tests/engine/common` explains at the call site.
+/// A static in a linked rlib is per-binary, so this is one device per test *binary* —
+/// a shared device and driver shader cache, but a pool, renderers and document per
+/// test, which `tests/engine/common` explains at the call site.
 ///
 /// Native only, and not by taste: a `GpuContext` is `Send + Sync` on native — wgpu's
 /// handles are, and the health cell is an `Arc<Mutex<..>>` — while on wasm they are
-/// `Rc<Cell<..>>` and a `static` could not hold one at all. The suite is native by
-/// construction, which is what let `tests/engine/common` keep this without a gate; the gate
-/// is what the move across the crate boundary costs.
+/// `Rc<Cell<..>>` and a `static` could not hold one at all.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn shared_context(
     build: impl FnOnce() -> Option<crate::GpuContext>,

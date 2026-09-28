@@ -122,9 +122,8 @@ pub struct EngineShared {
     /// The HDR lighting environment and its registered bytes (§6.3). A view setting,
     /// so it is the *store* that is shared and the current id that is seeded.
     environment: Registry<EnvironmentId>,
-    /// The lighting and the display a sibling opens with (§6.3, §6.5) — a seed, not
-    /// a shared value; see the note on the type. The display too, since a sibling's
-    /// surface is the same screen's.
+    /// The lighting and the display a sibling opens with (§6.3, §6.5) — a seed. The
+    /// display too, since a sibling's surface is the same screen's.
     settings: ViewSettings,
 }
 
@@ -151,11 +150,9 @@ pub struct Engine {
     /// depends on it: a stroke is fitted in canvas space, and the view is what the
     /// renderer and the projection read.
     view: ViewTransform,
-    /// Whether collaborators' selection outlines are drawn (§17.3).
-    ///
-    /// View state, so each client decides for itself and nothing about it is logged or
-    /// sent. Off by default: a second contour over the artwork is a cost paid on every
-    /// frame you look at it, for a fact that is occasionally useful.
+    /// Whether collaborators' selection outlines are drawn (§17.3). Off by default: a
+    /// second contour over the artwork is a cost paid on every frame you look at it,
+    /// for a fact that is occasionally useful.
     show_peer_selections: bool,
     /// The half of this client published to collaborators (§17.4): the name, the
     /// cursor, and the latch that decides when a frame goes out.
@@ -202,9 +199,8 @@ pub struct Engine {
     /// the frontend's alone.
     doc_origin: u64,
     /// How many of this client's stroke commits took the preview's tiles instead of
-    /// rendering the stroke again (`PreparedStroke`, §6.2). For tests and
-    /// diagnostics: the two paths are the same pixels by design, so only a count can
-    /// say which one ran.
+    /// rendering the stroke again (`PreparedStroke`, §6.2). The two paths are the same
+    /// pixels by design, so only a count can say which one ran.
     strokes_reused: u64,
     /// The raw pointer reports of the stroke in hand, for a dump — see
     /// [`DebugCapture`], which is nothing at all without its feature.

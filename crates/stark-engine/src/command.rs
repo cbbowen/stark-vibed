@@ -30,16 +30,29 @@
 //! Anything that must answer — importing a brush and getting its id, saving bytes,
 //! merging a remote action and learning whether it applied — is a **request**, and
 //! requests stay direct methods on [`Engine`](crate::Engine). See §4.
+//!
+//! # Where the line falls
+//!
+//! A command states what the **engine** owns and asks for what only a frontend can
+//! know. Three things are always the frontend's, and the variants below name their own
+//! side of the line rather than re-arguing it:
+//!
+//! - **the view** — canvas px are 64× coarser zoomed out than in, so anything felt in
+//!   screen px (an input tolerance, a smoothing length, where an image lands) has to
+//!   be converted before it arrives;
+//! - **the platform** — which digitizer is reporting, which image formats decode;
+//! - **gesture feel** — how long a dwell lasts, how much twist a pinch must earn,
+//!   what a drag eases onto. The engine has no clock and no window (§7), so it owns
+//!   what a gesture *means* and not when one happened.
 
 /// The tool a gesture drives. Tools become an open registry later (§10).
 ///
 /// **Session state, not document state**, which is why it is here and not in
-/// `stark-model` (§2). Only [`Brush`](Self::Brush) ever reaches a `StrokeRecord`:
-/// the selection tools produce a `SelectionOp` instead (§6.8). They share the enum
-/// — and so the pointer-gesture plumbing — because from the frontend's point of
-/// view they are the same interaction: press, drag, release. Which of them was in
-/// hand is not part of what a document *is*; the stroke or the op it produced is,
-/// and that is what the log carries.
+/// `stark-model` (§2): which tool was in hand is not part of what a document *is* —
+/// the stroke or the op it produced is, and that is what the log carries. One enum,
+/// and so one pointer-gesture path, because press-drag-release is the same
+/// interaction either way; only [`Brush`](Self::Brush) reaches a `StrokeRecord`, the
+/// selection tools produce a `SelectionOp` (§6.8).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum Tool {
     #[default]
@@ -109,12 +122,11 @@ pub enum InputCommand {
     Peer(PeerCommand),
 }
 
-/// The press-drag-release lifecycle, shared by painting and by the selection tools
-/// (§6.8): from the frontend's side both are one gesture, and the `tool`
-/// decides which the session builds — a `StrokeRecord` or a `SelectionOp`.
+/// The press-drag-release lifecycle (§6.8); [`Tool`] decides what the session builds
+/// from it.
 ///
-/// In flight this is view state. [`GestureCommand::End`] is the only edge that
-/// produces document state, and [`GestureCommand::Cancel`] produces none.
+/// In flight this is view state. [`End`](Self::End) is the only edge that produces
+/// document state, and [`Cancel`](Self::Cancel) produces none.
 #[derive(Clone, Debug)]
 pub enum GestureCommand {
     Start {
@@ -122,12 +134,10 @@ pub enum GestureCommand {
         sample: InputSample,
         /// How finely this gesture's input actually resolves position, in canvas px
         /// — see [`PathFitter::with_tolerance`](crate::path::PathFitter::with_tolerance).
-        ///
-        /// The frontend states it because only the frontend knows it: canvas px are
-        /// 64× coarser zoomed out than zoomed in, and a pen digitizer, a touchscreen
-        /// and a mouse each report at a different tolerance through the same API.
-        /// [`DEFAULT_TOLERANCE`](crate::path::DEFAULT_TOLERANCE) is one canvas px,
-        /// i.e. a mouse at 1:1.
+        /// The frontend's, per the view and the platform both: a pen digitizer, a
+        /// touchscreen and a mouse each report at a different tolerance through the
+        /// same API. [`DEFAULT_TOLERANCE`](crate::path::DEFAULT_TOLERANCE) is one
+        /// canvas px, i.e. a mouse at 1:1.
         ///
         /// It tunes the **fit** and nothing else — the selection tools, which fit no
         /// curve, ignore it, and so does the flattening into segments.
@@ -135,10 +145,9 @@ pub enum GestureCommand {
         /// The stroke-smoothing string length in canvas px (§6.11): the mark is
         /// drawn by a tip towed this far behind the pointer. `0` is no tow at all.
         ///
-        /// The frontend's to state, like `tolerance` and for the same reason: the
-        /// brush's smoothing amount is denominated in **screen** px, because wobble
-        /// is a fact about the hand, and only the frontend holds the view that
-        /// converts it. Fixed for the gesture, and ignored by the selection tools.
+        /// The brush's smoothing amount is denominated in **screen** px, because
+        /// wobble is a fact about the hand — so this is the frontend's to convert,
+        /// like `tolerance`. Fixed for the gesture, and ignored by the selection tools.
         rope: f32,
     },
     To {
@@ -148,9 +157,7 @@ pub enum GestureCommand {
     /// the line or ellipse it resembles, and hand the rest of the drag to that shape
     /// (§6.9).
     ///
-    /// Detecting the dwell is the frontend's: how long a pause has to be and how
-    /// still the hand has to hold is *gesture feel*, and the engine has no clock to
-    /// measure it with anyway (§7). What the engine owns is what a hold **means**.
+    /// Detecting the dwell is the frontend's; what a hold **means** is the engine's.
     ///
     /// Idempotent, and a no-op for a gesture that has already snapped, for a selection
     /// drag, or for a stroke that resembles nothing — so the frontend may send it
@@ -162,6 +169,12 @@ pub enum GestureCommand {
 
 /// Mutations of **document state**: each becomes an [`Action`](stark_model::document::Action),
 /// enters the undo history, is replicated to peers, and is reproduced by replay.
+///
+/// **Ids are minted by the engine, not named by the caller** — a layer's id *is* the
+/// id of the action that minted it (§17.9), so it cannot exist before the commit. A
+/// minted layer becomes the active one exactly when it is paint: a matte or a filter
+/// has no tile map, so arming one would swallow the next stroke (§15.7, §21.4).
+/// [`AddGuide`](Self::AddGuide) is the exception, and says why.
 #[derive(Clone, Debug)]
 pub enum DocCommand {
     Undo,
@@ -171,8 +184,7 @@ pub enum DocCommand {
     ///
     /// Navigation, like [`Undo`](Self::Undo) and [`Redo`](Self::Redo): it moves the
     /// same applied / withheld split those two move one step at a time, so nothing is
-    /// logged and nothing is sent. Absolute rather than a delta because a scrubber
-    /// knows exactly where it wants the playhead and nothing about where it was.
+    /// logged and nothing is sent.
     ///
     /// Clamped to the range the timeline reports, and a no-op on a timeline that
     /// has no single playhead to move (a shared session — see
@@ -191,11 +203,8 @@ pub enum DocCommand {
     },
     /// Copy a layer **and everything it carries** into its own stack, directly
     /// above it (§14.8) — the subtree travels as one, for the reason
-    /// [`RemoveLayer`](Self::RemoveLayer)'s does.
-    ///
-    /// The engine mints the copies' ids, as it does for
-    /// [`AddLayer`](Self::AddLayer) — one per layer of the subtree — and the copy
-    /// becomes the active layer when it can be painted on.
+    /// [`RemoveLayer`](Self::RemoveLayer)'s does, and so one id is minted per layer
+    /// of it.
     DuplicateLayer(LayerId),
     /// Remove a layer **and everything it carries** — the subtree is the group
     /// (§14.2). To keep what it carried, release those layers with
@@ -224,11 +233,10 @@ pub enum DocCommand {
     /// Move a layer — with everything it carries — into the stack carried by
     /// `carrier` (the document's own when `None`), at the place `at` names in it.
     ///
-    /// One command for all three gestures (§14.8): **reorder** leaves `carrier` as
-    /// it was, **carry** sets it to the layer being dropped onto, **release** clears
-    /// it. Asking a layer to carry its own ancestor is declined. A drag-and-drop
-    /// reorder is this one command because a drop lands in *some* stack at *some*
-    /// place in it (§14.6).
+    /// One command for all three gestures (§14.8, §14.6), since a drop lands in *some*
+    /// stack at *some* place in it: **reorder** leaves `carrier` as it was, **carry**
+    /// sets it to the layer being dropped onto, **release** clears it. Asking a layer
+    /// to carry its own ancestor is declined.
     MoveLayer {
         id: LayerId,
         carrier: Option<LayerId>,
@@ -244,9 +252,7 @@ pub enum DocCommand {
 
     /// Add a **matte** layer — a region filled with a [`Parcel`] (§15.2). A frame is
     /// one of these on top of the stack; a substrate ([`MatteRegion::Everything`]) is
-    /// one at the bottom, hence the full [`Place`] anchor (§15.5). The engine mints
-    /// the id; unlike `AddLayer` it does *not* become the active layer, because a
-    /// matte cannot be painted on.
+    /// one at the bottom, hence the full [`Place`] anchor (§15.5).
     AddMatte {
         carrier: Option<LayerId>,
         at: Place,
@@ -256,25 +262,18 @@ pub enum DocCommand {
     /// Bring an image in from **outside** the document — an image file, or the system
     /// clipboard — as a new layer holding it as paint (§23).
     ///
-    /// The engine mints the id, as it does for [`AddLayer`](Self::AddLayer), and the
-    /// new layer becomes the active one for the same reason: it is paint, so it is
-    /// somewhere the next stroke can go.
-    ///
     /// `at` is the canvas position of the image's top-left texel in **whole canvas
     /// pixels**, so the placement resamples nothing — see
     /// [`ActionKind::PlaceImage`](stark_model::document::ActionKind::PlaceImage).
-    /// Where to put it is the frontend's to decide, because only the frontend knows
-    /// what is being looked at (§18.1.2); scaling and turning it afterwards is
-    /// [`Edit::Transform`], which with nothing selected moves the whole layer.
+    /// Where it lands is the frontend's, per the view (§18.1.2); scaling and turning it
+    /// afterwards is [`Edit::Transform`], which with nothing selected moves the whole
+    /// layer. Decoding is the frontend's too, per the platform.
     ///
     /// The picture is named by **content id**, imported first through
     /// [`Engine::import_picture`](crate::Engine::import_picture) — the same two-step a
     /// stamp brush takes (§6.6), and for the same reasons: the id has to exist before
     /// the action that references it can be built, and in a shared session the bytes
     /// have to be registered before the commit that names them goes out.
-    ///
-    /// Decoding is the frontend's: which formats can be imported is a question about
-    /// the platform rather than about the engine.
     PlaceImage {
         carrier: Option<LayerId>,
         above: Option<LayerId>,
@@ -288,8 +287,7 @@ pub enum DocCommand {
     },
 
     /// Add a **filter** layer — a function of everything composited beneath it in
-    /// the stack it lands in (§21.2). The engine mints the id; as for `AddMatte` it
-    /// does *not* become the active layer, because a filter cannot be painted on.
+    /// the stack it lands in (§21.2).
     ///
     /// It arrives at its neutral setting, so adding one changes nothing until it is
     /// dialled with [`Edit::Filter`]. Where it lands is its scope —
@@ -448,8 +446,8 @@ pub enum ViewCommand {
     ///
     /// **Incremental**, unlike [`SetRotation`](Self::SetRotation): a pinch does not
     /// know what angle it wants, only how far the hand has turned since the last
-    /// report. Gesture feel — the twist a gesture must earn, the pull onto a quarter
-    /// turn — is the frontend's, spent by choosing `turn`.
+    /// report. The frontend spends its feel — the twist a gesture must earn, the pull
+    /// onto a quarter turn — by choosing `turn`.
     Pinch {
         anchor: Vec2,
         to: Vec2,
@@ -457,14 +455,11 @@ pub enum ViewCommand {
         turn: f32,
     },
     /// Turn the canvas to this angle (radians, clockwise) — the navigator's
-    /// right-drag (§18.1.2).
+    /// right-drag (§18.1.2). Absolute, like [`CenterOn`](Self::CenterOn).
     ///
-    /// Absolute, like [`CenterOn`](Self::CenterOn): the gesture knows exactly where
-    /// it wants the canvas, and an incremental command would have the frontend keep a
-    /// copy of the angle to add to. The *drag* gives a direction, which
+    /// The *drag* gives a direction, which
     /// [`ViewTransform::rotation_for_up`](crate::view::ViewTransform::rotation_for_up)
-    /// turns into an angle; the easing and the snap-to-square are the frontend's,
-    /// being properties of dragging with a hand.
+    /// turns into an angle; the easing and the snap-to-square are the frontend's feel.
     SetRotation(f32),
     /// Mirror what is on screen, left↔right — the oldest way of catching a drawing
     /// error, since the eye stops recognising what it expected and starts seeing what
@@ -474,7 +469,6 @@ pub enum ViewCommand {
     /// the screen with the right at any angle, so the check means the same thing
     /// however the easel is turned (see
     /// [`ViewTransform::mirror_screen_h`](crate::view::ViewTransform::mirror_screen_h)).
-    /// View state, so it changes nothing about the painting and nobody else sees it.
     MirrorH,
 
     /// Show this canvas-space point at the centre of the viewport, leaving the zoom
@@ -503,10 +497,9 @@ pub enum ViewCommand {
     /// The viewport changed size (window/canvas resize).
     Resize(Extent2),
 
-    /// What the next shape gesture does with the region it encloses: combine it
-    /// into the selection one of four ways, or fill it (§6.8,
-    /// §18.0.4). Shapes the *next* op; the op itself is what gets
-    /// logged.
+    /// What the next shape gesture does with the region it encloses: combine it into
+    /// the selection one of four ways, or fill it (§6.8, §18.0.4). Shapes the *next*
+    /// op; the op itself is what gets logged.
     SetShapeAction(ShapeAction),
     /// Edge softness (canvas px) for the next shape gesture — the same ramp whether
     /// it selects or fills.
@@ -518,22 +511,17 @@ pub enum ViewCommand {
     /// Not what a *selecting* gesture lands at: a selection's strength is the whole
     /// mask's and is set after the fact ([`Edit::SelectionOpacity`], §6.8),
     /// which is why that one is the selection bar's slider rather than the panel's.
-    /// Each answer is given where its moment is — this one before the gesture, with
-    /// the gesture's other settings; the mask's after.
     SetShapeOpacity(f32),
 
-    /// Whether collaborators' selection outlines are drawn over the canvas
-    /// (§17.3). View state, so each client decides for itself — this is
-    /// a preference about what you look at, not a fact about the drawing.
+    /// Whether collaborators' selection outlines are drawn over the canvas (§17.3).
     SetShowPeerSelections(bool),
 
     /// Open or shut a guide's **eye** (§20.5) — whether this client draws it.
     ///
-    /// The one thing about a guide that is *not* document state, because it is a
-    /// statement about what you are looking at rather than about the drawing:
-    /// shutting a guide to see the picture underneath must not reach across a shared
-    /// session, must not be saved, and must not cost an undo step. Everything else a
-    /// guide has is logged ([`Edit::Guide`] and its siblings).
+    /// The one thing about a guide that is *not* document state: shutting a guide to
+    /// see the picture underneath is a statement about what you are looking at rather
+    /// than about the drawing. Everything else a guide has is logged ([`Edit::Guide`]
+    /// and its siblings).
     ///
     /// **A guide is hidden until this client asks for it**, so one arriving from a
     /// peer or out of a file draws nothing until an eye is opened on it — the
@@ -583,13 +571,10 @@ pub enum ViewCommand {
     ///
     /// **View state**: how deep an undo stack this machine can afford is a fact about
     /// the machine, not about the painting — two people sharing a drawing have
-    /// different amounts of memory, and neither answer belongs in the file. It is a
-    /// command rather than a setter because §4's rule is that anything mutating state
-    /// and returning nothing is one.
-    ///
-    /// The engine's default (`HISTORY_TILE_BUDGET`) is one number for devices running
-    /// from a phone to a workstation; a frontend that knows which it is on should say
-    /// so.
+    /// different amounts of memory, and neither answer belongs in the file. The
+    /// default ([`DEFAULT_HISTORY_BUDGET`](crate::DEFAULT_HISTORY_BUDGET)) is one
+    /// number for devices from a phone to a workstation; a frontend that knows which
+    /// it is on should say so.
     ///
     /// Setting it does not itself trim; the next commit does, which is the only moment
     /// the stack grows. `0` means "keep the minimum" — retention is still floored at
@@ -606,11 +591,9 @@ pub enum ViewCommand {
     /// receives the stroke as an action and renders it whole whatever this says, and
     /// neither setting changes what a *file* means.
     ///
-    /// Off is the exact answer: the stroke is drawn the single way a replay, an undo
-    /// and a collaborator all draw it, so what is on screen reproduces bit for bit.
-    /// On — the default ([`DEFAULT_FAST_COMMIT`](crate::DEFAULT_FAST_COMMIT)) —
-    /// accepts the seam a cut costs (a level or two, `Tol::seam` in the corpus) and
-    /// gives back the hitch at the end of a long stroke.
+    /// Off buys a bit-for-bit reproduction, on (the default) gives back the hitch at
+    /// the end of a long stroke — see
+    /// [`DEFAULT_FAST_COMMIT`](crate::DEFAULT_FAST_COMMIT) for the trade.
     SetFastCommit(bool),
 }
 
@@ -643,18 +626,17 @@ pub enum PeerCommand {
     /// Per-client: collaborators paint on whichever layer each has selected, and each
     /// can see where the others are working.
     ///
-    /// A **matte** may be selected like any other layer (§15.7). It has no tile map,
-    /// so a stroke aimed at one draws nothing — refused identically by `apply` and by
-    /// the preview path, so the frontend needs no rule of its own, and selection stays
-    /// one concept rather than a paint target plus a separate frame-focus.
+    /// A **matte** may be selected like any other layer (§15.7), so selection stays one
+    /// concept rather than a paint target plus a separate frame-focus. A stroke aimed
+    /// at one draws nothing, refused identically by `apply` and by the preview path, so
+    /// the frontend needs no rule of its own.
     SetActiveLayer(LayerId),
 
     /// Where this client's pointer is, in canvas space; `None` when it leaves the
     /// canvas. Cheap at pointer rate: it writes a field, and the publish latch
     /// coalesces to one frame per tick (§17.5).
     ///
-    /// A `PeerCommand` for what it *is* — a fact about the hand, published, in no
-    /// file and reached by no undo — and not for who reads it: this client's own
+    /// Classified by what it *is* rather than by who reads it: this client's own
     /// guides draw their rays through it (§20.9), the way this client's own next
     /// stroke goes to [`SetActiveLayer`](Self::SetActiveLayer)'s layer. The cost to
     /// the frontend is a repaint, and so a decision about *when* to send this

@@ -145,11 +145,8 @@ pub struct LayerInfo {
     /// The layer panel keys its thumbnails on it. **The one field here that moves on
     /// an ordinary stroke** — every other describes the tree, which a stroke leaves
     /// alone, so without this the roster would compare equal across a commit that
-    /// only painted.
-    ///
-    /// Read off `shown`, so an unlogged drag — which installs a fresh `DocState` per
-    /// pointer sample — moves this row per sample where the tree beside it does not.
-    /// That is what makes a thumbnail track the drag rather than lag it.
+    /// only painted. An unlogged drag installs a fresh `DocState` per pointer sample,
+    /// so it moves this row per sample and a thumbnail tracks the drag.
     ///
     /// [`Layer::content_revision`]: crate::document::Layer::content_revision
     pub content_revision: Option<u64>,
@@ -339,11 +336,12 @@ impl Engine {
     /// A snapshot of UI-facing state (§7).
     pub fn observe(&self) -> ObservableState {
         let doc = self.timeline.current();
-        // Layers and the substrate color come off the *previewed* document when one is
-        // in flight (§15.7, §15.5), so the frame's handles track a drag and the color
-        // swatch tracks the picker rather than lagging the canvas. Only those two:
-        // `has_selection` must stay committed-only, or a marquee drag flashes the
-        // selection bar in and out before anything is selected.
+        // A field comes off `shown` — the previewed document, when one is in flight —
+        // exactly when a control previews the value it shows, so the chrome tracks the
+        // drag rather than lagging the canvas: the layer rows (§15.7), the substrate
+        // color (§15.5), the selection's opacity (§6.8) and the guide roster (§20.5).
+        // `has_selection` and `selection_hull` stay committed-only, or a marquee drag
+        // flashes the selection bar in and out before anything is selected.
         let shown = self.preview.doc().unwrap_or(doc);
         let layers = self.projected_layers(shown);
         ObservableState {
@@ -359,9 +357,6 @@ impl Engine {
             layers,
             has_selection: doc.has_selection(self.actor()),
             selection_hull: doc.selection_of(self.actor()).hull(),
-            // Off the *shown* document, unlike the two above: this one previews
-            // (`Edit::SelectionOpacity`), and a bar reading the committed number
-            // would fight its own slider mid-drag (§6.8).
             selection_opacity: shown.selection_of(self.actor()).opacity(),
             shape_action: self.session.shape_action,
             selection_feather: self.session.selection_feather(),
@@ -370,10 +365,6 @@ impl Engine {
             history_budget: self.client.history_budget,
             fast_commit: self.client.fast_commit,
             guides: self.projected_guides(|| {
-                // Off `shown`, like the layer list and the substrate color: a
-                // guide's drag previews through `Edit::Guide`, and a panel
-                // reading the committed roster would show the pose the hand left
-                // behind (§20.5).
                 shown
                     .guides()
                     .iter()
@@ -482,8 +473,6 @@ fn layer_rows(shown: &DocState) -> Vec<LayerInfo> {
             filter: l.filter(),
             has_underlay,
             merge_down,
-            // Off the *shown* document like the rest of the row, so a thumbnail tracks
-            // a drag preview's tiles rather than the committed ones behind them.
             content_revision: l.content_revision(),
             translation: l.translation,
         });

@@ -96,7 +96,7 @@ impl Presenter {
     }
 
     /// [`DrawList`], **memoized**: the draw list for `key`, built afresh or taken from
-    /// the cache (C4).
+    /// the cache.
     ///
     /// **Why the cache earns its place.** Building the list clones a `TilePairHandle`
     /// per visible tile, per layer, plus a `Vec` per layer, and the visible tile count

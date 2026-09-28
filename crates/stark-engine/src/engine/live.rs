@@ -55,7 +55,8 @@ pub(super) struct Preview {
     /// The two cannot be one: bumping the epoch per fold would discard every live
     /// stroke's head, yet a fold changes what a renderer should draw while both
     /// `doc_revision` and `epoch` stand still, so a draw list keyed on those two
-    /// alone would hold the frame at the moment the stroke began (C4).
+    /// alone would hold the frame at the moment the stroke began — a key must name
+    /// every term its value is a function of (`projection::Memo`).
     fold: Revision,
     /// Whether the fold no longer reflects the gestures and document it folds — set
     /// by [`invalidate`](Self::invalidate) and [`Engine::mark_live_stale`], cleared by

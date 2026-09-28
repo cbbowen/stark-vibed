@@ -76,17 +76,16 @@ pub const DEFAULT_HISTORY_BUDGET: u64 = 2 << 30;
 /// than rendering the stroke again at pen-up (`document::PreparedStroke`, §6.2).
 ///
 /// **On**, because the two renders are the same picture to within a level or two and
-/// only one of them is paid for while the artist is waiting. What the other setting
-/// buys is not a better picture but an *identical* one — the stroke drawn the single
-/// way a file, an undo and a collaborator all draw it, so the drawing reproduces bit
-/// for bit (§8, §9). That is worth offering and not worth defaulting to.
+/// only one of them is paid for while the artist is waiting. What off buys is not a
+/// better picture but an *identical* one — the stroke drawn the single way a file, an
+/// undo and a collaborator all draw it, so the drawing reproduces bit for bit (§8,
+/// §9). That is worth offering and not worth defaulting to.
 ///
 /// The **default**, not the value —
 /// [`ViewCommand::SetFastCommit`](crate::command::ViewCommand::SetFastCommit) sets it.
 /// Here rather than in a frontend's stored preferences for the reason
-/// [`DEFAULT_HISTORY_BUDGET`] is: two defaults for one behaviour is two answers to what
-/// Stark does out of the box, and a disagreement about *this* one would be invisible in
-/// everything but [`Engine::strokes_reused`].
+/// [`DEFAULT_HISTORY_BUDGET`] is, and because a disagreement about *this* one would be
+/// invisible in everything but [`Engine::strokes_reused`].
 pub const DEFAULT_FAST_COMMIT: bool = true;
 
 /// What this client is willing to spend, as a frontend has set it — **never logged and
@@ -254,18 +253,16 @@ impl Engine {
     /// not about a saved pass: `Logged::new` runs the funnel again on the way into the
     /// log, deliberately, so a footprint is built from what the fold will actually see.
     fn commit_sanitized(&mut self, id: ActionId, kind: ActionKind) {
-        // One row for every logged edit rather than one per `ActionKind`: what a
-        // profile is asked here is "was a commit the hitch the artist felt", read
-        // against `input.fit` and `frame` beside it. Which *kind* was slow the phases
-        // underneath already answer — `stroke.range` for a stroke that had to render,
-        // where one that took its preview's tiles has none.
+        // One row for every logged edit rather than one per `ActionKind`: the question
+        // is "was a commit the hitch the artist felt", read against `input.fit` and
+        // `frame` beside it. Which *kind* was slow the phases underneath already
+        // answer.
         crate::timing::span!("doc.commit");
-        // `kind` arrives through the **minted** half of the sanitizing funnel (§21.5);
-        // `Logged::new` is the "enters state" half. Sanitizing happens in the two doors
-        // above rather than inside the timeline so that the log and the wire carry
-        // *what was applied*: the broadcast clone below is taken from this action, and
-        // a peer that cleaned the raw kind on arrival would agree about pixels while
-        // disagreeing about the log.
+        // Sanitizing happens in the two doors above rather than inside the timeline so
+        // that the log and the wire carry *what was applied*: the broadcast clone below
+        // is taken from this action, and a peer that cleaned the raw kind on arrival
+        // would agree about pixels while disagreeing about the log. `kind` is through
+        // the **minted** half of the funnel (§21.5); `Logged::new` is the other.
         let action = Action { id, kind };
         // Cloned only when there is somewhere for the copy to go: a `CommitStroke`
         // carries the stroke's whole fitted control-point list, the largest thing in
@@ -297,9 +294,8 @@ impl Engine {
     /// left for a later fold to find.
     ///
     /// **This is the whole of what [`ClientSettings::fast_commit`] switches**: with
-    /// nothing offered, the fold renders the stroke exactly as a replay does, which is
-    /// what makes the switched-off path bit-for-bit rather than merely close
-    /// (`DEFAULT_FAST_COMMIT`).
+    /// nothing offered, the fold renders the stroke exactly as a replay does
+    /// ([`DEFAULT_FAST_COMMIT`]).
     pub(super) fn commit_stroke(&mut self, rec: StrokeRecord) {
         // Taken either way: the tiles describe a stroke being committed this instant,
         // so they are no use to the next fold whichever path lands it, and holding them

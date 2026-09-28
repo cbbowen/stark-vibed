@@ -79,7 +79,7 @@ impl<T: PartialEq> PartialEq for Projected<T> {
 }
 
 /// A **one-slot cache**: a value beside the key it was built from, rebuilt only when
-/// the key moves (C4). The engine keeps three of these — the layer roster, the guide
+/// the key moves. The engine keeps three of these — the layer roster, the guide
 /// roster and the compositor's draw list — and this type is the whole of what they
 /// have in common.
 ///

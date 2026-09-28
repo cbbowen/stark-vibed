@@ -607,7 +607,7 @@ mod tests {
     /// It is the whole argument for cutting the draw list into groups at all: a
     /// document that uses no blend modes, no clipping and no groups must reach the
     /// compositor as one run, or the feature is a tax on everyone who does not use
-    /// it — a *performance* claim measured like a correctness one (C8).
+    /// it — a *performance* claim asserted like a correctness one.
     #[test]
     fn plain_layers_merge_into_one_run() {
         let cs = oklab();
