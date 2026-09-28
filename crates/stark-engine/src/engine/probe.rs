@@ -11,7 +11,7 @@ use super::Engine;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::RgbaImage;
 use crate::document::DocState;
-use crate::gpu::substrate::Substrate;
+use crate::document::Substrate;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::testing::TileChannels;
 use crate::testing::{Probe, TimelineStats};

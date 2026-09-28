@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use crate::gpu::substrate::Substrate;
+use super::substrate::Substrate;
 use stark_model::AssetId;
 use stark_model::document::{
     Action, ActionId, ActionKind, ActorId, FillOp, Footprint, LayerId, Materialize, Resource,

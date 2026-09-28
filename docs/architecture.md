@@ -96,6 +96,7 @@ stark/
 │   │   │   ├── document/       # the state the log folds into
 │   │   │   │   ├── apply.rs     # impl Materialize for DocState — the fold (§4)
 │   │   │   │   ├── state.rs     # DocState: layers, selections, substrate, guides
+│   │   │   │   ├── substrate.rs # Substrate: which map, laid how large (§6.4)
 │   │   │   │   ├── timeline.rs  # Timeline trait; Linear + Replicated impls
 │   │   │   │   ├── layer.rs     # Layer, LayerContent, PaintTiles (§14)
 │   │   │   │   ├── selection.rs # the mask the op produces (§6.8)
@@ -212,12 +213,20 @@ a fact about the document and belongs left of the line; if it holds a tile it is
 cache and belongs right of it. That is not a judgement call — it is the invariant §8
 already enforces, which is why the boundary can be checked rather than remembered.
 
-Four modules are cut down the middle by that line — `document/layer.rs` and
-`document/selection.rs`, which keep the same file name on both sides, and
-`document/fill.rs` and `document/transform.rs`, whose derived halves are the plans
-`gpu/fill/plan.rs` and `gpu/transform/plan.rs`: a plan holds no state, so it belongs
-beside the pass that runs it rather than beside the fold. Reading an import tells you
-which half you are in.
+Five modules are cut down the middle by that line — `document/layer.rs`,
+`document/selection.rs` and `document/substrate.rs`, which keep the same file name on
+both sides, and `document/fill.rs` and `document/transform.rs`, whose derived halves
+are the plans `gpu/fill/plan.rs` and `gpu/transform/plan.rs`: a plan holds no state, so
+it belongs beside the pass that runs it rather than beside the fold. Reading an import
+tells you which half you are in.
+
+`substrate.rs` is the one where the *type* is on the left and a second inherent `impl`
+on the right: `Substrate` is the `(SubstrateId, SubstrateScale)` pair two actions set,
+so it holds no texture and is `DocState`'s field, while the grain's tile size and the
+pitch the deposition tooth taps the map at are facts about a pass and stay in
+`gpu/substrate.rs` beside the bake. An `impl` may sit in any module of its own crate,
+which is what lets the line fall where the meaning does rather than where the compiler
+insists.
 
 `document/guide/` (§20.5) is the module the rule places *whole*, and it is worth
 knowing why. Everything §20 derives from a perspective — its vanishing points, its

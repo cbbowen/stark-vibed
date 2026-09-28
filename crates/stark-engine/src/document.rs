@@ -22,6 +22,8 @@ pub(crate) mod merge;
 pub(crate) mod patch;
 pub(crate) mod selection;
 pub(crate) mod state;
+/// Which substrate the document stands on and how large — see the module.
+pub(crate) mod substrate;
 pub(crate) mod timeline;
 
 pub use state::{CanvasBounds, DEFAULT_SUBSTRATE_COLOR};
@@ -31,4 +33,5 @@ pub(crate) use guides::Guide;
 pub(crate) use layer::{CompositeParams, Layer, LayerContent, PaintTiles};
 pub(crate) use selection::Selection;
 pub(crate) use state::{DEFAULT_SUBSTRATE, DocState};
+pub(crate) use substrate::Substrate;
 pub(crate) use timeline::{LinearTimeline, ReplicatedTimeline, Step, Stepped, Timeline};

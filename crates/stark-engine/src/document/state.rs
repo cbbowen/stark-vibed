@@ -12,7 +12,7 @@ use rpds::{HashTrieMap, Vector};
 use super::guides::GuideRoster;
 use super::layer::{Layer, LayerContent, PropValue};
 use super::selection::Selection;
-use crate::gpu::substrate::Substrate;
+use super::substrate::Substrate;
 use stark_model::Srgb;
 use stark_model::SubstrateId;
 use stark_model::document::ActorId;

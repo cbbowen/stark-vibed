@@ -16,7 +16,8 @@
 
 use crate::device::context::GpuContext;
 use crate::device::desc;
-use stark_model::{SubstrateId, SubstrateScale};
+use crate::document::Substrate;
+use stark_model::SubstrateId;
 
 mod import;
 mod tooth;
@@ -59,38 +60,13 @@ impl TexelsPerPx {
     };
 }
 
-/// **A canvas substrate as the renderer builds it: which map, and how large it is
-/// laid** (§6.4).
+/// How the passes read a [`Substrate`]: the grain's tile size at this scale, the pitch
+/// the deposition tooth taps the map at, and the uv scale the media pass samples with.
 ///
-/// The pair, not the id alone, because the map that gets baked is a function of both:
-/// the rise a tip meets is a difference taken across [`TOOTH_REACH`] *canvas px*
-/// expressed in the map's own texels (`tooth::pack_substrate`), so laying the same
-/// substrate at twice the size halves that span and changes what the tooth bites.
-/// Baking one map and scaling the lookup would be the compensating fudge §1 rules out:
-/// it would report the rise over six px as if it were the rise over three.
-///
-/// So this is the registry's key, while the *bytes* stay keyed by the [`SubstrateId`]
-/// alone (`gpu::registry`): one height map, a bake per scale it is laid at.
-///
-/// [`TOOTH_REACH`]: tooth
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Default)]
-pub struct Substrate {
-    /// Which substrate — the document's `SubstrateId`, the thing the bytes are named by.
-    pub id: SubstrateId,
-    /// How large it is laid, as the document says (`DocState::substrate_scale`).
-    pub scale: SubstrateScale,
-}
-
+/// The type itself is [`document::substrate`](crate::document::substrate)'s — two
+/// document facts in one value, holding no texture. This half is here because every
+/// number in it is a fact about a *pass* (§2).
 impl Substrate {
-    /// The substrate `id` at natural size — what an engine with no document opinion
-    /// stands on, and what every caller that has only an id means.
-    pub fn new(id: SubstrateId) -> Self {
-        Self {
-            id,
-            scale: SubstrateScale::NATURAL,
-        }
-    }
-
     /// Canvas px spanned by one full tile of this substrate's map.
     fn tile_px(self) -> f32 {
         SUBSTRATE_TILE_PX as f32 * self.scale.factor()
@@ -275,6 +251,7 @@ impl crate::gpu::registry::Resource for Substrate {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stark_model::SubstrateScale;
 
     /// The fraction is exact and, over every scale and map size, small enough for the
     /// shader's integer arithmetic: `substrate_texel_along` multiplies up to `2·den·num`

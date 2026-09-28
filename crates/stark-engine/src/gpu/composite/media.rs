@@ -165,7 +165,7 @@ pub(super) struct MediaScene<'a> {
     pub(super) params: MediaParams,
     pub(super) environment: &'a Environment,
     /// Canvas px → substrate-tile uv for the substrate **the document is on**
-    /// ([`Substrate::uv_scale`](crate::gpu::substrate::Substrate::uv_scale)), as this frame is
+    /// ([`Substrate::uv_scale`](crate::document::Substrate::uv_scale)), as this frame is
     /// showing it.
     ///
     /// Taken off the document rather than the bound map: the map's *height* channel —
