@@ -52,28 +52,34 @@ import package::lib::quad::{fullscreen_clip, quad_corner};
 import package::lib::sample::{load1, box_coverage};
 
 struct Quad {
-    // a: destination tile texture's top-left in canvas px .xy; .z = TILE_TEX.
-    a: vec4<f32>,
-    // m: the forward affine's linear part, rows: canvas.x = m.x·p.x + m.y·p.y + t.x,
-    //    canvas.y = m.z·p.x + m.w·p.y + t.y. Vertex-stage only: it places the quad.
+    // The destination tile texture's top-left in canvas px.
+    dst_origin: vec2<f32>,
+    // The destination tile texture's edge, `TILE_TEX`.
+    tile_tex: f32,
+    // The forward affine's linear part, rows: canvas.x = m.x·p.x + m.y·p.y + xlate.x,
+    // canvas.y = m.z·p.x + m.w·p.y + xlate.y. Vertex-stage only: it places the quad.
     m: vec4<f32>,
-    // t: the forward translation .xy; the source tile *texture* origin .zw
-    //    (interior origin − apron, canvas px).
-    t: vec4<f32>,
-    // u: source interior origin .xy (canvas px); .z = TILE_SIZE (interior edge);
-    //    .w = the selection's opacity (`Selection::opacity`, §6.8) — the whole
-    //    mask's, which `src_mask`'s texels do not carry. Read by `fs_parcel`
-    //    alone: the mask passes below *carry* coverage rather than gate by it,
-    //    and scaling there would apply the opacity twice.
-    u: vec4<f32>,
-    // i/j: the inverse affine (rows / translation), fragment-stage. The fragment
-    //    maps its own canvas centre back through the inverse rather than
-    //    interpolating a uv across the quad: attribute interpolation plus the
-    //    sampler's fixed-point uv conversion can land an exact-centre tap a
-    //    fraction off, and the exactness invariants (identity, integer translate,
-    //    flips — §16.4) live or die on those taps being exact.
+    // The forward translation.
+    xlate: vec2<f32>,
+    // The source tile *texture* origin (interior origin − apron, canvas px).
+    src_origin: vec2<f32>,
+    // The source interior origin, canvas px.
+    src_interior: vec2<f32>,
+    // The source interior's edge, `TILE_SIZE`.
+    tile_size: f32,
+    // The selection's opacity (`Selection::opacity`, §6.8) — the whole mask's, which
+    // `src_mask`'s texels do not carry. Read by `fs_parcel` alone: the mask passes
+    // below *carry* coverage rather than gate by it, and scaling there would apply the
+    // opacity twice.
+    opacity: f32,
+    // The inverse affine's rows, fragment-stage. The fragment maps its own canvas
+    // centre back through the inverse rather than interpolating a uv across the quad:
+    // attribute interpolation plus the sampler's fixed-point uv conversion can land an
+    // exact-centre tap a fraction off, and the exactness invariants (identity, integer
+    // translate, flips — §16.4) live or die on those taps being exact.
     i: vec4<f32>,
-    j: vec4<f32>,
+    // And its translation.
+    inv_xlate: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> q: Quad;
@@ -113,12 +119,12 @@ fn vs_quad(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
     // The source interior corner in canvas px. Corner arithmetic is exact in f32,
     // so two quads sharing a source edge transform to bitwise-equal vertices and
     // rasterize watertight.
-    let p = q.u.xy + quad_corner(vi) * q.u.z;
+    let p = q.src_interior + quad_corner(vi) * q.tile_size;
     let c = vec2<f32>(
-        q.m.x * p.x + q.m.y * p.y + q.t.x,
-        q.m.z * p.x + q.m.w * p.y + q.t.y,
+        q.m.x * p.x + q.m.y * p.y + q.xlate.x,
+        q.m.z * p.x + q.m.w * p.y + q.xlate.y,
     );
-    let tex_px = (c - q.a.xy) / q.a.z;
+    let tex_px = (c - q.dst_origin) / q.tile_tex;
     return vec4<f32>(tex_px.x * 2.0 - 1.0, 1.0 - tex_px.y * 2.0, 0.0, 1.0);
 }
 
@@ -130,12 +136,12 @@ fn vs_quad(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
 // byte-exact. Edge taps fall into the source's apron (real neighbour content),
 // never a clamp.
 fn src_uv(frag: vec2<f32>) -> vec2<f32> {
-    let p = q.a.xy + frag;
+    let p = q.dst_origin + frag;
     let s = vec2<f32>(
-        q.i.x * p.x + q.i.y * p.y + q.j.x,
-        q.i.z * p.x + q.i.w * p.y + q.j.y,
+        q.i.x * p.x + q.i.y * p.y + q.inv_xlate.x,
+        q.i.z * p.x + q.i.w * p.y + q.inv_xlate.y,
     );
-    return (s - q.t.zw) / q.a.z;
+    return (s - q.src_origin) / q.tile_tex;
 }
 
 struct ParcelOut {
@@ -159,7 +165,7 @@ fn fs_parcel(@builtin(position) frag: vec4<f32>) -> ParcelOut {
     // still sum to what was there. Moved paint moves in the mask's *fraction* —
     // the one gate that conserves height — where minted paint takes the mask as
     // a factor of its ceiling (`integrate.wesl`).
-    let m = textureSampleLevel(src_mask, samp, uv, 0.0).r * q.u.w;
+    let m = textureSampleLevel(src_mask, samp, uv, 0.0).r * q.opacity;
     var out: ParcelOut;
     out.color = c;
     out.aux = vec4<f32>(h * m, 0.0, 0.0, 0.0);
@@ -184,12 +190,14 @@ fn fs_mask(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 // paint outside the rect is neither cut nor carried.
 
 struct Gated {
-    // a: destination tile texture's top-left in canvas px .xy; .z = TILE_TEX;
-    //    .w = fragment mode: 0 = homography (i0..i2 are the inverse's rows —
-    //    affine pieces embed a (0,0,1) bottom row, so their divide is by
-    //    exactly 1 and the §16.4 tap exactness carries over); 1 = inverse
-    //    bilinear over the cell corners in g0/g1.
-    a: vec4<f32>,
+    // The destination tile texture's top-left in canvas px.
+    dst_origin: vec2<f32>,
+    // Its edge, `TILE_TEX`.
+    tile_tex: f32,
+    // The fragment mode: 0 = homography (i0..i2 are the inverse's rows — affine pieces
+    // embed a (0,0,1) bottom row, so their divide is by exactly 1 and the §16.4 tap
+    // exactness carries over); 1 = inverse bilinear over the cell corners in g0/g1.
+    mode: f32,
     // The piece's corner images in canvas px: (00, 10) and (01, 11).
     c0: vec4<f32>,
     c1: vec4<f32>,
@@ -200,14 +208,17 @@ struct Gated {
     // Warp cell corner images (mode 1): (g00, g10) and (g01, g11).
     g0: vec4<f32>,
     g1: vec4<f32>,
-    // Warp cell source sub-rect: min .xy, size .zw.
-    s: vec4<f32>,
-    // The map's source rect: min .xy, max .zw — the coverage gate.
-    r: vec4<f32>,
-    // Source tile texture origin .xy (interior origin − apron, canvas px);
-    // .z = the selection's opacity (`Selection::opacity`, §6.8), read by
-    // `fs_parcel_gated` alone, for `Quad.u.w`'s reason; .w unused.
-    t: vec4<f32>,
+    // The warp cell's source sub-rect, as a corner and a size.
+    cell_min: vec2<f32>,
+    cell_size: vec2<f32>,
+    // The map's source rect — the coverage gate.
+    rect_min: vec2<f32>,
+    rect_max: vec2<f32>,
+    // The source tile texture origin (interior origin − apron, canvas px).
+    src_origin: vec2<f32>,
+    // The selection's opacity (`Selection::opacity`, §6.8), read by `fs_parcel_gated`
+    // alone, for `Quad.opacity`'s reason.
+    opacity: f32,
 }
 
 @group(0) @binding(0) var<uniform> qg: Gated;
@@ -225,7 +236,7 @@ fn vs_gated(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
         case 2u: { c = qg.c1.xy; }
         default: { c = qg.c1.zw; }
     }
-    let tex_px = (c - qg.a.xy) / qg.a.z;
+    let tex_px = (c - qg.dst_origin) / qg.tile_tex;
     return vec4<f32>(tex_px.x * 2.0 - 1.0, 1.0 - tex_px.y * 2.0, 0.0, 1.0);
 }
 
@@ -236,8 +247,8 @@ fn cross2(a: vec2<f32>, b: vec2<f32>) -> f32 {
 // The source canvas position for this fragment: its own canvas centre mapped
 // back through the inverse of the piece's map.
 fn gated_src(frag: vec2<f32>) -> vec2<f32> {
-    let p = qg.a.xy + frag;
-    if qg.a.w < 0.5 {
+    let p = qg.dst_origin + frag;
+    if qg.mode < 0.5 {
         // Homography (or embedded affine, whose w is exactly 1).
         let w = qg.i2.x * p.x + qg.i2.y * p.y + qg.i2.z;
         return vec2<f32>(
@@ -277,7 +288,7 @@ fn gated_src(frag: vec2<f32>) -> vec2<f32> {
     } else {
         u = (h.y - f.y * v) / den.y;
     }
-    return qg.s.xy + vec2<f32>(u, v) * qg.s.zw;
+    return qg.cell_min + vec2<f32>(u, v) * qg.cell_size;
 }
 
 // The moved parcel under a rect-scoped map: the lift law's `(latent, op,
@@ -286,12 +297,12 @@ fn gated_src(frag: vec2<f32>) -> vec2<f32> {
 @fragment
 fn fs_parcel_gated(@builtin(position) frag: vec4<f32>) -> ParcelOut {
     let s = gated_src(frag.xy);
-    let uv = (s - qg.t.xy) / qg.a.z;
+    let uv = (s - qg.src_origin) / qg.tile_tex;
     let c = textureSampleLevel(src_color, samp, uv, 0.0);
     let h = textureSampleLevel(src_aux, samp, uv, 0.0).x;
     let m = textureSampleLevel(src_mask, samp, uv, 0.0).r
-        * qg.t.z
-        * box_coverage(s, qg.r.xy, qg.r.zw);
+        * qg.opacity
+        * box_coverage(s, qg.rect_min, qg.rect_max);
     var out: ParcelOut;
     out.color = c;
     out.aux = vec4<f32>(h * m, 0.0, 0.0, 0.0);
@@ -305,8 +316,9 @@ fn fs_parcel_gated(@builtin(position) frag: vec4<f32>) -> ParcelOut {
 @fragment
 fn fs_mask_gated(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let s = gated_src(frag.xy);
-    let uv = (s - qg.t.xy) / qg.a.z;
-    let m = textureSampleLevel(src_mask, samp, uv, 0.0).r * box_coverage(s, qg.r.xy, qg.r.zw);
+    let uv = (s - qg.src_origin) / qg.tile_tex;
+    let m = textureSampleLevel(src_mask, samp, uv, 0.0).r
+        * box_coverage(s, qg.rect_min, qg.rect_max);
     return vec4<f32>(m, 0.0, 0.0, 0.0);
 }
 
@@ -314,9 +326,9 @@ fn fs_mask_gated(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 // did not reach — `old · (1 − box)`. Fullscreen, drawn before the moved quads.
 @fragment
 fn fs_mask_base(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
-    let p = qg.a.xy + frag.xy;
+    let p = qg.dst_origin + frag.xy;
     let m = load1(src_mask, vec2<i32>(floor(frag.xy))).r;
-    return vec4<f32>(m * (1.0 - box_coverage(p, qg.r.xy, qg.r.zw)), 0.0, 0.0, 0.0);
+    return vec4<f32>(m * (1.0 - box_coverage(p, qg.rect_min, qg.rect_max)), 0.0, 0.0, 0.0);
 }
 
 @vertex
@@ -331,15 +343,23 @@ struct FsOut {
 }
 
 // The combine's one map-dependent fact: whether the cut is gated by a source
-// rect (perspective/warp), and by which. `a.z = 0` is the affine's whole-plane
+// rect (perspective/warp), and by which. `gated = 0` is the affine's whole-plane
 // cut, arithmetically untouched from before the gate existed.
 struct Combine {
-    // a: destination tile texture origin .xy; .z = 1 to gate the cut; .w = the
-    //    selection's opacity (`Selection::opacity`, §6.8) — the same factor the
-    //    parcel side applied at the source, so the cut and the carry agree.
-    a: vec4<f32>,
-    // r: the gate rect, min .xy, max .zw.
-    r: vec4<f32>,
+    // The destination tile texture origin.
+    //
+    // `@align(16)` is the block's alignment rather than this member's: WGSL requires a
+    // uniform struct to be 16-byte aligned and has no struct-level attribute for it,
+    // and this is the one struct here with no `vec4` left to imply it (§6.10).
+    @align(16) dst_origin: vec2<f32>,
+    // 1 to gate the cut by the rect below.
+    gated: f32,
+    // The selection's opacity (`Selection::opacity`, §6.8) — the same factor the parcel
+    // side applied at the source, so the cut and the carry agree.
+    opacity: f32,
+    // The gate rect.
+    rect_min: vec2<f32>,
+    rect_max: vec2<f32>,
 }
 
 @group(0) @binding(7) var<uniform> qc: Combine;
@@ -351,12 +371,12 @@ fn fs_combine(@builtin(position) frag: vec4<f32>) -> FsOut {
     // constants read through the same code (§6.8's pattern, `lib::sample::load1`).
     let bc = load1(base_color, c);
     let ba = load1(base_aux, c);
-    var m = load1(base_mask, c).r * qc.a.w;
-    if qc.a.z > 0.5 {
+    var m = load1(base_mask, c).r * qc.opacity;
+    if qc.gated > 0.5 {
         // The cut only reaches inside the map's source rect (§16.8): the
         // effective coverage is m·box, the same gate the parcel side applied
         // at the source — so an identity map recombines exactly.
-        m = m * box_coverage(qc.a.xy + frag.xy, qc.r.xy, qc.r.zw);
+        m = m * box_coverage(qc.dst_origin + frag.xy, qc.rect_min, qc.rect_max);
     }
     let pc = load1(parcel_color, c);
     let ph = load1(parcel_aux, c).x;

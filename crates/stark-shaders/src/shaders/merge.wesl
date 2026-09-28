@@ -42,11 +42,18 @@ import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
 
 struct Merge {
-    // .x = the lower layer's opacity, .y = the upper layer's — folded into the
-    // result, which is why the merged layer is left at full opacity.
-    // .z = 1 when the upper layer is **clipped** to the lower (§14.4), else 0.
-    // .w unused.
-    p: vec4<f32>,
+    // The lower layer's opacity — folded into the result, which is why the merged
+    // layer is left at full opacity.
+    //
+    // `@align(16)` is the block's alignment rather than this member's: WGSL requires a
+    // uniform struct to be 16-byte aligned and has no struct-level attribute for it, so
+    // the first member says so — and the block keeps its whole 16-byte row, the fourth
+    // lane spare (§6.10).
+    @align(16) lower: f32,
+    // The upper layer's, folded in the same way.
+    upper: f32,
+    // 1 when the upper layer is **clipped** to the lower (§14.4), else 0.
+    clipped: f32,
 }
 
 @group(0) @binding(0) var<uniform> m: Merge;
@@ -117,8 +124,8 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         upper.res = ur.rgb;
     }
 
-    let opl0 = m.p.x;
-    let opl1 = m.p.y;
+    let opl0 = m.lower;
+    let opl1 = m.upper;
     // Heights as pass A would have accumulated them: the slider scales the *amount of
     // paint* directly (`aux = h·opl`), unlike the weight.
     let h0 = la * opl0;
@@ -152,7 +159,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // Not taken under `Clip`, where an absent backdrop deletes the source rather than
     // passing it through; that case falls to the general arithmetic below, which
     // returns nothing for it.
-    if h0 <= 0.0 && opl1 >= 1.0 && m.p.z <= 0.5 {
+    if h0 <= 0.0 && opl1 >= 1.0 && m.clipped <= 0.5 {
         out.color = uc;
         out.aux = vec4<f32>(ua, 0.0, 0.0, 0.0);
         @if(resid) out.resid = ur;
@@ -162,7 +169,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     let col0 = latent_unpremult(lower, lc.a, PAINT_EPS);
     let col1 = latent_unpremult(upper, uc.a, PAINT_EPS);
 
-    if m.p.z > 0.5 {
+    if m.clipped > 0.5 {
         // **Clipped** (§14.4): the upper layer exists only where the lower one does,
         // and it is a *deletion* rather than a scale on its alpha. Reading
         // `blend_common.wesl::merge` at `MODE_NORMAL` with `clip = 1` and a backdrop

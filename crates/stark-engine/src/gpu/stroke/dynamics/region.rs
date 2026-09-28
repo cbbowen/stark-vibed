@@ -370,25 +370,20 @@ pub(super) fn composite_tiles(
         buf
     });
     {
-        let att = targets.attachments(desc::CLEAR);
-        let mut pass = scope
-            .encoder()
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark dynamics region composite"),
-                color_attachments: &att[..targets.count()],
-                ..Default::default()
-            });
+        let mut pass =
+            desc::begin_pass(scope.encoder(), "stark dynamics region composite", targets);
         // An empty region (no base tiles) just stays cleared → "no paint".
         if let Some(inst) = &tile_inst {
             pass.set_pipeline(&kit.composite_pipeline);
             // Offset 0: `kit.composite_view_bgl` declares the view at a dynamic
             // offset, and this loop composites one region through one view.
-            pass.set_bind_group(0, &view_bg, &[view_slot.offset(0)]);
+            kit.composite_view_bgl
+                .set(&mut pass, &view_bg, &[view_slot.offset(0)]);
             pass.set_vertex_buffer(0, inst.slice(..));
             for (i, bg) in tile_bgs.iter().enumerate() {
                 let idx = i as u32;
-                pass.set_bind_group(1, *bg, &[]);
-                pass.draw(0..4, idx..idx + 1);
+                kit.composite_tile_bgl.set(&mut pass, bg, &[]);
+                pass.draw(desc::QUAD_VERTICES, idx..idx + 1);
             }
         }
     }
@@ -477,15 +472,9 @@ pub(super) fn slice_region(
         wgpu::BindingResource::TextureView(aux)
     });
     {
-        let mut pass = scope
-            .encoder()
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark dynamics slice"),
-                color_attachments: &[Some(desc::attach(&narrow_view, desc::CLEAR))],
-                ..Default::default()
-            });
+        let mut pass = desc::begin_pass(scope.encoder(), "stark dynamics slice", &narrow_view);
         pass.set_pipeline(&kit.slice_pipeline);
-        pass.set_bind_group(0, &bg, &[]);
+        kit.slice_bgl.set(&mut pass, &bg, &[]);
         pass.draw(desc::FULLSCREEN_VERTICES, 0..1);
     }
 

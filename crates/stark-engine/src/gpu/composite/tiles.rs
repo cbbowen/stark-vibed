@@ -89,7 +89,7 @@ impl TilePass {
                 buffers: &[Some(stark_shaders::mirror::composite::instance_layout(
                     wgpu::VertexStepMode::Instance,
                 ))],
-                targets: &space_targets[..formats.count()],
+                targets: &desc::targets_for(composite.fs_main, &space_targets),
             },
         );
 
@@ -154,12 +154,7 @@ impl TilePass {
         s: &TileStreams<'_>,
     ) {
         let ops = if clear { desc::CLEAR } else { desc::LOAD };
-        let attachments = into.attachments(ops);
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("stark composite pass"),
-            color_attachments: &attachments[..into.count()],
-            ..Default::default()
-        });
+        let mut pass = desc::begin_pass(encoder, "stark composite pass", into.with(ops));
         self.view_bgl.set(&mut pass, s.view_bg, &[s.view_offset]);
         let mut pipeline_is_matte = None;
         for draw in draws {

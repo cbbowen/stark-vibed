@@ -55,13 +55,6 @@ impl ChannelFormats {
         self.resid.is_some()
     }
 
-    /// How many attachments a pass over these channels declares — 2 without a
-    /// residual, 3 with. [`Targets::count`]'s other half: one is what the formats say,
-    /// the other what a caller brought.
-    pub(crate) fn count(&self) -> usize {
-        2 + usize::from(self.has_resid())
-    }
-
     /// What one texel of this trio costs, across all of its targets — 10 bytes in
     /// Oklab (`Rgba16Float` + `R16Float`), 18 with a residual (§6.7).
     ///
@@ -99,8 +92,8 @@ impl ChannelFormats {
     /// color's rule, being the rest of the same color.
     ///
     /// `aux` is the tile's own format or the wide one a stroke accumulates in.
-    /// Location 2 is `None` without a residual: slice to [`Self::count`], or keep the
-    /// hole where a later location follows it.
+    /// Location 2 is `None` without a residual — a hole [`desc::targets_for`] keeps or
+    /// drops by what the entry point says it writes (§6.10), never a count sliced here.
     pub(crate) fn deposit_targets(
         &self,
         aux: wgpu::TextureFormat,
@@ -202,26 +195,13 @@ pub(crate) struct Targets<'a> {
 }
 
 impl<'a> Targets<'a> {
-    /// The color attachments in target order, with `resid` at location 2 where the
-    /// space has one — the order every pipeline over these channels declares.
+    /// The trio as a pass's attachments, `resid` at location 2 where the space has one
+    /// — the order every pipeline over these channels declares — each with `ops`.
     ///
-    /// A fixed array plus [`Self::count`] rather than a `Vec`, so the caller slices
-    /// (`&attachments[..t.count()]`): these are built once per render pass encoded, and
-    /// a render pass per tile is the common case (§6.2).
-    pub(crate) fn attachments(
-        &self,
-        ops: wgpu::Operations<wgpu::Color>,
-    ) -> [Option<wgpu::RenderPassColorAttachment<'a>>; 3] {
-        [
-            Some(desc::attach(self.color, ops)),
-            Some(desc::attach(self.aux, ops)),
-            self.resid.map(|v| desc::attach(v, ops)),
-        ]
-    }
-
-    /// How many of [`Self::attachments`] are real — 2 without a residual, 3 with.
-    pub(crate) fn count(&self) -> usize {
-        2 + usize::from(self.resid.is_some())
+    /// [`desc::Attachments`] reads the length off the last attached location, so the
+    /// residual's absence is a hole rather than a count the caller has to slice to.
+    pub(crate) fn with(&self, ops: wgpu::Operations<wgpu::Color>) -> desc::Attachments<'a> {
+        desc::Attachments::with(ops, [Some(self.color), Some(self.aux), self.resid])
     }
 }
 
@@ -229,7 +209,7 @@ impl<'a> Targets<'a> {
 /// has one.
 impl<'a> From<Targets<'a>> for desc::Attachments<'a> {
     fn from(t: Targets<'a>) -> Self {
-        desc::Attachments::cleared([Some(t.color), Some(t.aux), t.resid])
+        t.with(desc::CLEAR)
     }
 }
 
@@ -304,7 +284,6 @@ mod tests {
                 state(2),
                 space.has_resid().then_some((TILE_COLOR_FORMAT, over))
             );
-            assert_eq!(targets.iter().flatten().count(), formats.count());
         };
         check(&crate::colorspace::OkLabColorSpace);
         #[cfg(feature = "mixbox")]

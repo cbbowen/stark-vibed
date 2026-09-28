@@ -124,52 +124,53 @@ impl ToolPingPong {
     /// pre-`charge` glob (0 = empty tool).
     pub(super) fn charge(&self, scope: &mut SubmitScope, k: &StrokeConstants, charge: f32) {
         let into = self.src(self.cur);
-        scope
-            .encoder()
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark dynamics brush init"),
-                color_attachments: &[
-                    Some(desc::attach(
-                        &into.color.view,
+        desc::begin_pass(
+            scope.encoder(),
+            "stark dynamics brush init",
+            // The three clears say unlike things, so each attachment carries its own
+            // (`desc::Attachments::at_locations`) and the residual's absence is a hole
+            // rather than a count to slice to.
+            desc::Attachments::at_locations([
+                Some(desc::attach(
+                    &into.color.view,
+                    desc::clear_to(wgpu::Color {
+                        r: k.channels[0] as f64,
+                        g: k.channels[1] as f64,
+                        b: k.channels[2] as f64,
+                        a: 1.0,
+                    }),
+                )),
+                Some(desc::attach(
+                    &into.aux.view,
+                    desc::clear_to(wgpu::Color {
+                        // Carried height is the only thing the tool carries (§6.1),
+                        // so the rest of the reservoir aux is unused. Opacity scales
+                        // the glob outright, and for a finite source that *is* the
+                        // ceiling — so no budget lane is needed here, where the
+                        // `add` rate's unbounded mint takes one (§6.2,
+                        // `dynamics.wesl::lay_parcel`).
+                        r: (charge * k.opacity) as f64,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
+                    }),
+                )),
+                // A freshly charged tip holds the brush's own color, and that
+                // color's residual with it — the same clear, off the same constants
+                // (§6.7).
+                into.resid_view().map(|v| {
+                    desc::attach(
+                        v,
                         desc::clear_to(wgpu::Color {
-                            r: k.channels[0] as f64,
-                            g: k.channels[1] as f64,
-                            b: k.channels[2] as f64,
-                            a: 1.0,
-                        }),
-                    )),
-                    Some(desc::attach(
-                        &into.aux.view,
-                        desc::clear_to(wgpu::Color {
-                            // Carried height is the only thing the tool carries (§6.1),
-                            // so the rest of the reservoir aux is unused. Opacity scales
-                            // the glob outright, and for a finite source that *is* the
-                            // ceiling — so no budget lane is needed here, where the
-                            // `add` rate's unbounded mint takes one (§6.2,
-                            // `dynamics.wesl::lay_parcel`).
-                            r: (charge * k.opacity) as f64,
-                            g: 0.0,
-                            b: 0.0,
+                            r: k.resid[0] as f64,
+                            g: k.resid[1] as f64,
+                            b: k.resid[2] as f64,
                             a: 0.0,
                         }),
-                    )),
-                    // A freshly charged tip holds the brush's own color, and that
-                    // color's residual with it — the same clear, off the same constants
-                    // (§6.7).
-                    into.resid_view().map(|v| {
-                        desc::attach(
-                            v,
-                            desc::clear_to(wgpu::Color {
-                                r: k.resid[0] as f64,
-                                g: k.resid[1] as f64,
-                                b: k.resid[2] as f64,
-                                a: 0.0,
-                            }),
-                        )
-                    }),
-                ][..into.targets().count()],
-                ..Default::default()
-            });
+                    )
+                }),
+            ]),
+        );
     }
 
     /// Cut the tool out for the range that resumes after this one. Copied rather than

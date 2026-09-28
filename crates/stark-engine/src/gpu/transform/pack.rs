@@ -111,12 +111,17 @@ pub(super) fn combine_uniform(
     let dest_origin = mask_tex_origin(dest);
     match gate {
         Some(rect) => CombineUniform {
-            a: [dest_origin.x, dest_origin.y, 1.0, opacity],
-            r: [rect.0.x, rect.0.y, rect.1.x, rect.1.y],
+            dst_origin: dest_origin.to_array(),
+            gated: 1.0,
+            opacity,
+            rect_min: rect.0.to_array(),
+            rect_max: rect.1.to_array(),
         },
         None => CombineUniform {
-            a: [dest_origin.x, dest_origin.y, 0.0, opacity],
-            r: [0.0; 4],
+            dst_origin: dest_origin.to_array(),
+            gated: 0.0,
+            opacity,
+            ..Default::default()
         },
     }
 }
@@ -136,13 +141,18 @@ fn quad_uniform(affine: Affine2, src: TileCoord, dest: TileCoord, opacity: f32) 
     let inv = affine.inverse();
     let (im, it) = (inv.matrix2, inv.translation);
     QuadUniform {
-        a: [dest_origin.x, dest_origin.y, TILE_TEX as f32, 0.0],
+        dst_origin: dest_origin.to_array(),
+        tile_tex: TILE_TEX as f32,
         // Shader rows: c.x = m.x·p.x + m.y·p.y; glam's Mat2 is column-major.
         m: [m.x_axis.x, m.y_axis.x, m.x_axis.y, m.y_axis.y],
-        t: [t.x, t.y, src_tex_origin.x, src_tex_origin.y],
-        u: [src_origin.x, src_origin.y, TILE_SIZE as f32, opacity],
+        xlate: t.to_array(),
+        src_origin: src_tex_origin.to_array(),
+        src_interior: src_origin.to_array(),
+        tile_size: TILE_SIZE as f32,
+        opacity,
         i: [im.x_axis.x, im.y_axis.x, im.x_axis.y, im.y_axis.y],
-        j: [it.x, it.y, 0.0, 0.0],
+        inv_xlate: it.to_array(),
+        ..Default::default()
     }
 }
 
@@ -160,8 +170,8 @@ fn gated_uniform(
     let c = &unit.corners;
     u.c0 = [c[0].x, c[0].y, c[1].x, c[1].y];
     u.c1 = [c[2].x, c[2].y, c[3].x, c[3].y];
-    let src_tex_origin = mask_tex_origin(unit.src);
-    u.t = [src_tex_origin.x, src_tex_origin.y, opacity, 0.0];
+    u.src_origin = mask_tex_origin(unit.src).to_array();
+    u.opacity = opacity;
     match &unit.frag {
         FragMap::Persp => {
             let h = inv.expect("perspective units carry a shared inverse");
@@ -178,10 +188,11 @@ fn gated_uniform(
                 let fwd = Affine2::from_mat2_translation(m, g[0] - m * *min);
                 set_rows(&mut u, &Homography::from_affine(fwd.inverse()).rows);
             } else {
-                u.a[3] = 1.0; // inverse-bilinear mode
+                u.mode = 1.0; // inverse-bilinear
                 u.g0 = [g[0].x, g[0].y, g[1].x, g[1].y];
                 u.g1 = [g[2].x, g[2].y, g[3].x, g[3].y];
-                u.s = [min.x, min.y, size.x, size.y];
+                u.cell_min = min.to_array();
+                u.cell_size = size.to_array();
             }
         }
     }
@@ -193,8 +204,10 @@ fn gated_uniform(
 fn gated_base(rect: (Vec2, Vec2), dest: TileCoord) -> GatedUniform {
     let dest_origin = mask_tex_origin(dest);
     let mut u = GatedUniform::zeroed();
-    u.a = [dest_origin.x, dest_origin.y, TILE_TEX as f32, 0.0];
-    u.r = [rect.0.x, rect.0.y, rect.1.x, rect.1.y];
+    u.dst_origin = dest_origin.to_array();
+    u.tile_tex = TILE_TEX as f32;
+    u.rect_min = rect.0.to_array();
+    u.rect_max = rect.1.to_array();
     u
 }
 
@@ -234,9 +247,9 @@ mod tests {
         for (u, (dest, src)) in staged.iter().zip(expect) {
             let d = mask_tex_origin(dest);
             let s = src.origin();
-            assert_eq!(&u.a[..2], &[d.x, d.y], "destination origin");
-            assert_eq!(&u.u[..2], &[s.x, s.y], "source origin");
-            assert_eq!(u.u[3], 0.5, "the gate's opacity rides in the quad");
+            assert_eq!(u.dst_origin, [d.x, d.y], "destination origin");
+            assert_eq!(u.src_interior, [s.x, s.y], "source origin");
+            assert_eq!(u.opacity, 0.5, "the gate's opacity rides in the quad");
         }
     }
 }

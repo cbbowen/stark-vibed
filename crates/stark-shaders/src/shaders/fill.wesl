@@ -42,16 +42,21 @@ const MAX_GRADIENT_STOPS: u32 = 16;
 
 struct Fill {
     // .xyz = a solid parcel's latent in this space's color channels (Oklab
-    // L,a,b or Mixbox concentrations), read only when `p.y == 0`; .w unused —
-    // a parcel carries color alone, the strength is `p.x` below.
+    // L,a,b or Mixbox concentrations), read only when `stops == 0`; .w unused —
+    // a parcel carries color alone, the strength is `opacity` below.
     c: vec4<f32>,
-    // .x = the fill's **opacity**: the visible alpha it covers with where
-    // coverage is full (`FillOp::opacity`); .y = gradient stop count (0 = a
-    // solid parcel; a gradient always has ≥ 2, §22.1); .z = the axis kind
-    // (0 linear, 1 radial); .w = the author's selection opacity
-    // (`Selection::opacity`, §6.8) — the whole mask's, which `gate`'s texels do
-    // not carry.
-    p: vec4<f32>,
+    // The fill's **opacity**: the visible alpha it covers with where coverage is
+    // full (`FillOp::opacity`).
+    opacity: f32,
+    // The gradient's stop count — 0 is a solid parcel, and a gradient always has
+    // ≥ 2 (§22.1).
+    stops: f32,
+    // The gradient's axis kind: 0 linear, 1 radial. `f32` because
+    // `ramp_common::ramp_position` takes it as one, shared with `matte.wesl`'s ramp.
+    axis_kind: f32,
+    // The author's selection opacity (`Selection::opacity`, §6.8) — the whole
+    // mask's, which `gate`'s texels do not carry.
+    gate_opacity: f32,
     // A solid parcel color's **residual** (.xyz) — the half of it the space's
     // three channels cannot express (§6.7); .w unused. Zero for every space but
     // Mixbox. Declared unconditionally: a uniform is mirrored into Rust from the
@@ -76,7 +81,11 @@ struct Fill {
 // bit-identical to its neighbour's interior (§6.4) — the same argument as
 // `selection.wesl`'s origin.
 struct Tile {
-    origin: vec4<f32>,
+    // `@align(16)` is the block's alignment rather than this member's: WGSL requires a
+    // uniform struct to be 16-byte aligned and has no struct-level attribute for it, so
+    // the only member says so — and the block keeps the whole row it always had, the
+    // upper half spare (§6.10).
+    @align(16) origin: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> f: Fill;
@@ -110,10 +119,10 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // opacity multiplies it (§6.8): a fill is a saturated parcel, so its stated
     // coverage times the mask *is* the opacity ceiling a stroke reads off the same
     // mask (`integrate.wesl`), with `w = 1`. On `cov` rather than folded into
-    // `f.p.x`, though the two are the same product: the exact passthrough below
+    // `f.opacity`, though the two are the same product: the exact passthrough below
     // keys on `cov == 0`, and a mask read at opacity 0 must take that branch
     // rather than recompute the resident paint and land an ulp off it.
-    let cov = load1(region, c).r * load1(gate, c).r * f.p.w;
+    let cov = load1(region, c).r * load1(gate, c).r * f.gate_opacity;
     // The base's color, both halves (§6.7, `lib::latent`). The gate is on the load —
     // a residual texture exists only in a space that has one — and the arithmetic
     // below is then written once.
@@ -151,10 +160,10 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // The parcel's color. Both halves come off the uniform, which declares the
     // residual whether or not the space uses it (§6.10) — so this needs no gate at all.
     var parcel = latent_of(f.c.rgb, f.r.rgb);
-    let stops = u32(f.p.y);
+    let stops = u32(f.stops);
     if stops >= 2 {
-        let pos = tile.origin.xy + frag.xy;
-        let t = ramp_position(pos, f.axis, f.p.z);
+        let pos = tile.origin + frag.xy;
+        let t = ramp_position(pos, f.axis, f.axis_kind);
         // The segment t falls in: the last stop at or before it. Stops are
         // ascending with endpoints at 0 and 1, so j+1 always exists.
         var j = 0u;
@@ -179,7 +188,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // What the fill asks for at this texel: its opacity through its own region and
     // through the author's gate. A **coverage** — the quantity the eye reads and
     // the one the slider is labelled with — not yet an amount of paint.
-    let want = min(f.p.x * cov, 1.0 - exp(-OPACITY_K * OPAQUE_MASS));
+    let want = min(f.opacity * cov, 1.0 - exp(-OPACITY_K * OPAQUE_MASS));
 
     // The paint that lands. A fill lays **fully opaque paint**: per-unit opacity 1,
     // so its optical mass and its height are one number, and that number is

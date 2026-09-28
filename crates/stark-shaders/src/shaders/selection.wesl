@@ -13,8 +13,8 @@
 // antialiased hard edge). A soft mask is what makes the brush fade out of the
 // selection instead of stopping at a staircase.
 //
-// The whole ramp is then scaled by the op's **opacity** (`c.w`) — how strongly this
-// region is selected at all. Nothing downstream knows about it: the mask has always
+// The whole ramp is then scaled by the op's **opacity** (`strength`) — how strongly
+// this region is selected at all. Nothing downstream knows about it: the mask has always
 // meant "how much each texel is selected", and a partial selection is that field
 // taking values other than 0 and 1, which is exactly what a feathered edge already
 // did. So a brush deposits at that fraction, a fill lands at it and a transform
@@ -30,16 +30,37 @@ import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
 
 struct Params {
-    // .xy = this tile texture's top-left in canvas px, .z = 2/TILE_TEX (canvas px →
-    // NDC), .w = feather width in canvas px.
-    a: vec4<f32>,
+    // This tile texture's top-left in canvas px.
+    //
+    // `@size(12)` keeps the lane this pair left spare, which is what `feather` below
+    // stands on: no alignment reaches offset 12 from offset 8, so the member's own
+    // stride is the only thing that can say it (§6.10). The lane held `2/TILE_TEX`
+    // when the vertex stage placed its own quad; `fullscreen_clip` needs no scale, and
+    // nothing has read it since.
+    @size(12) origin: vec2<f32>,
+    // Feather width in canvas px.
+    feather: f32,
     // Shape parameters: rect (min.xy, max.xy); ellipse (center.xy, radii.xy).
-    b: vec4<f32>,
-    // .x = shape kind, .y = combine mode, .z = lasso edge count, .w = the coverage
-    // a fully-covered texel gets — the op's opacity. Under `MODE_INVERT`, which has
-    // no shape, the same lane carries the level the mask reflects *through*
+    shape: vec4<f32>,
+    // Which shape to rasterize (`KIND_*`).
+    //
+    // **`u32`, not a code compared as an `f32`.** The lane was an `f32` because the
+    // three tags and the opacity below rode one `vec4<f32>`, and every code here is a
+    // small integer that f32 represents exactly, so the equality was in fact safe. It
+    // is the *kind* that was wrong: a tag is an enumerand, not a measurement, and
+    // writing it as one invites the next code to be a 0.5 or a scale factor, at which
+    // point the comparison silently stops being exact. Named members carry their own
+    // types, so the host writes `sel::KIND_RECT` where it used to write
+    // `sel::KIND_RECT as f32` and a wrong type fails at the assignment (§6.10).
+    kind: u32,
+    // How to combine the shape with the previous mask (`MODE_*`).
+    mode: u32,
+    // How many lasso edges `edges` holds; 0 for every analytic shape.
+    edge_count: u32,
+    // The coverage a fully-covered texel gets — the op's opacity. Under `MODE_INVERT`,
+    // which has no shape, the same member carries the level the mask reflects *through*
     // (`Selection::level`); both are "the strength this mask is drawn at".
-    c: vec4<f32>,
+    strength: f32,
 }
 
 @group(0) @binding(0) var<uniform> p: Params;
@@ -50,16 +71,8 @@ struct Params {
 @group(0) @binding(2) var edges: texture_2d<f32>;
 
 // Shape and combine codes — the shader ABI for `SelectionShape` and the combine
-// mode, mirrored by `gpu/selection.rs`, which packs them into `c.x` and `c.y`.
-//
-// **`u32`, read out of the float lane with `u32(...)`, rather than `f32` compared
-// with `==`.** The lane really is an `f32` — `MaskUniform` is three `[f32; 4]`s and
-// the tags ride in two of its slots — and every code here is a small integer, which
-// f32 represents exactly, so the equality was in fact safe. It is the *kind* that is
-// wrong: a tag is an enumerand, not a measurement, and writing it as one invites the
-// next code to be a 0.5 or a scale factor, at which point the comparison silently
-// stops being exact. `blend_common.wesl` already spells its `BlendMode` codes this
-// way; there is no reason for two conventions.
+// mode, mirrored by `gpu/selection.rs`, which writes them into `kind` and `mode`.
+// `blend_common.wesl` spells its `BlendMode` codes the same way.
 const KIND_ALL: u32 = 0u;
 const KIND_RECT: u32 = 1u;
 const KIND_ELLIPSE: u32 = 2u;
@@ -123,22 +136,22 @@ fn sd_lasso(q: vec2<f32>, count: u32) -> f32 {
 
 // The op's own coverage at canvas position `q`, in [0, opacity].
 fn shape_coverage(q: vec2<f32>) -> f32 {
-    let kind = u32(p.c.x);
+    let kind = p.kind;
     if kind == KIND_ALL {
-        return p.c.w;
+        return p.strength;
     }
     var sd = 1e30;
     if kind == KIND_RECT {
-        sd = sd_rect(q, p.b.xy, p.b.zw);
+        sd = sd_rect(q, p.shape.xy, p.shape.zw);
     } else if kind == KIND_ELLIPSE {
-        sd = sd_ellipse(q, p.b.xy, p.b.zw);
+        sd = sd_ellipse(q, p.shape.xy, p.shape.zw);
     } else if kind == KIND_LASSO {
-        sd = sd_lasso(q, u32(p.c.z));
+        sd = sd_lasso(q, p.edge_count);
     }
     // One canvas pixel is the floor: a "hard" edge is still antialiased, and the
     // half-contour stays exactly on the geometric boundary either way.
-    let w = max(p.a.w, 1.0);
-    return clamp(0.5 - sd / w, 0.0, 1.0) * p.c.w;
+    let w = max(p.feather, 1.0);
+    return clamp(0.5 - sd / w, 0.0, 1.0) * p.strength;
 }
 
 @fragment
@@ -147,15 +160,15 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // standing in for "the previous selection had no tile here".
     let old = load1(prev, vec2<i32>(floor(frag.xy))).r;
 
-    let mode = u32(p.c.y);
+    let mode = p.mode;
     if mode == MODE_INVERT {
         // Reflected through the mask's own level, not through 1: the complement of a
         // region selected at 0.4 is its outside selected at 0.4. Identical to the old
         // `1 − old` for every selection built at full strength.
-        return vec4<f32>(p.c.w - old, 0.0, 0.0, 0.0);
+        return vec4<f32>(p.strength - old, 0.0, 0.0, 0.0);
     }
 
-    let s = shape_coverage(p.a.xy + frag.xy);
+    let s = shape_coverage(p.origin + frag.xy);
     var out = s; // MODE_REPLACE
     if mode == MODE_UNION {
         out = max(old, s);

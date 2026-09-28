@@ -362,9 +362,28 @@ impl<'a> Attachments<'a> {
         Self::with(LOAD, targets)
     }
 
-    fn with(
+    /// [`Self::cleared`] with `ops` on each, for a caller that decides between the two
+    /// (a pass A run that clears the frame's first tiles and loads onto the rest).
+    pub(crate) fn with(
         ops: wgpu::Operations<wgpu::Color>,
         targets: impl IntoIterator<Item = Option<&'a wgpu::TextureView>>,
+    ) -> Self {
+        Self::at_locations(targets.into_iter().map(|t| t.map(|view| attach(view, ops))))
+    }
+
+    /// The attachments at the `@location`s they stand at, each carrying its **own**
+    /// load op — a clear-only pass whose targets mean unlike things (a freshly charged
+    /// tip, §6.2) is the case `ops` cannot express.
+    ///
+    /// **This is [`targets_for`] on the attachment side.** The length is read off where
+    /// the last `Some` falls rather than counted by the caller, so a list sliced to a
+    /// count — `&attachments[..t.count()]`, once per pass — cannot stop one location
+    /// early and lose that lane in silence.
+    ///
+    /// # Panics
+    /// If `targets` names more than [`MAX_ATTACHMENTS`] locations.
+    pub(crate) fn at_locations(
+        targets: impl IntoIterator<Item = Option<wgpu::RenderPassColorAttachment<'a>>>,
     ) -> Self {
         let mut out = Self {
             slots: [const { None }; MAX_ATTACHMENTS],
@@ -375,10 +394,10 @@ impl<'a> Attachments<'a> {
                 location < MAX_ATTACHMENTS,
                 "a pass attaches at most {MAX_ATTACHMENTS} targets",
             );
-            if let Some(view) = target {
-                out.slots[location] = Some(attach(view, ops));
+            if target.is_some() {
                 out.len = location + 1;
             }
+            out.slots[location] = target;
         }
         out
     }
@@ -386,9 +405,7 @@ impl<'a> Attachments<'a> {
     /// One target cleared to `color`, for where the clear value carries meaning: the
     /// coverage outside a selection's own tiles (§6.8).
     pub(crate) fn cleared_to(view: &'a wgpu::TextureView, color: wgpu::Color) -> Self {
-        let mut slots = [const { None }; MAX_ATTACHMENTS];
-        slots[0] = Some(attach(view, clear_to(color)));
-        Self { slots, len: 1 }
+        Self::at_locations([Some(attach(view, clear_to(color)))])
     }
 
     fn as_slice(&self) -> &[Option<wgpu::RenderPassColorAttachment<'a>>] {
@@ -665,8 +682,11 @@ fn targets_agree(label: &str, fs: EntryPoint, targets: &[Option<wgpu::ColorTarge
     );
 }
 
-/// The vertices of the fullscreen triangle every [`fullscreen_pipeline`] draws.
-pub(crate) const FULLSCREEN_VERTICES: std::ops::Range<u32> = 0..3;
+/// The vertices of the fullscreen triangle every [`fullscreen_pipeline`] draws, off
+/// `lib/quad.wesl`'s own count (§6.10) — the vertex function decides how many it is
+/// written for, and a `0..3` here would be that number a second time.
+pub(crate) const FULLSCREEN_VERTICES: std::ops::Range<u32> =
+    0..stark_shaders::mirror::quad::FULLSCREEN_VERTS;
 
 /// [`render_pipeline`] for the **fullscreen triangle** shape: no vertex buffers, no
 /// instancing, [`FULLSCREEN_VERTICES`] once. Ten of the passes here are this — every
@@ -779,8 +799,9 @@ pub(crate) const QUAD_STRIP: wgpu::PrimitiveState = wgpu::PrimitiveState {
     conservative: false,
 };
 
-/// The vertices of one [`QUAD_STRIP`] quad.
-pub(crate) const QUAD_VERTICES: std::ops::Range<u32> = 0..4;
+/// The vertices of one [`QUAD_STRIP`] quad, off `lib/quad.wesl`'s own count, for
+/// [`FULLSCREEN_VERTICES`]' reason.
+pub(crate) const QUAD_VERTICES: std::ops::Range<u32> = 0..stark_shaders::mirror::quad::QUAD_VERTS;
 
 /// A color target that replaces what it writes — the pass computes the finished
 /// texel, so there is nothing for fixed-function blending to do.

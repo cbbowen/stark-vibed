@@ -19,7 +19,7 @@
 // costs a little and — for anything reading derivatives, as `guides.wesl` does —
 // changes the answer along a line down the middle of the screen.
 //
-// The host's draw call must ask for exactly 3 vertices.
+// The host's draw call must ask for exactly `FULLSCREEN_VERTS` vertices.
 fn fullscreen_clip(vi: u32) -> vec4<f32> {
     let uv = vec2<f32>(f32((vi << 1u) & 2u), f32(vi & 2u));
     return vec4<f32>(uv * 2.0 - 1.0, 0.0, 1.0);
@@ -35,3 +35,11 @@ fn fullscreen_clip(vi: u32) -> vec4<f32> {
 fn quad_corner(vi: u32) -> vec2<f32> {
     return vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u));
 }
+
+// How many vertices `fullscreen_clip` is written for — stated for the host's benefit
+// and computed with by neither side, `SWEEP_VERTS`'s arrangement
+// (`stamp_common.wesl`) and for its reason: a draw count is a fact about the vertex
+// function, so the function's own file is where it belongs (§6.10).
+const FULLSCREEN_VERTS: u32 = 3u;
+// And `quad_corner`'s strip, the same way.
+const QUAD_VERTS: u32 = 4u;

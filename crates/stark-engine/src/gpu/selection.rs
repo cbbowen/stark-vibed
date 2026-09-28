@@ -65,6 +65,7 @@ const _: () = assert!(
 );
 use stark_shaders::Stages;
 use stark_shaders::mirror::mask_region::decl as mrd;
+use stark_shaders::mirror::selection as sel;
 use stark_shaders::mirror::selection::binding as sb;
 use stark_shaders::mirror::selection::decl as sd;
 
@@ -79,12 +80,6 @@ use stark_shaders::mirror::selection::Params as MaskUniform;
 
 // Generated from `mask_region.wesl`'s vertex parameters (§6.10).
 use stark_shaders::mirror::mask_region::MaskInstance;
-
-/// The mode code `selection.wesl` reads for an inversion. Not a [`SelectionMode`] —
-/// inverting is not a way of combining a shape, it is its own edit — which is why it
-/// is named here rather than in `SelectionMode::code`, and why it is still the
-/// shader's own number (§6.10) rather than a `4.0` written twice.
-const MODE_INVERT: f32 = stark_shaders::mirror::selection::MODE_INVERT as f32;
 
 #[derive(Clone)]
 pub(crate) struct SelectionRenderer {
@@ -106,10 +101,6 @@ pub(crate) struct SelectionRenderer {
 }
 
 /// The shape half of a selection rasterize: what to draw, as opposed to where.
-///
-/// `b` and `c` are the shape's two uniform vectors — their meaning depends on the
-/// [`SelectionShape`] being rasterized (rect corners, ellipse centre + radii, lasso
-/// bounds) — and `edges` is the lasso's edge buffer, unused by the analytic shapes.
 struct RasterShape<'a> {
     /// Coverage outside the rasterized tiles (§6.8).
     outside: f32,
@@ -121,9 +112,9 @@ struct RasterShape<'a> {
     opacity: f32,
     /// The result's analytic hull, as the plan computed it ([`Selection::hull`]).
     hull: Option<(Vec2, Vec2)>,
-    b: [f32; 4],
-    c: [f32; 4],
-    feather: f32,
+    /// The op's own half of `selection.wesl`'s uniform ([`shader_params`]) —
+    /// everything but the tile origin, which the rasterize fills per tile.
+    params: MaskUniform,
     /// The lasso's edge list ([`lasso_edges`]); empty for every other shape, which
     /// binds the 1×1 stand-in instead.
     edges: &'a [[f32; 4]],
@@ -279,7 +270,7 @@ impl SelectionRenderer {
         if matches!(op.shape(), SelectionShape::Lasso(_)) && edges.is_empty() {
             return Some(prev.clone());
         }
-        let (b, c) = shader_params(op, edges.len());
+        let params = shader_params(op, edges.len());
 
         // Union and Subtract build on the previous mask (it survives where the shape
         // does not reach); Replace and Intersect start from nothing.
@@ -298,9 +289,7 @@ impl SelectionRenderer {
                 level: plan.level,
                 opacity: plan.opacity,
                 hull: plan.hull,
-                b,
-                c,
-                feather: op.feather(),
+                params,
                 edges: &edges,
             },
         ))
@@ -325,9 +314,15 @@ impl SelectionRenderer {
                 level: plan.level,
                 opacity: plan.opacity,
                 hull: plan.hull,
-                b: [0.0; 4],
-                c: [0.0, MODE_INVERT, 0.0, plan.level],
-                feather: 0.0,
+                // Not a [`SelectionMode`] — inverting is not a way of combining a
+                // shape, it is its own edit — so the mode is named here rather than in
+                // `mode_code`. No shape and no feather: every member but these two is
+                // the zero the mirror's `Default` gives.
+                params: MaskUniform {
+                    mode: sel::MODE_INVERT,
+                    strength: plan.level,
+                    ..Default::default()
+                },
                 edges: &[],
             },
         )
@@ -369,7 +364,9 @@ impl SelectionRenderer {
         let u = scope.piece_uniform(
             "stark selection region uniform",
             &RegionUniform {
-                a: [w as f32, h as f32, TILE_TEX as f32, 0.0],
+                size: [w as f32, h as f32],
+                tile_tex: TILE_TEX as f32,
+                ..Default::default()
             },
         );
         let view_bg =
@@ -441,9 +438,7 @@ impl SelectionRenderer {
             level,
             opacity,
             hull,
-            b,
-            c,
-            feather,
+            params,
             edges,
         } = shape;
         if coords.is_empty() {
@@ -462,13 +457,9 @@ impl SelectionRenderer {
         };
         let params: Vec<MaskUniform> = coords
             .iter()
-            .map(|coord| {
-                let origin = mask_tex_origin(*coord);
-                MaskUniform {
-                    a: [origin.x, origin.y, 2.0 / TILE_TEX as f32, feather],
-                    b,
-                    c,
-                }
+            .map(|coord| MaskUniform {
+                origin: mask_tex_origin(*coord).to_array(),
+                ..params
             })
             .collect();
         let slots = scope
@@ -507,13 +498,14 @@ impl SelectionRenderer {
     ///
     /// `apply` runs live through a lasso drag, so a drag settles into a handful of
     /// pooled widths rather than a texture per pointer move. The shader reads the live
-    /// edge count from `Params::c[2]` (`sd_lasso`), so the slack texels past
-    /// `edges.len()` are never loaded.
+    /// edge count from [`MaskUniform::edge_count`] (`sd_lasso`), so the slack texels
+    /// past `edges.len()` are never loaded.
     fn edge_texture(&self, scope: &mut SubmitScope, edges: &[[f32; 4]]) -> wgpu::TextureView {
         let n = edges.len() as u32;
+        let format = wgpu::TextureFormat::Rgba32Float;
         let LeasedTex { tex, view } = scope.take_run(Key {
             size: (n.next_power_of_two(), 1),
-            format: wgpu::TextureFormat::Rgba32Float,
+            format,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             label: "stark selection lasso edges",
         });
@@ -522,7 +514,7 @@ impl SelectionRenderer {
             bytemuck::cast_slice(edges),
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(n * 16),
+                bytes_per_row: Some(n * desc::texel_bytes(format)),
                 rows_per_image: Some(1),
             },
             wgpu::Extent3d {
@@ -586,28 +578,23 @@ pub(crate) fn outside_clear(selection: &Selection) -> wgpu::Color {
 /// The numbers are `selection.wesl`'s own, generated from its declarations (§6.10)
 /// rather than transcribed: which `u32` a mode is numbered is a fact about the shader.
 ///
-/// `f32` because the lane it lands in is one — `Params::c` packs the kind, the
-/// mode, the edge count and the opacity into one `vec4<f32>`, and the shader
-/// compares them as floats.
-fn mode_code(mode: SelectionMode) -> f32 {
-    use stark_shaders::mirror::selection as sel;
-    let code = match mode {
+/// `u32` because `Params::mode` is one: a tag is an enumerand, and the member now
+/// says so (§6.10), which is what retired the `as f32` this used to end on.
+fn mode_code(mode: SelectionMode) -> u32 {
+    match mode {
         SelectionMode::Replace => sel::MODE_REPLACE,
         SelectionMode::Union => sel::MODE_UNION,
         SelectionMode::Subtract => sel::MODE_SUBTRACT,
         SelectionMode::Intersect => sel::MODE_INTERSECT,
-    };
-    code as f32
+    }
 }
 
-/// The shape/feather packed for `selection.wesl`'s uniform: `(b, c)` where `b`
-/// carries the analytic shape's parameters and `c` the kind/mode/edge
-/// count/opacity.
-pub(crate) fn shader_params(op: &SelectionOp, edges: usize) -> ([f32; 4], [f32; 4]) {
+/// The op's own half of `selection.wesl`'s uniform: its shape, kind, mode, edge count
+/// and strength. The tile origin is the rasterize's, once per tile.
+pub(crate) fn shader_params(op: &SelectionOp, edges: usize) -> MaskUniform {
     // The kind codes are `selection.wesl`'s, generated from its declarations
     // (§6.10) — see `SelectionMode::code` for why they are not written here.
-    use stark_shaders::mirror::selection as sel;
-    let (kind, b) = match &op.shape() {
+    let (kind, shape) = match &op.shape() {
         SelectionShape::All => (sel::KIND_ALL, [0.0; 4]),
         SelectionShape::Rect { min, max } => (sel::KIND_RECT, [min.x, min.y, max.x, max.y]),
         // Radii non-negative by `SelectionShape::sanitized`, which every op passes
@@ -617,15 +604,15 @@ pub(crate) fn shader_params(op: &SelectionOp, edges: usize) -> ([f32; 4], [f32; 
         }
         SelectionShape::Lasso(_) => (sel::KIND_LASSO, [0.0; 4]),
     };
-    (
-        b,
-        [
-            kind as f32,
-            mode_code(op.mode()),
-            edges as f32,
-            op.opacity(),
-        ],
-    )
+    MaskUniform {
+        feather: op.feather(),
+        shape,
+        kind,
+        mode: mode_code(op.mode()),
+        edge_count: edges as u32,
+        strength: op.opacity(),
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]

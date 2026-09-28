@@ -1241,6 +1241,28 @@ fold — are gone; what is left of that table is `pipeline_coverage.rs`, which a
 other question: that every entry point the shaders declare is built into some pipeline,
 with an exact set of the few that are not.
 
+### Adding a draw
+
+Nothing again, on either half of it.
+
+A fragment's output `@location`s are mirrored beside the module that declares the
+struct, and a pass builds its **target list** from what its own entry point says it
+writes — `desc::targets_for(fs, by_location)` — rather than slicing one to a count
+(`&targets[..formats.count()]`, `truncate`, `2 + usize::from(has_resid)`, one spelling
+per pass and per build of it). A short target list is the silent failure the count
+invited: WebGPU discards a fragment output with no target, so a list one entry short
+loses that lane with nothing to say so. `desc::Attachments::at_locations` is the same
+fold on the attachment side, reading a pass's length off where the last attachment
+falls, so the residual's absence is a **hole** and not a number the caller carries.
+Both keep a hole where a location exists that this build does not write, which is what
+lets one list serve the plain and the residual variant.
+
+A **draw count** is a fact about the vertex function, so it is stated in that
+function's own file and computed with by neither side: `lib/quad.wesl`'s
+`FULLSCREEN_VERTS` and `QUAD_VERTS`, `stamp_common.wesl`'s `SWEEP_VERTS`. This is the
+one class the linker would strip, and reading the unlinked sources is what makes it
+mirrorable at all.
+
 ### What this does and does not cover
 
 Generation was first aimed at the **silent** half of the boundary — uniforms,

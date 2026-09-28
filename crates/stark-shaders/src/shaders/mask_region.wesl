@@ -17,8 +17,15 @@
 import package::lib::quad::{quad_corner};
 
 struct Region {
-    // .xy = region size in px, .z = TILE_TEX, .w unused.
-    a: vec4<f32>,
+    // The region's size in px.
+    //
+    // `@align(16)` is the block's alignment rather than this member's: WGSL requires a
+    // uniform struct to be 16-byte aligned and has no struct-level attribute for it, so
+    // the first member says so — and the block keeps its whole 16-byte row, the fourth
+    // lane spare (§6.10).
+    @align(16) size: vec2<f32>,
+    // One mask tile's texture edge, `TILE_TEX` — the block each instance copies.
+    tile_tex: f32,
 }
 
 @group(0) @binding(0) var<uniform> r: Region;
@@ -38,9 +45,9 @@ struct MaskInstance {
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32, inst: MaskInstance) -> VsOut {
-    let px = inst.origin + quad_corner(vi) * r.a.z;
+    let px = inst.origin + quad_corner(vi) * r.tile_tex;
     var out: VsOut;
-    out.clip = vec4<f32>(px.x / r.a.x * 2.0 - 1.0, 1.0 - px.y / r.a.y * 2.0, 0.0, 1.0);
+    out.clip = vec4<f32>(px.x / r.size.x * 2.0 - 1.0, 1.0 - px.y / r.size.y * 2.0, 0.0, 1.0);
     out.origin = inst.origin;
     return out;
 }

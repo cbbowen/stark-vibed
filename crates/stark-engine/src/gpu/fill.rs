@@ -149,7 +149,8 @@ impl FillRenderer {
                 // origin is this pass's too.
                 let origin = mask_tex_origin(*coord);
                 TileUniform {
-                    origin: [origin.x, origin.y, 0.0, 0.0],
+                    origin: origin.to_array(),
+                    ..Default::default()
                 }
             })
             .collect();
@@ -210,13 +211,15 @@ impl FillRenderer {
 /// A free function over the space, like `place::texel`: it is the whole of what a
 /// caller can get wrong about the parcel, and it holds no device.
 fn fill_uniform(space: &dyn ColorSpace, op: &FillOp, gate_opacity: f32) -> FillUniform {
-    let mut uniform = FillUniform::default();
-    uniform.p[0] = op.opacity();
-    // How strongly the author's mask gates this fill (§6.8) — the whole mask's
-    // opacity, which the gate's own texels do not carry. The fill's *region* takes no
-    // such factor: it is this gesture's shape rasterized as a selection, and has no
-    // opacity of its own.
-    uniform.p[3] = gate_opacity;
+    let mut uniform = FillUniform {
+        opacity: op.opacity(),
+        // How strongly the author's mask gates this fill (§6.8) — the whole mask's
+        // opacity, which the gate's own texels do not carry. The fill's *region* takes
+        // no such factor: it is this gesture's shape rasterized as a selection, and has
+        // no opacity of its own.
+        gate_opacity,
+        ..Default::default()
+    };
     match op.paint() {
         Parcel::Solid(color) => {
             let l = space.rgb_to_latent(*color);
@@ -225,11 +228,11 @@ fn fill_uniform(space: &dyn ColorSpace, op: &FillOp, gate_opacity: f32) -> FillU
         }
         Parcel::Gradient(g) => {
             let stops = g.gradient.stops();
-            uniform.p[1] = stops.len() as f32;
+            uniform.stops = stops.len() as f32;
             uniform.axis = match g.axis {
                 GradientAxis::Linear { from, to } => [from.x, from.y, to.x, to.y],
                 GradientAxis::Radial { center, radius } => {
-                    uniform.p[2] = 1.0;
+                    uniform.axis_kind = 1.0;
                     [center.x, center.y, radius, 0.0]
                 }
             };
@@ -282,15 +285,16 @@ mod tests {
     }
 
     /// **The two opacities ride in different lanes**, and neither is the other: the
-    /// op's is the fill's own, `p[3]` is how hard the author's mask gates it (§6.8).
+    /// op's is the fill's own, `gate_opacity` is how hard the author's mask gates it
+    /// (§6.8).
     #[test]
     fn a_solid_fill_carries_its_own_opacity_and_the_masks_separately() {
         let op = FillOp::new(shape(), 0.0, Srgb::new([1.0, 0.0, 0.0]), 0.25);
         let u = uniform_of(&op, 0.5);
-        assert_eq!((u.p[0], u.p[3]), (0.25, 0.5));
+        assert_eq!((u.opacity, u.gate_opacity), (0.25, 0.5));
         // A solid parcel names no stops and no axis, which is what the shader reads
-        // `p[1]` for.
-        assert_eq!(u.p[1], 0.0);
+        // `stops` for.
+        assert_eq!(u.stops, 0.0);
         assert_eq!(u.axis, [0.0; 4]);
         // Red in Oklab is a positive `a` — the latent, not the sRGB triple.
         assert!(u.c[1] > 0.0, "a red fill converted to {:?}", u.c);
@@ -305,9 +309,9 @@ mod tests {
             to: Vec2::new(3.0, 4.0),
         });
         let u = uniform_of(&op, 1.0);
-        assert_eq!(u.p[1], 2.0);
+        assert_eq!(u.stops, 2.0);
         // Linear, so the radial flag stays down and the axis is the two endpoints.
-        assert_eq!(u.p[2], 0.0);
+        assert_eq!(u.axis_kind, 0.0);
         assert_eq!(u.axis, [1.0, 2.0, 3.0, 4.0]);
         assert_eq!((u.stop_c[0][3], u.stop_c[1][3]), (0.0, 1.0));
         assert!(
@@ -316,9 +320,9 @@ mod tests {
         );
     }
 
-    /// The radial axis is the same four lanes read differently, and `p[2]` is the one
-    /// thing that says which — so a centre and radius written into the linear lanes is
-    /// a ramp drawn along a line between two unrelated points.
+    /// The radial axis is the same four lanes read differently, and `axis_kind` is the
+    /// one thing that says which — so a centre and radius written into the linear lanes
+    /// is a ramp drawn along a line between two unrelated points.
     #[test]
     fn a_radial_gradient_raises_the_flag_that_reinterprets_the_axis() {
         let op = gradient_fill(GradientAxis::Radial {
@@ -326,7 +330,7 @@ mod tests {
             radius: 7.0,
         });
         let u = uniform_of(&op, 1.0);
-        assert_eq!(u.p[2], 1.0);
+        assert_eq!(u.axis_kind, 1.0);
         assert_eq!(u.axis, [5.0, 6.0, 7.0, 0.0]);
     }
 }

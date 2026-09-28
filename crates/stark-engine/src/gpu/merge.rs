@@ -331,7 +331,10 @@ impl MergeRenderer {
             return Law::Direct(scope.run_uniform(
                 "stark merge uniform",
                 &MergeUniform {
-                    p: [lower.opacity, upper.opacity, f32::from(u8::from(clip)), 0.0],
+                    lower: lower.opacity,
+                    upper: upper.opacity,
+                    clipped: f32::from(u8::from(clip)),
+                    ..Default::default()
                 },
             ));
         }

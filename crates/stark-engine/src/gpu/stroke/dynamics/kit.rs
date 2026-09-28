@@ -302,8 +302,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     );
     // The deposit's blends, over the *wide* scratch aux: nothing is narrowed until the
     // write-back.
-    let formats = ChannelFormats::of(color_space);
-    let composite_targets = formats.deposit_targets(SCRATCH_AUX_FORMAT);
+    let composite_targets = ChannelFormats::of(color_space).deposit_targets(SCRATCH_AUX_FORMAT);
     let composite_pipeline = desc::render_pipeline(
         device,
         desc::RenderPipe {
@@ -320,7 +319,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             buffers: &[Some(stark_shaders::mirror::composite::instance_layout(
                 wgpu::VertexStepMode::Instance,
             ))],
-            targets: &composite_targets[..formats.count()],
+            targets: &desc::targets_for(composite.fs_raw, &composite_targets),
         },
     );
     let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
