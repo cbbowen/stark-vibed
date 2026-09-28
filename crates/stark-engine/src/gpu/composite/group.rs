@@ -83,11 +83,11 @@ impl MatteDraw {
             Parcel::Gradient(GradientParcel { gradient, axis }) => {
                 let mut ramp = stark_shaders::mirror::matte::Ramp::default();
                 let stops = gradient.stops();
-                ramp.p[0] = stops.len() as f32;
+                ramp.stops = stops.len() as f32;
                 ramp.axis = match axis.translated(offset) {
                     GradientAxis::Linear { from, to } => [from.x, from.y, to.x, to.y],
                     GradientAxis::Radial { center, radius } => {
-                        ramp.p[1] = 1.0;
+                        ramp.axis_kind = 1.0;
                         [center.x, center.y, radius, 0.0]
                     }
                 };

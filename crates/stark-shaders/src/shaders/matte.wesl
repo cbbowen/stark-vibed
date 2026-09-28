@@ -33,11 +33,15 @@ import package::view::{view, view_map};
 
 // A gradient matte's ramp (§22.4) — per-matte where the view group is
 // per-pass, so it rides its own bind group. A solid matte binds a zeroed one:
-// `p.x == 0` says "the instance's own channels", so one pipeline serves both.
+// `stops == 0` says "the instance's own channels", so one pipeline serves both.
 struct Ramp {
-    // .x = stop count (0 = solid; a gradient always has ≥ 2, §22.1);
-    // .y = axis kind (0 linear, 1 radial); .zw unused.
-    p: vec4<f32>,
+    // The ramp's stop count — 0 is a solid matte, and a gradient always has ≥ 2
+    // (§22.1).
+    stops: f32,
+    // The axis kind: 0 linear, 1 radial. `f32` because `ramp_common::ramp_position`
+    // takes it as one, shared with `fill.wesl`'s own ramp — whose `stops` and
+    // `axis_kind` these are, named the same way for the same reason (§6.10).
+    axis_kind: f32,
     // The axis, canvas px: linear = from.xy, to.xy; radial = center.xy, radius.
     axis: vec4<f32>,
     // Stops: latent .xyz, ramp position t in .w — ascending, endpoints at 0 and
@@ -169,9 +173,9 @@ fn fs_main(in: VsOut) -> FsOut {
     // for is a location nothing writes. Grading the wash below is then unconditional.
     var fill = latent_of(in.channels.rgb, vec3<f32>(0.0));
     @if(resid) fill.res = in.resid.rgb;
-    let stops = u32(ramp.p.x);
+    let stops = u32(ramp.stops);
     if stops >= 2 {
-        let t = ramp_position(in.canvas, ramp.axis, ramp.p.y);
+        let t = ramp_position(in.canvas, ramp.axis, ramp.axis_kind);
         // The segment t falls in: the last stop at or before it — the same
         // walk as `fill.wesl`'s, over the same invariants.
         var j = 0u;

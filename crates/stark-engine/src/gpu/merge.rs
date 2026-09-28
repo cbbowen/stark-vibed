@@ -551,6 +551,7 @@ struct Uniforms {
 
 fn slab_uniform(opacity: f32) -> SlabUniform {
     SlabUniform {
-        p: [opacity, 0.0, 0.0, 0.0],
+        opacity,
+        ..Default::default()
     }
 }

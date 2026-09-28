@@ -39,11 +39,16 @@ import package::lib::paint_common::{COVERAGE_EPS, OPACITY_K, PAINT_EPS};
 import package::lib::quad::{fullscreen_clip};
 
 struct Slab {
-    // .x = the layer opacity to fold in, read by `fs_expand` alone — pass A scales a
-    // leaf layer's tiles by it, so an expansion that ignored it would describe a
-    // layer at full strength. `fs_store` writes tiles at opacity 1 and leaves the
-    // slider to the surviving layer, so it reads nothing here. .yzw unused.
-    p: vec4<f32>,
+    // The layer opacity to fold in, read by `fs_expand` alone — pass A scales a leaf
+    // layer's tiles by it, so an expansion that ignored it would describe a layer at
+    // full strength. `fs_store` writes tiles at opacity 1 and leaves the slider to the
+    // surviving layer, so it reads nothing here.
+    //
+    // `@align(16)` is the block's alignment rather than this member's: WGSL requires a
+    // uniform struct to be 16-byte aligned and has no struct-level attribute for it, so
+    // the only member says so — and the block keeps the whole row it always had, the
+    // upper three lanes spare (§6.10).
+    @align(16) opacity: f32,
 }
 
 @group(0) @binding(0) var<uniform> s: Slab;
@@ -78,7 +83,7 @@ fn fs_expand(@builtin(position) frag: vec4<f32>) -> FsOut {
     let p = vec2<i32>(floor(frag.xy));
     let c = textureLoad(in_color, p, 0);
     let h = textureLoad(in_aux, p, 0).x;
-    let opl = s.p.x;
+    let opl = s.opacity;
 
     // Coverage: per-unit opacity and thickness through the slab law, faded by the
     // layer's own slider — which scales the finished weight, not the mass.
