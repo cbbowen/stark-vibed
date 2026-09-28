@@ -262,7 +262,8 @@ impl LanePiece<'_> {
     /// accumulates by blending, the one read-modify-write of a region texel the loop
     /// makes without a snapshot.
     fn draw(&self, region: &mut RegionRun<'_>, index: u32) {
-        let pipeline = region.r.swept.pipeline(SweepPass::Levels);
+        let kit = &region.r.swept;
+        let pipeline = kit.pipeline(SweepPass::Levels);
         let mut pass = region
             .scope
             .encoder()
@@ -272,9 +273,9 @@ impl LanePiece<'_> {
                 ..Default::default()
             });
         pass.set_pipeline(pipeline);
-        pass.set_bind_group(0, &self.xform, &[0]);
-        pass.set_bind_group(1, self.prefix, &[]);
-        pass.set_bind_group(2, self.noise, &[]);
+        kit.uniform_bgl.set(&mut pass, &self.xform, &[0]);
+        kit.prefix_bgl.set(&mut pass, self.prefix, &[]);
+        kit.noise_bgl.set(&mut pass, self.noise, &[]);
         pass.set_vertex_buffer(0, self.instances.slice(..));
         pass.draw(0..SWEEP_VERTS, index..index + 1);
     }

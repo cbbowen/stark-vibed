@@ -67,6 +67,9 @@ impl OverlayLayouts {
 
 pub(super) struct OverlayPass {
     pub(super) pipeline: wgpu::RenderPipeline,
+    /// Group 0's layout, kept for the `@group` it stands at — the consumer owns the
+    /// buffer and hands the group in, and this is what says where it goes.
+    view_bgl: Bindings,
     pub(super) tile_bgl: Bindings,
 }
 
@@ -108,6 +111,7 @@ impl OverlayPass {
         );
         Self {
             pipeline,
+            view_bgl: layouts.view.clone(),
             tile_bgl: layouts.tile.clone(),
         }
     }
@@ -175,7 +179,8 @@ impl OverlayPass {
             desc::Attachments::loaded([Some(scene.target)]),
         );
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, scene.view_bg, &[scene.view_offset]);
+        self.view_bgl
+            .set(&mut pass, scene.view_bg, &[scene.view_offset]);
         pass.set_vertex_buffer(0, instances.slice());
         for (i, tile) in (0u32..).zip(mask_tiles) {
             self.tile_bgl.set(&mut pass, tile, &[]);

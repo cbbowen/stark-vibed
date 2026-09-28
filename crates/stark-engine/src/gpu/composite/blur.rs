@@ -576,7 +576,8 @@ impl BlurFrame {
                 Binds::AToKernel => 2,
                 Binds::BToKernel => 3,
             }];
-            cp.set_bind_group(0, bind, &[UniformSlots::<FftUniform>::offset(d.slot)]);
+            pass.bgl
+                .set(&mut cp, bind, &[UniformSlots::<FftUniform>::offset(d.slot)]);
             cp.dispatch_workgroups(d.groups.0, d.groups.1, 1);
         }
     }
