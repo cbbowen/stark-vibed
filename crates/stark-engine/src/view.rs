@@ -27,9 +27,7 @@ impl Extent2 {
 }
 
 /// The pan/zoom/rotate/mirror transform applied when presenting the canvas to a
-/// substrate (§6.4). Session state: per-client, never historized, never sent, and
-/// invisible to replay (§18.1.2), so two people sharing a drawing can have it at
-/// different angles.
+/// substrate (§6.4) — session state, per the module note.
 ///
 /// **Mutation goes through the methods below, and every one of them is total**: an
 /// argument that would leave the view unusable ([`usable`](Self::usable)) is refused
@@ -176,12 +174,10 @@ impl ViewTransform {
             .map(|(sx, sy)| self.center + self.canvas_delta(half * Vec2::new(sx, sy)))
     }
 
-    /// The canvas-space **bounding box** of everything the viewport shows.
-    ///
-    /// A bound rather than the region itself, because under rotation the region is a
-    /// turned rectangle and every caller here wants a rect. It therefore covers a
-    /// little more than is really on screen at an angle, which is the safe direction —
-    /// [`visible_corners`](Self::visible_corners) is the region it bounds.
+    /// The canvas-space **bounding box** of everything the viewport shows — the box
+    /// around [`visible_corners`](Self::visible_corners), for the callers that want a
+    /// rect. At an angle it covers a little more than is really on screen, which is
+    /// the safe direction.
     pub fn visible_bounds(self) -> (Vec2, Vec2) {
         let corners = self.visible_corners();
         corners
@@ -288,8 +284,7 @@ impl ViewTransform {
     pub(crate) fn show_rect(&mut self, min: Vec2, max: Vec2, margin: f32) {
         let size = max - min;
         // Also the NaN gate: every comparison against one is false, so a rect with a
-        // NaN corner is refused here rather than reaching the clamp below, which
-        // would pass it straight through (see the note on the type).
+        // NaN corner is refused here rather than at the clamp below, which cannot.
         if !(size.x > 0.0 && size.y > 0.0) {
             return;
         }
@@ -330,8 +325,8 @@ impl ViewTransform {
     /// which is what makes it a toggle rather than a setting.
     pub(crate) fn mirror_screen_h(&mut self) {
         // One commit rather than a `set_rotation` and a toggle: the pair *is* the
-        // reflection (`M·R(θ) = R(−θ)·M`), so a refused half would leave a view that
-        // is neither the one before nor the one after.
+        // reflection, so a refused half would leave a view that is neither the one
+        // before nor the one after.
         self.commit(Self {
             rotation: (-self.rotation).rem_euclid(TAU),
             flip_h: !self.flip_h,
@@ -360,8 +355,8 @@ impl ViewTransform {
     /// [`mirror_screen_h`](Self::mirror_screen_h) is defined in.
     /// (`R(δ)·R(θ)·M = R(θ+δ)·M`, so it stays a rotation-and-a-mirror.)
     ///
-    /// Refused whole when any of its four arguments is non-finite, which the clamp
-    /// below cannot do on its own: `(zoom * NaN).clamp(MIN, MAX)` is NaN, not `MAX`.
+    /// Refused whole when any of its four arguments is non-finite; the clamp below
+    /// cannot do that (see the note on the type).
     pub fn pinch(&mut self, anchor: Vec2, to: Vec2, scale: f32, turn: f32) {
         // The canvas point the gesture is holding, read through the view as it stands.
         let held = self.screen_to_canvas(anchor);

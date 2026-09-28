@@ -36,11 +36,8 @@ use hover::HoverStroke;
 use shape::ShapeDrag;
 
 /// What the hand is doing — **at most one thing at a time**, which is the whole of why
-/// this is an enum (§3).
-///
-/// The four states were three `Option` fields, kept mutually exclusive by hand at every
-/// door: a press nulled the other two, the hover door refused unless both were empty,
-/// and a cancel nulled all three. Those nullings are now the assignment.
+/// this is an enum (§3): the exclusion is the assignment, not a rule each door has to
+/// keep.
 ///
 /// **There is one of these**, the field of the one [`Session`] the engine owns, so the
 /// enum's width is a fixed cost in that struct rather than a per-value one — and the
@@ -69,8 +66,7 @@ enum Hand {
 }
 
 impl Hand {
-    /// Take the hover mark, leaving any other hand exactly where it was — `Option::take`
-    /// on the slot this enum replaced.
+    /// Take the hover mark, leaving any other hand exactly where it was.
     fn take_hover(&mut self) -> Option<HoverStroke> {
         match std::mem::take(self) {
             Hand::Hovering(h) => Some(h),
@@ -232,10 +228,7 @@ impl Session {
 
     // --- the hand: tool, brush, color, target -----------------------------
 
-    /// Point the hand at `tool`. Switching away mid-gesture **abandons** it rather
-    /// than committing a half-dragged marquee — the gate `ViewCommand::SetTool`'s
-    /// dispatch arm applies, carried onto the thing it is about, for the reason
-    /// [`set_selection_feather`](Self::set_selection_feather) gives.
+    /// The tool in hand.
     pub fn tool(&self) -> Tool {
         self.tool
     }
@@ -252,6 +245,8 @@ impl Session {
         self.active_layer
     }
 
+    /// Point the hand at `tool`. Switching away mid-gesture **abandons** it rather than
+    /// committing a half-dragged marquee.
     pub(crate) fn set_tool(&mut self, tool: Tool) {
         self.cancel_stroke();
         self.tool = tool;
@@ -274,9 +269,8 @@ impl Session {
 
     /// Arm `id` as the active layer if the document has it — **any** layer, a matte
     /// included: the active layer is *the selected layer*, not a paint target, which
-    /// is what lets the frontend have one selection concept instead of two (§15.7). A
-    /// stroke aimed at a matte draws nothing, refused identically by `apply` and by
-    /// the preview path. Answers whether it landed.
+    /// is what lets the frontend have one selection concept instead of two (§15.7).
+    /// Answers whether it landed.
     ///
     /// Takes the document because a session holds none.
     pub(crate) fn set_active_layer(
@@ -320,10 +314,8 @@ impl Session {
 
     // --- the guide roster's per-client half (§20.5) --------------------------
 
-    /// Whether this client draws the guide `id`. A guide nobody here has opened is
-    /// **not** drawn, which is what an absent entry in [`visible_guides`] means (§20.5).
-    ///
-    /// [`visible_guides`]: Self::visible_guides
+    /// Whether this client draws the guide `id` (§20.5) — see
+    /// [`visible_guides`](Self::visible_guides) for what an absent entry means.
     pub(crate) fn guide_visible(&self, id: GuideId) -> bool {
         self.visible_guides.contains(&id)
     }
@@ -339,15 +331,13 @@ impl Session {
         }
     }
 
-    /// The guides this client actually draws, in roster order: the document's own
-    /// list, kept down to the ones whose eye this client has opened.
+    /// **The one place the two halves of a guide meet** (§20.5): the document's roster,
+    /// in order, kept down to the open eyes. The overlay pass, the stroke assist's
+    /// [`Scaffold`] and the panel's rows all ask through here.
     ///
-    /// **The one place the two halves of a guide meet** (§20.5) — the overlay pass,
-    /// the stroke assist's [`Scaffold`] and the panel's rows all ask through here.
-    ///
-    /// Takes the document because a `Session` holds none, and which one it is combined
-    /// with is the caller's: the committed document for a commit, the previewed one
-    /// for what is on screen.
+    /// Takes the document because a `Session` holds none, and *which* one is the
+    /// caller's: the committed document for a commit, the previewed one for what is on
+    /// screen.
     pub(crate) fn shown_guides<'a>(
         &'a self,
         doc: &'a crate::document::DocState,
@@ -467,13 +457,13 @@ impl Session {
     ///
     /// **The two live halves gate the report differently, because they remember
     /// different amounts of it.** A stroke keeps the report's channels across reports
-    /// — [`Tow`] holds the tip and the target, and [`AssistShape::adjust`] folds the
-    /// position into a shape that outlives it — so one unusable number would park the
-    /// gesture where no later report could pull it back from, and the whole sample has
-    /// to be admissible. A shape drag reads only the position, and the marquees would
-    /// carry a bad corner only until the next move; the lasso is what makes even that
-    /// matter, since it keeps every point it is given and one would sit in the logged
-    /// polyline for the rest of the gesture.
+    /// — [`Tow`] holds the tip and the target, and `Assist::steer` folds the position
+    /// into a shape that outlives it — so one unusable number would park the gesture
+    /// where no later report could pull it back from, and the whole sample has to be
+    /// admissible. A shape drag reads only the position, and the marquees would carry a
+    /// bad corner only until the next move; the lasso is what makes even that matter,
+    /// since it keeps every point it is given and one would sit in the logged polyline
+    /// for the rest of the gesture.
     pub fn gesture_to(&mut self, sample: InputSample) {
         match &mut self.hand {
             Hand::Stroking(b) => {
@@ -538,9 +528,8 @@ impl Session {
     /// A hand that is only *hovering* offers the §18.1.10 mark instead: the stroke its
     /// recent reports would have committed, in the same shape, so the fold cannot tell
     /// it from a real gesture and `hover == committed` is inherited rather than
-    /// maintained. One value out, because an actor folds at most one gesture and a
-    /// fact outranks a hypothesis — which `Hand` now says rather than a `match` at
-    /// the fold.
+    /// maintained. One value out, because an actor folds at most one gesture and `Hand`
+    /// already settles which.
     ///
     /// `seed` and `translation` are the hover's alone: a probe has no press to pin
     /// them at.

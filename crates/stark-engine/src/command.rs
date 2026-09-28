@@ -439,9 +439,7 @@ pub enum ViewCommand {
     /// scaled by `scale` and turned by `turn` radians clockwise about it.
     ///
     /// One command rather than a [`Pan`](Self::Pan), a [`Zoom`](Self::Zoom) and a
-    /// turn, because the three are not independent: each anchors against the view it
-    /// is applied to, so sent in sequence the last two would anchor against a view the
-    /// hand never saw and the canvas would slide out from under it — see
+    /// turn, because the three are not independent — see
     /// [`ViewTransform::pinch`](crate::view::ViewTransform::pinch).
     ///
     /// **Incremental**, unlike [`SetRotation`](Self::SetRotation): a pinch does not
