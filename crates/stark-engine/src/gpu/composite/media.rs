@@ -151,11 +151,12 @@ impl MediaPass {
 /// The substrate as the media pass's `bg` and `bg_resid` lanes (§15.5, §6.7) — and the
 /// eyedropper's, which composites a patch over the same numbers.
 ///
-/// Opaque paint under everything, so per-unit opacity 1 in both: the residual target's
-/// alpha duplicates the color's, as it does on every tile.
-pub(crate) fn substrate_lanes(substrate: Latent) -> [[f32; 4]; 2] {
+/// Three channels and no alpha in either: the substrate is opaque paint under
+/// everything, so both sides write full coverage as a literal rather than reading it
+/// from a lane.
+pub(crate) fn substrate_lanes(substrate: Latent) -> [[f32; 3]; 2] {
     let Latent { lat, res } = substrate;
-    [[lat[0], lat[1], lat[2], 1.0], [res[0], res[1], res[2], 1.0]]
+    [lat, res]
 }
 
 /// What pass B needs beyond the accumulator: how the frame is lit, what is under the

@@ -223,8 +223,8 @@ fn fill_uniform(space: &dyn ColorSpace, op: &FillOp, gate_opacity: f32) -> FillU
     match op.paint() {
         Parcel::Solid(color) => {
             let l = space.rgb_to_latent(*color);
-            uniform.c = [l.lat[0], l.lat[1], l.lat[2], 0.0];
-            uniform.r = [l.res[0], l.res[1], l.res[2], 0.0];
+            uniform.c = l.lat;
+            uniform.r = l.res;
         }
         Parcel::Gradient(g) => {
             let stops = g.gradient.stops();

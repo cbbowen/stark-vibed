@@ -41,10 +41,14 @@ const MAX_GRADIENT_STOPS: u32 = 16;
 // for the identical reason (`matte.wesl`, §15.4).
 
 struct Fill {
-    // .xyz = a solid parcel's latent in this space's color channels (Oklab
-    // L,a,b or Mixbox concentrations), read only when `stops == 0`; .w unused —
-    // a parcel carries color alone, the strength is `opacity` below.
-    c: vec4<f32>,
+    // A solid parcel's latent in this space's color channels (Oklab L,a,b or Mixbox
+    // concentrations), read only when `stops == 0` — a parcel carries color alone, the
+    // strength is `opacity` below.
+    //
+    // `@size(16)` holds open the lane the triple leaves spare: `opacity` follows at a
+    // 4-byte alignment, so no alignment of its own can reach offset 16 from 12, and the
+    // member's own stride is the only thing that can say it (§6.10).
+    @size(16) c: vec3<f32>,
     // The fill's **opacity**: the visible alpha it covers with where coverage is
     // full (`FillOp::opacity`).
     opacity: f32,
@@ -57,11 +61,14 @@ struct Fill {
     // The author's selection opacity (`Selection::opacity`, §6.8) — the whole
     // mask's, which `gate`'s texels do not carry.
     gate_opacity: f32,
-    // A solid parcel color's **residual** (.xyz) — the half of it the space's
-    // three channels cannot express (§6.7); .w unused. Zero for every space but
+    // A solid parcel color's **residual** — the half of it the space's
+    // three channels cannot express (§6.7). Zero for every space but
     // Mixbox. Declared unconditionally: a uniform is mirrored into Rust from the
     // unlinked source (§6.10), which has no feature set to evaluate.
-    r: vec4<f32>,
+    //
+    // No `@size`, unlike `c` above: `axis` follows at a 16-byte alignment and places
+    // itself.
+    r: vec3<f32>,
     // The gradient's axis, canvas px: linear = from.xy, to.xy; radial =
     // center.xy, radius, unused.
     axis: vec4<f32>,
@@ -159,7 +166,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // a solid fill cannot have moved by an ulp for the gradient existing.
     // The parcel's color. Both halves come off the uniform, which declares the
     // residual whether or not the space uses it (§6.10) — so this needs no gate at all.
-    var parcel = latent_of(f.c.rgb, f.r.rgb);
+    var parcel = latent_of(f.c, f.r);
     let stops = u32(f.stops);
     if stops >= 2 {
         let pos = tile.origin + frag.xy;

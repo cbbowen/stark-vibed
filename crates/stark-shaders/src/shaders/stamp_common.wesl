@@ -24,16 +24,16 @@ struct TileXform {
     // is a function of the interpolated canvas position, which the finer raster grid
     // supplies on its own.
     half_footprint: f32,
-    // The brush's color in the color space's channels (.xyz); .w unused. Constant
+    // The brush's color in the color space's channels. Constant
     // across the stroke — color dynamics (below) jitter the channels per fragment.
     // There is no per-unit opacity here: the paint a brush lays is per-unit opaque
     // (§6.2), faded only by `drain` per fragment (see `stroke_drain`), and "how
     // much shows" is the effect's own opacity, applied where the whole parcel
     // lands (`integrate.wesl`).
-    color: vec4<f32>,
-    // The brush color's **residual** (.xyz) — what the space's three channels cannot
+    color: vec3<f32>,
+    // The brush color's **residual** — what the space's three channels cannot
     // express (§6.7). Zero for every space but Mixbox, whose pigment
-    // polynomial reaches neither black nor the saturated corners on its own; .w unused.
+    // polynomial reaches neither black nor the saturated corners on its own.
     //
     // Declared unconditionally, where the target that carries it is `@if(resid)`: a
     // uniform is mirrored into Rust from the *unlinked* source (§6.10), which has no
@@ -41,7 +41,11 @@ struct TileXform {
     // give one Rust struct two layouts. Sixteen bytes of zeroes once per stroke is the
     // price; the per-texel channel, which is the one that would matter, Oklab still
     // does not allocate.
-    resid: vec4<f32>,
+    //
+    // `@size(16)` holds open the lane the triple leaves spare, `origin`'s reason above:
+    // `drain` follows at a 4-byte alignment. `color` needs none — this member's own 16
+    // places it.
+    @size(16) resid: vec3<f32>,
     // The `drain` falloff per canvas px (`BrushParams::drain_px` — the brush's own
     // knob is quoted per *radius*, and the host divides).
     //
@@ -59,10 +63,11 @@ struct TileXform {
     tooth_softness: f32,
     // Color dynamics (§6.2): noise frequency per lookup axis
     // (across the stroke, along it) in .xy with 1/NOISE_TILE_PX pre-folded into
-    // .z; .w unused.
-    noise_freq: vec4<f32>,
-    // Per color-channel noise amplitude .xyz (all 0 = jitter off); .w unused.
-    noise_amp: vec4<f32>,
+    // .z — the same triple as `dynamics_common::Stamp`'s, which the loop reads.
+    noise_freq: vec3<f32>,
+    // Per color-channel noise amplitude (all 0 = jitter off). `@size(16)` for
+    // `resid`'s reason: `jitter_eps` follows at a 4-byte alignment.
+    @size(16) noise_amp: vec3<f32>,
     // The deposit jitter (§6.2): the gate's half-range (0 = off, and then the
     // deposit is bit-identical) and the stroke's own seed for it — a draw off
     // the same record seed the noise tile (`noise_tex`) is baked from.
@@ -73,9 +78,12 @@ struct TileXform {
     // region, which is not square (§6.2).
     ndc: vec2<f32>,
     // Substrate map texels per canvas px, `.xy / .z` per axis (`Stamp::substrate_num` and
-    // `substrate_den`, off the same stroke constant); .w unused. `.xy` is zero when the
+    // `substrate_den`, off the same stroke constant). `.xy` is zero when the
     // substrate has no relief to gate with.
-    substrate: vec4<u32>,
+    //
+    // Last, so the struct's own 16-byte round-up holds the lane this triple leaves
+    // spare and no `@size` is needed (§6.10).
+    substrate: vec3<u32>,
 }
 
 @group(0) @binding(0) var<uniform> xf: TileXform;
@@ -655,8 +663,8 @@ fn sweep_of(in: VsOut) -> Sweep {
 // deposit remains a pure function of the two and tile aprons stay bit-consistent
 // (§6.4).
 fn brush_color(in: VsOut, sw: Sweep) -> vec3<f32> {
-    if all(xf.noise_amp.xyz == vec3<f32>(0.0, 0.0, 0.0)) {
-        return xf.color.xyz;
+    if all(xf.noise_amp == vec3<f32>(0.0, 0.0, 0.0)) {
+        return xf.color;
     }
     // Brush-local y is in units of the radius **in force here**, so it converts back
     // through that one and not the segment's reference — they differ on a ramping tip,
@@ -666,9 +674,9 @@ fn brush_color(in: VsOut, sw: Sweep) -> vec3<f32> {
     let lateral = sw.local.y * sw.radius;
     let jitter = color_jitter(
         noise_tex, noise_samp, vec2<f32>(lateral, stroke_arc(in, sw)),
-        xf.noise_freq.xyz, xf.noise_amp.xyz,
+        xf.noise_freq, xf.noise_amp,
     );
-    return xf.color.xyz + jitter;
+    return xf.color + jitter;
 }
 
 // How far along the stroke this fragment is, in canvas px: the segment's own start

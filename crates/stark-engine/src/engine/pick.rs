@@ -137,7 +137,7 @@ fn mean_channels(texels: &[f32]) -> Option<[f32; 4]> {
 /// patch half-covered by a stroke reads as the mixture of paint and canvas an eye
 /// sees there instead of reporting the stroke alone. `over` is linear in each texel,
 /// so compositing every texel and then averaging is exactly the arithmetic below.
-fn mean_over_substrate(texels: &[f32], bg: [f32; 4]) -> Option<[f32; 4]> {
+fn mean_over_substrate(texels: &[f32], bg: [f32; 3]) -> Option<[f32; 4]> {
     let (sum, count) = sum_texels(texels);
     if count == 0 || !sum.iter().all(|v| v.is_finite()) {
         return None;

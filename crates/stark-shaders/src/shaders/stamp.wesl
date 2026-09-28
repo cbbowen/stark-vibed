@@ -206,7 +206,7 @@ fn fs_main(in: VsOut) -> FsOut {
     // of those pigments reaches. Jittering it would be jittering the correction rather
     // than the paint — and the correction has no direction in pigment space to be
     // jittered along.
-    @if(resid) out.resid = vec4<f32>(xf.resid.xyz * w, w);
+    @if(resid) out.resid = vec4<f32>(xf.resid * w, w);
     return out;
 }
 

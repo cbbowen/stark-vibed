@@ -10,17 +10,23 @@ import package::lib::noise::{dither2};
 import package::lib::paint_common::{PAINT_EPS};
 
 struct Media {
-    // The background (substrate) in the latent color space.
-    bg: vec4<f32>,
-    // The substrate color's **residual** (.xyz), the half of it the space's three
-    // channels cannot express (§6.7); .w unused. Zero for every space but
+    // The background (substrate) in the latent color space. Three channels and no
+    // fourth: the substrate is opaque paint under everything, and the alpha
+    // `over_substrate` carries out is the literal 1 it writes there.
+    bg: vec3<f32>,
+    // The substrate color's **residual**, the half of it the space's three
+    // channels cannot express (§6.7). Zero for every space but
     // Mixbox — and a black substrate is exactly the case that made this channel
     // necessary, since Mixbox's pigment polynomial renders black as `#383838`.
     //
     // Unconditional, like `comp_resid` below and for the same two reasons: a uniform
     // is mirrored into Rust from the unlinked source (§6.10), which cannot evaluate a
     // feature, and this pass has one bind group layout across both spaces.
-    bg_resid: vec4<f32>,
+    //
+    // `@size(16)` holds open the lane this triple leaves spare: `exposure` follows at a
+    // 4-byte alignment, so the member's own stride is the only thing that can say it.
+    // `bg` above needs none — this member's own 16 places it (§6.10).
+    @size(16) bg_resid: vec3<f32>,
     // The reciprocal of the irradiance a *flat* canvas receives (§6.3).
     exposure: f32,
     // The mip the diffuse irradiance is sampled from — blurred to a hemispherical
@@ -133,7 +139,7 @@ fn height_at(p: vec2<i32>, dim: vec2<i32>) -> f32 {
     return max(substrate_height_at(p), paint_height_at(p, dim));
 }
 
-fn substrate_color() -> vec4<f32> {
+fn substrate_color() -> vec3<f32> {
     return m.bg;
 }
 
@@ -153,7 +159,7 @@ fn over_substrate(paint: vec3<f32>, vis: f32) -> vec4<f32> {
     if is_transparent() {
         return vec4<f32>(paint, vis);
     }
-    return vec4<f32>(substrate_color().rgb * (1.0 - vis) + paint * vis, 1.0);
+    return vec4<f32>(substrate_color() * (1.0 - vis) + paint * vis, 1.0);
 }
 
 // Surface normal from the height gradient (impasto relief). The gradient is taken

@@ -32,7 +32,7 @@ import package::media_common::{
     if is_transparent() {
         return paint;
     }
-    return m.bg_resid.rgb * (1.0 - vis) + paint * vis;
+    return m.bg_resid * (1.0 - vis) + paint * vis;
 }
 
 @vertex

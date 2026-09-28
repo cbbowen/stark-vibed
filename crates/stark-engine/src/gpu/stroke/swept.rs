@@ -702,16 +702,18 @@ pub(super) fn tile_xform(
         // above that. The canvas→NDC scale below does *not* move — a supersampled
         // target covers the same canvas extent, only on a finer grid.
         half_footprint: 0.5 / ss as f32,
-        color: [k.channels[0], k.channels[1], k.channels[2], 1.0],
-        resid: k.resid,
+        color: k.channels,
+        // Three lanes of a four-lane constant, as `dynamics::plan` takes the same one:
+        // the shader reads a colour and has no use for a fourth.
+        resid: [k.resid[0], k.resid[1], k.resid[2]],
         drain: k.drain_px,
         tooth_softness: k.tooth_softness,
-        noise_freq: k.nfreq,
-        noise_amp: k.namp,
+        noise_freq: [k.nfreq[0], k.nfreq[1], k.nfreq[2]],
+        noise_amp: [k.namp[0], k.namp[1], k.namp[2]],
         jitter_eps: k.jitter_eps,
         jitter_seed: k.jitter_seed,
         ndc: [2.0 / size.0, 2.0 / size.1],
-        substrate: [k.substrate.num[0], k.substrate.num[1], k.substrate.den, 0],
+        substrate: [k.substrate.num[0], k.substrate.num[1], k.substrate.den],
         ..Default::default()
     }
 }

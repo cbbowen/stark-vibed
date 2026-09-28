@@ -933,8 +933,8 @@ conditional compilation (the `resid` axis, `stark-shaders/build.rs`).
 `media.wesl` and `blend.wesl` declare their own residual bindings in a `@group(1)`
 of their own, which a colorimetric build leaves empty — so such a document binds an
 empty layout rather than a placeholder texture. What does reach it is one uniform
-lane per **mirrored** struct (`Media.bg_resid`, `TileXform.resid`, `Stamp.j`,
-`Fill.r`, matte's instance attribute): those cannot be conditional, because the
+lane per **mirrored** struct (`Media.bg_resid`, `TileXform.resid`,
+`Stamp.brush_res`, `Fill.r`, matte's instance attribute): those cannot be conditional, because the
 mirror generator reads *unlinked* sources (§6.10) and has no feature set to evaluate,
 so a member that came and went with the variant would give one host struct two
 layouts. They are genuinely zero there — `rgb_to_resid` returns `[0.0; 3]` for a
@@ -1127,6 +1127,41 @@ to `package__1dynamics_common_Stamp`, emits it once per artifact that reaches it
 whatever no entry point uses, and drops the comments that are half of what is being
 generated. Parsing the linked WGSL with `naga` would buy the offsets and cost all
 four.
+
+### Naming a lane
+
+A `vec4` that carries unlike numbers, or three that mean something and a fourth that
+does not, is a lane map living in the comment beside it — the one place the compiler
+cannot reach. Split it: named members in the same order, and the host assigns by name
+instead of counting. Genuinely vectorial lanes stay vectors — a matrix's rows, a
+per-axis triple, a kind-tagged union read two ways, a packed pair — because there the
+position *is* the meaning.
+
+**The byte layout must not move, and WGSL gives exactly two attributes to say so.**
+
+- **`@align(16)` on the first member**, when nothing left in the struct implies the
+  16-byte alignment a uniform block requires. WGSL has no struct-level attribute for
+  it, so the first member states it; without it a struct of scalars falls to align 4
+  and its `min_binding_size` with it (`Slab.opacity`, `Merge.lower`, `Region.size`).
+- **`@size(N)` on the member before a gap no alignment can reach.** A `vec3` sizes 12
+  and aligns 16, so a `vec3` followed by an `f32` puts that `f32` at offset 12 of the
+  row and every later member four bytes early (`Fill.c`, `TileXform.resid`,
+  `Media.bg_resid`). A `vec3` followed by another `vec3`, a `vec4` or a matrix needs
+  nothing — the follower's own alignment places it. A `vec3` **last** needs nothing
+  either: the struct's own round-up holds the lane (`TileXform.substrate`).
+
+Which of the three applies is not readable off where the spare lane sits, and guessing
+it is how a wrong `@size` ships. **`min_binding_size` will not catch one**: strip the
+three `@size(16)`s above and eleven members slide four bytes, four of them across a
+16-byte row — and every struct still rounds to the size it had, so every
+`min_binding_size` is unchanged and every generated `offset_of` assertion still holds,
+because both halves moved together.
+
+So read it off the mirror. `mirror.rs` is byte-stable where the linked WGSL is not
+(the linker reorders whole declarations run to run), so snapshot it before and after
+and diff the **assertion messages** — every `SIZE ==`, `ALIGN ==` and
+`OFFSET_OF_* == N`, and every `min_size` — rather than the expressions, which rustfmt
+reflows freely. A correct split adds padding fields and changes nothing else.
 
 ### Adding a vertex instance record
 
