@@ -298,7 +298,7 @@ impl Engine {
     /// that holds the engine and has no projection to hand. The collaboration pump is
     /// that caller: it services peer traffic without taking an observation each time
     /// (§17.5), and must stop applying anything once the device has died.
-    pub fn gpu_failure(&self) -> Option<crate::device::context::DeviceFailure> {
+    pub fn gpu_failure(&self) -> Option<crate::error::DeviceFailure> {
         self.shared.gpu.health().failure()
     }
 

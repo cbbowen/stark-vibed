@@ -6,47 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::error::Result;
-
-/// Why the GPU stopped being usable.
-///
-/// Kept as a kind plus the driver's own words rather than as a `wgpu::Error`, because
-/// this outlives the callback that produced it and crosses into
-/// [`ObservableState`](crate::ObservableState) — where it has to be `Clone`,
-/// comparable, and free of any borrow of the device that just died.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum FailureKind {
-    /// The device was lost: a driver reset, a GPU hot-unplug, a browser tab whose
-    /// context went away, or `destroy()`. **Nothing will work again on this device**
-    /// — recovery means building a new one.
-    Lost,
-    /// The device ran out of memory. Not necessarily terminal, but the operation
-    /// that hit it produced nothing.
-    OutOfMemory,
-    /// A validation or internal error that no error scope caught. A bug in the
-    /// engine rather than a fact about the machine, which is why it is reported
-    /// rather than recovered from.
-    Invalid,
-}
-
-/// A GPU failure the engine was told about out-of-band, with what the driver said.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DeviceFailure {
-    pub kind: FailureKind,
-    /// The driver's message. For a human and for a bug report; nothing branches on it.
-    pub detail: String,
-}
-
-impl std::fmt::Display for DeviceFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let what = match self.kind {
-            FailureKind::Lost => "the GPU device was lost",
-            FailureKind::OutOfMemory => "the GPU ran out of memory",
-            FailureKind::Invalid => "the GPU reported an error",
-        };
-        write!(f, "{what}: {}", self.detail)
-    }
-}
+use crate::error::{DeviceFailure, FailureKind, Result};
 
 /// What this device has suffered, shared by every clone of a [`GpuContext`].
 ///

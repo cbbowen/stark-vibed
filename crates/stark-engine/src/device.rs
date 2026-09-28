@@ -21,4 +21,4 @@ pub(crate) mod scratch;
 pub(crate) mod tile;
 pub(crate) mod uniforms;
 
-pub use context::{DeviceFailure, FailureKind, GpuContext, GpuHealth};
+pub use context::{GpuContext, GpuHealth};

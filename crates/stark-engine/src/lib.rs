@@ -148,13 +148,13 @@ pub mod testing;
 
 pub use assist::Assisted;
 pub use colorspace::{all_available, available};
-pub use device::{DeviceFailure, FailureKind, GpuContext, GpuHealth};
+pub use device::{GpuContext, GpuHealth};
 pub use engine::{
     Background, DEFAULT_FAST_COMMIT, DEFAULT_HISTORY_BUDGET, Engine, EngineShared, ExportPlan,
     ExportScale, GuideInfo, Guides, LayerInfo, Layers, MatteInfo, ObservableState, PickOptions,
     PickSource, PresenceTick, Projected, Rendered,
 };
-pub use error::{EngineError, ExportError, Produces, Result};
+pub use error::{DeviceFailure, EngineError, ExportError, FailureKind, Produces, Result};
 pub use gpu::{
     EnvironmentId, MediaParams, Offscreen, Output, Transfer, max_stretch, max_tip_reach,
 };
