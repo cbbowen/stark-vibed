@@ -90,7 +90,7 @@ stark/
 │   │   │   ├── command.rs      # Gesture/Doc/View/Peer commands (§4)
 │   │   │   ├── session.rs      # view state: tool, brush, view, in-flight gesture
 │   │   │   ├── peer.rs         # presence: the roster built from the frames (§17.4)
-│   │   │   ├── presence.rs     # the publish latch (§17.5)
+│   │   │   ├── presence.rs     # the publish latch, and Identity (§17.5)
 │   │   │   ├── error.rs        # EngineError + Result; folds DocError in
 │   │   │   ├── filters.rs      # the filter passes' host-side numbers (§6.10, §21)
 │   │   │   ├── document/       # the state the log folds into; names no renderer

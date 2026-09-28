@@ -20,16 +20,57 @@
 //! the roster; the receiving half of the *frame* is
 //! [`Peers::merge`](crate::peer::Peers::merge).
 //!
-//! The wire *types* stay in [`crate::peer`]. What lives here is the state that
-//! interprets them.
+//! The wire *frame* types stay in `stark-model`'s `peer` and the roster built from them
+//! in [`crate::peer`]. What lives here is the state that speaks and interprets them —
+//! [`Identity`] and [`default_name`] among it, because the roster names this module and
+//! not the other way about (§2).
 
 use crate::gesture::LiveGesture;
 use crate::path::frozen_spans_for;
-use crate::peer::{Identity, default_name};
 use stark_model::document::{ActorId, LayerId, StrokeRecord};
 use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
 use stark_model::peer::{GESTURE_RESYNC, GestureFrame, HEARTBEAT, PeerFrame, StrokeHead};
+
+/// Who this client is on the wire.
+///
+/// `actor` must be **durable** — derived from a key the frontend persists, so the
+/// same person reloading is the same author. It reaches past presence: undo targets
+/// *your* actions, and `DocState` keeps a selection per actor forever because replay
+/// needs it, so a fresh id per session orphans your own history and leaves a dead
+/// entry in the log.
+///
+/// `boot` distinguishes *runs* of that identity, which is what makes durability safe:
+/// [`PeerFrame::seq`] restarts at zero every process, so a peer that reloads within
+/// [`PEER_TIMEOUT`](stark_model::peer::PEER_TIMEOUT) would otherwise have every frame
+/// rejected as stale until it
+/// out-numbered its previous run. It need only increase, not mean anything.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Identity {
+    pub actor: ActorId,
+    pub boot: u64,
+}
+
+impl Identity {
+    pub fn new(actor: ActorId, boot: u64) -> Self {
+        Self { actor, boot }
+    }
+}
+
+impl From<ActorId> for Identity {
+    /// An identity with no run counter — correct for a client whose key is freshly
+    /// generated, since a brand-new [`ActorId`] has no previous run to be confused
+    /// with, and for tests.
+    fn from(actor: ActorId) -> Self {
+        Self { actor, boot: 0 }
+    }
+}
+
+/// A peer's name until they publish one: short, stable, and derived from the id, so
+/// two unnamed peers are still distinguishable.
+pub(crate) fn default_name(actor: ActorId) -> String {
+    format!("{:04x}", actor.0 as u16)
+}
 
 /// The sending half: what this client has told the wire about its gesture.
 pub(crate) struct GestureTx {

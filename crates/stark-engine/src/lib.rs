@@ -162,6 +162,7 @@ pub use gpu::{
     EnvironmentId, MediaParams, Offscreen, Output, Transfer, max_stretch, max_tip_reach,
 };
 pub use image::RgbaImage;
-pub use peer::{Identity, Peer};
+pub use peer::Peer;
+pub use presence::Identity;
 pub use tow::TowString;
 pub use view::{Extent2, ViewTransform};

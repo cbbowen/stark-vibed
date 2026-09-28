@@ -5,6 +5,12 @@
 //! `stark-net` speaks without ever naming this module. Here is the state a client
 //! accumulates from them: a [`Peer`] per participant, the [`Peers`] roster that ages
 //! them out, and the gesture receiver that reassembles a stroke in progress.
+//!
+//! **Who *this* client is — [`Identity`](crate::presence::Identity) — is the publishing
+//! side's**, in [`presence`](crate::presence), and so is the name a nameless peer is
+//! given ([`default_name`]). They sat here and left because this module reads
+//! `presence`'s receiver while `presence` read them: one cycle between two files, in
+//! two `use` lines. The roster is above the protocol, so the two facts go down (§2).
 
 use std::collections::BTreeMap;
 
@@ -15,40 +21,7 @@ use stark_model::peer::{GESTURE_TIMEOUT, PEER_TIMEOUT, PeerFrame};
 use crate::gesture::GestureView;
 #[cfg(test)]
 use crate::gesture::LiveGesture;
-use crate::presence::GestureRx;
-
-/// Who this client is on the wire.
-///
-/// `actor` must be **durable** — derived from a key the frontend persists, so the
-/// same person reloading is the same author. It reaches past presence: undo targets
-/// *your* actions, and `DocState` keeps a selection per actor forever because replay
-/// needs it, so a fresh id per session orphans your own history and leaves a dead
-/// entry in the log.
-///
-/// `boot` distinguishes *runs* of that identity, which is what makes durability safe:
-/// [`PeerFrame::seq`] restarts at zero every process, so a peer that reloads within
-/// [`PEER_TIMEOUT`] would otherwise have every frame rejected as stale until it
-/// out-numbered its previous run. It need only increase, not mean anything.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Identity {
-    pub actor: ActorId,
-    pub boot: u64,
-}
-
-impl Identity {
-    pub fn new(actor: ActorId, boot: u64) -> Self {
-        Self { actor, boot }
-    }
-}
-
-impl From<ActorId> for Identity {
-    /// An identity with no run counter — correct for a client whose key is freshly
-    /// generated, since a brand-new [`ActorId`] has no previous run to be confused
-    /// with, and for tests.
-    fn from(actor: ActorId) -> Self {
-        Self { actor, boot: 0 }
-    }
-}
+use crate::presence::{GestureRx, default_name};
 
 /// A participant, as everyone else sees them.
 #[derive(Clone, Debug)]
@@ -60,7 +33,8 @@ pub struct Peer {
     pub color: [f32; 3],
     pub active_layer: LayerId,
     pub cursor: Option<Vec2>,
-    /// The run of this peer we are listening to; see [`Identity::boot`].
+    /// The run of this peer we are listening to; see
+    /// [`Identity::boot`](crate::presence::Identity::boot).
     boot: u64,
     seq: u64,
     /// The receiving half of the gesture protocol. Its counterpart,
@@ -391,12 +365,6 @@ pub(crate) fn peer_color(actor: ActorId) -> [f32; 3] {
     z ^= z >> 31;
     let hue = (z >> 40) as f32 / 16777216.0 * 360.0;
     hsv_to_rgb(hue, 0.72, 0.95)
-}
-
-/// A peer's name until they publish one: short, stable, and derived from the id, so
-/// two unnamed peers are still distinguishable.
-pub(crate) fn default_name(actor: ActorId) -> String {
-    format!("{:04x}", actor.0 as u16)
 }
 
 fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 3] {
