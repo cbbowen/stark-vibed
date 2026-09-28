@@ -152,11 +152,9 @@ pub(crate) fn control_point_from(pos: Vec2, row: [f32; CHANNELS]) -> ControlPoin
 /// (held rows), not written over its result, so the rest solves around them.
 ///
 /// Both thresholds in the growth rule are quoted in the caller's **input tolerance**
-/// rather than in canvas px (see [`Self::with_tolerance`]): what counts as jitter to
-/// smooth through, as against detail to keep, is a fact about the device and the zoom
-/// level, and only the caller knows it. Flattening is untouched by this — its budget
-/// is an error against the *curve*, in the canvas px it will be drawn in
-/// ([`FlattenTolerance`](super::FlattenTolerance)).
+/// rather than in canvas px (see [`Self::with_tolerance`]). Flattening is untouched by
+/// this — its budget is an error against the *curve*, in the canvas px it will be drawn
+/// in ([`FlattenTolerance`](super::FlattenTolerance)).
 #[cfg_attr(test, derive(Clone))]
 pub struct PathFitter {
     /// Every accepted report, with the distance along the stroke that parameterizes
@@ -450,9 +448,8 @@ impl PathFitter {
         // Both candidates are scored over the **as-is** window — see `mean_error`.
         let err_as_is = self.mean_error(&as_is, as_is_w, scored);
         let err_grown = self.mean_error(&grown, as_is_w, scored);
-        // Both prices are quoted in the input's own units rather than in canvas px —
-        // the error one squared, since it is compared against a mean square. See
-        // `KNOT_COST` and `KNOT_SPACING`.
+        // The error price is squared because it is compared against a mean square
+        // (`KNOT_COST`, `KNOT_SPACING`).
         let tolerance = self.tolerance.get();
         let price = KNOT_COST * tolerance * tolerance;
         let spacing = KNOT_SPACING * tolerance;
@@ -636,9 +633,7 @@ impl PathFitter {
         self.observation_window(&fit, w);
         let frozen = frozen_at(m);
         let index = SplineIndex::new(m).expect("at least two control points");
-        // Solved **into** the candidate polygon, which is also the ridge's prior. An
-        // owned result would be a copy of the whole polygon per fit, four fits per
-        // pointer report.
+        // Solved **into** the candidate polygon, which is also the ridge's prior.
         index.fit_into(
             Observations {
                 ts: &w.ts,
@@ -717,9 +712,8 @@ impl PathFitter {
             vals,
             profile,
         } = w;
-        // The curve as the candidate polygon stands, borrowed rather than copied — it
-        // is read to measure arc length and then dropped, and the fits write back into
-        // the candidate themselves ([`SplineIndex`]).
+        // Read only to measure the candidate's arc profile — `solve` then fits back
+        // into these very rows ([`SplineIndex`]).
         let spline: CubicBSpline<'_, 2> =
             CubicBSpline::new(&candidate.geom).expect("at least two control points");
         let m = candidate.geom.len();
@@ -781,9 +775,6 @@ impl PathFitter {
     /// error the solve was never trying to remove, and a dwell buys control points to
     /// trace itself.
     fn mean_error(&self, fit: &Fit, w: &Window, profile: &mut Vec<f32>) -> f32 {
-        // Borrowed, not copied: scoring reads the candidate's control points and never
-        // moves them, so a copy would be a whole polygon per candidate per report to
-        // answer one number.
         let spline = CubicBSpline::new(&fit.geom).expect("at least two control points");
         let spans = spline.num_spans() as f32;
         let total = self.arc_total();
@@ -933,10 +924,11 @@ impl PathFitter {
 /// tuned with. Input with no arc at all comes back all ones: the unweighted fit exactly.
 ///
 /// Writes the weights for the reports `idx` names — the solve's window — into `out`,
-/// emptied first, but measures each against its **true** neighbours, which is why it
-/// takes the whole run rather than a slice. Only the stroke's own first and last
-/// reports get a half-interval; the window's leading report has a real predecessor and
-/// is entitled to it.
+/// emptied first. Each is measured against its neighbouring **survivors**, so the sum is
+/// a trapezoid rule over the reports actually being fitted rather than over the ones
+/// that happened to arrive; the window's *leading* report reaches its true predecessor
+/// in `pts`, which is why this takes the whole run rather than a slice. Only the
+/// stroke's own first and last reports get a half-interval.
 fn arc_weights(pts: &[Accepted], idx: &[usize], out: &mut Vec<f32>) {
     let k = idx.len();
     out.clear();
@@ -945,23 +937,16 @@ fn arc_weights(pts: &[Accepted], idx: &[usize], out: &mut Vec<f32>) {
         return;
     }
     out.extend((0..k).map(|j| {
-        // Measured against the neighbouring **survivors**, so the sum is a trapezoid
-        // rule over the reports actually being fitted rather than over the ones that
-        // happened to arrive. Where nothing was decimated the survivors are the
-        // neighbours and this is the plain rule.
         let hi = if j + 1 < k {
             pts[idx[j + 1]].arc
         } else {
-            // The stroke's own last report has no successor, so it gets the one
-            // half-interval it is entitled to.
             pts[idx[j]].arc
         };
         let low = if j > 0 {
             pts[idx[j - 1]].arc
         } else {
             // The *window's* leading report is not the stroke's: it has a real
-            // predecessor in `pts` and is entitled to it. Only the stroke's own
-            // first report is halved, and `saturating_sub` is what says so.
+            // predecessor in `pts`, and `saturating_sub` is what reaches it.
             pts[idx[0].saturating_sub(1)].arc
         };
         // Halved because an interior report spans two half-intervals. An end report
@@ -1151,9 +1136,8 @@ mod tests {
     }
 
     /// **Under budget the selection is the identity**: ordinary painting keeps every
-    /// report the window admitted, `arc_weights` reduces to the plain rule, and the
-    /// fitted curve is bit-identical to an unbounded fit — so the bound touches the
-    /// pathological cases only.
+    /// report the window admitted, so the bound touches the pathological cases only
+    /// ([`MAX_WINDOW_SAMPLES`] carries the argument).
     #[test]
     fn a_window_under_budget_keeps_every_report() {
         let pts = accepted(MAX_WINDOW_SAMPLES, 1.0);
