@@ -6,36 +6,45 @@
 //! agree to the last bit across replay, goldens and peers. The library
 //! transcendentals (`sin`, `atan2`, …) are not specified to that — each platform's
 //! libm may round differently. These cover the arc an edge is swept as, the
-//! flattener's turn, the pen's orientation, a stretched tip's map and the tooth's
-//! bearing.
+//! flattener's turn, the pen's orientation, a stretched tip's map, the tooth's bearing
+//! and the stack a stamp's mask is turned through.
 //!
 //! Two kinds of function live here. The series — `sin_small` and its neighbours — are
 //! written for the narrow range one caller reduced to, and are only as accurate as that
 //! range needs. [`ln`], [`exp`], [`pow`] and [`cos_quadrant`] are ports of fdlibm's own
-//! float routines, because the segment budget, the tip bakes, the bleed solve and the
-//! tooth kernel each read a library transcendental over a domain no series covers
-//! cheaply. They round as fdlibm does, which is within an ulp — not as the host libm
+//! float routines, because the segment budget, the tip bakes, the stamp volumes, the
+//! bleed solve, the tooth kernel and a placed image's alpha-to-height each read a library
+//! transcendental over a domain no series covers cheaply. They round as fdlibm does,
+//! which is within an ulp — not as the host libm
 //! does, so porting a call site moves its pixels by an ulp once.
 //!
 //! f64 appears in [`cos_quadrant`]'s kernels, as it does in fdlibm's: a wider
 //! correctly-rounded operation is as reproducible as a narrow one, and the trigonometric
 //! kernels want the headroom.
 //!
-//! **What is still on libm and writes a tile**: the stamp tip's volume
-//! (`gpu/stroke/volume.rs` — `tau_of`'s logarithm, and the `sin_cos` that rotates the
-//! mask per orientation, for which [`sin_cos_turns`] is already the answer), and a placed
-//! image's alpha-to-height inversion (`gpu/place.rs`, which its own doc says is paid "on
-//! every replay that crosses the placement"). **Still on libm but deciding a composited
-//! frame rather than a stored tile**: the focal blur's axis
-//! (`gpu/composite/blur.rs` — its `atan2` could be [`atan2`] today), the chromatic
-//! aberration's spread (`gpu/composite/filter.rs`) and the environment convolution's
-//! direction (`gpu/environment.rs`).
+//! **What is still on libm and writes a tile**: the color conversion, and nothing else.
+//! `stark_model::color` takes the sRGB transfer through `f32::powf` and Oklab's cube root
+//! through `cbrt`, and `ColorSpace::rgb_to_latent` is how every stroke's brush color,
+//! every fill parcel and every texel of a placed image reaches a tile. **It cannot be
+//! closed from here**: `stark-model` is upstream of this crate (§2), so it needs either
+//! the routines moved down or the `libm` *crate* — fdlibm in Rust, bit-portable by
+//! construction, which is already what the vendored mixbox runs the identical transfer
+//! through.
 //!
-//! Two things that look like remainders and are not. `powi` is not a libm call: a
+//! **Still on libm but deciding a composited frame rather than a stored tile**: the focal
+//! blur's axis (`gpu/composite/blur.rs` — its `atan2` could be [`atan2`] today), the
+//! chromatic aberration's spread (`gpu/composite/filter.rs`) and the environment
+//! convolution's direction (`gpu/environment.rs`).
+//!
+//! Four things that look like remainders and are not. `powi` is not a libm call: a
 //! runtime exponent lowers to `compiler_builtins`' `__powisf2`, which is binary
-//! exponentiation by multiplication and the same Rust source on every target. And the
-//! libm in `assist` is **pre-record** — the assist decides what gets recorded, so it owes
-//! agreement within one process and nothing across them.
+//! exponentiation by multiplication and the same Rust source on every target. The libm in
+//! `assist` is **pre-record** — the assist decides what gets recorded, so it owes
+//! agreement within one process and nothing across them — and so is [`tow`](crate::tow)'s,
+//! which says so in its own module doc, and so are the guides': what
+//! `guide::camera::dragged` and `guide::conic::circle_seen` compute is *recorded* rather
+//! than derived from a record. And the CIE lobe in the engine's `filters` is on no render
+//! path at all — it paints the spectrum bar the dispersion pad draws.
 
 /// `sin(x)` as a truncated Maclaurin series, **for small `x` only**: within 1.03 ulp
 /// (worst relative error 9.1e-8 against an f64 reference) for `|x| ≤ 0.428`, which is
