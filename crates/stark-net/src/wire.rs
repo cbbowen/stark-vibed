@@ -154,13 +154,24 @@ use iroh::EndpointId;
 /// `sin_cos_turns` can land a Pen-oriented slice, a stretched tip's map or a tooth
 /// bearing's bin an ulp from where a peer on 28 put it. No shape moved, so a file
 /// reads either way; what such a log *means* changed.
-pub(crate) const ALPN: &[u8] = b"stark/collab/29";
+/// 30: the arithmetic *after* a record that decides a tile is deterministic by
+/// construction rather than by the host's libm (§12.1) — the segment budget's cut,
+/// the round and stamp tips' bakes, the substrate blur, the bleed solve, a placed
+/// image's alpha→height, the mask volume's orientation stack, and the sRGB and Oklab
+/// conversions every brush color, fill parcel and placed texel passes through.
+/// `detmath` serves the engine's half and the `libm` crate the model's, since the
+/// model is below it. No shape moved, so a file reads either way; what changed is
+/// what a peer *derives* from an identical log — a level of 255 on a thin scatter of
+/// texels, and an exact quarter turn where radians could not hold one. A peer on 29
+/// computes different pixels from the same actions, and that two peers do not is the
+/// whole of what §12.1 promises.
+pub(crate) const ALPN: &[u8] = b"stark/collab/30";
 
 /// The number [`ALPN`] ends with, as a number, for a ticket to carry — see
 /// `ticket`'s `TicketBody::proto` for why a link names it. Kept in step with
 /// [`ALPN`] by a test rather than by building the byte-string from it: two
 /// tokens side by side are not worth the compile-time ceremony.
-pub(crate) const PROTO: u32 = 29;
+pub(crate) const PROTO: u32 = 30;
 
 /// Upper bound on an encoded request, over any transport.
 ///
