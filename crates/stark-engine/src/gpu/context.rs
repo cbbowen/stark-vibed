@@ -120,10 +120,7 @@ impl GpuHealth {
         *slot = Some(failure);
     }
 
-    /// One `Option`, moved in whole — [`crate::unpoisoned`]'s own argument, which is
-    /// why this calls it rather than restating it. Every lock in the crate goes
-    /// through that function, and a second copy of its body is how a crate-wide rule
-    /// decays into one that holds on the paths somebody remembered.
+    /// One `Option`, moved in whole — [`crate::unpoisoned`]'s case exactly.
     fn lock(&self) -> std::sync::MutexGuard<'_, Option<DeviceFailure>> {
         crate::unpoisoned(self.0.lock())
     }
@@ -233,10 +230,7 @@ impl GpuContext {
         // A conservative floor for everything the engine does not have an opinion
         // about; the two it does are set from that opinion below.
         let mut required_limits = wgpu::Limits::downlevel_defaults();
-        // **Assigned, not raised to meet.** `MAX_TEXTURE_DIM_2D` is the largest texture
-        // the engine will create, so it is also precisely what the device is asked for:
-        // one number, and no way for the size we allocate and the size we required to
-        // disagree.
+        // Assigned, not raised to meet — see `MAX_TEXTURE_DIM_2D`.
         required_limits.max_texture_dimension_2d = MAX_TEXTURE_DIM_2D;
         // **The stamp loop's `exchange` writes six storage textures where WebGPU
         // guarantees four.**
@@ -288,9 +282,8 @@ impl GpuContext {
                 trace: wgpu::Trace::Off,
             })
             .await?;
-        // The instance and the adapter are dropped here, which wgpu explicitly
-        // permits ("does not have to be kept alive"): the device and queue keep
-        // everything behind them alive, and nothing offscreen needs a surface.
+        // The instance and the adapter are dropped here, as the note on `GpuContext`
+        // says they may be; nothing offscreen needs a surface.
         Ok(Self::from_parts(device, queue))
     }
 }
@@ -301,10 +294,6 @@ impl GpuContext {
 /// uncaptured error is one operation that was refused (a validation bug, an
 /// allocation that did not fit), while device-lost is the device itself going away
 /// and every operation after it failing too.
-///
-/// This is the whole of what the engine can do about a GPU failure synchronously —
-/// wgpu reports errors asynchronously and by callback, so there is no return value
-/// anywhere in the submit path to check.
 fn install_callbacks(device: &wgpu::Device, health: &GpuHealth) {
     let lost = health.clone();
     device.set_device_lost_callback(move |reason, detail| {
@@ -317,9 +306,7 @@ fn install_callbacks(device: &wgpu::Device, health: &GpuHealth) {
     device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
         let (kind, detail) = match &error {
             wgpu::Error::OutOfMemory { .. } => (FailureKind::OutOfMemory, error.to_string()),
-            // Validation and internal errors are both bugs rather than facts about
-            // the machine, and both mean the operation produced nothing. They are one
-            // kind here because nothing downstream would act on the difference.
+            // One kind, because nothing downstream would act on the difference.
             wgpu::Error::Validation { .. } | wgpu::Error::Internal { .. } => {
                 (FailureKind::Invalid, error.to_string())
             }

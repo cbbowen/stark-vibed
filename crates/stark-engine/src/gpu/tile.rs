@@ -253,11 +253,10 @@ impl Drop for GpuTex {
             }
             return;
         };
-        // Recovered from rather than propagated, because the alternative is a leak:
-        // an `if let Ok(..)` would drop the texture on the floor — never recycled, and
-        // `capacity` never told, so the pool would quietly grow a replacement for a
-        // texture it still owns. Nothing the lock guards can be left inconsistent by a
-        // panic: it is a free list and a counter.
+        // Recovered from rather than propagated ([`unpoisoned`]), because here the
+        // alternative is a leak: an `if let Ok(..)` would drop the texture on the floor
+        // — never recycled, and `capacity` never told, so the pool would quietly grow a
+        // replacement for a texture it still owns.
         let mut inner = unpoisoned(pool.lock());
         let Some(tex) = self.tex.take() else { return };
         inner.stamp += 1;
@@ -419,9 +418,8 @@ struct TilePair {
     composite_bg: OnceLock<wgpu::BindGroup>,
 }
 
-/// A layer's painted tiles: sparse, so only populated ones exist, and persistent,
-/// so a `DocState` snapshot of one costs a handful of `Arc` bumps (§5.1, §6.1).
-/// The sparsity *is* the infinite canvas.
+/// A layer's painted tiles: sparse — the sparsity *is* the infinite canvas — and
+/// persistent, per the module note (§5.1, §6.1).
 pub(crate) type TileMap = rpds::HashTrieMap<stark_model::geom::TileCoord, TilePairHandle>;
 
 /// One tile's channels, decoded to `f32` — what [`TilePairHandle::read_channels`]
@@ -448,8 +446,7 @@ pub struct TileChannels {
 /// which is what lets a mask be feathered, unbounded, and free to snapshot (§6.8).
 pub(crate) type MaskMap = rpds::HashTrieMap<stark_model::geom::TileCoord, MaskHandle>;
 
-/// A handle to a tile. Cloning is cheap (Arc bumps), which is what makes persistent
-/// `DocState` snapshots cheap (§5.1).
+/// A handle to a tile.
 ///
 /// Built from two [`TexHandle`]s rather than acquired from the pool: see
 /// [`TexHandle`] for why the pool does not know what a tile is.
@@ -583,9 +580,9 @@ impl TilePairHandle {
     }
 }
 
-/// A handle to one pooled **selection mask** tile (§6.8). Cloning is an
-/// `Arc` bump, so a `Selection` snapshot is as cheap as a `DocState` one — and the
-/// texture returns to the pool when the last history version referencing it drops.
+/// A handle to one pooled **selection mask** tile (§6.8) — a [`TilePairHandle`]'s
+/// terms, one channel: the texture returns to the pool when the last history version
+/// referencing it drops.
 #[derive(Clone)]
 pub struct MaskHandle(TexHandle, Arc<MaskGroups>);
 
@@ -602,10 +599,9 @@ impl MaskHandle {
         self.0.view()
     }
 
-    /// Pass C's bind group over this mask tile, built by `make` on first use and
-    /// kept for the tile's life — [`TilePairHandle::composite_bg`] for masks, sound
-    /// for the same reason: a mask tile is rasterized afresh rather than rewritten,
-    /// so identity doubles as "unchanged" ([`Self::same`]).
+    /// Pass C's bind group over this mask tile, built by `make` on first use and kept
+    /// for the tile's life — [`TilePairHandle::composite_bg`] for masks, sound for
+    /// [`Self::same`]'s reason.
     ///
     /// **Named for its consumer**, unlike the paint tile's, because a mask is bound
     /// through three different layouts and one cache slot can only answer for one of
@@ -624,9 +620,9 @@ impl MaskHandle {
         self.1.region.get_or_init(make)
     }
 
-    /// Whether two handles are the same allocation — [`TilePairHandle::same`]
-    /// for masks, and true for the same reason: a mask tile is rasterized
-    /// afresh rather than rewritten, so identity doubles as "unchanged".
+    /// Whether two handles are the same allocation — [`TilePairHandle::same`] for
+    /// masks, sound for its reason: a mask tile is rasterized afresh rather than
+    /// rewritten.
     pub(crate) fn same(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0.0, &other.0.0)
     }
