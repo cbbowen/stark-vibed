@@ -37,7 +37,8 @@
 //!
 //! **What this list cannot reach is the GPU's own transcendentals**, and one of them does
 //! decide a stored tile: `lib/color.wesl`'s `linear_srgb_to_oklab` runs a `pow` for its
-//! cube root, and `merge` writes tiles through the blend pass that calls it (§15). WGSL
+//! cube root — reached from `blend.wesl` and `filter_common.wesl` — and `merge` writes
+//! **stored** tiles through the blend pass that calls it (§15). WGSL
 //! specifies no rounding for `pow`, so that is not a libm question and no host choice
 //! closes it — which is the same fact `STARK_SKIP_GOLDEN` exists for, a golden being
 //! blessed on one adapter. Named here so "nothing writes a tile" is not read wider than

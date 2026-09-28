@@ -101,9 +101,11 @@ fn fit(c: &mut Criterion) {
         // fitter fed in one call, so per-element is per *pointer move*.
         g.throughput(criterion::Throughput::Elements(pts.len() as u64));
 
-        // The batch form: every report pushed, then one finish, with no preview read in
-        // between — what `Engine::replay_stroke` pays. A peer pays none of it: it
-        // receives the control points (§17.5).
+        // The batch form: every report pushed, then one finish, with no preview read
+        // in between — the live authoring path with its per-frame readers taken off it,
+        // which is what `Engine::replay_stroke` drives a recorded hand through. Nothing
+        // that replays the *log* pays this, and no peer pays it either: the record and
+        // the wire both carry control points (§8, §17.5).
         g.bench_with_input(BenchmarkId::new("batch", name), &pts, |b, pts| {
             b.iter(|| path::fit(black_box(pts)));
         });
@@ -266,9 +268,10 @@ fn flatten(c: &mut Criterion) {
     g.finish();
 }
 
-/// Fit + flatten end to end, at the renderer's own entry point: what
-/// `Engine::replay_stroke` pays on the CPU before a single dispatch is recorded. A
-/// stroke replayed from the log pays only the flatten: the record holds the fit.
+/// Fit + flatten end to end, at the renderer's own entry point: the whole CPU cost of
+/// *authoring* a stroke, before a single dispatch is recorded. Only an author pays both
+/// halves — a stroke replayed from the log pays the flatten alone, because the record
+/// holds the fitted control points and never the samples (§8).
 ///
 /// Worth its own line rather than being read off the sum: the two halves share no
 /// state, so a change that moves work across the boundary (pricing an edge in the
