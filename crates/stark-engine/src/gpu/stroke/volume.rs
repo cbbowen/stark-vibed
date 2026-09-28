@@ -329,6 +329,11 @@ pub(crate) fn coverage_f32(coverage: &[u8]) -> Vec<f32> {
 /// A **stored mask's** optical depth, `κ = −ln(1 − coverage)` — the currency the
 /// deposit sums (§6.1), and the one conversion between the two.
 ///
+/// The logarithm is [`detmath`](crate::detmath)'s rather than the host's (§12.1). This
+/// is what a stamp brush's whole prefix volume is built out of, and the volume is
+/// `Rg32Float` — nothing rounds an ulp away between here and the deposit, so two peers
+/// whose libms disagreed on a texel would lay different paint from the same log.
+///
 /// The clamp keeps `κ` finite where a mask reaches 1: full coverage is infinite
 /// depth, and would carry `+∞` into every prefix sum downstream of it.
 /// `dynamics.wesl`'s own `tau_of` mirrors this clamp, so the tool side — which has
@@ -346,7 +351,7 @@ pub(crate) fn coverage_f32(coverage: &[u8]) -> Vec<f32> {
 /// where the strength scales the exponent and the core is not saturated enough to hide
 /// it.
 pub(crate) fn tau_of(coverage: f32) -> f32 {
-    -(1.0 - coverage.clamp(0.0, 0.999)).ln()
+    -crate::detmath::ln(1.0 - coverage.clamp(0.0, 0.999))
 }
 
 /// Build a brush's **prefix** volume (§6.2, §6.6): for each orientation `layer` and
