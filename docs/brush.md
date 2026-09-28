@@ -359,7 +359,7 @@ mean alpha into the coverage-weighted color, and the opacity ceiling needs no
 second spelling: inverting the resolved mass recovers exactly the averaged
 coverage, so the 1× branch already scales what a supersampled render of the
 scaled stroke would show. The fragment's own box window shrinks to its
-subsample's share (`TileXform::params.w`), the rest of the pixel being the
+subsample's share (`TileXform::half_footprint`), the rest of the pixel being the
 resolve's. Two structural notes: a gated stroke takes the carried-parcel path
 even at full opacity, because over-blending per-piece averages differs from
 averaging the whole parcel by the covariance of subsample alphas where pieces

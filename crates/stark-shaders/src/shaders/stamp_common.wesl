@@ -10,15 +10,20 @@ import package::lib::paint_common::{tooth_at, linear_across};
 import package::lib::sample::{bilerp_taps, bilerp_mix1};
 
 struct TileXform {
-    // params.xy = the target's top-left in canvas px — a tile *texture*'s (interior
-    // origin − apron), or the stamp loop's region's; params.z unused (the NDC
-    // scale is `ndc` below, per axis); params.w = half
-    // the deposit's own footprint in canvas px — 0.5 on the 1× path, 0.5/s when
-    // the sweep rasterizes s subsamples per px into a supersampled scratch
-    // (§6.2). Only `swept_depth`'s lateral window reads it: every other
-    // per-fragment quantity is a function of the interpolated canvas position,
-    // which the finer raster grid supplies on its own.
-    params: vec4<f32>,
+    // The target's top-left in canvas px — a tile *texture*'s (interior origin −
+    // apron), or the stamp loop's region's.
+    //
+    // `@size(12)` keeps the lane this pair left spare, which is what `half_footprint`
+    // below stands on: no alignment reaches offset 12 from offset 8, so the member's
+    // own stride is the only thing that can say it (§6.10). The NDC scale that lane
+    // looks like it should carry is `ndc`, below, because it is per axis.
+    @size(12) origin: vec2<f32>,
+    // Half the deposit's own footprint in canvas px — 0.5 on the 1× path, 0.5/s when
+    // the sweep rasterizes s subsamples per px into a supersampled scratch (§6.2).
+    // Only `swept_depth`'s lateral window reads it: every other per-fragment quantity
+    // is a function of the interpolated canvas position, which the finer raster grid
+    // supplies on its own.
+    half_footprint: f32,
     // The brush's color in the color space's channels (.xyz); .w unused. Constant
     // across the stroke — color dynamics (below) jitter the channels per fragment.
     // There is no per-unit opacity here: the paint a brush lays is per-unit opaque
@@ -37,16 +42,21 @@ struct TileXform {
     // price; the per-texel channel, which is the one that would matter, Oklab still
     // does not allocate.
     resid: vec4<f32>,
-    // The `drain` falloff per canvas px in .x (`BrushParams::drain_px` — the brush's
-    // own knob is quoted per *radius*, and the host divides) and the **width of the
-    // tooth's contact transition** in the rise's own units in .z
-    // (`ToothParams::softness`, §6.4); .yw unused. Both stroke constants in the only
-    // sense that matters — each is a function of
-    // something the fragment already knows, so it is evaluated there (`stroke_drain`,
-    // `substrate_tooth`). The tooth's *depth* is not among them, and neither is `add`:
-    // both are pen-driven (§6.2) and ride the segment instance, like the radius. What
-    // the tip is made of does not change under the hand; how hard it is pressed does.
-    paint: vec4<f32>,
+    // The `drain` falloff per canvas px (`BrushParams::drain_px` — the brush's own
+    // knob is quoted per *radius*, and the host divides).
+    //
+    // `@size(8)` keeps the lane this pair left spare, `origin`'s reason one member up.
+    //
+    // Both of these are stroke constants in the only sense that matters — each is a
+    // function of something the fragment already knows, so it is evaluated there
+    // (`stroke_drain`, `substrate_tooth`). The tooth's *depth* is not among them, and
+    // neither is `add`: both are pen-driven (§6.2) and ride the segment instance, like
+    // the radius. What the tip is made of does not change under the hand; how hard it
+    // is pressed does.
+    @size(8) drain: f32,
+    // The **width of the tooth's contact transition**, in the rise's own units
+    // (`ToothParams::softness`, §6.4).
+    tooth_softness: f32,
     // Color dynamics (§6.2): noise frequency per lookup axis
     // (across the stroke, along it) in .xy with 1/NOISE_TILE_PX pre-folded into
     // .z; .w unused.
@@ -119,7 +129,7 @@ struct VsOut {
     // not per stroke, because the pen can drive it — bearing down gives the tip the
     // give to press past the falls it was bridging, so the grain fills in: the charcoal
     // behaviour. 1 is all of it, and the gate short-circuits. The band the contact is
-    // soft over is the *stroke's* (`xf.paint.z`), for the reason given there.
+    // soft over is the *stroke's* (`xf.tooth_softness`), for the reason given there.
     @location(5) @interpolate(flat) tooth_give: f32,
     // **The stretch of the tip's travel this point is swept by**, in radius units:
     // where the point sits in the tip frame when the segment ends .x, and where when it
@@ -582,7 +592,7 @@ fn sweep_vertex(
             + perp * (sk * (abs_r - rho * cos(delta)));
     }
 
-    let ndc = (canvas - xf.params.xy) * vec2<f32>(xf.ndc.x, -xf.ndc.y) + vec2<f32>(-1.0, 1.0);
+    let ndc = (canvas - xf.origin) * vec2<f32>(xf.ndc.x, -xf.ndc.y) + vec2<f32>(-1.0, 1.0);
 
     // The exact frame *at this vertex*, from the same arc arithmetic the fragment used
     // to run. On a straight sweep every quantity below is affine in canvas position, so
@@ -698,7 +708,7 @@ fn stroke_arc(in: VsOut, sw: Sweep) -> f32 {
 // drained brush lays the same start cap whichever one draws it
 // (`dynamics.wesl::stroke_drain` states what the loop's storage does with the excess).
 fn stroke_drain(arc: f32) -> f32 {
-    return clamp(1.0 - xf.paint.x * arc, 0.0, 1.0);
+    return clamp(1.0 - xf.drain * arc, 0.0, 1.0);
 }
 
 // The share of its paint this fragment's texel receives from the substrate under it
@@ -729,7 +739,7 @@ fn substrate_tooth(in: VsOut, sw: Sweep) -> f32 {
         xf.substrate.z,
         sweep_tangent(in.dir, sw.turn),
         give,
-        xf.paint.z,
+        xf.tooth_softness,
     );
 }
 
@@ -959,13 +969,13 @@ fn swept_depth(in: VsOut, sw: Sweep) -> f32 {
     let l = stretch_look(sw, in.stretch);
     // Half the fragment's own footprint in the lookup frame's lateral units
     // (§6.2's pixel footprint): brush-local y is denominated in the tip in force,
-    // drawn out by the stretch's lateral scale. `xf.params.w` is half a canvas px
+    // drawn out by the stretch's lateral scale. `xf.half_footprint` is half a canvas px
     // on the 1× path and half a *subsample* when the sweep supersamples — each
     // fragment filters over the patch of canvas it will answer for, and the
     // integrate's resolve supplies the rest of the pixel. A function of the
     // fragment's frame and the stroke's own constant, like everything here, so
     // the deposit stays a pure function of canvas position (§6.4).
-    let dy = xf.params.w * in.stretch.z / sw.radius;
+    let dy = xf.half_footprint * in.stretch.z / sw.radius;
     var depth: f32;
     // Box-filtered only where the window spans at least a mask texel. Below that the
     // differenced lateral prefix degenerates into a fixed one-texel blur *scaled by

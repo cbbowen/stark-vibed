@@ -32,23 +32,27 @@ import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
 
 struct Integrate {
-    // The stroke's ceiling in `.x`: the paint effect's opacity
-    // (`PaintEffect::opacity`, §6.2) with the selection mask's folded in
-    // (`stroke_constants`, §6.8) — the mask's overall opacity is not in the mask
-    // texture, and this is the one number it reaches the deposit through. 1 is
-    // the identity, and taken as an exact branch below.
+    // The stroke's ceiling: the paint effect's opacity (`PaintEffect::opacity`,
+    // §6.2) with the selection mask's folded in (`stroke_constants`, §6.8) — the
+    // mask's overall opacity is not in the mask texture, and this is the one number
+    // it reaches the deposit through. 1 is the identity, and taken as an exact
+    // branch below.
     //
-    // `.y` = how many scratch subsample texels stand for one canvas px, per axis
-    // (§6.2): 1 on the plain path — the 1:1 load, bit for bit — and the sweep's
-    // supersampling factor when the scratch was rasterized finer, which is what
-    // sends the loads through the box resolve below.
-    //
-    // `.z` ≠ 0 says `scratch_ceiling` is a real lane: the stroke's ceiling is
-    // pen-driven, and the coverage the parcel may show is read off the lane
-    // rather than derived from the dial (§6.2). 0 binds the 1×1 zero there and
-    // takes the dial's branch, bit for bit. `.w` unused — the uniform's 16-byte
-    // round (§6.10).
-    params: vec4<f32>,
+    // `@align(16)` is the block's alignment rather than this member's: WGSL requires
+    // a struct in the uniform address space to be 16-byte aligned and has no
+    // struct-level attribute to say it with, so the first member carries it — which
+    // is also what keeps the block a whole 16-byte row, its fourth lane spare.
+    @align(16) ceiling: f32,
+    // How many scratch subsample texels stand for one canvas px, per axis (§6.2): 1
+    // on the plain path — the 1:1 load, bit for bit — and the sweep's supersampling
+    // factor when the scratch was rasterized finer, which is what sends the loads
+    // through the box resolve below.
+    subsamples: f32,
+    // ≠ 0 says `scratch_ceiling` is a real lane: the stroke's ceiling is pen-driven,
+    // and the coverage the parcel may show is read off the lane rather than derived
+    // from the dial (§6.2). 0 binds the 1×1 zero there and takes the dial's branch,
+    // bit for bit.
+    ceiling_lane: f32,
 }
 
 // The layer's resident paint under this tile — its own tile, or the 1×1 zero
@@ -63,7 +67,7 @@ struct Integrate {
 // paint, 0 where it may not, feathered in between. Either this tile's own mask —
 // 1:1 with the destination, apron included — or a 1×1 texture holding the constant
 // coverage outside the mask's tile set; the clamped load below reads both. The
-// coverage alone: the mask's overall opacity arrives in `ig.params.x`.
+// coverage alone: the mask's overall opacity arrives in `ig.ceiling`.
 @group(0) @binding(4) var selection: texture_2d<f32>;
 // The residual halves of the two colors above (§6.7) — the layer's resident
 // paint and the stroke's parcel. Bound only by a space that has a residual, and
@@ -74,7 +78,7 @@ struct Integrate {
 @group(0) @binding(7) var<uniform> ig: Integrate;
 // The stroke's **ceiling lane** (§6.2, `stamp.wesl::FsOut::ceiling`): the parcel's
 // mass and moment above each ceiling level — 1:1 with the scratch parcel,
-// subsamples included. Read only when `ig.params.z` says the sweep wrote one; the
+// subsamples included. Read only when `ig.ceiling_lane` says the sweep wrote one; the
 // 1×1 zero stands in otherwise, and nothing here touches it.
 @group(0) @binding(8) var scratch_ceiling: texture_2d<f32>;
 
@@ -128,8 +132,8 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // and the ceiling below inverts through the same law, so it scales the
     // averaged coverage precisely as a supersampled render of the scaled stroke
     // would show it. No second branch needed anywhere past this point.
-    let s = i32(ig.params.y);
-    let lane = ig.params.z != 0.0;
+    let s = i32(ig.subsamples);
+    let lane = ig.ceiling_lane != 0.0;
     var s_c: vec4<f32>;
     var s_a: vec4<f32>;
     var s_res = vec3<f32>(0.0, 0.0, 0.0);
@@ -256,7 +260,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         // (`t` at or under the parcel's own transmittance, both possibly 0) lands
         // the whole parcel rather than asking the log about it. Clamped at 1
         // because the sums it is read from are f16.
-        let v = min(ig.params.x * sel * s_v, 1.0);
+        let v = min(ig.ceiling * sel * s_v, 1.0);
         let t = 1.0 - v;
         if t > exp(-OPACITY_K * m1) {
             let ms = -log(t) / OPACITY_K;
@@ -274,7 +278,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
         // fill makes of the same mask, and the same one a dial at a half makes
         // with no mask at all. The mask's own antialiasing and feather are the
         // stroke's edge either way.
-        let opacity = ig.params.x * sel;
+        let opacity = ig.ceiling * sel;
         // An exact branch at 1, `integrate.wesl`'s own untouched-texel reason one
         // level up: the round trip below lands an ulp off now and then, and every
         // full-opacity stroke would pay it. On the supersampled path this is exact

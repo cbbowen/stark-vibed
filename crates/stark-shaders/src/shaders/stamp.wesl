@@ -81,7 +81,7 @@ struct SegmentInstance {
     //
     // The give only. How wide the contact transition around it is
     // (`ToothParams::softness`) does not vary segment to segment, so it rides
-    // the stroke uniform instead (`stamp_common::TileXform::paint`).
+    // the stroke uniform instead (`stamp_common::TileXform::tooth_softness`).
     @location(4) tooth_give: f32,
     // The tip drawn out along its facing axis (§6.6): the travel scale, the shear and
     // the lateral scale that carry a point of the reference travel frame into the

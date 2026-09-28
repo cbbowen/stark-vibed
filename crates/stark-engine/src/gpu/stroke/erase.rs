@@ -145,7 +145,9 @@ impl StrokeRenderer {
         let opacity = scope.run_uniform(
             "stark erase opacity",
             &stark_shaders::mirror::erase::Erase {
-                params: [k.opacity, f32::from(u8::from(k.ceiling_lane)), 0.0, 0.0],
+                ceiling: k.opacity,
+                ceiling_lane: f32::from(u8::from(k.ceiling_lane)),
+                ..Default::default()
             },
         );
 

@@ -56,7 +56,7 @@ clipping the extent, and as **the other factor of the opacity ceiling** (§6.2)
 there, and the capped law does the rest:
 
 - The swept fast path masks in the **integrate** pass (`integrate.wesl`) and the
-  eraser in its own (`erase.wesl`): `opacity = ig.params.x · m`, and the whole
+  eraser in its own (`erase.wesl`): `opacity = ig.ceiling · m`, and the whole
   accumulated parcel is scaled through the slab law to show exactly that much.
 - The dynamics stamp loop masks in **deposit** (`dynamics.wesl::lay_parcel`),
   under the two laws a mask has: what the brush *mints* is capped at

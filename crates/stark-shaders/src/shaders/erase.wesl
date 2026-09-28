@@ -32,13 +32,20 @@ import package::lib::quad::{fullscreen_clip};
 import package::lib::sample::{load1};
 
 struct Erase {
-    // The stroke's ceiling in `.x`: the erase opacity (`EraseEffect::opacity`,
-    // §6.12) with the selection mask's folded in (`stroke_constants`, §6.8), as
-    // `integrate.wesl` carries it. `.y` ≠ 0 says `ceiling` is a real lane — the
-    // stroke's ceiling is pen-driven, and the coverage it may act on is read off
-    // the lane rather than the accumulated extent — as `integrate.wesl`'s
-    // `params.z` says it. `.zw` unused — the uniform's 16-byte round (§6.10).
-    params: vec4<f32>,
+    // The stroke's ceiling: the erase opacity (`EraseEffect::opacity`, §6.12) with
+    // the selection mask's folded in (`stroke_constants`, §6.8), under the name
+    // `integrate.wesl` carries it by.
+    //
+    // `@align(16)` is the block's alignment rather than this member's, exactly as
+    // `integrate.wesl` states it: WGSL requires a uniform struct to be 16-byte
+    // aligned and has no struct-level attribute for it, so the first member says so
+    // — and the block keeps its whole 16-byte row, the upper half spare.
+    @align(16) ceiling: f32,
+    // ≠ 0 says the two lane textures below (`ceiling`, `moment`) are real: the
+    // stroke's ceiling is pen-driven, and the coverage it may act on is read off them
+    // rather than off the accumulated extent — as `integrate.wesl`'s own
+    // `ceiling_lane` says it.
+    ceiling_lane: f32,
 }
 
 // The layer's resident paint under this tile — its own tile, or the 1×1 zero
@@ -62,7 +69,7 @@ struct Erase {
 @if(resid) @group(0) @binding(5) var base_resid: texture_2d<f32>;
 // The stroke's ceiling lane (`stamp.wesl::FsErase::ceiling`, §6.12): the mass
 // and moment above each ceiling level, 1:1 with the accumulator, and the moment
-// of the whole mass beside it. Read only when `e.params.y` says the sweep wrote
+// of the whole mass beside it. Read only when `e.ceiling_lane` says the sweep wrote
 // them; the 1×1 zero stands in for both otherwise.
 @group(0) @binding(6) var ceiling: texture_2d<f32>;
 @group(0) @binding(7) var moment: texture_2d<f32>;
@@ -124,7 +131,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // a heavy one takes nothing more and a heavy one over a light one takes what
     // the heavy one asks. Clamped for the same reason `integrate.wesl` clamps.
     var cover = w;
-    if e.params.y != 0.0 {
+    if e.ceiling_lane != 0.0 {
         cover = min(
             claimed_coverage(m_e, textureLoad(moment, c, 0).x, textureLoad(ceiling, c, 0)),
             1.0,
@@ -135,7 +142,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> FsOut {
     // shows *through* — the old transmittance plus the newly uncovered share —
     // so the small quantity is the one computed and nothing cancels where the
     // paint is nearly opaque.
-    let through = t0 + (1.0 - t0) * (e.params.x * sel) * cover;
+    let through = t0 + (1.0 - t0) * (e.ceiling * sel) * cover;
     // Inverted through the slab law into the mass that shows exactly that much
     // (`fill.wesl`'s inversion, run the other way). `through >= t0` by
     // construction, so `m1 <= m0` up to rounding — the `min` states it outright,

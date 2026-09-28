@@ -520,7 +520,10 @@ fn opacity_uniform(
     lane: bool,
 ) -> LeasedSlots<Integrate> {
     let u = Integrate {
-        params: [opacity, ss as f32, f32::from(u8::from(lane)), 0.0],
+        ceiling: opacity,
+        subsamples: ss as f32,
+        ceiling_lane: f32::from(u8::from(lane)),
+        ..Default::default()
     };
     scope.run_uniform("stark integrate opacity", &u)
 }
@@ -557,7 +560,7 @@ impl SweepDraws {
     ///
     /// `ss` is the supersampling factor the piece rasterizes at (§6.2): it reaches the
     /// shader as the pixel footprint's half-width, `0.5 / ss` canvas px
-    /// (`TileXform::params.w`), so each subsample box-filters over its own footprint
+    /// ([`TileXform::half_footprint`]), so each subsample box-filters over its own footprint
     /// rather than the whole pixel's. 1 on every path that does not supersample, the
     /// erase sweep included.
     ///
@@ -694,25 +697,22 @@ pub(super) fn tile_xform(
     ss: u32,
 ) -> TileXform {
     TileXform {
-        params: [
-            origin.x,
-            origin.y,
-            0.0,
-            // Half the deposit's own footprint in canvas px (§6.2): the box filter's
-            // half-window at 1×, each subsample's own share of the pixel above that.
-            // The canvas→NDC scale below does *not* move — a supersampled target
-            // covers the same canvas extent, only on a finer grid.
-            0.5 / ss as f32,
-        ],
+        origin: origin.to_array(),
+        // The box filter's half-window at 1×, each subsample's own share of the pixel
+        // above that. The canvas→NDC scale below does *not* move — a supersampled
+        // target covers the same canvas extent, only on a finer grid.
+        half_footprint: 0.5 / ss as f32,
         color: [k.channels[0], k.channels[1], k.channels[2], 1.0],
         resid: k.resid,
-        paint: [k.drain_px, 0.0, k.tooth_softness, 0.0],
+        drain: k.drain_px,
+        tooth_softness: k.tooth_softness,
         noise_freq: k.nfreq,
         noise_amp: k.namp,
         jitter_eps: k.jitter_eps,
         jitter_seed: k.jitter_seed,
         ndc: [2.0 / size.0, 2.0 / size.1],
         substrate: [k.substrate.num[0], k.substrate.num[1], k.substrate.den, 0],
+        ..Default::default()
     }
 }
 

@@ -537,9 +537,9 @@ The *give* is a modulation target and the *softness* is not, and that split is
 the model: pressure changes how hard a tip is pressed, but no amount of it makes
 a charcoal stick out of graphite. So the give rides the segment instance
 (`SegmentInstance::tooth_give`, `Stamp::tooth_give`) and the softness rides the
-stroke (`TileXform::paint.z`, and `Stamp::tooth_softness` because that loop's
-uniform is per slot). The softness default lives on the brush and nowhere else —
-the shader declares no constant for it, only the inert floor that keeps a
+stroke (`TileXform::tooth_softness`, and `Stamp::tooth_softness` because that
+loop's uniform is per slot). The softness default lives on the brush and nowhere
+else — the shader declares no constant for it, only the inert floor that keeps a
 softness of zero from being a division by zero. Both lanes are **neutral at 1**
 rather than at zero: `tooth_give = 1` is the short-circuit every bleed slot and
 every untoothed brush takes, and a zeroed lane would be the driest tip there is.
