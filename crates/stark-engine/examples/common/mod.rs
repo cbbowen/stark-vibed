@@ -1,8 +1,18 @@
-//! Shared by the dev repro harnesses: paying a captured document's content bill.
+//! Shared by the dev repro harnesses: paying a captured document's content bill, and
+//! writing a render out.
 //!
 //! Not a Cargo example itself — `examples/*/mod.rs` matches neither of the patterns
 //! Cargo auto-discovers, so this is included with `mod common;` exactly the way
 //! `tests/engine/common` is.
+
+/// Write `img` beside the others a harness dumps.
+///
+/// Through [`stark_engine::RgbaImage::to_png`], which is the shipped export path
+/// (§15.6) — a harness that hand-rolled an encoder would be diagnosing the app with
+/// bytes the app does not write.
+pub fn write_png(path: &std::path::Path, img: &stark_engine::RgbaImage) {
+    std::fs::write(path, img.to_png().expect("encode png")).expect("write png");
+}
 
 /// Resolve everything `file` names out of the frontend's bundled assets, so a
 /// captured document replays as the app replays it (§8).

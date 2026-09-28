@@ -9,7 +9,7 @@ use stark_engine::command::Tool;
 use stark_model::Srgb;
 use std::fmt;
 use std::fs;
-use std::io::{BufReader, BufWriter};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use stark_engine::Extent2;
@@ -1412,13 +1412,10 @@ fn golden_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden")
 }
 
+/// Through [`RgbaImage::to_png`] rather than an encoder of its own: that is the shipped
+/// export path (§15.6), so a golden is blessed in the bytes an export would write.
 pub fn write_png(path: &Path, img: &RgbaImage) {
-    let file = fs::File::create(path).expect("create png");
-    let mut enc = png::Encoder::new(BufWriter::new(file), img.width, img.height);
-    enc.set_color(png::ColorType::Rgba);
-    enc.set_depth(png::BitDepth::Eight);
-    let mut writer = enc.write_header().expect("png header");
-    writer.write_image_data(&img.pixels).expect("png data");
+    fs::write(path, img.to_png().expect("encode png")).expect("write png");
 }
 
 fn read_png(path: &Path) -> RgbaImage {

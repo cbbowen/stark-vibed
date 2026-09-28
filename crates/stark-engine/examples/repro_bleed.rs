@@ -18,7 +18,6 @@
 mod common;
 
 use stark_model::Srgb;
-use std::io::BufWriter;
 use std::path::PathBuf;
 
 use stark_engine::Extent2;
@@ -29,28 +28,33 @@ use stark_model::DocumentFile;
 use stark_model::document::{ActionKind, FillOp, SelectionShape};
 use stark_model::geom::Vec2;
 
-fn save_png(path: &PathBuf, img: &RgbaImage) {
-    let file = std::fs::File::create(path).expect("create png");
-    let mut enc = png::Encoder::new(BufWriter::new(file), img.width, img.height);
-    enc.set_color(png::ColorType::Rgba);
-    enc.set_depth(png::BitDepth::Eight);
-    let mut w = enc.write_header().expect("png header");
-    w.write_image_data(&img.pixels).expect("png data");
-}
-
 fn main() {
-    let mut args = std::env::args().skip(1);
+    // The flags are filtered out of the positional stream rather than read off the
+    // front of it: `repro_bleed file.stark --synth` used to take `--synth` for the
+    // output directory and write three PNGs into a folder of that name.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (flags, positional): (Vec<&String>, Vec<&String>) =
+        args.iter().partition(|a| a.starts_with("--"));
+    let mut positional = positional.into_iter();
     let input = PathBuf::from(
-        args.next()
-            .expect("usage: repro_bleed <file.stark> [out_dir]"),
+        positional
+            .next()
+            .expect("usage: repro_bleed <file.stark> [out_dir] [--synth|--identity]"),
     );
-    let out_dir = args
+    let out_dir = positional
         .next()
         .map(PathBuf::from)
         .unwrap_or_else(|| input.parent().expect("input has a parent").to_path_buf());
 
-    let synth = std::env::args().any(|a| a == "--synth");
-    let identity = std::env::args().any(|a| a == "--identity");
+    let flag = |name: &str| flags.iter().any(|a| a.as_str() == name);
+    let synth = flag("--synth");
+    let identity = flag("--identity");
+    if let Some(unknown) = flags
+        .iter()
+        .find(|a| !matches!(a.as_str(), "--synth" | "--identity"))
+    {
+        panic!("unknown flag {unknown}: expected --synth or --identity");
+    }
     let bytes = std::fs::read(&input).expect("read input");
     let mut doc = DocumentFile::from_bytes(&bytes).expect("parse .stark");
     if identity {
@@ -275,9 +279,9 @@ fn main() {
         }
         pd[3] = 255;
     }
-    save_png(&out_dir.join("with.png"), &with);
-    save_png(&out_dir.join("without.png"), &without);
-    save_png(&out_dir.join("diff.png"), &diff);
+    common::write_png(&out_dir.join("with.png"), &with);
+    common::write_png(&out_dir.join("without.png"), &without);
+    common::write_png(&out_dir.join("diff.png"), &diff);
     println!(
         "wrote with.png / without.png / diff.png to {}",
         out_dir.display()
