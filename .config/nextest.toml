@@ -90,10 +90,11 @@ test-group = 'gpu'
 filter = 'test(a_pair_that_claims_to_commute_does)'
 slow-timeout = { period = "120s", terminate-after = 5 }
 
-# Compares early against late per-move milliseconds, so a parallel run's load makes it
-# flake. Nothing beside it is what lets the bound be 1.4 — a window's median, best of
-# three strokes, measured 1.03–1.13 both quiet and at half load. Load beyond the suite
-# is still beyond this: with all 32 cores busy the ratio reaches 1.9.
+# Compares early against late per-move milliseconds, so a parallel run's load used to
+# make it flake. It no longer does — a window's median, best of three strokes by ratio,
+# measured 0.85–1.12 quiet and 0.73–1.29 with all 32 cores busy, against a bound of 1.4
+# — but it still runs with nothing beside it, because a guard measured in wall clock
+# should not also be a claim about the scheduler.
 [[profile.default.overrides]]
 filter = 'test(per_move_cost_does_not_grow_with_stroke_length)'
 threads-required = "num-test-threads"

@@ -714,12 +714,12 @@ fn stroke_spans_multiple_tiles_via_cow() {
 /// frontend actually draws on, and after the first frame it allocates nothing.
 ///
 /// Each window's number is its **median** per-move millisecond, not its mean, and the
-/// caller takes the best of three whole strokes. A wall clock on a shared box measures
-/// scheduler stalls as well as work, and a window whose moves are individually dearer
-/// collects more of that tail — so a mean ratio reports contention as growth, which is
-/// the flake this test was. Its mean-and-readback form read 1.35 and 1.51 with this
-/// box's 32 cores busy beside it, against a bound of 1.6; with half of them busy the
-/// medians below hold to 1.12.
+/// caller takes the best of three whole strokes by ratio. A wall clock on a shared box
+/// measures scheduler stalls as well as work, and a window whose moves are individually
+/// dearer collects more of that tail — so a mean ratio reports contention as growth,
+/// which is the flake this test was. The mean-and-readback form it replaced read 1.35
+/// and 1.51 with all 32 of this box's cores busy beside it, against a bound of 1.6;
+/// under the same load these read 1.03–1.29 and 0.73–1.07.
 ///
 /// **Answers `None` where there is no GPU**, rather than a pair — and the difference
 /// is the whole reason this does not build its own device. It used to, and returned
@@ -777,23 +777,28 @@ fn per_move_cost_does_not_grow_with_stroke_length() {
         ("swept", brush(RED, 14.0)),
         ("stamp loop", crate::common::corpus::smear_brush(14.0)),
     ] {
-        // Best of three whole strokes, window by window: a repeat that lost the CPU is
-        // noise about this box rather than about the stroke. The frame-cost guard beside
-        // this one takes the same form
-        // ([`a_thin_stroke_costs_what_a_flat_field_costs`](composite.rs)).
-        let (mut early, mut late) = (f64::INFINITY, f64::INFINITY);
+        // The best of three whole strokes, and best by **ratio** rather than window by
+        // window: a repeat that lost the CPU is noise about this box rather than about
+        // the stroke, but load that *arrives* mid-test would otherwise pair one
+        // repeat's unloaded `early` with another's loaded `late` and report the change
+        // in the box as growth in the stroke. A ratio is scale-free, so a repeat run
+        // wholly under load still answers the question and only a repeat straddling
+        // the change is discarded.
+        let mut best: Option<(f64, f64)> = None;
         for _ in 0..3 {
-            let Some((e, l)) = measure_per_move_growth(b) else {
+            let Some(pair) = measure_per_move_growth(b) else {
                 return;
             };
-            early = early.min(e);
-            late = late.min(l);
+            if best.is_none_or(|(e, l)| pair.1 / pair.0 < l / e) {
+                best = Some(pair);
+            }
         }
-        // 1.4 against a measured 1.03–1.13: eight solo runs on a quiet box read
-        // 1.05–1.10 swept and 1.12–1.13 on the loop, and three with half this box's
-        // cores busy beside them read 1.04–1.12 and 1.08–1.12. The residual few per
-        // cent is real — the fitter re-solves its unfrozen prefix on every sample
-        // (`input.fit`) — so this is not a bound that wants to reach 1.0.
+        let (early, late) = best.expect("three repeats measured something");
+        // 1.4 against a measured 0.85–1.12 on a quiet box, five runs, and 0.73–1.29
+        // with all 32 cores busy beside it — where the form this replaced reached 1.51
+        // against 1.6. The residual few per cent is real, since the fitter re-solves
+        // its unfrozen prefix on every sample (`input.fit`), so this is not a bound
+        // that wants to reach 1.0.
         assert!(
             late < early * 1.4,
             "{what}: per-move cost grew with stroke length: \
