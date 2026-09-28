@@ -1,8 +1,10 @@
 //! Which canvas substrate the document stands on, and how large it is laid (§6.4).
 //!
 //! The *derived* half of the pair, and the smaller one: the log carries a
-//! [`SubstrateId`] and a [`SubstrateScale`] through two separate actions, and this is
-//! the pair they compose into — [`DocState`](super::state::DocState)'s field, the thing
+//! [`SubstrateId`](stark_model::SubstrateId) and a
+//! [`SubstrateScale`](stark_model::SubstrateScale) through two separate actions, and
+//! this is the pair they compose into — [`DocState`](crate::document::state::DocState)'s
+//! field, the thing
 //! a renderer is handed and the key a bake is registered under.
 //!
 //! **Here rather than beside the bake** (`gpu::substrate`), because it holds no texture

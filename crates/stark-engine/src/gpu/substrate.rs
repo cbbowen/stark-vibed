@@ -31,7 +31,8 @@ use tooth::{Bearing, pack_substrate};
 /// both the deposition and shading passes must use the same value for the texture to
 /// line up.
 ///
-/// The document's [`SubstrateScale`] multiplies it — see [`Substrate`], which is the pair
+/// The document's [`SubstrateScale`](stark_model::SubstrateScale) multiplies it — see
+/// [`Substrate`], which is the pair
 /// everything downstream actually reads.
 ///
 /// An integer, because the deposition tooth reads the map through an exact fraction of
