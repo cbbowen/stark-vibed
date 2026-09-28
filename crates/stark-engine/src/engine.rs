@@ -59,8 +59,9 @@ use crate::colorspace::ColorSpace;
 use crate::command::InputCommand;
 use crate::device::context::GpuContext;
 use crate::device::scratch::ScratchPool;
+use crate::document::DocState;
 use crate::document::Substrate;
-use crate::document::{ApplyCtx, DocState};
+use crate::fold::ApplyCtx;
 use crate::gpu::composite::ViewSettings;
 use crate::gpu::environment::EnvironmentId;
 use crate::gpu::registry::Registry;
@@ -310,7 +311,7 @@ impl Engine {
     /// Where the history playhead stands and how far it can travel, in actions —
     /// or `None` for a document whose history is not this client's alone to walk
     /// (a shared session). See
-    /// [`Timeline::scrub_range`](crate::document::Timeline::scrub_range).
+    /// [`Timeline::scrub_range`](crate::fold::Timeline::scrub_range).
     ///
     /// A **request** rather than a field of [`ObservableState`]: only a scrubber on
     /// screen asks for it, where in the projection every pointer sample of every

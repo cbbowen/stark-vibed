@@ -26,11 +26,11 @@ pub use crate::device::tile::TileChannels;
 /// claim is about what a reset releases). The pool's own behaviour is tested where it
 /// lives, in `gpu::tile`.
 pub use crate::device::tile::{AllocSource, TilePool};
-pub use crate::document::audit::undeclared;
 pub use crate::document::guides::Guide;
 pub use crate::document::layer::{CompositeParams, Layer, LayerContent, PropValue};
 pub use crate::document::state::DocState;
-pub use crate::document::timeline::TimelineStats;
+pub use crate::fold::audit::undeclared;
+pub use crate::fold::timeline::TimelineStats;
 pub use crate::gesture::{GestureView, LiveGesture};
 pub use crate::session::{Outline, Session};
 

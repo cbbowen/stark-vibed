@@ -16,7 +16,7 @@ use std::sync::Arc;
 ///
 /// - **Handing one out is a refcount bump**, whatever it holds and however long it is.
 ///   The layer roster would otherwise cost a walk of the whole tree, cloning every name
-///   and asking [`merge::plan_at`](crate::document::merge::plan_at) per row; `Engine`
+///   and asking [`merge::plan_at`](crate::fold::merge::plan_at) per row; `Engine`
 ///   keeps the last one against the counters it is a function of
 ///   ([`Engine::projected_layers`](crate::Engine::projected_layers)), so an unchanged
 ///   document walks nothing at all.
@@ -118,7 +118,7 @@ impl<K: PartialEq, V: Clone> Memo<K, V> {
     /// What was built from `key`, or `build`'s answer stored against it.
     ///
     /// **The borrow is released before `build` runs.** A build is arbitrary engine code
-    /// — the layer walk asks [`merge::plan_at`](crate::document::merge::plan_at) per
+    /// — the layer walk asks [`merge::plan_at`](crate::fold::merge::plan_at) per
     /// row, the draw list walks every visible tile of every layer — so one that read
     /// the memo it was filling would panic at run time.
     ///

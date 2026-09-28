@@ -15,7 +15,7 @@ use history::History;
 type Entry = Logged<DocState>;
 
 use super::apply::ApplyCtx;
-use super::state::DocState;
+use crate::document::state::DocState;
 use stark_model::document::{Action, ActionId, ActorId, Logged};
 // The undo algebra is the model's (§12.3, `document::effect`): which actions in a log
 // are effective is a fact about the log, like *that* it folds and which actions

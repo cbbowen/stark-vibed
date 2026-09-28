@@ -93,17 +93,19 @@ stark/
 │   │   │   ├── presence.rs     # the publish latch (§17.5)
 │   │   │   ├── error.rs        # EngineError + Result; folds DocError in
 │   │   │   ├── filters.rs      # the filter passes' host-side numbers (§6.10, §21)
-│   │   │   ├── document/       # the state the log folds into
-│   │   │   │   ├── apply.rs     # impl Materialize for DocState — the fold (§4)
+│   │   │   ├── document/       # the state the log folds into; names no renderer
 │   │   │   │   ├── state.rs     # DocState: layers, selections, substrate, guides
 │   │   │   │   ├── substrate.rs # Substrate: which map, laid how large (§6.4)
-│   │   │   │   ├── timeline.rs  # Timeline trait; Linear + Replicated impls
 │   │   │   │   ├── layer.rs     # Layer, LayerContent, PaintTiles (§14)
 │   │   │   │   ├── selection.rs # the mask the op produces (§6.8)
 │   │   │   │   ├── fill.rs      # planning a fill against the mask (§6.8)
 │   │   │   │   ├── transform.rs # the tile plans (§16)
-│   │   │   │   ├── merge.rs     # merging a layer down (§14.11)
 │   │   │   │   └── patch.rs     # Materialize::unfold (§12.6)
+│   │   │   ├── fold/           # the folding — above gpu/, since it holds every renderer
+│   │   │   │   ├── apply.rs     # impl Materialize for DocState — the fold (§4)
+│   │   │   │   ├── timeline.rs  # Timeline trait; Linear + Replicated impls
+│   │   │   │   ├── merge.rs     # merging a layer down (§14.11)
+│   │   │   │   └── audit.rs     # every apply touches only its Footprint (§12.6)
 │   │   │   ├── colorspace.rs   # ColorSpace trait; Oklab + Mixbox impls (§6.7)
 │   │   │   ├── assets.rs       # the content-addressed asset store (§6.6)
 │   │   │   ├── noise.rs        # tileable 2-D noise tiles for color dynamics (§6.2)

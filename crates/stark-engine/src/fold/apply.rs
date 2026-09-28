@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use super::substrate::Substrate;
+use crate::document::substrate::Substrate;
 use stark_model::AssetId;
 use stark_model::document::{
     Action, ActionId, ActionKind, ActorId, FillOp, Footprint, LayerId, Materialize, Resource,
@@ -14,12 +14,12 @@ use stark_model::document::{
 };
 use stark_model::geom::{IVec2, TileRect};
 
-use super::guides::Guide;
-use super::layer::{Layer, PaintTiles, PropValue};
-use super::liquify::LiquifyRun;
-use super::selection::Selection;
-use super::state::DocState;
 use crate::device::tile::TilePool;
+use crate::document::guides::Guide;
+use crate::document::layer::{Layer, PaintTiles, PropValue};
+use crate::document::liquify::LiquifyRun;
+use crate::document::selection::Selection;
+use crate::document::state::DocState;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::stroke::StrokeRenderer;
 use crate::gpu::transform::plan::plan_float;
@@ -52,7 +52,7 @@ pub struct ApplyCtx {
     ///
     /// Here rather than only beside the compositor, because the **deposit reads it**:
     /// the tooth gates the paint a stroke lays by the substrate under it. Asked with
-    /// [`DocState::substrate`](super::state::DocState) and its scale *as the log stood
+    /// [`DocState::substrate`](crate::document::state::DocState) and its scale *as the log stood
     /// at that action*, so a stroke from before a mid-document `SetSubstrate` deposits
     /// against the substrate it was painted on, at the size it was laid at, on replay
     /// and on a peer alike.
@@ -563,7 +563,7 @@ impl Materialize for DocState {
     /// Held to that footprint by `Logged::inverse`, where the fold's own audit is
     /// (§12.6).
     fn unfold(&mut self, footprint: &Footprint, previous: &DocState) {
-        *self = super::patch::unapply(footprint, previous, self);
+        *self = crate::document::patch::unapply(footprint, previous, self);
     }
 }
 
@@ -718,7 +718,7 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
 /// Takes the actor rather than the [`Action`] because that is all any arm reads of
 /// it: the author's own mask is keyed by it (§17.3) and `SetSelectionOpacity` writes
 /// through it. Nothing here reads the Lamport clock.
-pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> Folded {
+pub(crate) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> Folded {
     Folded::Done(match kind {
         ActionKind::AddLayer {
             id,
@@ -859,7 +859,7 @@ pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> 
 ///
 /// Not a `Result`, because neither answer is a failure: a kind this half does not fold
 /// is one [`apply`] renders itself.
-pub(super) enum Folded {
+pub(crate) enum Folded {
     /// Folded here: the document with the action in it.
     Done(DocState),
     /// Not folded: the state as it arrived, for the caller that has a renderer.

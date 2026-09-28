@@ -8,7 +8,8 @@ use std::sync::Arc;
 
 use super::Engine;
 use crate::command::Tool;
-use crate::document::{CanvasBounds, DocState, Layer, LayerContent, merge};
+use crate::document::{CanvasBounds, DocState, Layer, LayerContent};
+use crate::fold::merge;
 use crate::gpu::environment::EnvironmentId;
 use crate::projection::{Projected, Revision};
 use crate::view::ViewTransform;

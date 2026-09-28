@@ -710,7 +710,7 @@ impl Layer {
     ///
     /// The borrow is the **tree's**, not each call's, so a walk may keep the layers
     /// it has seen and answer a question about a layer's lower sibling or its carrier
-    /// without searching for either ([`MergeSite`](super::merge::MergeSite)).
+    /// without searching for either ([`MergeSite`](crate::fold::merge::MergeSite)).
     pub fn visit<'a>(&'a self, depth: usize, f: &mut impl FnMut(&'a Layer, usize)) {
         f(self, depth);
         for l in self.carries.iter() {

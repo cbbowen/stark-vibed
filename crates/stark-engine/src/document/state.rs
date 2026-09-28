@@ -1134,7 +1134,7 @@ mod tests {
     /// the neutral 1, where the setter's own `clamp` kept the NaN.
     #[test]
     fn a_wild_value_lands_as_the_funnel_leaves_it() {
-        use super::super::apply::{Folded, apply_pure};
+        use crate::fold::apply::{Folded, apply_pure};
         use stark_model::document::{Action, ActionId, ActionKind, Logged};
 
         // Through the door the history folds through, then the fold itself.

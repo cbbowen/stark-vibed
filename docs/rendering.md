@@ -946,7 +946,7 @@ One cost the channel does carry, stated rather than hidden:
   extent snapshot's color and aux, which ride in the tail of that dispatch (§6.2),
   and the reservoir's color and aux — which is exactly WebGPU's guaranteed
   `maxStorageTexturesPerShaderStage`. The residual's two put it at six, so
-  `minimum_required_limits` now asks for six. See `gpu/context.rs` for what that costs
+  `minimum_required_limits` now asks for six. See `device/context.rs` for what that costs
   and for the packing that would get back to four if a device ever reports it.
 
 The `bake`'s workgroup scan pays nothing worth quoting: one more `vec4` array a

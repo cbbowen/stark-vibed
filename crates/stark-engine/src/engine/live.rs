@@ -12,8 +12,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::Engine;
 use crate::command::Edit;
-use crate::document::apply::{fill_onto, select_onto};
-use crate::document::{ApplyCtx, DocState, Layer, PreparedStroke};
+use crate::document::{DocState, Layer};
+use crate::fold::apply::{fill_onto, select_onto};
+use crate::fold::{ApplyCtx, PreparedStroke};
 use crate::gesture::{GestureView, LiveGesture};
 use crate::gpu::stroke::Progress;
 use crate::gpu::stroke::StrokeSpans;

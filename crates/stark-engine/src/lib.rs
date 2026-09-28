@@ -20,10 +20,12 @@
 //!
 //! # The layers underneath
 //!
-//! - [`document`] — [`Action`](stark_model::document::Action)s, the
-//!   [`document::Timeline`] that orders them (linear solo, replicated when
-//!   shared), and [`document::DocState`], a persistent map of copy-on-write
-//!   tiles (§5).
+//! - [`document`] — the state a log folds into: [`document::DocState`], a persistent
+//!   map of copy-on-write tiles (§5).
+//! - [`fold`] — the folding itself: what an
+//!   [`Action`](stark_model::document::Action) *does*, and the [`fold::Timeline`] that
+//!   orders them (linear solo, replicated when shared). A tier above [`gpu`], because
+//!   the context it folds through holds every renderer (§2).
 //! - [`session`] — view state: the tool, the brush, what they are aimed at and the
 //!   in-flight gesture (§3). The pan/zoom ([`view`]) is the engine's own field, for
 //!   the reason `session`'s own doc gives.
@@ -74,6 +76,7 @@ pub mod document;
 pub(crate) mod engine;
 pub(crate) mod error;
 pub mod filters;
+pub(crate) mod fold;
 pub(crate) mod gesture;
 pub(crate) mod gpu;
 pub mod guides;

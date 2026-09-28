@@ -109,7 +109,7 @@ these should appear in code again.
 | Term | What it is instead | Defined in |
 |---|---|---|
 | **binding** | Unqualified, the shader's own `@binding` — one slot in one `@group`. The generated mirror splits it two ways: `mirror::<module>::binding::*` is the bare index, and `mirror::<module>::decl::*` the whole declaration (group, index, kind, `@if(resid)` gate), which is what a host names a slot by. `BINDINGS` is that same set in declaration order, for a check that asks about the set. | [`stark-shaders-build/src/emit/bindings.rs`](../crates/stark-shaders-build/src/emit/bindings.rs) |
-| **`Bindings`** (engine) | Not a plural of the above: a *bind group layout* plus the entries it was derived from, so a group built from it cannot disagree with it (§6.10). | [`stark-engine/src/gpu/desc.rs`](../crates/stark-engine/src/gpu/desc.rs) |
+| **`Bindings`** (engine) | Not a plural of the above: a *bind group layout* plus the entries it was derived from, so a group built from it cannot disagree with it (§6.10). | [`stark-engine/src/device/desc.rs`](../crates/stark-engine/src/device/desc.rs) |
 | **binding** (chrome) | A chord reaching a command, or a drag reaching a gesture — the §25 registries. Always a *key* or *drag* binding in prose, never bare. | [`stark-ui/src/drags.rs`](../crates/stark-ui/src/drags.rs) |
 
 ## The document and the log
@@ -119,7 +119,7 @@ these should appear in code again.
 | **action** | An entry in the log — the document itself (§4). Deterministically ordered, replayable, never deleted (retired ones are tombstoned). | [`stark-model/src/document/action.rs`](../crates/stark-model/src/document/action.rs) |
 | **command** | What the frontend *asks for*. A command may produce an action, several, or none; the boundary between the two is §4. | [`stark-engine/src/command.rs`](../crates/stark-engine/src/command.rs) |
 | **deed** | What the guided tour reads off the `dispatch` seam: not what a command *says*, but what it *changed* (§24). Only `tutor/` uses this word. | [`stark-dioxus-frontend/src/tutor/lessons.rs`](../crates/stark-dioxus-frontend/src/tutor/lessons.rs) |
-| **timeline** | The history structure: the ordered actions plus what is currently materialized. `DocState` is its derived, cached view. | [`stark-engine/src/document/timeline.rs`](../crates/stark-engine/src/document/timeline.rs) |
+| **timeline** | The history structure: the ordered actions plus what is currently materialized. `DocState` is its derived, cached view. | [`stark-engine/src/fold/timeline.rs`](../crates/stark-engine/src/fold/timeline.rs) |
 | **roster** | A list the document or session owns in order — the presence roster (§17), the drawing-guide roster (§20.5). Always qualified. | [`stark-engine/src/peer.rs`](../crates/stark-engine/src/peer.rs) |
 | **ledger** | Browser-local, per-viewer state that is *not* in the document — what the tour has already said. | [`stark-dioxus-frontend/src/tutor/lessons.rs`](../crates/stark-dioxus-frontend/src/tutor/lessons.rs) |
 

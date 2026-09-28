@@ -9,7 +9,7 @@ use super::Engine;
 use super::capture::Capture;
 use super::live::Held;
 use crate::command::{DocCommand, Edit, GestureCommand, PeerCommand, ViewCommand};
-use crate::document::Step;
+use crate::fold::Step;
 use crate::gesture::LiveGesture;
 use stark_model::document::{ActionId, ActionKind, GuideId, LayerId, TransformMap};
 
@@ -313,7 +313,7 @@ impl Engine {
                 // that would cut nothing logs nothing (§16.12).
                 let frame = self.frame_of(layer);
                 let (doc, actor) = (self.document(), self.actor());
-                if crate::document::apply::float_cut_offered(doc, actor, layer, frame) {
+                if crate::fold::apply::float_cut_offered(doc, actor, layer, frame) {
                     // The float is also what the hand is about to move.
                     self.mint_layer(|a, number| ActionKind::FloatSelection {
                         layer,
@@ -423,7 +423,7 @@ impl Engine {
                 // decline never reaches the log or repoints the brush — the same
                 // argument `Transform` makes about a degenerate map. `apply` asks again,
                 // because a peer's action does not pass through here (§14.11).
-                if let Some(plan) = crate::document::merge::offer(self.document(), id) {
+                if let Some(plan) = crate::fold::merge::offer(self.document(), id) {
                     // Read **before** the commit, which is what makes it answerable:
                     // the commit repoints the brush off the layer it is about to fold
                     // away (§17.9), so afterwards there is nothing left to compare.
@@ -476,7 +476,7 @@ impl Engine {
     ///
     /// `None` clears the preview, which is what the release of a drag that changed
     /// nothing sends, and so does an edit whose commit would be declined. The sanitize
-    /// and the fold both happen inside [`crate::document::apply::preview_of`], so this
+    /// and the fold both happen inside [`crate::fold::apply::preview_of`], so this
     /// cannot forget a step it does not perform.
     ///
     /// It moves the document the compositor reads and stops there: no
@@ -491,7 +491,7 @@ impl Engine {
     /// action its release would commit.
     fn held(&self, edit: Edit) -> Held {
         let shown = self.edit_kind(edit.clone()).and_then(|kind| {
-            crate::document::apply::preview_of(
+            crate::fold::apply::preview_of(
                 kind,
                 self.timeline.current(),
                 self.actor(),

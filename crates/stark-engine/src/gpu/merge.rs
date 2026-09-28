@@ -6,7 +6,7 @@
 //! and the pool reclaims what falls out of reach.
 //!
 //! The arithmetic is `merge.wesl`'s and the rule is
-//! [`document::merge`](crate::document::merge)'s; what is left here is the tile
+//! [`document::merge`](crate::fold::merge)'s; what is left here is the tile
 //! bookkeeping, and the one part of it worth stating is **what this does not draw**.
 //! A merge is normally lopsided — a few tiles of stroke onto a background that spans
 //! the canvas — so a tile only one side has, and which that side's opacity leaves
@@ -58,7 +58,7 @@ pub(crate) struct MergeSide<'a> {
 
 /// One merge, described: the two layers and how the upper's paint meets the lower's.
 ///
-/// Decided in one place, [`merge::plan`](crate::document::merge::plan). `blend` and
+/// Decided in one place, [`merge::plan`](crate::fold::merge::plan). `blend` and
 /// `clip` are the **source layer's own** (§14.11): a merge folds the upper layer into
 /// the lower through exactly the merge the compositor would have run between them.
 #[derive(Copy, Clone)]

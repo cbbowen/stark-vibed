@@ -26,10 +26,10 @@ use stark_model::document::Action;
 use stark_model::document::{Footprint, LayerId, Prop, Resource};
 use stark_model::geom::TileCoord;
 
-use super::layer::Layer;
-use super::liquify::LiquifyRun;
-use super::selection::Selection;
-use super::state::DocState;
+use crate::document::layer::Layer;
+use crate::document::liquify::LiquifyRun;
+use crate::document::selection::Selection;
+use crate::document::state::DocState;
 
 /// One addressable difference between two states, named as the [`Resource`] that owns
 /// it — the same vocabulary a footprint speaks, so coverage is a containment test

@@ -344,7 +344,7 @@ mod tests {
     }
 
     /// The action folded into `state` — **the fold itself**, through the half of
-    /// [`apply`](super::super::apply) that is a `DocState` call and nothing else (§4).
+    /// [`apply`](crate::fold::apply) that is a `DocState` call and nothing else (§4).
     ///
     /// A GPU kind hands the state straight back and there is nothing here to render
     /// it with, which is what makes "this suite drives the ctx-free half" a fact
@@ -355,9 +355,9 @@ mod tests {
         };
         state
     }
-    use super::super::apply::{Folded, apply_pure};
-    use super::super::audit::undeclared;
     use super::super::guides::Guide;
+    use crate::fold::apply::{Folded, apply_pure};
+    use crate::fold::audit::undeclared;
     use stark_model::document::{Action, ActionId, ActionKind, ActionTag, GuideId};
     use stark_model::document::{BlendMode, Filter, MatteRegion, Place};
     use stark_model::{AssetId, SubstrateId, SubstrateScale};

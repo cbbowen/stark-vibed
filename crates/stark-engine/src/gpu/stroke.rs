@@ -338,7 +338,7 @@ impl StrokeRenderer {
         // path rows below are read against. Its *count* is the one number that says
         // how much of this is the live preview: a gesture renders its tail on every
         // frame it survives, and its commit then takes that render rather than
-        // adding one (`document::PreparedStroke`) — so a replay, a redo or a peer's
+        // adding one (`fold::PreparedStroke`) — so a replay, a redo or a peer's
         // action is what a commit's entry here means.
         crate::timing::span!("stroke.range");
         // Refused before anything is flattened or walked, from the record alone, so a

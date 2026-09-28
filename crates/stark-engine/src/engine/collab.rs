@@ -13,7 +13,8 @@
 use super::commit::Drag;
 use super::{Engine, ROOT_LAYER};
 use crate::Result;
-use crate::document::{DocState, LinearTimeline, ReplicatedTimeline, Timeline};
+use crate::document::DocState;
+use crate::fold::{LinearTimeline, ReplicatedTimeline, Timeline};
 use crate::peer::{Identity, Peer};
 use stark_model::DocumentFile;
 use stark_model::document::{Action, ActorId};

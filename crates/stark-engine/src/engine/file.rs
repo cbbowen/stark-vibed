@@ -13,7 +13,7 @@ use super::commit::Drag;
 use super::{Authoring, Engine, ROOT_LAYER};
 use crate::Result;
 use crate::document::Substrate;
-use crate::document::{LinearTimeline, Timeline};
+use crate::fold::{LinearTimeline, Timeline};
 use crate::gpu::environment::EnvironmentId;
 use stark_model::AssetId;
 use stark_model::AssetNeed;

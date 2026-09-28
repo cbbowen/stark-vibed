@@ -41,9 +41,9 @@
 //! answer, the adjustment being nonlinear, so filtering the stops is not filtering the
 //! ramp.
 
-use super::layer::{CompositeParams, Layer};
-use super::selection::Selection;
-use super::state::DocState;
+use crate::document::layer::{CompositeParams, Layer};
+use crate::document::selection::Selection;
+use crate::document::state::DocState;
 use crate::gpu::transform::plan::plan_paint;
 use stark_model::document::LayerId;
 use stark_model::geom::{Affine2, IVec2};

@@ -503,7 +503,7 @@ assert_golden!("oil_blend_01", png, tolerance);
   tile's own channels: four lanes of color whose fourth is the per-unit **opacity**,
   one lane of **height**, and the residual where the space has one (§6.7).
 
-  The reader lives in `gpu/tile.rs` rather than in `gpu/readback.rs` or in the test
+  The reader lives in `device/tile.rs` rather than in `device/readback.rs` or in the test
   harness, and that placement is the design. `readback` reads `wgpu::Texture`s;
   a tile does not hand one out, because `Texture::destroy` takes `&self`, so a
   borrow is enough to leave the pool's free list holding a view onto nothing. The

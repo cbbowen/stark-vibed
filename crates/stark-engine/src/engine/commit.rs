@@ -7,7 +7,8 @@
 //! gone, and the undo depth given up to memory.
 
 use super::Engine;
-use crate::document::{ApplyCtx, DocState, LinearTimeline, Step, Stepped, Timeline};
+use crate::document::DocState;
+use crate::fold::{ApplyCtx, LinearTimeline, Step, Stepped, Timeline};
 use stark_model::document::{Action, ActionId, ActionKind, LayerId, StrokeRecord};
 
 /// The committed timeline: readable anywhere in the engine, **writable only through
@@ -73,7 +74,7 @@ pub(super) enum Drag {
 pub const DEFAULT_HISTORY_BUDGET: u64 = 2 << 30;
 
 /// Whether a stroke's commit takes the tiles its live preview already drew, rather
-/// than rendering the stroke again at pen-up (`document::PreparedStroke`, §6.2).
+/// than rendering the stroke again at pen-up (`fold::PreparedStroke`, §6.2).
 ///
 /// **On**, because the two renders are the same picture to within a level or two and
 /// only one of them is paid for while the artist is waiting. What off buys is not a
@@ -192,7 +193,7 @@ impl Engine {
     }
 
     /// Log one action and apply it — **unless the document already reads that way**
-    /// ([`is_noop_on`](crate::document::apply::is_noop_on)), in which case nothing is
+    /// ([`is_noop_on`](crate::fold::apply::is_noop_on)), in which case nothing is
     /// logged and the drag in flight is still dropped.
     ///
     /// **One door, so an arm of [`process_doc`](Self::process_doc) is one word.** A
@@ -215,7 +216,7 @@ impl Engine {
         // a slider released on the value it was pressed on would compare unequal to its
         // own sanitized twin — the case the check exists to catch.
         let kind = kind.sanitized();
-        if crate::document::apply::is_noop_on(&kind, self.document(), self.actor()) {
+        if crate::fold::apply::is_noop_on(&kind, self.document(), self.actor()) {
             self.preview.hold(None);
             return;
         }
@@ -330,7 +331,7 @@ impl Engine {
     /// What is measured is resident tile bytes, and what a fold releases is the tile
     /// handles the discarded snapshots pinned.
     ///
-    /// A shared session declines by construction, because [`Timeline::forget_oldest`](crate::document::Timeline::forget_oldest)
+    /// A shared session declines by construction, because [`Timeline::forget_oldest`](crate::fold::Timeline::forget_oldest)
     /// does: its document is re-materialized from the whole log (§12.2), so nothing
     /// there is foldable. Nothing about this call site has to know that.
     fn trim_history(&mut self) {
