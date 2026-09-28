@@ -5,6 +5,16 @@
 //! [`Parcel`] and the rest of what a layer *is* as a fact about the document — is
 //! `stark-model`'s `document::layer`. The line is the usual one (§2): those are in
 //! the log, these hold tiles.
+//!
+//! # Refusals
+//!
+//! A layer refuses what its content cannot mean — a stroke aimed at a matte, a blend
+//! mode on a filter — by handing itself back unchanged. **Every such refusal is the
+//! document's and not a frontend rule**, which is what keeps a replay and a peer
+//! agreeing about a log that happens to contain the action (§12.6): a check only the
+//! chrome made would leave the engine to swallow it, or to invent something. So the
+//! sites below say *what* they turn away and leave the reason here;
+//! [`Layer::with_prop`] is the one list of which layers refuse which property.
 
 use stark_model::document::Filter;
 use std::rc::Rc;
@@ -64,10 +74,8 @@ impl CompositeParams {
     };
 
     /// Whether these do nothing, so what they describe can draw straight into the
-    /// accumulator instead of being isolated and merged (§6.3, §14.7).
-    ///
-    /// One predicate over all three rather than three tests at each call site: a
-    /// layer needs isolating if *any* of them does something.
+    /// accumulator instead of being isolated and merged (§6.3, §14.7) — one predicate
+    /// over all three rather than three tests at each call site.
     pub(crate) fn is_free(self) -> bool {
         self.blend.is_normal() && !self.clip && self.opacity >= 1.0
     }
@@ -296,13 +304,12 @@ pub struct Layer {
     /// How this layer — **and everything it carries** — meets what lies beneath it
     /// (§14.4.3). One value rather than three fields: see [`CompositeParams`].
     ///
-    /// The **clip** is the one worth restating here (§14.4). The layer exists only
-    /// where there is paint under it *in its own stack*: it inherits the alpha of
-    /// everything composited below it there, not of "the nearest layer that is not
-    /// itself clipped". There is no chain to trace, because the group is what bounds
-    /// *below* — clipping to exactly one layer is that layer carrying this one. It is
-    /// not a scale on the source's alpha; see `blend_common.wesl` for why that is the
-    /// wrong operation and what the right one is.
+    /// What the **clip** inherits is the part no signature shows (§14.4): the alpha of
+    /// everything composited below it *in its own stack*, not of "the nearest layer
+    /// that is not itself clipped". There is no chain to trace, because the group is
+    /// what bounds below — clipping to exactly one layer is that layer carrying this
+    /// one. Nor is it a scale on the source's alpha; `blend_common.wesl` says why that
+    /// is the wrong operation and what the right one is.
     pub composite: CompositeParams,
     /// Whether the layer contributes to the composite.
     pub visible: bool,
@@ -359,11 +366,7 @@ pub struct Layer {
 
 impl Layer {
     /// Whether the compositor draws this layer at all — **and with it, everything it
-    /// carries**, since the group *is* the layer (§14.3).
-    ///
-    /// The draw list's first cull, and the one predicate every other cull in the
-    /// renderer and the projection must agree with (`LayerInfo::has_underlay`'s doc
-    /// says it "follows the renderer").
+    /// carries**, since the group *is* the layer (§14.3). The draw list's first cull.
     ///
     /// Fully transparent counts as hidden because it is: the compositor multiplies by
     /// this weight, so zero contributes nothing and the subtree beneath it is a draw
@@ -453,13 +456,9 @@ impl Layer {
     ///
     /// **The one test for "is there paint here"**, and an `Option` rather than an empty
     /// [`PaintTiles`] so a matte or a filter cannot silently read as an empty paint
-    /// layer.
-    ///
-    /// **The refusal is the point.** A matte has no tile map, so a stroke, a fill or a
-    /// transform aimed at one is turned away rather than swallowed or magically
-    /// rasterized (§15.7) — and turned away in the *engine*, not only in the frontend,
-    /// which is what keeps replay and peers agreeing about a log that happens to contain
-    /// such an action. An absent layer reads the same way.
+    /// layer — nor be swallowed or magically rasterized when a stroke, a fill or a
+    /// transform is aimed at one (§15.7; see *Refusals*). An absent layer reads the
+    /// same way.
     pub fn paint(&self) -> Option<&PaintTiles> {
         match &self.content {
             LayerContent::Paint(tiles) => Some(tiles),
@@ -537,9 +536,8 @@ impl Layer {
         })
     }
 
-    /// Whether strokes may be painted onto this layer. Neither a matte nor a filter
-    /// has a tile map, so a stroke targeting one is refused rather than silently
-    /// swallowed or magically rasterized (§15.7, §21.4).
+    /// Whether strokes may be painted onto this layer — [`paint`](Self::paint) for a
+    /// caller that wants only the answer (§15.7, §21.4).
     pub fn is_paintable(&self) -> bool {
         matches!(self.content, LayerContent::Paint(_))
     }
@@ -563,8 +561,7 @@ impl Layer {
     /// since a render answers with a whole [`PaintTiles`] and so carries the liquify
     /// run it composed through rather than leaving the fold to pair one up.
     ///
-    /// A no-op on anything with no paint to replace: a stroke aimed at a matte or a
-    /// filter is refused (§15.7, §21.4).
+    /// A no-op on anything with no paint to replace (§15.7, §21.4).
     pub(crate) fn with_painted(&self, paint: PaintTiles) -> Self {
         match &self.content {
             LayerContent::Paint(_) => Self {
@@ -659,14 +656,10 @@ impl Layer {
     }
 
     /// The same layer with one property written — [`prop`](Self::prop)'s inverse, and
-    /// the one statement of **which layers refuse which property**. A refusal hands
-    /// the layer back unchanged, in the document rather than in a frontend rule (see
-    /// `DocState`'s *Refusals*):
+    /// the one statement of **which layers refuse which property**:
     ///
-    /// - A **blend mode on a filter** (§21.4). A mode says how a source meets a
-    ///   backdrop, and a filter has no source — nor, never carrying (§21.2), a group
-    ///   whose merge the mode could describe. Its **clip** is live: a clip says where
-    ///   the layer may land, which survives having no source (§21.4.1).
+    /// - A **blend mode on a filter**, whose clip stays live — the asymmetry is
+    ///   [`LayerContent::Filter`]'s (§21.4, §21.4.1).
     /// - A **translation on a filter**, which has nothing that sits anywhere
     ///   ([`is_translatable`](Self::is_translatable)).
     /// - A **matte's region and paint** on anything but a matte, and a **filter** on

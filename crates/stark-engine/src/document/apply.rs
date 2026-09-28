@@ -177,7 +177,15 @@ impl ApplyCtx {
     }
 }
 
-/// A deterministic refusal (§12.1): the state as it arrived, and a warning saying why.
+/// A deterministic refusal: the state as it arrived, and a warning saying why.
+///
+/// **Every refusal in this file is a function of the state being folded, and of
+/// nothing else** (§12.1). That is what makes the whole class safe to leave in the
+/// log: a peer and a replay fold the same action against the same state and decline
+/// together, where a refusal that read a clock, a device or a frontend's opinion would
+/// leave two clients holding different documents with no pixel to say which.
+/// The sites below therefore say only *what* they turn away.
+///
 /// Only the fold says so — a preview of the same refusal shows the committed document
 /// and says nothing, since it would say it on every pointer move.
 fn declined(state: DocState, why: &'static str) -> DocState {
@@ -300,9 +308,9 @@ fn stroke_apply(
     state.map_layer(rec.layer, |l| l.with_painted(painted))
 }
 
-/// The body of [`ActionKind::PlaceImage`] (§23): the layer `add` mints — by exactly
-/// the call an `AddLayer` makes, so an unknown carrier declines it identically —
-/// holding the picture `image` with its top-left texel at `at`.
+/// The body of [`ActionKind::PlaceImage`] (§23): the layer `add` mints — by exactly the
+/// call an `AddLayer` makes, so an unknown carrier turns both away alike — holding the
+/// picture `image` with its top-left texel at `at`.
 ///
 /// The tiles are built only once the layer is known to have landed: for a layer that
 /// is not there they would be a photograph's worth of GPU memory for nothing. They
@@ -353,11 +361,9 @@ fn place_apply(
 /// move.
 ///
 /// The plan is **re-derived from the state being folded over** rather than trusted
-/// from the log ([`merge::offer`](super::merge::offer), which the command and the
-/// panel ask too), so a replay and a peer decide from the same document — and a plan
-/// that no longer names `dest` (a concurrent reorder, a mode set on either layer
-/// since) declines the whole action, leaving the document untouched. Deterministic,
-/// so everyone declines together.
+/// from the log ([`merge::offer`](super::merge::offer), which the command and the panel
+/// ask too), and a plan that no longer names `dest` — a concurrent reorder, a mode set
+/// on either layer since — declines the whole action ([`declined`]).
 fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) -> DocState {
     let Some(plan) = super::merge::offer(&state, source) else {
         return declined(state, "merge down no longer offered here");
@@ -572,8 +578,8 @@ impl Materialize for DocState {
 /// either.
 ///
 /// **Total.** An action that cannot be honoured — a stroke on a missing layer, a
-/// transform past the tile caps — returns the state unchanged rather than an error,
-/// so every peer declines it identically (`Materialize::fold`).
+/// transform past the tile caps — returns the state unchanged rather than an error
+/// ([`declined`]).
 fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
     let actor = action.id.actor;
     match &action.kind {
@@ -728,8 +734,7 @@ pub(super) fn apply_pure(kind: &ActionKind, state: DocState, actor: ActorId) -> 
         // **Declined unless the subtree is what the action names** (§12.6). Every id
         // in it is a `Resource::Layer` write, so a group holding one the action does
         // not name — a peer's concurrent add — would write state nothing declared.
-        // Asked of the state being folded, so peers and replays decline the same
-        // action; `duplicate_layer` refuses on the same terms.
+        // `duplicate_layer` refuses on the same terms.
         ActionKind::RemoveLayer { id, carried } => {
             match state.carried_ids(*id) {
                 // Absent: nothing to remove, and the arm below would say the same.
@@ -959,9 +964,8 @@ pub(crate) fn preview_of(
 /// - **A write to paint, to which layers exist, or to the tree's shape is `false`**,
 ///   read off the footprint. Finding out whether a stroke left a layer byte-identical
 ///   means rendering it, and a structural edit's refusals — a cycle, a subtree the
-///   action no longer names — are the deterministic declines §12.1 wants in the log
-///   so that every peer declines together. A false "no" costs an undo step; a false
-///   "yes" would silently drop an edit.
+///   action no longer names — are declines that belong *in* the log ([`declined`]).
+///   A false "no" costs an undo step; a false "yes" would silently drop an edit.
 /// - **An action naming a layer the document lacks is `false`**, read off the same
 ///   footprint: inert *here*, but a peer whose concurrent undo has just put that layer
 ///   back applies it, and a log that omitted it would be a different log on the two
@@ -1090,8 +1094,9 @@ mod tests {
         is_noop_on(&kind, state, ACTOR)
     }
 
-    /// The first drift: `Layer::with_prop` refuses a blend on a filter (§21.4), so the
-    /// action folds to nothing — and the hand-written arm compared the mode anyway.
+    /// A refusal the *fold* makes is a no-op, whatever the payload says: `with_prop`
+    /// turns a blend on a filter away (§21.4), so comparing the mode would log an
+    /// action that changes nothing.
     #[test]
     fn a_blend_the_filter_refuses_is_not_an_edit() {
         let state = furnished();
@@ -1106,8 +1111,8 @@ mod tests {
         ));
     }
 
-    /// The second drift: `set_matte_rect` refuses a rect it cannot measure and a
-    /// region with no rect to move, and the hand-written arm compared corners anyway.
+    /// The same rule where the refusal is geometric: `set_matte_rect` turns away a rect
+    /// it cannot measure, and a region with no rect to move at all.
     #[test]
     fn a_rect_the_matte_refuses_is_not_an_edit() {
         let state = furnished();
