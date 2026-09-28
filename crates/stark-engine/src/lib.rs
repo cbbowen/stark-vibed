@@ -81,6 +81,9 @@ pub(crate) mod gesture;
 pub(crate) mod gpu;
 pub mod guides;
 pub(crate) mod image;
+/// The module layering, checked against the source (§2) — see the module.
+#[cfg(test)]
+mod layering;
 pub(crate) mod noise;
 pub(crate) mod peer;
 pub(crate) mod pictures;

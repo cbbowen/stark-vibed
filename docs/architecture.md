@@ -280,6 +280,53 @@ Two caveats, stated rather than hidden:
   therefore do not run under `cargo nextest run --workspace` — run them by hand
   when the vendored code changes (§20).
 
+### 2.1 The engine's module layering
+
+The crate-boundary rule above says which *crate* a type lives in. Inside
+`stark-engine` — sixty thousand lines, twenty-odd top-level modules — the same
+question is asked of modules, and for a while nothing answered it: `document/` held
+tile handles and named `gpu::tile`, `gpu/` named `document::selection`, and the two
+largest modules of the crate were a cycle that no tool reported. `peer` and
+`presence` were a second one, two `use` lines wide.
+
+**A module may name only what is in a tier below its own.** Lowest first:
+
+| Tier | Modules | What it is |
+|---|---|---|
+| 0 | the crate root's own items | `unpoisoned`, the timing macro — they name nothing |
+| 1 | `view` `colorspace` `timing` `gesture` `noise` `projection` `filters` `guides` `path` | the leaves: no `crate::` path leaves any of them |
+| 2 | `error` | `EngineError`, `ExportError`, and `DeviceFailure` with them |
+| 3 | `device` | the wgpu context and what it hands out: tiles, scratch, descriptors, channels, uniforms, readback |
+| 4 | `image` `pictures` | |
+| 5 | `assets` | the content-addressed brush-shape store |
+| 6 | `document` | the state a log folds into. **Names `device` and nothing above it** |
+| 7 | `gpu` | the passes |
+| 8 | `fold` | the folding — `ApplyCtx` holds every renderer, so it is above all of them |
+| 9 | `command` | |
+| 10 | `presence` → 11 `peer` → 12 `session` | the roster is above the protocol that fills it |
+| 13 | `engine` | owns everything |
+
+`testing` is outside the layering rather than at the top of it: it is the suite's
+harness, so it reaches down to whatever a test must see while `#[cfg(test)]` code at
+every tier reaches it back for a device or a skip.
+
+**The tiers are checked against the source**, in `stark-engine/src/layering.rs`: every
+`crate::<top>` path in the crate is read out of the files, resolved through the crate
+root's re-exports (so `crate::Engine` reads as the edge to `engine` that it is), and
+held to the table. A strict ordering cannot contain a cycle, so this rules the class
+out rather than listing the instances — which is the point: a new edge that would close
+a loop fails a test the round it is written. The module's own doc states what reading
+text cannot see (a `#[cfg]`, a re-export chain, an alias, a relative path), and
+`#[cfg(test)]` code is deliberately out of scope, because a test module legitimately
+reaches up.
+
+One edge does not obey the rule, and the table names it with its reason:
+`assets` → `gpu`, because the brush-shape store bakes its prefix volumes through
+`gpu::stroke::volume` — whose rise measurement is priced against the liquify step
+budget beside it — while `gpu::stroke` resolves a tip *through* the store. Retiring it
+means `StrokeScene` carrying a resolved tip instead of the store, which is a signature
+change rather than a move. An exception that outlives its reason fails the suite too.
+
 ## 3. Layered architecture
 
 ```

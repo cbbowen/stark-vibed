@@ -85,8 +85,14 @@ crates/
                    is its `STARK_GOLDEN_EXACT` — blake3 over the fitted and flattened
                    bits of six recorded strokes
   stark-engine/    the derived view — no UI, no windowing; compiles to wasm
-    document/      DocState, the timeline, and the fold that fills them
-    gpu/           tile pool, stroke renderer, compositor, readback
+    document/      DocState: the state a log folds into. Names no renderer, which
+                   is what makes the modules below a layering rather than a tangle
+    fold/          the fold that fills it, the timeline that orders it, and the
+                   §12.6 audit — above `gpu`, since `ApplyCtx` holds every renderer
+    device/        the wgpu context and what it hands out: the tile pool, scratch,
+                   descriptors, channels, uniforms, readback. Below `document`
+    gpu/           the passes: stroke renderer, compositor, the substrate bake
+    layering.rs    the tier table, read off the source — see §2.1 and the rule below
     filters.rs     what a frontend needs in order to predict or draw what a filter
     guides.rs      pass or the guide overlay will do, read off the generated shader
                    mirror rather than transcribed (§6.10)
@@ -340,6 +346,13 @@ per-test tolerance hides exactly that drift. Deleting a golden re-blesses it.
 - **A new engine method that mutates state and returns nothing is a bug** — it
   should be a command (§4). Operations that must *answer* are a named request
   tier, so they stay countable when the engine moves behind a channel.
+- **`stark-engine`'s top-level modules are a strict layering** (§2.1). A module may
+  name only what is in a tier below its own, and `src/layering.rs` reads every
+  `crate::<top>` path out of the crate's own source to say so — which rules out
+  cycles as a class instead of listing the two that had already formed. A new
+  top-level module must take a tier before anything may name it, and the one
+  declared exception carries its reason and the signature change that would retire
+  it. `#[cfg(test)]` code is out of scope on purpose: a test reaches up.
 
 ## Conventions
 
