@@ -1073,6 +1073,7 @@ impl TilePool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::context_or_skip;
 
     /// [`Census`] indexes by discriminant, and the array it indexes is as long as the
     /// variant count — so what is left to check is that a discriminant really is a
@@ -1272,16 +1273,6 @@ mod tests {
 
     /// The pool's color channel format — the free list the four tests below watch.
     const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-
-    /// A context, or `None` where the machine has no adapter *and*
-    /// [`ALLOW_NO_GPU`](crate::testing::ALLOW_NO_GPU) permits the skip. Panics otherwise:
-    /// a skipped GPU test still reports `ok`.
-    ///
-    /// **Uncached**, unlike the suite's: these watch a pool's free list, so each wants a
-    /// device nothing else has drawn on.
-    fn context_or_skip() -> Option<GpuContext> {
-        crate::testing::or_skip(pollster::block_on(GpuContext::headless()), "GPU tests")
-    }
 
     /// The recycling allocator returns dropped tiles to its free list, so history
     /// retention drives GPU memory reclamation (§5.1, §6.1).

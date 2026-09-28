@@ -814,16 +814,10 @@ impl SubmitScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gpu::context::GpuContext;
     use crate::gpu::tile::{AllocSource, TilePool};
+    use crate::testing::context_or_skip;
 
     const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
-
-    /// A context, or `None` where the machine has no adapter *and*
-    /// [`ALLOW_NO_GPU`](crate::testing::ALLOW_NO_GPU) permits the skip.
-    fn context_or_skip() -> Option<GpuContext> {
-        crate::testing::or_skip(pollster::block_on(GpuContext::headless()), "GPU tests")
-    }
 
     /// **The cadence is what bounds peak memory**, which is the whole reason
     /// [`FLUSH_TILES`] exists: without it a merge holds every tile's scratch at once,

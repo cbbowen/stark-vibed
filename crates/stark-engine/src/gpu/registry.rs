@@ -546,9 +546,7 @@ mod tests {
     /// open or it is not.
     #[test]
     fn a_sibling_can_read_its_object_while_the_same_content_is_re_registered() {
-        let Some(ctx) =
-            crate::testing::or_skip(pollster::block_on(GpuContext::headless()), "GPU tests")
-        else {
+        let Some(ctx) = crate::testing::context_or_skip() else {
             return;
         };
         let registry = Registry::new(&ctx, Probe(0));

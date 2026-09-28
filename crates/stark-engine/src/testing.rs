@@ -144,6 +144,23 @@ pub fn or_skip<T, E: std::fmt::Display>(built: std::result::Result<T, E>, what: 
     }
 }
 
+/// A headless context, or `None` for a permitted skip ([`or_skip`]) — what this
+/// crate's own GPU unit tests build a device with.
+///
+/// **Uncached**, unlike [`shared_context`]: these tests watch a tile pool's free lists
+/// and a device's health cell, so each wants a device nothing else has drawn on.
+///
+/// `#[cfg(test)]` because the blocking is `pollster`'s and `pollster` is a
+/// dev-dependency — the split [`or_skip`] describes, which is also why an integration
+/// test cannot reach this and passes its own `build` to [`shared_context`].
+#[cfg(test)]
+pub(crate) fn context_or_skip() -> Option<crate::GpuContext> {
+    or_skip(
+        pollster::block_on(crate::GpuContext::headless()),
+        "GPU tests",
+    )
+}
+
 /// The one GPU context a test binary builds, kept for that binary's life.
 ///
 /// **The caching is here; the blocking is still the caller's** — `pollster` is a

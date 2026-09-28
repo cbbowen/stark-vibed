@@ -318,12 +318,7 @@ fn install_callbacks(device: &wgpu::Device, health: &GpuHealth) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A context, or `None` where the machine has no adapter *and*
-    /// [`ALLOW_NO_GPU`](crate::testing::ALLOW_NO_GPU) permits the skip.
-    fn context_or_skip() -> Option<GpuContext> {
-        crate::testing::or_skip(pollster::block_on(GpuContext::headless()), "GPU tests")
-    }
+    use crate::testing::context_or_skip;
 
     /// **A GPU error reaches the health cell instead of the default panic.**
     ///
