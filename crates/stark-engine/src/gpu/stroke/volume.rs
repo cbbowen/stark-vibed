@@ -249,6 +249,12 @@ pub(crate) fn orientation_layers(width: u32, height: u32) -> u32 {
 /// Slice 0 is *not* the identity — it is the mask resampled through the rotation
 /// arithmetic at θ = 0. `FollowStroke`, the only caller that would read it as the
 /// shape's native orientation, has its own single-layer bake instead.
+///
+/// The turn is [`detmath`](crate::detmath)'s and not libm's (§12.1): a baked volume is
+/// a replay input, so a peer whose sine rounded the other way would integrate a
+/// differently-turned mask. Taken in **turns**, which is how the angle arrives — the
+/// quarter nearest `l/layers` splits off exactly, so a quarter-turn slice is exactly
+/// `(±1, 0)` where `TAU · l/layers` cannot land on a quarter turn at all.
 pub(crate) fn rotate_layers(coverage: &[f32], width: u32, height: u32, layers: u32) -> Vec<f32> {
     let w = width as usize;
     let plane = w * height as usize;
@@ -272,8 +278,7 @@ pub(crate) fn rotate_layers(coverage: &[f32], width: u32, height: u32, layers: u
         a * (1.0 - ty) + b * ty
     };
     for l in 0..layers as usize {
-        let theta = std::f32::consts::TAU * l as f32 / layers as f32;
-        let (s, c) = theta.sin_cos();
+        let (s, c) = crate::detmath::sin_cos_turns(l as f32 / layers as f32);
         let base = l * plane;
         for y in 0..height as usize {
             let py = (y as f32 + 0.5) / height as f32 * 2.0 - 1.0;
