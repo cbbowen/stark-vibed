@@ -7,7 +7,10 @@
 //!
 //! - **Bit-exact everywhere.** These tiles are pure CPU f32 arithmetic, so two peers and
 //!   two replays on different adapters produce the same bytes — true of no render pass
-//!   in this crate (§9's goldens are adapter-specific for that reason).
+//!   in this crate (§9's goldens are adapter-specific for that reason). What the claim
+//!   rests on is that the one transcendental in the path is [`detmath`](crate::detmath)'s
+//!   and not the host libm's ([`height_of`], §12.1): the adapter was never the only way
+//!   two hosts could differ.
 //! - **No dimension cap from the hardware.** Nothing here binds the image as a texture,
 //!   so the only bound on its size is the document's own
 //!   ([`MAX_PICTURE_DIM`](stark_assetid::MAX_PICTURE_DIM)) rather than whatever
@@ -210,9 +213,14 @@ static HEIGHT: std::sync::LazyLock<[f32; 256]> =
 /// Where the slider ends, as mass: coverage is `1 − exp(−K·mass)` and reaches 1 only in
 /// the limit, so a fully opaque pixel asks for `OPAQUE_MASS` rather than for the
 /// infinity the inversion would otherwise return.
+///
+/// Both transcendentals are [`detmath`](crate::detmath)'s (§12.1). This is the whole of
+/// a placed image's height channel, paid on import and on every replay that crosses the
+/// placement (§23), so the module's bit-exactness claim is the claim that no host's libm
+/// gets a say in it.
 fn height_of(alpha: u8) -> f32 {
-    let want = (alpha as f32 / 255.0).min(1.0 - (-OPACITY_K * OPAQUE_MASS).exp());
-    -(1.0 - want).ln() / OPACITY_K
+    let want = (alpha as f32 / 255.0).min(1.0 - crate::detmath::exp(-OPACITY_K * OPAQUE_MASS));
+    -crate::detmath::ln(1.0 - want) / OPACITY_K
 }
 
 fn write_half(out: &mut [u8], v: f32) {
@@ -285,10 +293,10 @@ mod tests {
     #[test]
     fn the_height_table_is_the_expression_it_replaced() {
         for a in 0..=u8::MAX {
-            let want = (a as f32 / 255.0).min(1.0 - (-OPACITY_K * OPAQUE_MASS).exp());
+            let want = (a as f32 / 255.0).min(1.0 - crate::detmath::exp(-OPACITY_K * OPAQUE_MASS));
             assert_eq!(
                 HEIGHT[a as usize].to_bits(),
-                (-(1.0 - want).ln() / OPACITY_K).to_bits(),
+                (-crate::detmath::ln(1.0 - want) / OPACITY_K).to_bits(),
                 "alpha {a}",
             );
         }
@@ -306,8 +314,10 @@ mod tests {
     fn a_source_alpha_lands_as_the_coverage_it_asks_for() {
         for a in [1u8, 64, 128, 200, 255] {
             let texel = texel_of([200, 40, 30, a]);
-            let covers = 1.0 - (-OPACITY_K * texel.color[3] * texel.height).exp();
-            let want = (a as f32 / 255.0).min(1.0 - (-OPACITY_K * OPAQUE_MASS).exp());
+            // The law forward through `detmath` too, so this is the exact inverse of
+            // the inversion `height_of` runs rather than nearly one.
+            let covers = 1.0 - crate::detmath::exp(-OPACITY_K * texel.color[3] * texel.height);
+            let want = (a as f32 / 255.0).min(1.0 - crate::detmath::exp(-OPACITY_K * OPAQUE_MASS));
             assert!(
                 (covers - want).abs() < 1e-4,
                 "alpha {a} asked for {want} and lands {covers}",
