@@ -182,11 +182,9 @@ pub fn refresh(state: AppState) {
 
 /// A composed ramp, ready to go: **which layer, and the paint it lays there**.
 ///
-/// The layer and the payload travel together, and that is the point. They used to
-/// be resolved apart — a payload enum matched against the target it came from —
-/// so every site had to spell out two arms that could not happen (a fill payload
-/// on a matte target) alongside the two that could. Carried together the mismatch
-/// is not a case to handle; it is a value that cannot be built.
+/// The layer and the payload travel together so that a mismatch — a fill payload on a
+/// matte target — is not a case any site has to handle, but a value that cannot be
+/// built.
 enum Laid {
     Fill(stark_model::document::LayerId, FillOp),
     Matte(stark_model::document::LayerId, Parcel),

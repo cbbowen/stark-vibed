@@ -185,10 +185,6 @@ pub const FILL: Preview<(LayerId, FillOp)> = Preview::new(|(layer, op)| Edit::Fi
 /// orbit writes the rotation, the ring drag writes the focal length and the cell
 /// slider writes the lattice, and one row covers all of them without an edit
 /// per knob.
-///
-/// The newest row, and the one the table was waiting for: guides became document
-/// state after this module was written, which turned every control on that bar
-/// from a live view-state write into exactly the bargain described above.
 pub const GUIDE: Preview<(GuideId, PerspectiveGuide)> =
     Preview::new(|(id, guide)| Edit::Guide(id, guide));
 
@@ -199,8 +195,8 @@ pub const TRANSFORM: Preview<(LayerId, TransformMap)> =
 
 /// A layer's place on the canvas — the pick-and-translate drag (§16.11, §14.12).
 ///
-/// The row that replaced the carry's use of [`TRANSFORM`]: a translation is a
-/// property write, so this preview moves no tile where that one resampled the
-/// layer per changed sample — the whole of what the frame field buys.
+/// A translation is a property write, so this preview moves no tile where
+/// [`TRANSFORM`] resamples the layer per changed sample — the whole of what the frame
+/// field buys.
 pub const TRANSLATE: Preview<(LayerId, stark_model::geom::IVec2)> =
     Preview::new(|(layer, to)| Edit::Translate { layer, to });
