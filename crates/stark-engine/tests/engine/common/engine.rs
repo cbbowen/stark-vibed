@@ -59,7 +59,7 @@ pub const PAPER: wgpu::Color = wgpu::Color {
 ///
 /// **What is *not* shared is as important.** Each engine still builds its own
 /// `TilePool`, its own renderers and its own document, because `Engine::new` does; so
-/// a test that counts pooled textures (`tests/engine/tile_pool.rs`) or paints on a document
+/// a test that counts pooled textures (`gpu::tile`'s own) or paints on a document
 /// sees nothing of any other test. What is shared is the device and the driver's
 /// shader cache, neither of which any test asserts on.
 ///
@@ -71,8 +71,8 @@ pub const PAPER: wgpu::Color = wgpu::Color {
 /// validation error would leave every later test in that binary observing a failed
 /// GPU — no test does, and one that wants to should build its own context.
 fn shared_context() -> Option<&'static stark_engine::GpuContext> {
-    // The decision — skip or fail — is `stark_engine::testing`'s, so this harness,
-    // `tests/engine/tile_pool.rs` and `benches/stroke.rs` cannot come to disagree about
+    // The decision — skip or fail — is `stark_engine::testing`'s, so this harness, the
+    // crate's own unit tests and `benches/stroke.rs` cannot come to disagree about
     // what a missing adapter means. **The cache is that module's too**, and for a reason
     // that is nothing to do with sharing: the `OnceLock`'s `Sync` proof outruns the
     // default recursion limit, which is a crate property, and every test crate that

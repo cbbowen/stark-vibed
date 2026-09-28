@@ -44,7 +44,6 @@ mod seam;
 mod selection;
 mod sharing;
 mod stroke;
-mod tile_pool;
 mod tooth;
 mod transform;
 mod translate;
