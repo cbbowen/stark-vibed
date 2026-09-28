@@ -1146,13 +1146,14 @@ position *is* the meaning.
 - **`@size(N)` on the member before a gap no alignment can reach.** A `vec3` sizes 12
   and aligns 16, so a `vec3` followed by an `f32` puts that `f32` at offset 12 of the
   row and every later member four bytes early (`Fill.c`, `TileXform.resid`,
-  `Media.bg_resid`). A `vec3` followed by another `vec3`, a `vec4` or a matrix needs
+  `TileXform.noise_amp`, `Media.bg_resid`). A `vec3` followed by another `vec3`, a
+  `vec4` or a matrix needs
   nothing — the follower's own alignment places it. A `vec3` **last** needs nothing
   either: the struct's own round-up holds the lane (`TileXform.substrate`).
 
 Which of the three applies is not readable off where the spare lane sits, and guessing
 it is how a wrong `@size` ships. **`min_binding_size` will not catch one**: strip the
-three `@size(16)`s above and eleven members slide four bytes, four of them across a
+four `@size(16)`s above and twelve members slide four bytes, four of them across a
 16-byte row — and every struct still rounds to the size it had, so every
 `min_binding_size` is unchanged and every generated `offset_of` assertion still holds,
 because both halves moved together.
