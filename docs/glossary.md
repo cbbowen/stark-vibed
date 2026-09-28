@@ -145,9 +145,10 @@ these should appear in code again.
 - **Prefer the word the domain already owns.** `backdrop` is the W3C compositing
   term; `stencil` is the finite-difference one; `grain` is what a canvas's own
   texture is called. Coining is a last resort.
-- **A uniform lane is a byte layout, not a term.** `view_a`, `sub_b` and friends
-  are named for where they sit; the comment beside each says what it carries. They
-  are not vocabulary and are not listed here.
+- **A uniform lane is a byte layout, not a term.** Where a `vec4` still bundles
+  unlike numbers (`TileXform.params`, `Stamp.e`), the lane is named for where it
+  sits and the comment beside it says what it carries. Those spellings are not
+  vocabulary and are not listed here.
 - **Renaming stops at anything already written down.** A `localStorage` key, a
   golden's file name and a log variant are all data somebody's machine is holding.
   A key is simply left alone (`Store::Substrates` still spells its key

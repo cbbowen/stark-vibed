@@ -733,7 +733,7 @@ Oklab ──→ display (the surface's transfer: sRGB, extended sRGB or scRGB �
   outline (§6.8) and the guide overlay (§20.4) hold their colours as display-sRGB
   codes — a hue is picked as a code — and reach the frame through
   `encode_from_srgb`, off the same selector, with the transfer carried in their own
-  uniforms (`View.xlate.z`, `Guide.cov.w`). A code written straight out is read as
+  uniforms (`View.transfer`, `Guide.transfer`). A code written straight out is read as
   light on an scRGB surface and as P3 primaries on a wide-gamut one; the guide's
   dark halo lost its legibility exactly that way. Black and white are the two
   colours every transfer agrees on, which is why the local actor's marching ants

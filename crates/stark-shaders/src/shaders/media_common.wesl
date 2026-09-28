@@ -10,7 +10,8 @@ import package::lib::noise::{dither2};
 import package::lib::paint_common::{PAINT_EPS};
 
 struct Media {
-    bg: vec4<f32>,     // background (substrate) in latent color space
+    // The background (substrate) in the latent color space.
+    bg: vec4<f32>,
     // The substrate color's **residual** (.xyz), the half of it the space's three
     // channels cannot express (§6.7); .w unused. Zero for every space but
     // Mixbox — and a black substrate is exactly the case that made this channel
@@ -20,25 +21,40 @@ struct Media {
     // is mirrored into Rust from the unlinked source (§6.10), which cannot evaluate a
     // feature, and this pass has one bind group layout across both spaces.
     bg_resid: vec4<f32>,
-    // exposure, diffuse_lod, gloss, height_strength (the relief slope). The slope sits
-    // here because it is a shading term and there is no light *direction* to hang it
-    // off: the pass is image-based lit (§6.5), so the environment carries the
-    // direction and this uniform carries only what shading multiplies by.
-    shade: vec4<f32>,
-    view_a: vec4<f32>, // canvas_origin.xy (canvas px at pixel 0), canvas_per_px, inv_tile
-    // substrate_strength, transparent (0/1), dither step (one code of the target's
-    // encoding, or 0 — `media::dither_step`, §6.5), _
-    sub_b: vec4<f32>,
-    // The screen→canvas linear map, column-major: `view_m.xy` is the first column,
-    // `view_m.zw` the second. What carries a fragment into canvas space when the view
-    // is turned or mirrored (§18.1.2). `view_a.z` is the same map's
-    // length scale — rotation and mirroring leave lengths alone — which is what the
-    // relief slope below wants, and what it would be wrong to take from this matrix.
+    // The reciprocal of the irradiance a *flat* canvas receives (§6.3).
+    exposure: f32,
+    // The mip the diffuse irradiance is sampled from — blurred to a hemispherical
+    // average.
+    diffuse_lod: f32,
+    // How smooth and glossy the paint film is, 0..1.
+    gloss: f32,
+    // The relief slope. A shading term with no light *direction* to hang it off: the
+    // pass is image-based lit (§6.5), so the environment carries the direction and
+    // this uniform carries only what shading multiplies by.
+    height_strength: f32,
+    // The canvas px at screen pixel 0.
+    canvas_origin: vec2<f32>,
+    // The screen→canvas map's length *scale* — rotation and mirroring leave lengths
+    // alone — which is what `height_strength` wants, and what it would be wrong to
+    // take from `view_m` below.
+    canvas_per_px: f32,
+    // The reciprocal of the canvas px one period of the substrate field spans.
+    inv_tile: f32,
+    substrate_strength: f32,
+    // 0 or 1 — see `is_transparent`.
+    transparent: f32,
+    // One code of the target's encoding, or 0 (`media::dither_step`, §6.5).
+    dither_step: f32,
+    // The screen→canvas linear map, column-major: `.xy` is the first column and
+    // `.zw` the second. What carries a fragment into canvas space when the view is
+    // turned or mirrored (§18.1.2).
     view_m: vec4<f32>,
-    // The display (§6.5): `.x` the transfer the target expects (`lib/display.wesl`'s
-    // selector, as a float), `.y` the headroom the tonemap compresses into — times
-    // SDR white; 1 on any SDR surface and on every export. `.zw` unused.
-    out: vec4<f32>,
+    // The transfer the target expects — `lib/display.wesl`'s selector, as a float
+    // (§6.5).
+    transfer: f32,
+    // The headroom the tonemap compresses into — times SDR white; 1 on any SDR
+    // surface and on every export (§6.5).
+    headroom: f32,
 }
 
 @group(0) @binding(0) var<uniform> m: Media;
@@ -71,9 +87,9 @@ fn substrate_height_at(p: vec2<i32>) -> f32 {
     // The fragment's *centre*, like every other sample: at the corner the substrate
     // sits half a texel up-and-left of the pixel it shades, which is invisible on
     // its own and stops the view's mirror being an exact reflection.
-    let canvas = m.view_a.xy + inv * (vec2<f32>(p) + 0.5);
-    let hs = textureSampleLevel(substrate, substrate_samp, canvas * m.view_a.w, 0.0).r;
-    return m.sub_b.x * hs; // sub_b.x = substrate_strength
+    let canvas = m.canvas_origin + inv * (vec2<f32>(p) + 0.5);
+    let hs = textureSampleLevel(substrate, substrate_samp, canvas * m.inv_tile, 0.0).r;
+    return m.substrate_strength * hs;
 }
 
 fn paint_height_at(p: vec2<i32>, dim: vec2<i32>) -> f32 {
@@ -127,7 +143,7 @@ fn substrate_color() -> vec4<f32> {
 // setting alpha would leave every bare-canvas texel carrying substrate color at
 // zero alpha, which fringes the moment the PNG is composited over anything else.
 fn is_transparent() -> bool {
-    return m.sub_b.y > 0.5;
+    return m.transparent > 0.5;
 }
 
 // The substrate a fragment composites over, and the alpha it ends up with. On a
@@ -141,12 +157,12 @@ fn over_substrate(paint: vec3<f32>, vis: f32) -> vec4<f32> {
 }
 
 // Surface normal from the height gradient (impasto relief). The gradient is taken
-// over screen pixels but divided by the canvas px they span (`view_a.z`), so the
+// over screen pixels but divided by the canvas px they span (`canvas_per_px`), so the
 // slope is per *canvas* px — the relief (and its gloss) is zoom-invariant rather
 // than steepening as you zoom out.
 fn relief_normal(p: vec2<f32>, dim: vec2<i32>) -> vec3<f32> {
     let i = vec2<i32>(floor(p));
-    let strength = m.shade.w / m.view_a.z;
+    let strength = m.height_strength / m.canvas_per_px;
     let hl = height_at(i + vec2<i32>(-1, 0), dim);
     let hr = height_at(i + vec2<i32>(1, 0), dim);
     let hu = height_at(i + vec2<i32>(0, -1), dim);
@@ -243,10 +259,6 @@ fn tonemap_to(color: vec3<f32>, black_point: f32, headroom: f32) -> vec3<f32> {
 // channel: paint is glossy everywhere it is, and the substrate behind it never is.
 fn finish(base: vec3<f32>, paint: f32, alpha: f32, p: vec2<f32>, dim: vec2<i32>) -> vec4<f32> {
     let n = relief_normal(p, dim);
-    let exposure = m.shade.x;
-    let diffuse_lod = m.shade.y;
-    let gloss = m.shade.z; // how smooth/glossy the paint film is, 0..1
-
     // Orthographic view V = (0,0,1), so N·V is just the normal's z.
     let n_dot_v = clamp(n.z, 1e-4, 1.0);
     // Paint is a dielectric (F0 ≈ 0.04) and is smoother than the canvas it sits on;
@@ -255,7 +267,7 @@ fn finish(base: vec3<f32>, paint: f32, alpha: f32, p: vec2<f32>, dim: vec2<i32>)
     // almost as matte as the substrate it barely covers, thick paint carries the
     // full sheen, and bare canvas carries none.
     let f0 = 0.04;
-    let roughness = clamp(1.0 - gloss * clamp(paint, 0.0, 1.0), 0.045, 1.0);
+    let roughness = clamp(1.0 - m.gloss * clamp(paint, 0.0, 1.0), 0.045, 1.0);
 
     // Cook–Torrance split-sum image-based lighting:
     //  · diffuse — hemispherical irradiance (heavily-blurred env) in the normal dir;
@@ -263,14 +275,14 @@ fn finish(base: vec3<f32>, paint: f32, alpha: f32, p: vec2<f32>, dim: vec2<i32>)
     //    by roughness, weighted by the analytic env-BRDF (Smith G + Fresnel integral).
     // Energy is conserved: the diffuse keeps only what the specular doesn't.
     //
-    // Both ends of the roughness ramp land on `diffuse_lod`, not on the 1×1 top of the
+    // Both ends of the roughness ramp land on `m.diffuse_lod`, not on the 1×1 top of the
     // chain: a fully rough lobe *is* the hemispherical average, so it has to read the
     // same blur the diffuse does. Sampling a blurrier level than the diffuse made the
     // dielectric floor brighter than the sheen `finish` subtracts back off, which
     // showed up as black paint that would not go black.
-    let irradiance = sample_env(env_dir(n), diffuse_lod);
+    let irradiance = sample_env(env_dir(n), m.diffuse_lod);
     let refl = 2.0 * n.z * n - vec3<f32>(0.0, 0.0, 1.0);
-    let prefiltered = sample_env(env_dir(refl), roughness * diffuse_lod);
+    let prefiltered = sample_env(env_dir(refl), roughness * m.diffuse_lod);
 
     let brdf = env_brdf_approx(n_dot_v, roughness);
     // How much energy the specular lobe actually carries off. The diffuse keeps the
@@ -283,24 +295,24 @@ fn finish(base: vec3<f32>, paint: f32, alpha: f32, p: vec2<f32>, dim: vec2<i32>)
     let diffuse = kd * base * irradiance;
     let specular = prefiltered * spec_energy;
 
-    let lit = (diffuse + specular) * exposure;
+    let lit = (diffuse + specular) * m.exposure;
     // The sheen to lift back off: what the specular contributes where the reflection
     // sees nothing brighter than the ambient the diffuse already sampled. A glint
     // reflecting an actual light sits far above this, so gloss survives the subtraction
     // — only the uniform dielectric floor over the whole canvas comes off.
-    let sheen = spec_energy * dot(irradiance, vec3<f32>(0.2126, 0.7152, 0.0722)) * exposure;
+    let sheen = spec_energy * dot(irradiance, vec3<f32>(0.2126, 0.7152, 0.0722)) * m.exposure;
     // Straight (un-premultiplied) alpha: PNG stores straight, and the color here is
     // the paint's own, not paint-times-coverage. Compressed into the display's
     // headroom and encoded in the transfer this surface reads (§6.5).
-    let encoded = encode_display(u32(m.out.x), tonemap_to(lit, sheen, m.out.y));
+    let encoded = encode_display(u32(m.transfer), tonemap_to(lit, sheen, m.headroom));
     // Quantization dither (§6.5): the store below is the pipeline's one walk from
     // f32 down to the target's 8-bit codes, so its rounding is made stochastic —
     // ±half a code, uniform, `lib::noise`'s law — and a ramp too gentle for the
     // codes renders as mixture instead of bands. One lane shared across RGB, so
     // the noise is luma-only (chroma noise is the visible kind at this amplitude);
     // the second covers alpha, whose soft edges band the same way on a cut-out
-    // export (§15.6). `sub_b.z` is one code of the target's encoding — and 0 for
-    // a target deep enough not to band, which turns all of this off.
-    let d = dither2(vec2u(p), DITHER_SEED) * m.sub_b.z;
+    // export (§15.6). `dither_step` is 0 for a target deep enough not to band,
+    // which turns all of this off.
+    let d = dither2(vec2u(p), DITHER_SEED) * m.dither_step;
     return vec4<f32>(encoded + d.x, alpha + d.y);
 }

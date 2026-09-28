@@ -55,7 +55,7 @@ struct OverlayInstance {
 fn vs_main(@builtin(vertex_index) vi: u32, inst: OverlayInstance) -> VsOut {
     let corner = quad_corner(vi);
     var out: VsOut;
-    out.clip = canvas_to_clip(inst.origin + corner * view.misc.x);
+    out.clip = canvas_to_clip(inst.origin + corner * view.tile_size);
     // The apron'd mask texture mapped exactly as the compositor maps a color tile —
     // so the taps below reach into the apron (the neighbour's real coverage) at the
     // tile edge rather than clamping.
@@ -68,7 +68,7 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: OverlayInstance) -> VsOut {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // uv step of one canvas px: (TILE_SIZE/TILE_TEX) / TILE_SIZE = 1/TILE_TEX.
-    let d = view.misc.y / view.misc.x;
+    let d = view.uv_scale / view.tile_size;
     let m = textureSample(mask, samp, in.uv).r;
     let mx0 = textureSample(mask, samp, in.uv - vec2<f32>(d, 0.0)).r;
     let mx1 = textureSample(mask, samp, in.uv + vec2<f32>(d, 0.0)).r;
@@ -84,7 +84,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if gl < 1e-4 * in.level {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
-    let dist_px = abs((m - 0.5 * in.level) / gl) * view.misc.w;
+    let dist_px = abs((m - 0.5 * in.level) / gl) * view.zoom;
     let alpha = 1.0 - smoothstep(HALF_WIDTH - 0.5, HALF_WIDTH + 0.5, dist_px);
     if alpha <= 0.0 {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
@@ -94,7 +94,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // (§17.3). The hue is a display-sRGB code (`peer_color`), and the target need
     // not be sRGB — so it is carried onto whatever this frame's is (§6.5).
     if in.tint.a > 0.0 {
-        let rgb = encode_from_srgb(u32(view.xlate.z), in.tint.rgb);
+        let rgb = encode_from_srgb(u32(view.transfer), in.tint.rgb);
         return vec4<f32>(rgb, alpha * in.tint.a);
     }
     // Your own: alternating black/white along the screen diagonal — legible over

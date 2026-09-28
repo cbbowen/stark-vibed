@@ -210,26 +210,20 @@ impl MediaScene<'_> {
         MediaUniform {
             bg,
             bg_resid,
-            shade: [exposure, diffuse_lod, m.specular, m.height_strength],
-            view_a: [
-                canvas_origin.x,
-                canvas_origin.y,
-                1.0 / self.view.zoom,
-                self.substrate_uv_scale,
-            ],
-            sub_b: [
-                m.substrate_strength,
-                if self.transparent { 1.0 } else { 0.0 },
-                self.dither_step,
-                0.0,
-            ],
+            exposure,
+            diffuse_lod,
+            gloss: m.specular,
+            height_strength: m.height_strength,
+            canvas_origin: canvas_origin.to_array(),
+            canvas_per_px: 1.0 / self.view.zoom,
+            inv_tile: self.substrate_uv_scale,
+            substrate_strength: m.substrate_strength,
+            transparent: f32::from(u8::from(self.transparent)),
+            dither_step: self.dither_step,
             view_m: self.view.inverse_linear().to_cols_array(),
-            out: [
-                self.output.transfer().lane(),
-                self.output.headroom(),
-                0.0,
-                0.0,
-            ],
+            transfer: self.output.transfer().lane(),
+            headroom: self.output.headroom(),
+            ..Default::default()
         }
     }
 }

@@ -46,30 +46,28 @@ fn pack_guides(scene: &GuideScene, view: ViewTransform, transfer: Transfer) -> G
         None => [0.0, 0.0, 0.0, TRACE_NONE],
     };
     let (r45, r90) = scene.rings;
+    // A guide whose lattice names no grid is a zeroed slot like any other absent
+    // element, and `has_grid = 0` takes all six fans out (§20.3).
+    let (corner, has_grid) = match scene.lattice {
+        Some(g) => (g.to_array(), 1.0),
+        None => ([0.0; 3], 0.0),
+    };
     GuideUniform {
         inv: inv.to_cols_array(),
-        org: [org.x, org.y, view.zoom, scene.focal],
-        cov: [
-            scene.center.x,
-            scene.center.y,
-            scene.opacity,
-            transfer.lane(),
-        ],
-        proj: [
-            match scene.lens {
-                Lens::Rectilinear => LENS_RECTILINEAR,
-                Lens::Fisheye => LENS_FISHEYE,
-            },
-            r45,
-            r90.unwrap_or(0.0),
-            0.0,
-        ],
-        // A guide whose lattice names no grid is a zeroed slot like any other
-        // absent element, and its `.w = 0` takes all six fans out (§20.3).
-        grid: match scene.lattice {
-            Some(g) => [g.x, g.y, g.z, 1.0],
-            None => [0.0; 4],
+        org: org.to_array(),
+        zoom: view.zoom,
+        focal: scene.focal,
+        cov: scene.center.to_array(),
+        opacity: scene.opacity,
+        transfer: transfer.lane(),
+        lens: match scene.lens {
+            Lens::Rectilinear => LENS_RECTILINEAR,
+            Lens::Fisheye => LENS_FISHEYE,
         },
+        ring_45: r45,
+        ring_90: r90.unwrap_or(0.0),
+        corner,
+        has_grid,
         dirs: std::array::from_fn(|i| {
             let d = scene.dirs[i];
             [d.x, d.y, d.z, scene.axis_alpha[i]]
@@ -99,6 +97,7 @@ fn pack_guides(scene: &GuideScene, view: ViewTransform, transfer: Transfer) -> G
             Some(c) => [c.normal.x, c.normal.y, c.offset, 1.0],
             None => [0.0; 4],
         }),
+        ..Default::default()
     }
 }
 

@@ -16,20 +16,27 @@ struct View {
     // (§18.1.2); upright and unmirrored it is diagonal, and this is the scale pair it
     // always was.
     st: vec4<f32>,
-    // translate.xy; .z the display transfer the frame's target is encoded in
-    // (`lib/display.wesl`'s selector, as a float), which `overlay.wesl` alone reads;
-    // .w unused.
-    xlate: vec4<f32>,
-    // .x the tile size (interior, canvas px), .y and .z the interior uv scale and
-    // bias, .w the zoom (screen px per canvas px) — what `overlay.wesl` and
-    // `matte.wesl` measure a constant on-screen width with.
+    // The map's translation.
+    xlate: vec2<f32>,
+    // The display transfer the frame's target is encoded in (`lib/display.wesl`'s
+    // selector, as a float), which `overlay.wesl` alone reads.
+    transfer: f32,
+    // The tile interior, canvas px.
     //
+    // `@align(16)` starts a new 16-byte row, which is what these four were written as
+    // one `vec4` for: the lane above `transfer` is spare, and naming them must not
+    // slide the row up into it (§6.10).
+    @align(16) tile_size: f32,
     // A tile texture carries an apron around its interior, so a pass samples the
     // interior sub-rect alone and lets the bilinear filter reach into the apron at the
     // edges, which is what kills tile seams:
     //
-    //     uv = corner * misc.y + misc.z,  misc.y = TILE_SIZE/TILE_TEX, misc.z = APRON/TILE_TEX
-    misc: vec4<f32>,
+    //     uv = corner * uv_scale + uv_bias,  TILE_SIZE/TILE_TEX and APRON/TILE_TEX
+    uv_scale: f32,
+    uv_bias: f32,
+    // Screen px per canvas px — what `overlay.wesl` and `matte.wesl` measure a
+    // constant on-screen width with.
+    zoom: f32,
 }
 
 @group(0) @binding(0) var<uniform> view: View;
@@ -44,11 +51,11 @@ fn view_map() -> mat2x2<f32> {
 
 // Clip position of a canvas-space point.
 fn canvas_to_clip(p: vec2<f32>) -> vec4<f32> {
-    return vec4<f32>(view_map() * p + view.xlate.xy, 0.0, 1.0);
+    return vec4<f32>(view_map() * p + view.xlate, 0.0, 1.0);
 }
 
 // A quad corner as a uv in the interior sub-rect of an apron'd tile texture — see
-// `View.misc`.
+// `View.uv_scale`.
 fn interior_uv(corner: vec2<f32>) -> vec2<f32> {
-    return corner * view.misc.y + view.misc.z;
+    return corner * view.uv_scale + view.uv_bias;
 }

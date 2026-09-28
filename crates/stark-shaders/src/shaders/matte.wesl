@@ -124,13 +124,13 @@ fn vs_main(@builtin(vertex_index) vi: u32, inst: MatteInstance) -> VsOut {
         vec2<f32>(m[1][1], -m[0][1]),
         vec2<f32>(-m[1][0], m[0][0]),
     ) * (1.0 / det);
-    out.canvas = inv * (ndc - view.xlate.xy);
+    out.canvas = inv * (ndc - view.xlate);
     out.rect = inst.rect;
     out.channels = inst.channels;
     out.opacity = inst.opacity;
-    // `misc.w` is the zoom (screen px per canvas px), so the edge keeps a constant
-    // on-screen softness at any zoom.
-    out.aa = 1.0 / max(view.misc.w, 1e-6);
+    // The zoom is screen px per canvas px, so the edge keeps a constant on-screen
+    // softness at any zoom.
+    out.aa = 1.0 / max(view.zoom, 1e-6);
     out.flags = inst.flags;
     @if(resid) out.resid = inst.resid;
     return out;

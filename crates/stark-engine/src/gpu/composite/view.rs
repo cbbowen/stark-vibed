@@ -26,10 +26,10 @@ pub(crate) use stark_shaders::mirror::view::View as ViewUniform;
 
 /// The canvas px → NDC map `st` (column-major) with translation `xlate`, at `zoom`.
 ///
-/// The three tile constants in `misc` are filled here rather than by the caller: they
-/// are facts about the tile layout (§6.4) that no caller should be choosing, and one
-/// quoting a different `INTERIOR_UV_BIAS` would sample its neighbours' aprons, the
-/// seam showing on that path alone.
+/// The three tile constants are filled here rather than by the caller: they are facts
+/// about the tile layout (§6.4) that no caller should be choosing, and one quoting a
+/// different `INTERIOR_UV_BIAS` would sample its neighbours' aprons, the seam showing
+/// on that path alone.
 ///
 /// `zoom` and `transfer` reach only the overlay pass, which measures its outline width
 /// in screen px from a canvas-space distance (§6.8) and draws a peer's sRGB-coded hue
@@ -46,8 +46,13 @@ pub(crate) fn view_uniform(
 ) -> ViewUniform {
     ViewUniform {
         st,
-        xlate: [xlate.x, xlate.y, transfer.lane(), 0.0],
-        misc: [TILE_SIZE as f32, INTERIOR_UV_SCALE, INTERIOR_UV_BIAS, zoom],
+        xlate: xlate.to_array(),
+        transfer: transfer.lane(),
+        tile_size: TILE_SIZE as f32,
+        uv_scale: INTERIOR_UV_SCALE,
+        uv_bias: INTERIOR_UV_BIAS,
+        zoom,
+        ..Default::default()
     }
 }
 

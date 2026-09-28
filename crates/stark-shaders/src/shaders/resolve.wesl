@@ -42,12 +42,19 @@ import package::lib::noise::{dither2};
 import package::lib::quad::{fullscreen_clip};
 
 struct Resolve {
-    // n.x = samples per axis; n.y = the dither step — one code of the target's
-    // encoding, the same number `media_common.wesl` scales its own store's dither
-    // by (§6.5); n.z = the display transfer the media pass encoded by
-    // (`lib/display.wesl`'s selector, as a float). All floats because those are the
-    // only scalars this file needs.
-    n: vec4<f32>,
+    // Samples per axis.
+    //
+    // `@align(16)` is the block's alignment rather than this lane's: WGSL requires a
+    // struct in the uniform address space to be 16-byte aligned and has no
+    // struct-level attribute to say it with, so the first member carries it — which
+    // is also what keeps the block a whole 16-byte row, its fourth lane spare.
+    @align(16) samples: f32,
+    // One code of the target's encoding, the same number `media_common.wesl` scales
+    // its own store's dither by (§6.5).
+    dither: f32,
+    // The display transfer the media pass encoded by — `lib/display.wesl`'s
+    // selector, as a float.
+    transfer: f32,
 }
 
 @group(0) @binding(0) var<uniform> r: Resolve;
@@ -72,8 +79,8 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
 
 @fragment
 fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
-    let n = i32(r.n.x);
-    let transfer = u32(r.n.z);
+    let n = i32(r.samples);
+    let transfer = u32(r.transfer);
     // The source is exactly `n` times the target in each axis, so this block is
     // always in bounds and nothing has to be clamped.
     let base = vec2<i32>(floor(pos.xy)) * n;
@@ -89,7 +96,7 @@ fn fs_main(@builtin(position) pos: vec4<f32>) -> @location(0) vec4<f32> {
     // The header's second walk down to 8 bits: the same law as the media pass's
     // store — one luma lane, one alpha lane, ±half a code — at this pass's own
     // pixel grid and seed.
-    let d = dither2(vec2u(pos.xy), DITHER_SEED) * r.n.y;
+    let d = dither2(vec2u(pos.xy), DITHER_SEED) * r.dither;
     return vec4<f32>(
         encode_display(transfer, rgb / max(a, WEIGHT_EPS)) + d.x,
         a / f32(n * n) + d.y,

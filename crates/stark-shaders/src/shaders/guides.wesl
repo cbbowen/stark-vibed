@@ -28,21 +28,33 @@ import package::lib::display::{encode_from_srgb};
 import package::lib::quad::{fullscreen_clip};
 
 struct Guide {
-    // Screen px → canvas px: `canvas = m * frag + org.xy` (m column-major).
+    // Screen px → canvas px: `canvas = m * frag + org` (m column-major).
     inv: vec4<f32>,
-    // org.xy, zoom (screen px per canvas px), focal (canvas px).
-    org: vec4<f32>,
-    // Center of view .xy (canvas px), master opacity, and the display transfer the
-    // frame's target is encoded in (`lib/display.wesl`'s selector, as a float).
-    cov: vec4<f32>,
-    // Lens (`LENS_*`), 45° ring radius, 90° ring radius (≤ 0 when the lens has
-    // none), unused.
-    proj: vec4<f32>,
-    // The lattice the fans measure out (§20.3): .xyz the corner where its three
-    // squared planes meet, in camera space, in cells; .w = 1 when it names a
-    // grid at all, 0 when the corner has come to rest at the eye and there is
-    // no fan to draw.
-    grid: vec4<f32>,
+    // The canvas px at screen pixel 0.
+    org: vec2<f32>,
+    // Screen px per canvas px.
+    zoom: f32,
+    // The camera's focal length, canvas px.
+    focal: f32,
+    // Center of view, canvas px.
+    cov: vec2<f32>,
+    // The master opacity every element is faded by.
+    opacity: f32,
+    // The display transfer the frame's target is encoded in (`lib/display.wesl`'s
+    // selector, as a float).
+    transfer: f32,
+    // Which lens (`LENS_*`), as a float.
+    lens: f32,
+    // The 45° ring's radius, canvas px.
+    ring_45: f32,
+    // The 90° ring's radius, ≤ 0 when the lens has none.
+    ring_90: f32,
+    // The lattice the fans measure out (§20.3): the corner where its three squared
+    // planes meet, in camera space, in cells.
+    corner: vec3<f32>,
+    // 1 when the lattice names a grid at all, 0 when its corner has come to rest at
+    // the eye and there is no fan to draw.
+    has_grid: f32,
     // World axes in camera space .xyz; .w = that axis's opacity (0 = the axis
     // is nowhere on the canvas, both of its planes being off) — what the
     // markers belonging to an axis alone, its vanishing points, follow.
@@ -124,7 +136,7 @@ const RAY_OPACITY: f32 = 0.6;
 // Opacity of the FOV ring.
 const RING_OPACITY: f32 = 0.8;
 
-// The codes `pack_guides` (`gpu/composite/guides.rs`) writes into `proj.x` and
+// The codes `pack_guides` (`gpu/composite/guides.rs`) writes into `lens` and
 // into the `.w` of a `lines`/`rays` slot, read back through the mirror (§6.10),
 // so the host spells no number. Exact small integers, so `==` is exact.
 const LENS_RECTILINEAR: f32 = 0.0;
@@ -286,7 +298,7 @@ struct VsOut {
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
-    let transfer = u32(guide.cov.w);
+    let transfer = u32(guide.transfer);
     var out: VsOut;
     out.clip = fullscreen_clip(vi);
     out.axis_x = encode_from_srgb(transfer, AXIS_X);
@@ -304,11 +316,11 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let frag = in.clip;
     let m = mat2x2<f32>(guide.inv.xy, guide.inv.zw);
-    let p = m * frag.xy + guide.org.xy; // canvas px
-    let zoom = guide.org.z;
-    let f = guide.org.w;
-    let cov = guide.cov.xy;
-    let master = guide.cov.z;
+    let p = m * frag.xy + guide.org; // canvas px
+    let zoom = guide.zoom;
+    let f = guide.focal;
+    let cov = guide.cov;
+    let master = guide.opacity;
 
     let chrome_c = in.chrome;
     let halo_c = in.halo;
@@ -323,7 +335,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // on a uniform value, so the derivative calls below remain in uniform
     // control flow.
     var ray: vec3<f32>;
-    if guide.proj.x == LENS_FISHEYE {
+    if guide.lens == LENS_FISHEYE {
         // Inverse stereographic: past the 90° ring (s > 1) the z component
         // goes negative and the texel sees *behind* the camera.
         let u = (p - cov) / (2.0 * f);
@@ -336,7 +348,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // How far out this texel is, in units of the 45° ring — the guide's own
     // statement of how far out is far out (§20.1), and the one radius that names
     // the same visual angle at any focal length and under either lens.
-    let periph = length(p - cov) / max(guide.proj.y, 1e-6);
+    let periph = length(p - cov) / max(guide.ring_45, 1e-6);
 
     var acc = vec4<f32>(0.0);
 
@@ -370,8 +382,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         // level set and the corner never enters it. (`dot` with the axis rather
         // than a component read, since the lattice arrives turned into camera
         // space with everything else; a rotation makes the two the same number.)
-        let pj = dot(guide.grid.xyz, guide.dirs[j].xyz);
-        let pk = dot(guide.grid.xyz, guide.dirs[k].xyz);
+        let pj = dot(guide.corner, guide.dirs[j].xyz);
+        let pk = dot(guide.corner, guide.dirs[k].xyz);
         // A family is a set of lines *in a plane*, so it follows that plane's
         // own flag, exactly as the plane's vanishing trace and station point do
         // below. Switching a plane off takes both of the families ruling it —
@@ -381,7 +393,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         //
         // The plane's obliquity fade rides in the same product, keyed on the one
         // axis *not* in the plane, which is its normal (`plane_fade`).
-        let lattice = guide.grid.w * master;
+        let lattice = guide.has_grid * master;
         let a_ij = guide.pairs[i] * plane_fade(guide.dirs[k].z, periph) * lattice;
         let a_ik = guide.pairs[k] * plane_fade(guide.dirs[j].z, periph) * lattice;
         // Stepping across the plane spanned with the successor axis (whose own
@@ -430,8 +442,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 
     // --- The view-cone rings: 45° always, 90° where the lens has one
     // (§20.1, §20.8).
-    acc = ring(acc, p, cov, guide.proj.y, zoom, master, chrome_c, halo_c);
-    acc = ring(acc, p, cov, guide.proj.z, zoom, master, chrome_c, halo_c);
+    acc = ring(acc, p, cov, guide.ring_45, zoom, master, chrome_c, halo_c);
+    acc = ring(acc, p, cov, guide.ring_90, zoom, master, chrome_c, halo_c);
 
     // --- Station points: rings on the Thales circle (§20.2). ---------------
     for (var k = 0u; k < 3u; k++) {

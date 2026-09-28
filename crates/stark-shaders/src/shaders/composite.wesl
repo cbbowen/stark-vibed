@@ -62,7 +62,7 @@ struct Instance {
 fn vs_main(@builtin(vertex_index) vi: u32, inst: Instance) -> VsOut {
     let corner = quad_corner(vi);
     var out: VsOut;
-    out.clip = canvas_to_clip(inst.origin + corner * view.misc.x);
+    out.clip = canvas_to_clip(inst.origin + corner * view.tile_size);
     out.uv = interior_uv(corner);
     out.opacity = inst.opacity;
     return out;

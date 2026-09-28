@@ -60,7 +60,7 @@ impl TilePass {
 
         // Both pipelines below bind this, so both shaders' stages are folded in.
         // `view.wesl`'s uniform comes out vertex-only — the fragment stage gets canvas
-        // position as a varying and the zoom through `misc.w` — and its sampler
+        // position as a varying and the zoom through `view.zoom` — and its sampler
         // fragment-only, which no list has to say.
         let view_bgl = Bindings::shared_by(
             device,

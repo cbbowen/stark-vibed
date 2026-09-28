@@ -185,7 +185,10 @@ impl ResolvePass {
             &ss.buf,
             0,
             bytemuck::bytes_of(&ResolveUniform {
-                n: [ss.n as f32, scene.dither_step, scene.transfer.lane(), 0.0],
+                samples: ss.n as f32,
+                dither: scene.dither_step,
+                transfer: scene.transfer.lane(),
+                ..Default::default()
             }),
         );
         desc::fullscreen_pass(
