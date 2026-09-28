@@ -347,13 +347,17 @@ mod tests {
     /// the two agree for both spaces there are — so *that* is what is asserted, of
     /// whichever spaces this build carries. A pass built for a residual it does not get,
     /// or the reverse, is a picture nobody would read as this.
+    ///
+    /// Against `Oklab` rather than the pigment variant, because `Pigment` is generated
+    /// from the shader axis (§6.10) and its `Mixbox` side is not a name a build without
+    /// the feature has.
     #[test]
     fn the_shader_build_a_space_reads_agrees_with_its_residual() {
         for id in every_id() {
             let Some(space) = make(id) else { continue };
             assert_eq!(
                 space.has_resid(),
-                space.pigment() == Pigment::Mixbox,
+                space.pigment() != Pigment::Oklab,
                 "{id:?}: the residual and the shader build it asks for disagree"
             );
         }
