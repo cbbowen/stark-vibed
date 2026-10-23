@@ -24,11 +24,9 @@
 //! for the other is already shared, and what it waits on is a hovering report.
 
 use stark_ui::slots::{self, Digit, ERASER, Row};
-use wgpui::{
-    AnyElement, Bounds, IntoElement, Pixels, Point, SharedString, canvas, div, prelude::*, px,
-    relative, rgb,
-};
+use wgpui::{AnyElement, IntoElement, SharedString, div, prelude::*, px, relative, rgb};
 
+use crate::regions::probe;
 use crate::style;
 use stark_ui::slots::CLEAR_HOLD;
 
@@ -72,34 +70,8 @@ pub enum Region {
     Trash(Digit),
 }
 
-/// Where the rack's controls were laid out — `crate::panel`'s device, for its reason.
-pub type Regions = std::rc::Rc<std::cell::RefCell<Vec<(Region, Bounds<Pixels>)>>>;
-
-fn probe(regions: &Regions, region: Region) -> impl IntoElement {
-    let regions = regions.clone();
-    canvas(
-        move |bounds, _, _| regions.borrow_mut().push((region, bounds)),
-        |_, (), _, _| {},
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .right_0()
-    .bottom_0()
-}
-
-/// Which control a press landed on. Innermost first (`.rev()`), which is
-/// `crate::pick`'s rule and its reason: a row is probed as its own first child and
-/// contains the trash on it, so reading forwards would hand back the row under a trash
-/// that was pressed.
-pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
-    regions
-        .borrow()
-        .iter()
-        .rev()
-        .find(|(_, bounds)| bounds.contains(&at))
-        .map(|(region, _)| *region)
-}
+/// Where each control was laid out, as of the last frame that painted ([`crate::regions`]).
+pub type Regions = crate::regions::Regions<Region>;
 
 /// This window's rack: what the digits hold, what is holding one down, and the two
 /// pointer facts a pinned rack needs.

@@ -42,6 +42,7 @@ use wgpui::{
     prelude::*, px, rgb, wgpu_surface,
 };
 
+use crate::regions::{self as regions, probe};
 use crate::style;
 
 /// The box the miniature is fitted into, in logical px — the largest it is ever
@@ -79,43 +80,13 @@ pub enum Region {
     Miniature,
 }
 
-/// Where it was laid out — `crate::panel`'s device, for its reason.
-pub type Regions = std::rc::Rc<std::cell::RefCell<Vec<(Region, Bounds<Pixels>)>>>;
-
-fn probe(regions: &Regions, region: Region) -> impl IntoElement {
-    let regions = regions.clone();
-    canvas(
-        move |bounds, _, _| regions.borrow_mut().push((region, bounds)),
-        |_, (), _, _| {},
-    )
-    .absolute()
-    .size_full()
-}
-
-/// Which control a press landed on.
-pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
-    regions
-        .borrow()
-        .iter()
-        .find(|(_, bounds)| bounds.contains(&at))
-        .map(|(region, _)| *region)
-}
+/// Where each control was laid out, as of the last frame that painted ([`crate::regions`]).
+pub type Regions = crate::regions::Regions<Region>;
 
 /// Where in the miniature a position sits, as fractions of it — clamped, so a drag
 /// that has left the box keeps moving the view it took hold of.
 pub fn fraction_at(regions: &Regions, at: Point<Pixels>) -> Option<(f32, f32)> {
-    let bounds = regions
-        .borrow()
-        .iter()
-        .find(|(r, _)| *r == Region::Miniature)
-        .map(|(_, b)| *b)?;
-    let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
-    (w > 0.0 && h > 0.0).then(|| {
-        (
-            ((f32::from(at.x) - f32::from(bounds.origin.x)) / w).clamp(0.0, 1.0),
-            ((f32::from(at.y) - f32::from(bounds.origin.y)) / h).clamp(0.0, 1.0),
-        )
-    })
+    regions::fraction_in(regions::bounds_of(regions, Region::Miniature)?, at)
 }
 
 /// Build the shelf's body.

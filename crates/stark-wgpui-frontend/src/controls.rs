@@ -85,37 +85,41 @@ impl Controls {
         // knob's top is the in-force effect's (`panel::Knob::range`) and a
         // `SliderState`'s bounds are fixed when it is built.
         let knobs = KNOBS.map(|knob| {
-            let state = cx.new(|_| SliderState::new().min(0.0).max(1.0).step(knob.step()));
-            subs.push(
-                cx.subscribe(&state, move |this, _, event: &SliderEvent, cx| {
-                    if let SliderEvent::Change(v) = event {
-                        this.turn(knob, v.start(), cx);
-                    }
-                }),
-            );
-            state
+            turns(
+                cx,
+                &mut subs,
+                (0.0, 1.0),
+                knob.step(),
+                move |this, v, cx| {
+                    this.turn(knob, v, cx);
+                },
+            )
         });
         let dials = std::array::from_fn(|i| {
             let dial = <Dial as strum::VariantArray>::VARIANTS[i];
             let (lo, hi) = dial.range();
-            let state = cx.new(|_| SliderState::new().min(lo).max(hi).step(dial.step()));
-            subs.push(cx.subscribe(
-                &state,
-                move |this, _, event: &SliderEvent, cx| match event {
+            track(
+                cx,
+                &mut subs,
+                (lo, hi),
+                dial.step(),
+                move |this, event, cx| match event {
                     SliderEvent::Change(v) => this.turn_dial(dial, fraction(v.start(), lo, hi), cx),
                     SliderEvent::Release(v) => {
-                        this.settle_dial(dial, fraction(v.start(), lo, hi), cx);
+                        this.settle_dial(dial, fraction(v.start(), lo, hi), cx)
                     }
                 },
-            ));
-            state
+            )
         });
-        let opacity = cx.new(|_| SliderState::new().min(0.0).max(1.0).step(0.01));
-        subs.push(
-            cx.subscribe(&opacity, |this, _, event: &SliderEvent, cx| match event {
+        let opacity = track(
+            cx,
+            &mut subs,
+            (0.0, 1.0),
+            0.01,
+            |this, event, cx| match event {
                 SliderEvent::Change(v) => this.turn_opacity(v.start(), cx),
                 SliderEvent::Release(v) => this.settle_opacity(v.start(), cx),
-            }),
+            },
         );
         let labels: Vec<SharedString> = BlendMode::ALL
             .iter()
@@ -138,31 +142,31 @@ impl Controls {
         // (`Canvas::turn_light`) rather than the track, which knows only its range.
         let lights = std::array::from_fn(|i| {
             let dial = <light::Dial as strum::VariantArray>::VARIANTS[i];
-            let (lo, hi) = dial.range();
-            let state = cx.new(|_| SliderState::new().min(lo).max(hi).step(dial.step()));
-            subs.push(cx.subscribe(
-                &state,
-                move |this, _, event: &SliderEvent, cx| match event {
+            track(
+                cx,
+                &mut subs,
+                dial.range(),
+                dial.step(),
+                move |this, event, cx| match event {
                     SliderEvent::Change(v) => this.turn_light(dial, v.start(), cx),
                     // The scale is laid down and the headroom written down once
                     // (`Canvas::settle_light`).
                     SliderEvent::Release(v) => this.settle_light(dial, v.start(), cx),
                 },
-            ));
-            state
+            )
         });
         let guide_dials = std::array::from_fn(|i| {
             let dial = <gd::Dial as strum::VariantArray>::VARIANTS[i];
-            let (lo, hi) = dial.range();
-            let state = cx.new(|_| SliderState::new().min(lo).max(hi).step(dial.step()));
-            subs.push(cx.subscribe(
-                &state,
-                move |this, _, event: &SliderEvent, cx| match event {
+            track(
+                cx,
+                &mut subs,
+                dial.range(),
+                dial.step(),
+                move |this, event, cx| match event {
                     SliderEvent::Change(v) => this.turn_guide(dial, v.start(), cx),
                     SliderEvent::Release(v) => this.settle_guide(dial, v.start(), cx),
                 },
-            ));
-            state
+            )
         });
         let lights_labels: Vec<SharedString> = light::ENVIRONMENTS
             .iter()
@@ -206,45 +210,35 @@ impl Controls {
         // (see `EDITOR_STEP`), so the view is what maps a drag onto whichever range the
         // row has *this* frame.
         let editor_mods = brush_editor::MOD_ROWS.map(|row| {
-            let state = cx.new(|_| SliderState::new().min(0.0).max(1.0).step(EDITOR_STEP));
-            subs.push(
-                cx.subscribe(&state, move |this, _, event: &SliderEvent, cx| {
-                    if let SliderEvent::Change(v) = event {
-                        this.turn_mod_row(row, v.start(), cx);
-                    }
-                }),
-            );
-            state
+            turns(
+                cx,
+                &mut subs,
+                (0.0, 1.0),
+                EDITOR_STEP,
+                move |this, v, cx| {
+                    this.turn_mod_row(row, v, cx);
+                },
+            )
         });
         let editor_knobs = brush_editor::KNOBS.map(|knob| {
-            let state = cx.new(|_| SliderState::new().min(0.0).max(1.0).step(EDITOR_STEP));
-            subs.push(
-                cx.subscribe(&state, move |this, _, event: &SliderEvent, cx| {
-                    if let SliderEvent::Change(v) = event {
-                        this.turn_editor_knob(knob, v.start(), cx);
-                    }
-                }),
-            );
-            state
+            turns(
+                cx,
+                &mut subs,
+                (0.0, 1.0),
+                EDITOR_STEP,
+                move |this, v, cx| {
+                    this.turn_editor_knob(knob, v, cx);
+                },
+            )
         });
-        let mod_floor = cx.new(|_| SliderState::new().min(0.0).max(1.0).step(EDITOR_STEP));
-        subs.push(
-            cx.subscribe(&mod_floor, |this, _, event: &SliderEvent, cx| {
-                if let SliderEvent::Change(v) = event {
-                    this.turn_mapping(Shape::Floor, v.start(), cx);
-                }
-            }),
-        );
+        let mod_floor = turns(cx, &mut subs, (0.0, 1.0), EDITOR_STEP, |this, v, cx| {
+            this.turn_mapping(Shape::Floor, v, cx);
+        });
         // The response is quoted −1..=1 — late, linear, early — and the track is a
         // fraction like every other here, so the view spends the one mapping.
-        let mod_curve = cx.new(|_| SliderState::new().min(0.0).max(1.0).step(EDITOR_STEP));
-        subs.push(
-            cx.subscribe(&mod_curve, |this, _, event: &SliderEvent, cx| {
-                if let SliderEvent::Change(v) = event {
-                    this.turn_mapping(Shape::Curve, v.start(), cx);
-                }
-            }),
-        );
+        let mod_curve = turns(cx, &mut subs, (0.0, 1.0), EDITOR_STEP, |this, v, cx| {
+            this.turn_mapping(Shape::Curve, v, cx);
+        });
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Find a command\u{2026}"));
         subs.push(cx.subscribe_in(
             &search,
@@ -432,6 +426,39 @@ pub struct Sync<'a> {
     pub editor: Option<&'a Shown>,
     /// The mapping whose two shape knobs are showing, if any.
     pub mapping: Option<Modulation>,
+}
+
+/// A track over `lo..=hi` at `step`, every event it raises handed to `on` — how each
+/// of the chrome's sliders is made.
+fn track(
+    cx: &mut Context<'_, Canvas>,
+    subs: &mut Vec<Subscription>,
+    (lo, hi): (f32, f32),
+    step: f32,
+    on: impl Fn(&mut Canvas, &SliderEvent, &mut Context<'_, Canvas>) + 'static,
+) -> Entity<SliderState> {
+    let state = cx.new(|_| SliderState::new().min(lo).max(hi).step(step));
+    subs.push(
+        cx.subscribe(&state, move |this, _, event: &SliderEvent, cx| {
+            on(this, event, cx);
+        }),
+    );
+    state
+}
+
+/// [`track`] for a slider whose release lays down nothing its last change did not.
+fn turns(
+    cx: &mut Context<'_, Canvas>,
+    subs: &mut Vec<Subscription>,
+    range: (f32, f32),
+    step: f32,
+    on: impl Fn(&mut Canvas, f32, &mut Context<'_, Canvas>) + 'static,
+) -> Entity<SliderState> {
+    track(cx, subs, range, step, move |this, event, cx| {
+        if let SliderEvent::Change(v) = event {
+            on(this, v.start(), cx);
+        }
+    })
 }
 
 /// Where `v` stands in `lo..=hi`, which is what the view's handlers speak.

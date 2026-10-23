@@ -48,6 +48,7 @@ mod navigator;
 mod palette;
 mod panel;
 mod pick;
+mod regions;
 mod render;
 mod select;
 mod slots;

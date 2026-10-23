@@ -30,14 +30,12 @@ use stark_model::document::LayerId;
 use stark_ui::commands::{Bindings, Command};
 use stark_ui::icons::Icon;
 use stark_ui::layer_tree::{self, Row};
-use wgpui::{
-    App, Bounds, IntoElement, Pixels, Point, RenderOnce, SharedString, Window, canvas, div,
-    prelude::*, px, rgb,
-};
+use wgpui::{App, IntoElement, RenderOnce, SharedString, Window, div, prelude::*, px, rgb};
 
 use wgpui_component::select::Select;
 
 use crate::controls::Controls;
+use crate::regions::probe;
 use crate::style::{self, StyleExt};
 
 /// What a press on the layers panel landed on.
@@ -67,27 +65,8 @@ pub enum Region {
     Remove,
 }
 
-/// Where each control was laid out, as of the last painted frame.
-pub type Regions = std::rc::Rc<std::cell::RefCell<Vec<(Region, Bounds<Pixels>)>>>;
-
-fn probe(regions: &Regions, region: Region) -> impl IntoElement {
-    let regions = regions.clone();
-    canvas(
-        move |bounds, _, _| regions.borrow_mut().push((region, bounds)),
-        |_, (), _, _| {},
-    )
-    .absolute()
-    .size_full()
-}
-
-/// Which control a press landed on.
-pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
-    regions
-        .borrow()
-        .iter()
-        .find(|(_, bounds)| bounds.contains(&at))
-        .map(|(region, _)| *region)
-}
+/// Where each control was laid out, as of the last frame that painted ([`crate::regions`]).
+pub type Regions = crate::regions::Regions<Region>;
 
 /// A small square control — an eye, a carry, a clip mark.
 ///
@@ -418,15 +397,6 @@ pub fn act(region: Region, rows: &[Row], active: Option<LayerId>) -> Option<Act>
     })
 }
 
-/// What adding a layer sends: a plain layer above the selected one, or on top with nothing
-/// selected (§14.2).
-pub fn add_layer(active: Option<LayerId>) -> DocCommand {
-    DocCommand::AddLayer {
-        carrier: None,
-        above: active,
-    }
-}
-
 /// What a press turns into.
 pub enum Act {
     /// One of the registry's acts, run through the window's own door (`Canvas::run`).
@@ -575,7 +545,7 @@ mod tests {
             Some(Act::Command(Command::AddLayer))
         ));
         assert!(matches!(
-            add_layer(None),
+            stark_ui::layer_tree::add_layer(None),
             DocCommand::AddLayer { above: None, .. }
         ));
     }

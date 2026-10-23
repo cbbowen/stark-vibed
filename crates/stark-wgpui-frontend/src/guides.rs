@@ -25,13 +25,14 @@
 
 use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, Edit, ViewCommand};
-use stark_model::document::{GuideId, Lens, PerspectiveGuide};
+use stark_model::document::{GuideId, Lens};
 use stark_ui::commands::{Bindings, Command};
 use stark_ui::guides::{AXIS_NAMES, Dial, PAIR_AXES, label};
 use stark_ui::icons::Icon;
-use wgpui::{Bounds, IntoElement, Pixels, Point, SharedString, canvas, div, prelude::*, px};
+use wgpui::{IntoElement, SharedString, div, prelude::*, px};
 
 use crate::controls::Controls;
+use crate::regions::probe;
 use crate::style::{self, StyleExt};
 
 /// Which control a press on the shelf landed on.
@@ -51,30 +52,8 @@ pub enum Region {
     Lens,
 }
 
-/// Where each was laid out — `crate::panel`'s device, for its reason.
-pub type Regions = std::rc::Rc<std::cell::RefCell<Vec<(Region, Bounds<Pixels>)>>>;
-
-fn probe(regions: &Regions, region: Region) -> impl IntoElement {
-    let regions = regions.clone();
-    canvas(
-        move |bounds, _, _| regions.borrow_mut().push((region, bounds)),
-        |_, (), _, _| {},
-    )
-    .absolute()
-    .size_full()
-}
-
-/// Which control a press landed on.
-pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
-    // Reversed, so a row's eye and trash win over the row under them: the three
-    // overlap by construction and the list is built parent-first.
-    regions
-        .borrow()
-        .iter()
-        .rev()
-        .find(|(_, bounds)| bounds.contains(&at))
-        .map(|(region, _)| *region)
-}
+/// Where each control was laid out, as of the last frame that painted ([`crate::regions`]).
+pub type Regions = crate::regions::Regions<Region>;
 
 /// The guide this shelf's dressing acts on: the one last taken up, or — for a client
 /// that has taken none, or whose choice an undo has removed — the newest.
@@ -323,14 +302,7 @@ pub fn act(
     Some(match region {
         // Placed where the artist is looking, and appended: the roster reads in the
         // order guides were added.
-        Region::Add => Act::Doc(DocCommand::AddGuide {
-            guide: PerspectiveGuide {
-                center,
-                ..Default::default()
-            },
-            after: guides.last().map(|g| g.id),
-            name: None,
-        }),
+        Region::Add => Act::Doc(stark_ui::guides::add_at(guides, center)),
         // Whether this client draws it is **session** state, not the document's: a
         // collaborator's eye is theirs (§20.5).
         Region::Visible(i) => {
@@ -347,10 +319,7 @@ pub fn act(
         }
         Region::Lens => {
             let (id, mut guide) = held()?;
-            guide.lens = match guide.lens {
-                Lens::Rectilinear => Lens::Fisheye,
-                Lens::Fisheye => Lens::Rectilinear,
-            };
+            guide.lens = stark_ui::guides::toggled(guide.lens);
             Act::Doc(DocCommand::Set(Edit::Guide(id, guide)))
         }
     })
@@ -370,6 +339,7 @@ pub enum Act {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use stark_model::document::PerspectiveGuide;
     use stark_model::document::{ActionId, ActorId};
 
     fn info(n: u64, guide: PerspectiveGuide) -> stark_engine::GuideInfo {

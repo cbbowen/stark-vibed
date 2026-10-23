@@ -22,10 +22,11 @@ use stark_engine::{EnvironmentId, ObservableState};
 use stark_model::{Srgb, SubstrateId};
 use stark_ui::lighting::{Dial, dials};
 use stark_ui::prefs::Hdr;
-use wgpui::{AnyElement, Bounds, IntoElement, Pixels, Point, canvas, div, prelude::*, px, rgb};
+use wgpui::{AnyElement, IntoElement, div, prelude::*, px, rgb};
 use wgpui_component::select::Select;
 
 use crate::controls::Controls;
+use crate::regions::probe;
 use crate::style::{self, StyleExt};
 
 /// The HDR behind an image-backed environment, or `None` for the procedural
@@ -63,27 +64,8 @@ pub enum Region {
     Hdr,
 }
 
-/// Where each was laid out — `crate::panel`'s device, for its reason.
-pub type Regions = std::rc::Rc<std::cell::RefCell<Vec<(Region, Bounds<Pixels>)>>>;
-
-fn probe(regions: &Regions, region: Region) -> impl IntoElement {
-    let regions = regions.clone();
-    canvas(
-        move |bounds, _, _| regions.borrow_mut().push((region, bounds)),
-        |_, (), _, _| {},
-    )
-    .absolute()
-    .size_full()
-}
-
-/// Which control a press landed on.
-pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
-    regions
-        .borrow()
-        .iter()
-        .find(|(_, bounds)| bounds.contains(&at))
-        .map(|(region, _)| *region)
-}
+/// Where each control was laid out, as of the last frame that painted ([`crate::regions`]).
+pub type Regions = crate::regions::Regions<Region>;
 
 /// What the shelf needs that is neither the projection nor a track.
 pub struct Shown<'a> {

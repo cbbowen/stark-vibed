@@ -18,7 +18,7 @@ use stark_engine::command::{
     DocCommand, Edit, GestureCommand, HoverReport, InputSample, Tool, ViewCommand,
 };
 use stark_model::AssetNeed;
-use stark_model::document::{BrushShape, FillOp, GuideId, SelectionOp, ShapeAction};
+use stark_model::document::{BrushShape, FillOp, GuideId, LayerId, SelectionOp, ShapeAction};
 use stark_model::geom::Vec2;
 use stark_model::{AssetId, Srgb, SubstrateId};
 use stark_pen::{Claim, Phase, Pose, Report, Tablet};
@@ -517,7 +517,7 @@ impl Canvas {
         // whole window, so a press it does not want is a press that closes it rather
         // than one that reaches the canvas. That is the whole of what "modal" means
         // here, and it is two lines rather than a catcher.
-        match menu::hit(&self.menu_regions, ev.position) {
+        match crate::regions::hit(&self.menu_regions, ev.position) {
             Some(menu::Region::Title(i)) => {
                 // The lit title closes it, which is the escape hatch every other
                 // armed control in this app offers through the control that armed it.
@@ -557,7 +557,7 @@ impl Canvas {
         // full-viewport catcher without the catcher — one hit test in one place
         // rather than an element stacked over the surface (the module note).
         if let Some(ui) = self.mode {
-            if let Some(region) = transform::hit(&self.bar_regions, ev.position) {
+            if let Some(region) = crate::regions::hit(&self.bar_regions, ev.position) {
                 self.bar_act(ui, region, cx);
                 return;
             }
@@ -575,7 +575,7 @@ impl Canvas {
         // asked before the columns and before anything else could call this paint.
         // It is mounted only when the mode's bar is not, so the two hit tests above
         // and here cannot both answer.
-        match select::hit(&self.select_bar_regions, ev.position) {
+        match crate::regions::hit(&self.select_bar_regions, ev.position) {
             Some(select::Region::Act(i)) => {
                 if let Some(command) = select::SELECT_ACTS.get(i) {
                     self.run(*command, window, cx);
@@ -591,7 +591,7 @@ impl Canvas {
         // The eyedropper's bar takes the same edge as the selection's and is asked
         // beside it. The two are never up at once (`Canvas::render`), so the order
         // between these two tests carries no meaning.
-        if let Some(region) = pick::hit(&self.pick_regions, ev.position) {
+        if let Some(region) = crate::regions::hit(&self.pick_regions, ev.position) {
             if let Some(command) = pick::act(&mut self.sampler, region) {
                 self.run(command, window, cx);
             }
@@ -602,25 +602,25 @@ impl Canvas {
         // hit tests is immaterial — the region lists are disjoint — but *all* of them
         // come before the catch-all below, which is what turns a press on a column
         // into nothing rather than into paint.
-        if let Some(region) = layers::hit(&self.layer_regions, ev.position) {
+        if let Some(region) = crate::regions::hit(&self.layer_regions, ev.position) {
             self.act(region, window, cx);
             return;
         }
-        if let Some(region) = guides::hit(&self.guide_regions, ev.position) {
+        if let Some(region) = crate::regions::hit(&self.guide_regions, ev.position) {
             self.guide_act(region, cx);
             return;
         }
-        if let Some(region) = lighting::hit(&self.lighting_regions, ev.position) {
+        if let Some(region) = crate::regions::hit(&self.lighting_regions, ev.position) {
             self.light_act(region, window, cx);
             return;
         }
-        if navigator::hit(&self.nav_regions, ev.position).is_some() {
+        if crate::regions::hit(&self.nav_regions, ev.position).is_some() {
             self.held = Some(Held::Overview);
             self.overview_to(ev.position, cx);
             return;
         }
 
-        if let Some(region) = color::hit(&self.color_regions, ev.position) {
+        if let Some(region) = crate::regions::hit(&self.color_regions, ev.position) {
             let Some(at) = color::fraction_at(&self.color_regions, region, ev.position) else {
                 return;
             };
@@ -639,13 +639,13 @@ impl Canvas {
 
         // The galleries share the column too, and are asked before the Select section
         // for no reason beyond where they sit: the regions are disjoint.
-        if let Some(region) = gallery::hit(&self.gallery_regions, ev.position) {
+        if let Some(region) = crate::regions::hit(&self.gallery_regions, ev.position) {
             self.gallery_act(region, window, cx);
             return;
         }
 
         // The Select section shares the brush panel's column, so it is asked with it.
-        match select::hit(&self.select_regions, ev.position) {
+        match crate::regions::hit(&self.select_regions, ev.position) {
             Some(select::Region::Tool(i)) => {
                 if let Some(tool) = stark_ui::selection::SHAPE_TOOLS.get(i) {
                     self.run(select::tool_command(*tool), window, cx);
@@ -670,7 +670,7 @@ impl Canvas {
         }
 
         // Then the brush panel: its column is where a press stops being paint.
-        match panel::hit(&self.regions, ev.position) {
+        match crate::regions::hit(&self.regions, ev.position) {
             Some(Region::Fold(what)) => {
                 self.fold(what, cx);
                 return;
@@ -706,7 +706,7 @@ impl Canvas {
         // transient rack is never asked and the stroke it is standing over is never
         // swallowed — the same bargain the web frontend makes by granting the pointer
         // in its stylesheet.
-        if let Some(region) = crate::slots::hit(&self.slot_regions, ev.position) {
+        if let Some(region) = crate::regions::hit(&self.slot_regions, ev.position) {
             let now = self.elapsed();
             if self.rack.press(region, now) {
                 self.repaint(cx);
@@ -806,7 +806,7 @@ impl Canvas {
             None => {}
         }
 
-        let tool = self.obs.as_ref().map_or(Tool::Brush, |o| o.tool);
+        let tool = self.tool().unwrap_or(Tool::Brush);
         // A held modifier borrows the shape action for this one gesture — whether it
         // does is `stark_ui::selection`'s answer, and a `Some` is what has to be
         // put back on release.
@@ -904,7 +904,7 @@ impl Canvas {
         // Sliding off the rack's trash backs out of the hold that would empty the slot
         // — what sliding off a button has always meant (§18.1.8). Asked before anything
         // else, because a press on it took hold of nothing else.
-        if self.rack.moved(crate::slots::hit(&self.slot_regions, at)) {
+        if self.rack.moved(crate::regions::hit(&self.slot_regions, at)) {
             self.repaint(cx);
         }
         // [`open_canvas`](Self::open_canvas)'s reason, and one more: three of the arms
@@ -1025,7 +1025,7 @@ impl Canvas {
         // (`slots::Rack::release`).
         if let Some(slot) = self
             .rack
-            .release(crate::slots::hit(&self.slot_regions, ev.position))
+            .release(crate::regions::hit(&self.slot_regions, ev.position))
         {
             self.pick_slot(slot, cx);
         }
@@ -1212,9 +1212,7 @@ impl Canvas {
         // The *choice* is what the bar holds; which layer it means is resolved now,
         // against whichever layer is selected at the moment of the sample
         // (`stark_ui::pick::Sampler::options`).
-        let options = self
-            .sampler
-            .options(self.obs.as_ref().map(|o| o.active_layer));
+        let options = self.sampler.options(self.active_layer());
         let (origin, scale) = (self.origin(), window.scale_factor());
         let Some(r) = self.renderer.as_mut() else {
             return;
@@ -1303,7 +1301,7 @@ impl Canvas {
     /// document's.
     fn act(&mut self, region: layers::Region, window: &mut Window, cx: &mut Context<'_, Self>) {
         let rows = self.rows();
-        let active = self.obs.as_ref().map(|o| o.active_layer);
+        let active = self.active_layer();
         match layers::act(region, &rows, active) {
             Some(Act::Command(command)) => self.run(command, window, cx),
             Some(Act::Doc(command)) => self.send(command, cx),
@@ -1322,7 +1320,7 @@ impl Canvas {
     /// nothing; [`settle_opacity`](Self::settle_opacity) lays it down — one undo step
     /// and one replicated action for the drag (§14.6).
     pub(crate) fn turn_opacity(&mut self, opacity: f32, cx: &mut Context<'_, Self>) {
-        let Some(id) = self.obs.as_ref().map(|o| o.active_layer) else {
+        let Some(id) = self.active_layer() else {
             return;
         };
         self.send(
@@ -1333,7 +1331,7 @@ impl Canvas {
 
     /// The end of a drag on the opacity track: commit what it previewed.
     pub(crate) fn settle_opacity(&mut self, opacity: f32, cx: &mut Context<'_, Self>) {
-        let Some(id) = self.obs.as_ref().map(|o| o.active_layer) else {
+        let Some(id) = self.active_layer() else {
             return;
         };
         self.send(DocCommand::Set(Edit::LayerOpacity(id, opacity)), cx);
@@ -1345,7 +1343,7 @@ impl Canvas {
         mode: stark_model::document::BlendMode,
         cx: &mut Context<'_, Self>,
     ) {
-        let Some(id) = self.obs.as_ref().map(|o| o.active_layer) else {
+        let Some(id) = self.active_layer() else {
             return;
         };
         self.send(DocCommand::Set(Edit::LayerBlend(id, mode)), cx);
@@ -1385,7 +1383,10 @@ impl Canvas {
             // it ([`settle_light`]), so one drag is one write rather than one a frame.
             light::Dial::Headroom => {
                 self.hdr.headroom = v;
-                self.apply_hdr(cx);
+                // The display's own figure is a *window* question and this is not
+                // one; the switch re-asks it whenever the window can answer, and a
+                // track is only ever mounted where it cannot (`lighting::dials`).
+                self.apply_hdr(None, cx);
             }
         }
     }
@@ -1399,27 +1400,40 @@ impl Canvas {
                     self.send(DocCommand::Set(Edit::SubstrateScale(scale)), cx);
                 }
             }
-            light::Dial::Headroom => {
-                let mut prefs = stark_ui::storage::load::<Prefs>().unwrap_or_default();
-                prefs.hdr = self.hdr;
-                stark_ui::storage::save(&prefs);
-            }
+            light::Dial::Headroom => self.store_hdr(),
             light::Dial::Impasto | light::Dial::Texture | light::Dial::Gloss => {}
         }
     }
 
-    /// Tell the engine what the window is (§6.5) and show it — the read-modify half of
-    /// the HDR switch, shared by the switch and by the headroom track.
-    fn apply_hdr(&mut self, cx: &mut Context<'_, Self>) {
-        // The display's own figure is a *window* question and this is not one; the
-        // switch below re-asks it whenever the window can answer, and a track is only
-        // ever mounted where it cannot (`lighting::dials`).
+    /// Tell the engine what the window is (§6.5) — the HDR choice, and the display's
+    /// own headroom where the caller could ask the window for it — and show it. Shared
+    /// by the switch and by the headroom track.
+    fn apply_hdr(&mut self, display: Option<f32>, cx: &mut Context<'_, Self>) {
         let hdr = self.hdr;
         if let Some(r) = self.renderer.as_mut() {
-            r.desk.apply_output(hdr, None);
+            r.desk.apply_output(hdr, display);
             self.obs = Some(r.desk.engine().observe());
         }
         self.repaint(cx);
+    }
+
+    /// The selected layer, once there is a projection to say.
+    fn active_layer(&self) -> Option<LayerId> {
+        self.obs.as_ref().map(|o| o.active_layer)
+    }
+
+    /// The committed document's revision (`ObservableState::doc_revision`), 0 before
+    /// there is one.
+    fn revision(&self) -> u64 {
+        self.obs.as_ref().map_or(0, |o| o.doc_revision)
+    }
+
+    /// Keep the HDR choice. Read-modify-write, so the preferences this frontend does
+    /// not apply survive.
+    fn store_hdr(&self) {
+        let mut prefs = stark_ui::storage::load::<Prefs>().unwrap_or_default();
+        prefs.hdr = self.hdr;
+        stark_ui::storage::save(&prefs);
     }
 
     /// Re-light the canvas (§6.3). A view setting: no stored pixel moves, only how the
@@ -1683,7 +1697,7 @@ impl Canvas {
         // The revision those bytes are of, read *before* anything asynchronous: by
         // the time a dialog answers the hand may have painted again, and marking that
         // revision written would call a stroke saved that no file holds.
-        let revision = self.obs.as_ref().map_or(0, |o| o.doc_revision);
+        let revision = self.revision();
         if let Some(path) = self.path.clone() {
             let done = match files::write(&path, &bytes) {
                 Ok(path) => Done::Saved { path, revision },
@@ -1695,16 +1709,13 @@ impl Canvas {
         // per process is what every platform gives.
         let ask = cx.prompt_for_new_path(&self.directory(), Some(&stark_ui::files::default_name()));
         self.file_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let done = match ask.await {
-                Ok(Ok(Some(path))) => match files::write(&path, &bytes) {
+            let done = match files::answered(ask.await, "save") {
+                Ok(Some(path)) => match files::write(&path, &bytes) {
                     Ok(path) => Done::Saved { path, revision },
                     Err(e) => Done::Failed(e),
                 },
-                Ok(Ok(None)) => Done::Cancelled,
-                Ok(Err(e)) => Done::Failed(format!("the save dialog failed: {e}")),
-                // The sender went without answering — the window closed under the
-                // dialog. Nothing to report and nothing to write.
-                Err(_) => Done::Cancelled,
+                Ok(None) => Done::Cancelled,
+                Err(e) => Done::Failed(e),
             };
             let _ = this.update_in(cx, |this, window, cx| this.settle(done, window, cx));
         }));
@@ -1712,24 +1723,17 @@ impl Canvas {
 
     /// Replace the document with one read from disk.
     fn open(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        let ask = cx.prompt_for_paths(wgpui::PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let ask = cx.prompt_for_paths(files::one_file());
         self.file_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let done = match ask.await {
-                Ok(Ok(Some(paths))) => match paths.into_iter().next() {
-                    Some(path) => match files::read(&path) {
-                        Ok(bytes) => Done::Opened { path, bytes },
-                        Err(e) => Done::Failed(e),
-                    },
-                    None => Done::Cancelled,
+            let picked = files::answered(ask.await, "open")
+                .map(|paths| paths.and_then(|paths| paths.into_iter().next()));
+            let done = match picked {
+                Ok(Some(path)) => match files::read(&path) {
+                    Ok(bytes) => Done::Opened { path, bytes },
+                    Err(e) => Done::Failed(e),
                 },
-                Ok(Ok(None)) => Done::Cancelled,
-                Ok(Err(e)) => Done::Failed(format!("the open dialog failed: {e}")),
-                Err(_) => Done::Cancelled,
+                Ok(None) => Done::Cancelled,
+                Err(e) => Done::Failed(e),
             };
             let _ = this.update_in(cx, |this, window, cx| this.settle(done, window, cx));
         }));
@@ -1741,7 +1745,7 @@ impl Canvas {
     /// bargain `Engine::export` is built for: the future does not hold the renderer,
     /// so the window goes on painting while the GPU→CPU copy is in flight.
     fn export(&mut self, window: &mut Window, cx: &mut Context<'_, Self>) {
-        let revision = self.obs.as_ref().map_or(0, |o| o.doc_revision);
+        let revision = self.revision();
         let (frame, scale, background, content) = files::EXPORT;
         let Some(r) = self.renderer.as_mut() else {
             return;
@@ -1756,17 +1760,17 @@ impl Canvas {
         let ask = cx.prompt_for_new_path(&self.directory(), Some("painting.png"));
         self.file_task = Some(cx.spawn_in(window, async move |this, cx| {
             let image = render.await;
-            let done = match (ask.await, image) {
-                (Ok(Ok(Some(path))), Ok(image)) => match files::encode(&image, &path) {
+            let done = match (files::answered(ask.await, "export"), image) {
+                (Ok(Some(path)), Ok(image)) => match files::encode(&image, &path) {
                     Ok(bytes) => match std::fs::write(&path, bytes) {
                         Ok(()) => Done::Exported { revision },
                         Err(e) => Done::Failed(format!("could not write {}: {e}", path.display())),
                     },
                     Err(e) => Done::Failed(e),
                 },
-                (Ok(Ok(None)), _) | (Err(_), _) => Done::Cancelled,
-                (Ok(Err(e)), _) => Done::Failed(format!("the export dialog failed: {e}")),
-                (_, Err(e)) => Done::Failed(format!("could not render the picture: {e}")),
+                (Ok(None), _) => Done::Cancelled,
+                (Err(e), _) => Done::Failed(e),
+                (Ok(Some(_)), Err(e)) => Done::Failed(format!("could not render the picture: {e}")),
             };
             let _ = this.update_in(cx, |this, window, cx| this.settle(done, window, cx));
         }));
@@ -1795,7 +1799,7 @@ impl Canvas {
             Done::Opened { path, bytes } => {
                 if self.load(&bytes) {
                     self.path = Some(path);
-                    self.written = self.obs.as_ref().map_or(0, |o| o.doc_revision);
+                    self.written = self.revision();
                 }
             }
             // A picture is not the document, but it is a copy of the work — so it
@@ -1904,11 +1908,7 @@ impl Canvas {
 
     /// Put the file's name on the window, if it changed.
     fn retitle(&mut self, window: &mut Window) {
-        let title = files::window_title(
-            self.path.as_deref(),
-            self.unsaved(),
-            self.collab.phase == stark_ui::collab::Phase::Shared,
-        );
+        let title = files::window_title(self.path.as_deref(), self.unsaved(), self.sharing());
         if title != self.title {
             window.set_window_title(&title);
             self.title = title;
@@ -2444,7 +2444,7 @@ impl Canvas {
     /// work itself — `presence_due` is a `&self` comparison, so an idle shared session
     /// costs it per frame and takes no mutable borrow at all.
     fn tick_presence(&mut self, cx: &mut Context<'_, Self>) {
-        if self.collab.phase != stark_ui::collab::Phase::Shared {
+        if !self.sharing() {
             return;
         }
         let now = self.elapsed();
@@ -2555,16 +2555,9 @@ impl Canvas {
     /// answers, so the two frontends cannot come to disagree about what an unbounded
     /// selection means.
     fn begin_transform(&mut self, cx: &mut Context<'_, Self>) {
-        let Some(o) = self.obs.as_ref() else { return };
-        let Some(entry) = stark_ui::transform::entry(o) else {
+        let Some(ui) = self.obs.as_ref().and_then(stark_ui::transform::begin) else {
             return;
         };
-        let ui = stark_ui::transform::mount(
-            entry.layer,
-            Family::Free,
-            entry.hull,
-            Bands::at(o.view.zoom),
-        );
         self.hold(ui, cx);
     }
 
@@ -2702,7 +2695,7 @@ impl Canvas {
     /// nothing says otherwise, and remembering the last one armed is a signal the web
     /// app keeps and this one has nowhere to.
     fn arm_shape(&mut self, cx: &mut Context<'_, Self>) {
-        let tool = self.obs.as_ref().map_or(Tool::Brush, |o| o.tool);
+        let tool = self.tool().unwrap_or(Tool::Brush);
         if !tool.is_selection() {
             self.send(ViewCommand::SetTool(Tool::SelectRect), cx);
         }
@@ -2939,19 +2932,13 @@ impl Canvas {
         window: &mut Window,
         cx: &mut Context<'_, Self>,
     ) {
-        let ask = cx.prompt_for_paths(wgpui::PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: None,
-        });
+        let ask = cx.prompt_for_paths(files::one_file());
         self.file_task = Some(cx.spawn_in(window, async move |this, cx| {
-            let picked = match ask.await {
-                Ok(Ok(Some(paths))) => paths.into_iter().next(),
-                Ok(Ok(None)) | Err(_) => None,
-                Ok(Err(e)) => {
+            let picked = match files::answered(ask.await, "import") {
+                Ok(paths) => paths.and_then(|paths| paths.into_iter().next()),
+                Err(e) => {
                     let _ = this.update_in(cx, |this, _, cx| {
-                        this.report(format!("the import dialog failed: {e}"));
+                        this.report(e);
                         this.repaint(cx);
                     });
                     return;
@@ -3146,21 +3133,13 @@ impl Canvas {
             self.clear_hover_mark(cx);
             return;
         }
-        // The quick-brush rack, claimed before the chord table is consulted so a future
-        // row on a digit could never shadow it. A digit is not a chord: it is a *hold*,
-        // owning both edges of its key (§18.1.8); it is read off the physical row
-        // (`crate::keys::code_of`) so a layout that types something else there still has
-        // a rack; and **Shift is tolerated**, since on most layouts it is what the digit
-        // row types under and a hand resting on it should not silently disarm the rack.
-        // Alt is not: bare Alt is the eyedropper's, and only a bare digit is ours.
-        //
-        // `hold_slot` ignores a press while a hold is in flight, which is what makes the
-        // key's own auto-repeat harmless, and it is what counts a digit pressed twice in
-        // a beat (`slots::Taps`) — so nothing here keeps time.
-        if !stroke.mods.ctrl
-            && !stroke.mods.alt
-            && let Some(slot) = slots::of_code(stroke.code)
-        {
+        // The quick-brush rack: a digit is not a chord but a *hold*, owning both edges
+        // of its key (§18.1.8), and which presses are one is the rack's own rule
+        // (`stark_ui::slots::claims`). `hold_slot` ignores a press while a hold is in
+        // flight, which is what makes the key's own auto-repeat harmless, and it is
+        // what counts a digit pressed twice in a beat (`slots::Taps`) — so nothing here
+        // keeps time.
+        if let Some(slot) = slots::claims(&stroke) {
             self.hold_slot(slot, Grip::Key, cx);
             return;
         }
@@ -3242,7 +3221,7 @@ impl Canvas {
         let doc = match command {
             Command::Undo => Some(DocCommand::Undo),
             Command::Redo => Some(DocCommand::Redo),
-            Command::AddLayer => Some(layers::add_layer(self.obs.as_ref().map(|o| o.active_layer))),
+            Command::AddLayer => Some(stark_ui::layer_tree::add_layer(self.obs.as_ref())),
             // Covering everything *is* selecting nothing, so Ctrl+A and Ctrl+D are
             // one act (§6.8) — which is the registry's claim, and this is it honoured
             // rather than restated.
@@ -3376,12 +3355,12 @@ impl Canvas {
         // The stamp gallery is inside the dialog while one is open — the shelf that
         // usually holds it is behind the scrim — so its own list is asked first, its
         // cards being nested inside the sheet's rectangle either way.
-        if let Some(region) = gallery::hit(&self.gallery_regions, at) {
+        if let Some(region) = crate::regions::hit(&self.gallery_regions, at) {
             self.gallery_act(region, window, cx);
             self.restroke(cx);
             return;
         }
-        let Some(region) = brush_editor::hit(&self.editor_regions, at) else {
+        let Some(region) = crate::regions::hit(&self.editor_regions, at) else {
             // The scrim: outside the sheet is out of the dialog, which is the answer
             // every overlay in this toolkit gives (`wgpui_component::dialog`).
             return self.close_editor(cx);
@@ -3558,23 +3537,15 @@ impl Canvas {
     }
 
     /// Flip the HDR switch (§6.5): show it, and keep it. Ungated — a view act.
-    /// Read-modify-write, so the preferences this frontend does not apply survive.
     fn toggle_hdr(&mut self, window: &Window, cx: &mut Context<'_, Self>) {
         self.hdr.on = !self.hdr.on;
-        let display = window.display_headroom();
-        if let Some(r) = self.renderer.as_mut() {
-            r.desk.apply_output(self.hdr, display);
-            self.obs = Some(r.desk.engine().observe());
-        }
-        let mut prefs = stark_ui::storage::load::<Prefs>().unwrap_or_default();
-        prefs.hdr = self.hdr;
-        stark_ui::storage::save(&prefs);
-        self.repaint(cx);
+        self.store_hdr();
+        self.apply_hdr(window.display_headroom(), cx);
     }
 
     /// Arm a shape tool, or put it down if it is the one already in hand.
     fn arm_tool(&mut self, tool: Tool, cx: &mut Context<'_, Self>) {
-        let current = self.obs.as_ref().map_or(Tool::Brush, |o| o.tool);
+        let current = self.tool().unwrap_or(Tool::Brush);
         self.send(
             ViewCommand::SetTool(stark_ui::selection::arm(current, tool)),
             cx,
@@ -3793,7 +3764,7 @@ impl Render for Canvas {
         // itself (`stark_pen`), a peer's frames arrive on a task, a resize is a frame
         // the surface element asks for, and everything a command touches goes through
         // `repaint`.
-        if self.collab.phase == stark_ui::collab::Phase::Shared {
+        if self.sharing() {
             window.request_animation_frame();
         }
         // The rack's one clock: the trash held down empties its slot when the fill it
@@ -3986,7 +3957,7 @@ impl Render for Canvas {
         // The widget layer's dials are told what the model says before the shelves
         // that show them are built (`crate::controls`).
         let rows = self.rows();
-        let active = self.obs.as_ref().map(|o| o.active_layer);
+        let active = self.active_layer();
         let chosen = active.and_then(|id| rows.iter().find(|r| r.info.id == id));
         // What the editor's two dozen tracks are settled from — `None` with no dialog
         // up, which is what keeps them free the rest of the time (`crate::controls`).

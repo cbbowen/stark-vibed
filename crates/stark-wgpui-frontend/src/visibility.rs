@@ -30,7 +30,7 @@
 //! This window's columns are its furniture: the canvas is what is *left* once they
 //! have taken their room, and a first run showing a menu bar over an empty grey field
 //! would read as a broken app. So [`stored`] asks for the distinction
-//! (`stark_ui::visibility::stored_open`) and answers the absent case itself.
+//! (`stark_ui::visibility::stored_screen`) and answers the absent case itself.
 
 use std::collections::HashSet;
 

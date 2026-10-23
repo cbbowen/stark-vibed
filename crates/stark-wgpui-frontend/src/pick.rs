@@ -24,11 +24,9 @@
 use stark_ui::commands::{Bindings, Command, PickScope};
 use stark_ui::pick::{PATCHES, Sampler, patch_word};
 use strum::VariantArray;
-use wgpui::{
-    Bounds, HitboxBehavior, IntoElement, Pixels, Point, SharedString, canvas, div, prelude::*, rgb,
-    rgba,
-};
+use wgpui::{HitboxBehavior, IntoElement, SharedString, canvas, div, prelude::*, rgb, rgba};
 
+use crate::regions::probe;
 use crate::style::{self, StyleExt};
 
 /// Which of the bar's controls a press landed on.
@@ -45,35 +43,8 @@ pub enum Region {
     Bar,
 }
 
-/// Where the bar's controls were laid out — `crate::panel`'s device, for its reason.
-pub type Regions = std::rc::Rc<std::cell::RefCell<Vec<(Region, Bounds<Pixels>)>>>;
-
-fn probe(regions: &Regions, region: Region) -> impl IntoElement {
-    let regions = regions.clone();
-    canvas(
-        move |bounds, _, _| regions.borrow_mut().push((region, bounds)),
-        |_, (), _, _| {},
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .right_0()
-    .bottom_0()
-}
-
-/// Which control a press landed on.
-///
-/// Innermost first (`.rev()`), which is `crate::select`'s rule and its reason: the
-/// strip is probed as the bar's first child and contains every chip on it, so reading
-/// forwards would hand back the ground under a chip that was pressed.
-pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
-    regions
-        .borrow()
-        .iter()
-        .rev()
-        .find(|(_, bounds)| bounds.contains(&at))
-        .map(|(region, _)| *region)
-}
+/// Where each control was laid out, as of the last frame that painted ([`crate::regions`]).
+pub type Regions = crate::regions::Regions<Region>;
 
 /// What a press on `region` makes of the sampler, or the command it asks for.
 ///

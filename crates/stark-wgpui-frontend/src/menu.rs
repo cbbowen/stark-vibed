@@ -32,10 +32,9 @@ use stark_engine::ObservableState;
 use stark_ui::commands::VisibilityToggle;
 use stark_ui::commands::{Bindings, Command};
 use stark_ui::panels::PanelId;
-use wgpui::{
-    AnyElement, Bounds, IntoElement, Pixels, Point, canvas, deferred, div, prelude::*, px, rgb,
-};
+use wgpui::{AnyElement, IntoElement, deferred, div, prelude::*, px, rgb};
 
+use crate::regions::probe;
 use crate::style::{self, StyleExt};
 
 /// The bar's height, logical px.
@@ -160,33 +159,8 @@ pub enum Region {
     Row(usize, usize),
 }
 
-/// Where the bar's controls were laid out — `crate::panel`'s device, for its reason.
-pub type Regions = std::rc::Rc<std::cell::RefCell<Vec<(Region, Bounds<Pixels>)>>>;
-
-fn probe(regions: &Regions, region: Region) -> impl IntoElement {
-    let regions = regions.clone();
-    canvas(
-        move |bounds, _, _| regions.borrow_mut().push((region, bounds)),
-        |_, (), _, _| {},
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .right_0()
-    .bottom_0()
-}
-
-/// Which control a press landed on. `None` for a press anywhere else, which is what
-/// closes an open menu — a menu that stayed up through a click on the canvas would be
-/// a menu the artist has to dismiss before painting.
-pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
-    regions
-        .borrow()
-        .iter()
-        .rev()
-        .find(|(_, bounds)| bounds.contains(&at))
-        .map(|(region, _)| *region)
-}
+/// Where each control was laid out, as of the last frame that painted ([`crate::regions`]).
+pub type Regions = crate::regions::Regions<Region>;
 
 /// The command a row names, if that row is one.
 pub fn command(menu: usize, row: usize) -> Option<Command> {

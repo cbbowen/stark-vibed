@@ -17,11 +17,9 @@ use std::sync::Arc;
 use stark_model::AssetId;
 use stark_ui::assets::{Entry, Kind, Shapes, Shipped};
 use stark_ui::library::Thumbs;
-use wgpui::{
-    Bounds, ImageSource, IntoElement, Pixels, Point, RenderImage, canvas, div, img, prelude::*, px,
-    rgb,
-};
+use wgpui::{ImageSource, IntoElement, RenderImage, div, img, prelude::*, px, rgb};
 
+use crate::regions::probe;
 use crate::style::{self, StyleExt};
 
 /// The width of a card, logical px. Small enough that a row of them fits the panel's
@@ -90,38 +88,13 @@ pub enum Which {
     Substrates,
 }
 
-/// Where each card was laid out — `crate::panel`'s device, for its reason.
-pub type Regions = std::rc::Rc<std::cell::RefCell<Vec<(Region, Bounds<Pixels>)>>>;
-
-fn probe(regions: &Regions, region: Region) -> impl IntoElement {
-    let regions = regions.clone();
-    canvas(
-        move |bounds, _, _| regions.borrow_mut().push((region, bounds)),
-        |_, (), _, _| {},
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .right_0()
-    .bottom_0()
-}
+/// Where each control was laid out, as of the last frame that painted ([`crate::regions`]).
+pub type Regions = crate::regions::Regions<Region>;
 
 /// The letter a procedural card wears — its name's first, in whatever case the catalog
 /// wrote it.
 fn initial_of(name: &str) -> Option<char> {
     name.chars().next()
-}
-
-/// Which card a press landed on.
-pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
-    // Reversed, so the remove mark on top of a card wins over the card under it: the
-    // two overlap by construction and the list is built parent-first.
-    regions
-        .borrow()
-        .iter()
-        .rev()
-        .find(|(_, bounds)| bounds.contains(&at))
-        .map(|(region, _)| *region)
 }
 
 /// What a gallery needs to draw itself, gathered by the view.

@@ -50,6 +50,7 @@ use wgpui::{
 use wgpui_component::slider::SliderState;
 
 use crate::controls::Controls;
+use crate::regions::{self as regions, probe};
 use crate::render::Preview;
 use crate::style::{self, StyleExt};
 
@@ -131,51 +132,17 @@ impl Shape {
     }
 }
 
-/// Where each control was laid out, as of the last frame that painted.
-pub type Regions = std::rc::Rc<std::cell::RefCell<Vec<(Region, Bounds<Pixels>)>>>;
-
-/// Which control a press landed on.
-///
-/// **Reversed**, unlike the panel's: the controls here nest — a chip inside a row
-/// inside a section inside the sheet — and the list is built parent-first, so the last
-/// rectangle containing the point is the innermost one.
-pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
-    regions
-        .borrow()
-        .iter()
-        .rev()
-        .find(|(_, bounds)| bounds.contains(&at))
-        .map(|(region, _)| *region)
-}
+/// Where each control was laid out, as of the last frame that painted ([`crate::regions`]).
+pub type Regions = crate::regions::Regions<Region>;
 
 /// Where a press on the test canvas is, in the **device px** its view is denominated
 /// in — `None` when the press was not on it, or when no frame has measured it yet.
 pub fn preview_at(regions: &Regions, at: Point<Pixels>, scale: f32) -> Option<Vec2> {
-    let bounds = regions
-        .borrow()
-        .iter()
-        .find(|(region, _)| *region == Region::Preview)
-        .map(|(_, bounds)| *bounds)?;
+    let bounds = regions::bounds_of(regions, Region::Preview)?;
     Some(Vec2::new(
         (f32::from(at.x) - f32::from(bounds.origin.x)) * scale,
         (f32::from(at.y) - f32::from(bounds.origin.y)) * scale,
     ))
-}
-
-fn probe(regions: &Regions, region: Region) -> impl IntoElement {
-    let regions = regions.clone();
-    canvas(
-        move |bounds, _, _| regions.borrow_mut().push((region, bounds)),
-        |_, (), _, _| {},
-    )
-    // All four insets rather than `size_full`: an absolutely-positioned child with
-    // only a size is placed wherever the flow had reached, which put the transform
-    // overlay a viewport below the window for exactly one build (§11.2, N6).
-    .absolute()
-    .top_0()
-    .left_0()
-    .right_0()
-    .bottom_0()
 }
 
 /// The editor while it is open — the sibling engine, the stroke it is showing, and
@@ -998,6 +965,7 @@ fn curve_plot(mapping: stark_model::document::Modulation) -> impl IntoElement {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::regions::hit;
     use wgpui::size;
 
     fn at(x: f32, y: f32) -> Point<Pixels> {

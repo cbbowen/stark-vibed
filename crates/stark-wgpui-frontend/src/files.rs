@@ -60,6 +60,34 @@ pub enum Done {
     Failed(String),
 }
 
+/// What a path dialog answered: what was picked, `None` where there is nothing to act
+/// on, or what went wrong in words naming the `dialog`.
+///
+/// `None` covers two answers: the user called the dialog off, and the sender went
+/// without answering — the window closed under the dialog — where there is nothing to
+/// report and nothing to write.
+pub fn answered<T, E: std::fmt::Display, C>(
+    answer: Result<Result<Option<T>, E>, C>,
+    dialog: &str,
+) -> Result<Option<T>, String> {
+    match answer {
+        Ok(Ok(picked)) => Ok(picked),
+        Ok(Err(e)) => Err(format!("the {dialog} dialog failed: {e}")),
+        Err(_) => Ok(None),
+    }
+}
+
+/// The picker for one existing file — what opening a document and importing an asset
+/// both ask.
+pub fn one_file() -> wgpui::PathPromptOptions {
+    wgpui::PathPromptOptions {
+        files: true,
+        directories: false,
+        multiple: false,
+        prompt: None,
+    }
+}
+
 /// The document as bytes, **lean**: what any build can resolve out of its own
 /// catalog is named rather than carried (§8's version 6).
 ///

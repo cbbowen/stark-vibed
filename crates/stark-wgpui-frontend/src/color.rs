@@ -9,15 +9,13 @@
 use std::sync::Arc;
 
 use stark_ui::color::{self, FIELD_N, RAMP_N};
-use wgpui::{
-    Bounds, ImageSource, IntoElement, Pixels, Point, RenderImage, canvas, div, img, prelude::*, px,
-    rgb,
-};
+use wgpui::{ImageSource, IntoElement, Pixels, Point, RenderImage, div, img, prelude::*, px, rgb};
 
 use wgpui::Entity;
 use wgpui_component::Sizable;
 use wgpui_component::input::{Input, InputState};
 
+use crate::regions::{self as regions, probe};
 use crate::style;
 
 /// The gamut the wheel is fitted to (§6.5) — **the picture carrier's, not the
@@ -62,46 +60,13 @@ pub enum Region {
     Track,
 }
 
-/// Where the two controls were laid out — `crate::panel`'s device, for its reason.
-pub type Regions = std::rc::Rc<std::cell::RefCell<Vec<(Region, Bounds<Pixels>)>>>;
-
-fn probe(regions: &Regions, region: Region) -> impl IntoElement {
-    let regions = regions.clone();
-    canvas(
-        move |bounds, _, _| regions.borrow_mut().push((region, bounds)),
-        |_, (), _, _| {},
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .right_0()
-    .bottom_0()
-}
-
-/// Which control a press landed on.
-pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
-    regions
-        .borrow()
-        .iter()
-        .find(|(_, bounds)| bounds.contains(&at))
-        .map(|(region, _)| *region)
-}
+/// Where each control was laid out, as of the last frame that painted ([`crate::regions`]).
+pub type Regions = crate::regions::Regions<Region>;
 
 /// Where in a control's own box a position sits, as fractions of it — clamped, so a
 /// drag that has left the control keeps moving the value it took hold of.
 pub fn fraction_at(regions: &Regions, region: Region, at: Point<Pixels>) -> Option<(f32, f32)> {
-    let bounds = regions
-        .borrow()
-        .iter()
-        .find(|(r, _)| *r == region)
-        .map(|(_, b)| *b)?;
-    let (w, h) = (f32::from(bounds.size.width), f32::from(bounds.size.height));
-    (w > 0.0 && h > 0.0).then(|| {
-        (
-            ((f32::from(at.x) - f32::from(bounds.origin.x)) / w).clamp(0.0, 1.0),
-            ((f32::from(at.y) - f32::from(bounds.origin.y)) / h).clamp(0.0, 1.0),
-        )
-    })
+    regions::fraction_in(regions::bounds_of(regions, region)?, at)
 }
 
 /// The picker's own cached pictures.

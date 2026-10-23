@@ -28,9 +28,10 @@ use stark_model::document::ShapeAction;
 use stark_ui::commands::{Bindings, Command};
 use stark_ui::icons::Icon;
 use stark_ui::selection::{Dial, SHAPE_ACTIONS, SHAPE_TOOLS, action_word, dials};
-use wgpui::{Bounds, IntoElement, Pixels, Point, SharedString, canvas, div, prelude::*, rgb, rgba};
+use wgpui::{IntoElement, SharedString, div, prelude::*, rgb, rgba};
 
 use crate::controls::Controls;
+use crate::regions::probe;
 use crate::style::{self, StyleExt};
 
 /// The acts a selection can be put through, in the order the bar draws them.
@@ -61,45 +62,8 @@ pub enum Region {
     Bar,
 }
 
-/// Where each of this section's controls was laid out — `crate::panel`'s device, for
-/// its reason: the panel reports its geometry rather than deriving it.
-pub type Regions = std::rc::Rc<std::cell::RefCell<Vec<(Region, Bounds<Pixels>)>>>;
-
-/// Measure one control.
-///
-/// Four insets rather than a size (`crate::menu` probes the same way). The two
-/// resolve against the same rectangle — the parent's box inside its border, padding
-/// included — but a child given only a size is *placed* where the flow had reached,
-/// so it lands right only by being its parent's first child (§11.2 N6). The insets
-/// say where it goes as well as how big it is, which is one fewer thing for a control
-/// that gains a sibling to break.
-fn probe(regions: &Regions, region: Region) -> impl IntoElement {
-    let regions = regions.clone();
-    canvas(
-        move |bounds, _, _| regions.borrow_mut().push((region, bounds)),
-        |_, (), _, _| {},
-    )
-    .absolute()
-    .top_0()
-    .left_0()
-    .right_0()
-    .bottom_0()
-}
-
-/// Which control a press landed on.
-///
-/// Innermost first (`.rev()`, as `crate::menu` reads its own list): the section's
-/// rectangles are disjoint and would answer the same either way, but the bar's strip
-/// contains every chip on it and is probed first, being the strip's first child — so
-/// reading forwards would hand back the ground under a chip that was pressed.
-pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
-    regions
-        .borrow()
-        .iter()
-        .rev()
-        .find(|(_, bounds)| bounds.contains(&at))
-        .map(|(region, _)| *region)
-}
+/// Where each control was laid out, as of the last frame that painted ([`crate::regions`]).
+pub type Regions = crate::regions::Regions<Region>;
 
 /// Build the section.
 ///
@@ -148,7 +112,7 @@ pub fn select_body(
                     marked(
                         format!("shape-{}", action_word(*a)).into(),
                         probe(regions, Region::Action(i)),
-                        action_mark(*a),
+                        stark_ui::selection::action_glyph(*a),
                         *a == action,
                         action_tip(*a).to_string(),
                     )
@@ -268,23 +232,6 @@ pub fn tool_command(tool: Tool) -> Command {
         // The rectangle is the marquee anything else would mean, and the brush has no
         // chip here at all — see the tool row above.
         Tool::SelectRect | Tool::Brush => Command::SelectRect,
-    }
-}
-
-/// The mark for one of the five actions.
-///
-/// The web app's row draws these five and this one draws the same five, from the
-/// catalog both read (`stark_ui::icons`) — which matters more here than usual:
-/// the row's whole claim is that Add, Sub and Isect are one question answered three
-/// ways, and that claim is carried by the glyphs being a family.
-fn action_mark(action: ShapeAction) -> Icon {
-    use stark_model::document::SelectionMode;
-    match action {
-        ShapeAction::Select(SelectionMode::Replace) => stark_ui::icons::SELECTION_NEW,
-        ShapeAction::Select(SelectionMode::Union) => stark_ui::icons::SELECTION_ADD,
-        ShapeAction::Select(SelectionMode::Subtract) => stark_ui::icons::SELECTION_SUB,
-        ShapeAction::Select(SelectionMode::Intersect) => stark_ui::icons::SELECTION_ISECT,
-        ShapeAction::Fill => stark_ui::icons::PAINT_BUCKET,
     }
 }
 

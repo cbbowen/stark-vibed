@@ -33,6 +33,7 @@ use wgpui::{
     prelude::*, px, rgb, rgba,
 };
 
+use crate::regions::probe;
 use crate::style::{self, StyleExt};
 
 /// The two mirrors, offered only under the affine family — the other two maps
@@ -57,27 +58,8 @@ pub enum Region {
     Act(usize),
 }
 
-/// Where the bar's controls were laid out — `crate::panel`'s device, for its reason.
-pub type Regions = std::rc::Rc<std::cell::RefCell<Vec<(Region, Bounds<Pixels>)>>>;
-
-fn probe(regions: &Regions, region: Region) -> impl IntoElement {
-    let regions = regions.clone();
-    canvas(
-        move |bounds, _, _| regions.borrow_mut().push((region, bounds)),
-        |_, (), _, _| {},
-    )
-    .absolute()
-    .size_full()
-}
-
-/// Which control a press landed on.
-pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
-    regions
-        .borrow()
-        .iter()
-        .find(|(_, bounds)| bounds.contains(&at))
-        .map(|(region, _)| *region)
-}
+/// Where each control was laid out, as of the last frame that painted ([`crate::regions`]).
+pub type Regions = crate::regions::Regions<Region>;
 
 /// The bar that fronts the mode.
 ///

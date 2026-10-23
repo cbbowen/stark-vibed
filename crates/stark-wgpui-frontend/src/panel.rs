@@ -27,13 +27,14 @@ use stark_ui::brush_config::{MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
 use stark_ui::commands::{Command, VisibilityToggle};
 use stark_ui::icons::Icon;
 use wgpui::{
-    AnyElement, App, Bounds, Entity, IntoElement, Pixels, Point, RenderOnce, SharedString, Window,
-    canvas, div, prelude::*, px, rgb,
+    AnyElement, App, Entity, IntoElement, Pixels, Point, RenderOnce, SharedString, Window, div,
+    prelude::*, px, rgb,
 };
 use wgpui_component::slider::SliderState;
 
 use crate::brush::Brush;
 use crate::controls::Controls;
+use crate::regions::probe;
 use crate::style::{self, StyleExt};
 
 /// The panel's own padding (`p_3`), in logical px.
@@ -442,20 +443,7 @@ fn title(regions: &Regions, what: VisibilityToggle, open: bool) -> impl IntoElem
     style::tip(row, if open { "Fold away" } else { "Unfold" })
 }
 
-// --- what the layout actually is ------------------------------------------
-//
-// **The panel does not compute its own geometry, it reports it.** The first cut of
-// this hand-derived every offset from the Tailwind-shaped spacing the tree asks for —
-// and was wrong: a press where the arithmetic said "Airbrush" selected Hard Eraser,
-// because the guessed row pitch was 26 px and Taffy had laid out 39. Two descriptions
-// of one layout is exactly the drift `stark-ui` exists to stop, one scale down,
-// and the answer is the same: have one of them ask the other.
-//
-// So each control carries a zero-cost `canvas` element whose *prepaint* writes its
-// laid-out bounds into [`Regions`]. The view clears the list each frame before
-// building the tree and reads it on the next press — layout is stable between frames,
-// and a press before the first prepaint simply finds nothing, which is the same
-// answer as a press on empty panel.
+// --- what the layout actually is: reported, not computed ([`crate::regions`]) ---
 
 /// Which control a measured rectangle belongs to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -467,36 +455,8 @@ pub enum Region {
     Fold(VisibilityToggle),
 }
 
-/// Where each control was laid out, as of the last frame that painted.
-///
-/// `Rc<RefCell<..>>` because a prepaint closure is `'static` and the view outlives it:
-/// wgpui hands the closure no context to write through, so what it writes into has to
-/// be something it owns a handle to.
-pub type Regions = std::rc::Rc<std::cell::RefCell<Vec<(Region, Bounds<Pixels>)>>>;
-
-/// An invisible element that records its parent's bounds.
-///
-/// `absolute().size_full()` so it takes the whole of the control it sits in and adds
-/// nothing to the layout. Its paint is empty: what is wanted is the *measurement*,
-/// and the control draws itself.
-pub fn probe(regions: &Regions, region: Region) -> impl IntoElement {
-    let regions = regions.clone();
-    canvas(
-        move |bounds, _, _| regions.borrow_mut().push((region, bounds)),
-        |_, (), _, _| {},
-    )
-    .absolute()
-    .size_full()
-}
-
-/// Which control a press landed on.
-pub fn hit(regions: &Regions, at: Point<Pixels>) -> Option<Region> {
-    regions
-        .borrow()
-        .iter()
-        .find(|(_, bounds)| bounds.contains(&at))
-        .map(|(region, _)| *region)
-}
+/// Where each control was laid out, as of the last frame that painted ([`crate::regions`]).
+pub type Regions = crate::regions::Regions<Region>;
 
 /// Whether a position is over one of the columns at all — the canvas begins where
 /// they end, so a press neither column wants is paint.
@@ -527,7 +487,9 @@ pub fn drag_knob(brush: &mut Brush, knob: Knob, fraction: f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::regions::hit;
     use stark_ui::panels::PanelId;
+    use wgpui::Bounds;
     use wgpui::{point, px, size};
 
     fn at(x: f32, y: f32) -> Point<Pixels> {
