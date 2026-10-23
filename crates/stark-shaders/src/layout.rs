@@ -127,11 +127,7 @@ pub fn layout_shared_by(
     anchor: Binding,
     dynamic: &[Binding],
 ) -> Vec<wgpu::BindGroupLayoutEntry> {
-    let mut eps = Vec::with_capacity(2 * pipelines.len());
-    for p in pipelines {
-        p.push_to(&mut eps);
-    }
-    entries(&eps, anchor, dynamic)
+    entries(&flatten(pipelines), anchor, dynamic)
 }
 
 /// [`layout_shared_by`] for a group these pipelines may reach nothing of: the entries,
@@ -146,14 +142,19 @@ pub fn layout_shared_by(
 /// No `dynamic`: a group that may be empty is no place for a uniform bound at an
 /// offset, and the check that would name one has nothing to check against.
 pub fn layout_if_reached(pipelines: &[Stages], anchor: Binding) -> Vec<wgpu::BindGroupLayoutEntry> {
+    reached(&flatten(pipelines), anchor)
+        .iter()
+        .map(|r| entry(r, &[]))
+        .collect()
+}
+
+/// Every entry point `pipelines` run, in order.
+fn flatten(pipelines: &[Stages]) -> Vec<EntryPoint> {
     let mut eps = Vec::with_capacity(2 * pipelines.len());
     for p in pipelines {
         p.push_to(&mut eps);
     }
-    reached(&eps, anchor)
-        .iter()
-        .map(|r| entry(r, &[]))
-        .collect()
+    eps
 }
 
 /// The entries themselves, over the stages both spellings above flatten to.

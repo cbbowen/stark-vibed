@@ -39,6 +39,29 @@ pub(crate) struct Field {
     pub(crate) real: bool,
 }
 
+impl Field {
+    /// This field as a `pub` member of the generated struct, its docs carried over.
+    pub(crate) fn member(&self) -> TokenStream {
+        let (docs, id, ty) = (&self.docs, &self.ident, &self.ty);
+        quote! {
+            #(#[doc = #docs])*
+            pub #id: #ty,
+        }
+    }
+
+    /// The assertion that `owner`'s Rust layout puts this field at its offset, failing
+    /// with `msg` — bound to a `const` before it is asserted on, for the reason
+    /// `emit::structs` gives.
+    pub(crate) fn offset_check(&self, owner: &proc_macro2::Ident, msg: &str) -> TokenStream {
+        let (id, offset) = (&self.ident, lit(self.offset));
+        let at = format_ident!("OFFSET_OF_{}", self.ident.to_string().to_uppercase());
+        quote! {
+            const #at: usize = core::mem::offset_of!(#owner, #id);
+            assert!(#at == #offset, #msg);
+        }
+    }
+}
+
 /// A struct placed at its WGSL offsets.
 pub(crate) struct Laid {
     pub(crate) fields: Vec<Field>,

@@ -180,24 +180,15 @@ fn from_struct(m: &Module, entry: &str, s: &Struct) -> TokenStream {
     }
 
     let ident = format_ident!("{name}");
-    let members = fields.iter().map(|f| {
-        let (docs, id, ty) = (&f.docs, &f.ident, &f.ty);
-        quote! {
-            #(#[doc = #docs])*
-            pub #id: #ty,
-        }
-    });
+    let members = fields.iter().map(Field::member);
     let checks = fields.iter().map(|f| {
-        let (id, want) = (&f.ident, lit(f.offset));
-        let at = format_ident!("OFFSET_OF_{}", f.ident.to_string().to_uppercase());
-        let msg = format!(
-            "`{name}.{}` is not at the tightly-packed offset {} its vertex attribute reads",
-            f.ident, f.offset,
-        );
-        quote! {
-            const #at: usize = core::mem::offset_of!(#ident, #id);
-            assert!(#at == #want, #msg);
-        }
+        f.offset_check(
+            &ident,
+            &format!(
+                "`{name}.{}` is not at the tightly-packed offset {} its vertex attribute reads",
+                f.ident, f.offset,
+            ),
+        )
     });
 
     let count = lit(fields.len() as u32);

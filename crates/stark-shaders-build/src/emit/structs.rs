@@ -69,13 +69,7 @@ fn emit(name: &str, source: &str, laid: &Laid) -> TokenStream {
     let (size, align) = (*size, *align);
 
     let ident = format_ident!("{name}");
-    let members = fields.iter().map(|f| {
-        let (docs, id, ty) = (&f.docs, &f.ident, &f.ty);
-        quote! {
-            #(#[doc = #docs])*
-            pub #id: #ty,
-        }
-    });
+    let members = fields.iter().map(crate::layout::Field::member);
 
     // What makes the generator trustworthy rather than merely plausible: the layout
     // rules computed these offsets, and the compiler now confirms the Rust type really
@@ -86,13 +80,10 @@ fn emit(name: &str, source: &str, laid: &Laid) -> TokenStream {
     // arguments are opaque tokens that no formatter can lay out — put the `size_of`
     // inside the `assert!` and the generated file reads `size_of :: < Stamp > ()`.
     let checks = fields.iter().filter(|f| f.real).map(|f| {
-        let (id, offset) = (&f.ident, lit(f.offset));
-        let at = format_ident!("OFFSET_OF_{}", f.ident.to_string().to_uppercase());
-        let msg = format!("`{name}.{}` is not at WGSL offset {}", f.ident, f.offset);
-        quote! {
-            const #at: usize = core::mem::offset_of!(#ident, #id);
-            assert!(#at == #offset, #msg);
-        }
+        f.offset_check(
+            &ident,
+            &format!("`{name}.{}` is not at WGSL offset {}", f.ident, f.offset),
+        )
     });
 
     let doc = format!(
