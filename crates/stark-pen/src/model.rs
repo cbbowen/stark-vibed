@@ -211,6 +211,13 @@ pub fn map_device(at: [f32; 2], device: Rect, display: Rect) -> Option<[f32; 2]>
 /// report. What comes back there is a finite number in range and nothing more is
 /// promised — the reading is unphysical anyway, since a nib in contact is not in the
 /// tablet's plane.
+#[cfg_attr(
+    not(any(windows, test)),
+    expect(
+        dead_code,
+        reason = "the Wintab reader is its only caller, and it is `cfg(windows)`"
+    )
+)]
 #[must_use]
 pub fn tilt_from_orientation(azimuth: f32, altitude: f32) -> [f32; 2] {
     let (sin_az, cos_az) = azimuth.sin_cos();
@@ -235,6 +242,13 @@ pub fn tilt_from_orientation(azimuth: f32, altitude: f32) -> [f32; 2] {
 ///
 /// `None` for a source that spans nothing, which is what an axis a device does not
 /// report looks like and would otherwise be a division by zero.
+#[cfg_attr(
+    not(any(windows, test)),
+    expect(
+        dead_code,
+        reason = "the Wintab reader is its only caller, and it is `cfg(windows)`"
+    )
+)]
 #[must_use]
 pub fn map_axis(value: f32, from: (f32, f32), to: (f32, f32)) -> Option<f32> {
     let (from_origin, from_extent) = from;

@@ -645,7 +645,7 @@ impl Bindings {
         if let Some((command, _)) = self
             .overrides
             .iter()
-            .find(|(_, chord)| chord.as_ref().is_some_and(&hit))
+            .find(|(_, chord)| chord.as_ref().is_some_and(hit))
         {
             return Some(*command);
         }

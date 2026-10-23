@@ -34,17 +34,15 @@
 //!
 //! # Platforms
 //!
-//! Windows only, through the Windows Ink pointer messages (`WM_POINTER*`), which is
-//! the API a digitizer speaks with no vendor driver installed at all. Every other
-//! host gets a backend that reports nothing, so a frontend needs no `cfg` of its own
-//! and a mouse goes on working as it always did.
+//! Windows only, through two readers behind one seam (`windows`): **Wintab** where a
+//! vendor driver opens a context, and the Windows Ink pointer messages (`WM_POINTER*`)
+//! everywhere else — the API a digitizer speaks with no vendor driver installed at
+//! all. Every other host gets a backend that reports nothing, so a frontend needs no
+//! `cfg` of its own and a mouse goes on working as it always did.
 //!
-//! Two gaps worth naming rather than discovering. **Wintab is not here**: an artist
-//! who has unchecked "Use Windows Ink" in a Wacom control panel gets no pressure from
-//! this crate, because with that box clear the driver reports none through Ink — the
-//! backend would be a second one beside `win32`, behind a preference. **macOS is not
-//! here either**: `NSEvent` carries pressure, tilt and rotation on a tablet event and
-//! nobody has written that backend.
+//! One gap worth naming rather than discovering: **macOS is not here**. `NSEvent`
+//! carries pressure, tilt and rotation on a tablet event and nobody has written that
+//! backend.
 //!
 //! [`InputSample`]: https://docs.rs/stark-engine
 
@@ -56,7 +54,7 @@ mod none;
 mod tablet;
 
 // **The one module in the tree that may contain `unsafe`**, and the only one: a
-// window procedure and six `extern "system"` calls are what a pen is on Windows.
+// window procedure and the platform's pen APIs are what a pen is on Windows.
 //
 // The exemption is one attribute on one `mod`, which is what keeps the confinement
 // the compiler's rather than a convention's — the workspace denies `unsafe_code`
