@@ -13,8 +13,7 @@
 
 use dioxus::prelude::*;
 
-use crate::icons::icon;
-use crate::widgets::Modal;
+use crate::widgets::{Modal, ModalDone};
 
 /// Phosphor's licence, read from the copy vendored beside the icons it covers.
 ///
@@ -115,14 +114,7 @@ pub fn CreditsModal(on_close: EventHandler<()>) -> Element {
                 license: "CC0 1.0 Universal",
             }
 
-            div { class: "modal-actions",
-                button {
-                    class: "btn btn-primary",
-                    onclick: move |_| on_close.call(()),
-                    {icon(stark_ui::icons::DONE)}
-                    "Done"
-                }
-            }
+            ModalDone { on_close }
         }
     }
 }

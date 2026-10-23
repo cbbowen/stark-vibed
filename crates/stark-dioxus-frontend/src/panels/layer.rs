@@ -30,19 +30,11 @@ use stark_ui::layer_tree::{
 };
 use stark_ui::reorder::{Grab, Motion};
 
-/// Add a paint layer above the selected one, in its own stack (`Command::AddLayer`), so
-/// adding while working inside a group lands in that group.
+/// Add a paint layer above the selected one (`Command::AddLayer`,
+/// [`layer_tree::add_layer`]).
 pub fn add_layer(state: AppState) {
-    let (carrier, above) = state
-        .obs
-        .peek()
-        .as_ref()
-        .map(|o| {
-            let selected = o.layers.iter().find(|l| l.id == o.active_layer);
-            (selected.and_then(|l| l.carrier), selected.map(|l| l.id))
-        })
-        .unwrap_or((None, None));
-    dispatch(state, DocCommand::AddLayer { carrier, above });
+    let add = layer_tree::add_layer(state.obs.peek().as_ref());
+    dispatch(state, add);
 }
 
 /// Dispatch `add`, a command that adds one layer, and select the layer it added.
@@ -78,12 +70,7 @@ pub fn LayerPanel() -> Element {
     // The tree and the selected row through one memo (`state::use_obs`): both move on a
     // commit, never on a pan or a stroke sample. A committed stroke arrives through a
     // layer's `content_revision`.
-    let tree = use_obs(state, |o| {
-        (
-            o.layers.clone(),
-            o.layers.iter().find(|l| l.id == o.active_layer).cloned(),
-        )
-    });
+    let tree = use_obs(state, |o| (o.layers.clone(), o.active().cloned()));
     let (layers, selected) = tree().unwrap_or_default();
     // Keep the rows' pictures up to date (§14.6; `crate::layer_thumbs`). Driven from this
     // panel, their only viewer, so a closed panel renders none. `refresh` is idempotent.

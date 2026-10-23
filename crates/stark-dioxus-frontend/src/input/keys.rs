@@ -151,21 +151,13 @@ fn handle_keydown(state: AppState, e: &platform::KeyEvent) {
     }
 
     track_mods(state, stroke.mods);
-    // The quick-brush rack, claimed before the chord table is consulted so a
-    // future row on a digit could never shadow it. A digit is not a row there:
-    // it is a *hold*, owning both edges of its key (§18.1.8); it reads the
-    // physical row so a layout that types `&é"'` on it still has a rack; and
-    // Shift is deliberately tolerated — on most layouts it is what the digit
-    // row types under, and a hand resting on it should not silently disarm the
-    // rack — where the table's chords are exact. `slots::hold` ignores a press
+    // The quick-brush rack: a digit is not a row in the chord table but a *hold*,
+    // owning both edges of its key (§18.1.8), and which presses are one is the
+    // rack's own rule (`stark_ui::slots::claims`). `slots::hold` ignores a press
     // while a hold is in flight, which is what makes the key's own auto-repeat
     // harmless, and it is what counts a digit pressed twice in a beat
-    // (`slots::Taps`), so nothing here keeps time. Alt is not tolerated: bare
-    // Alt is the eyedropper's, and only a bare digit is ours.
-    if !stroke.mods.ctrl
-        && !stroke.mods.alt
-        && let Some(slot) = stark_ui::slots::of_code(stroke.code)
-    {
+    // (`slots::Taps`), so nothing here keeps time.
+    if let Some(slot) = stark_ui::slots::claims(&stroke) {
         slots::hold(state, slot, Grip::Key);
         e.prevent_default();
         return;

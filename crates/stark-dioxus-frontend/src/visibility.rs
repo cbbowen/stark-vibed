@@ -9,6 +9,18 @@ use dioxus::prelude::*;
 use crate::state::AppState;
 use stark_ui::commands::VisibilityToggle;
 
+/// Write what is on screen. **The one writer**, called by everything that shows or
+/// hides anything — `layout::set_open` and `layout::toggle_collapse`,
+/// `navigator::set_open`, `slots::set_pinned`, `panels::timeline::set_open`.
+///
+/// Whole-record rather than incremental, and that is the point: the four facts live
+/// in four signals, and reading all of them here is what keeps the record from ever
+/// holding a half-updated screen. It is also what makes the `match` in it the place
+/// a new menu entry is *made* to declare itself.
+///
+/// `peek` throughout, never `read`: this runs from inside the writers, and
+/// subscribing a click handler to the state it is in the middle of changing is how a
+/// signal read ends up live across a write of itself.
 pub fn persist(state: AppState) {
     let hidden = state.panels.hidden.peek().clone();
     let collapsed = state.panels.collapsed.peek().clone();

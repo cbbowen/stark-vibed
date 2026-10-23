@@ -26,7 +26,8 @@ use crate::input::{Nav, canvas_xy};
 use crate::platform::capture_pointer;
 use crate::state::{AppState, use_obs};
 use crate::widgets::{
-    Bar, Chip, CommandButton, InlineRename, PopoutId, close_popout, toggle_popout, use_popout,
+    Bar, Chip, CommandButton, InlineRename, PopoutId, RemoveButton, close_popout, toggle_popout,
+    use_popout,
 };
 use stark_model::geom::Vec2;
 use stark_ui::commands::Command;
@@ -195,14 +196,10 @@ fn GradientRow(entry: stark_ui::gradients::GradientEntry, active: bool) -> Eleme
             // The same trash the preset, layer and guide rows wear: a fourth
             // roster, same act, same mark — overlaid on the ramp and lifted
             // off it by shadow, as the preset rows' is off their stroke.
-            button {
+            RemoveButton {
                 class: "gradient-remove",
                 title: "Remove gradient",
-                onclick: move |e| {
-                    e.stop_propagation();
-                    gradients::remove(state, &remove_name);
-                },
-                {icon(stark_ui::icons::REMOVE)}
+                onremove: move |_| gradients::remove(state, &remove_name),
             }
         }
     }

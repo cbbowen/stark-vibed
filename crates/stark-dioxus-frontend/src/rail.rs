@@ -26,7 +26,7 @@ use crate::commands;
 use crate::icons::{icon, icon_large};
 use crate::layout::chrome_dimmed;
 use crate::platform;
-use crate::state::{AppState, use_obs_opt};
+use crate::state::AppState;
 use crate::widgets::{self, PopoutId};
 use stark_ui::commands::{Command, VisibilityToggle};
 
@@ -154,19 +154,7 @@ fn VisibilityMenu() -> Element {
 #[component]
 fn CmdItem(command: Command) -> Element {
     let state = use_context::<AppState>();
-    // One memo per row, and rows are components, so each re-renders when its
-    // own answer changes rather than on every commit (`state::use_obs`'s
-    // argument, one field per component instead of a shared tuple).
-    //
-    // Both facts in the **one** memo, which is what that argument asks for: the
-    // lit state was read straight out of the registry in the body below, and
-    // `commands::active` asks the projection for the three shape tools
-    // (`Lit::tool`) — so a row for one of those was subscribed to every
-    // engine write however narrow its `enabled` memo was.
-    let look = use_obs_opt(state, move |o| {
-        (command.enabled(o), commands::active(command, state))
-    });
-    let (enabled, active) = look();
+    let (enabled, active) = commands::use_look(state, command);
     rsx! {
         button {
             class: "palette-row",
@@ -194,13 +182,7 @@ fn CmdItem(command: Command) -> Element {
             // Every row already has a mark and the eye is already on it, where
             // the ✓ was a column of its own that only a row with such a state
             // ever filled.
-            span {
-                class: "menu-item",
-                class: if active == Some(true) { "cmd-active" },
-                class: if active == Some(false) { "cmd-inactive" },
-                {icon(command.icon())}
-                {command.word()}
-            }
+            {menu_mark(command, active, command.word())}
             if let Some(chord) = command.shortcut(&state.bindings.read()) {
                 span { class: "menu-shortcut", {chord} }
             }
@@ -367,6 +349,20 @@ fn CommandSearch() -> Element {
     }
 }
 
+/// A command row's mark and words, lit or dimmed by [`commands::active`] — one picture
+/// of that answer on both surfaces that list commands ([`CmdItem`], [`PaletteRow`]).
+fn menu_mark(command: Command, active: Option<bool>, words: &str) -> Element {
+    rsx! {
+        span {
+            class: "menu-item",
+            class: if active == Some(true) { "cmd-active" },
+            class: if active == Some(false) { "cmd-inactive" },
+            {icon(command.icon())}
+            {words}
+        }
+    }
+}
+
 /// One row of the palette, rendered from the command it runs — the mark, the
 /// name, the greyed state, the live-act tint, and the chip that rebinds its
 /// chord ([`BindChip`]).
@@ -391,10 +387,7 @@ fn PaletteRow(
     field: Signal<Option<Event<MountedData>>>,
 ) -> Element {
     let state = use_context::<AppState>();
-    let look = use_obs_opt(state, move |o| {
-        (command.enabled(o), commands::active(command, state))
-    });
-    let (enabled, active) = look();
+    let (enabled, active) = commands::use_look(state, command);
     rsx! {
         button {
             class: if selected { "palette-row selected" } else { "palette-row" },
@@ -411,13 +404,7 @@ fn PaletteRow(
             // Share while a session runs — and the visibility menu draws a
             // toggle's "you are in it" the same way ([`CmdItem`]), so the two
             // surfaces are one picture of one answer.
-            span {
-                class: "menu-item",
-                class: if active == Some(true) { "cmd-active" },
-                class: if active == Some(false) { "cmd-inactive" },
-                {icon(command.icon())}
-                {command.name()}
-            }
+            {menu_mark(command, active, command.name())}
             BindChip { command, capturing, field }
         }
     }

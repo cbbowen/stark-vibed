@@ -220,13 +220,13 @@ pub fn SubstrateColorPicker() -> Element {
     }
 }
 
-/// Mutate the lighting params in place, push them to the engine, and repaint.
 /// Read the current media params off the observable projection, mutate a copy, and
-/// push it back — the same read-modify-commit shape as `update_brush`.
+/// push it back — the same read-modify-commit shape as `update_brush`, and like it
+/// a handler's, so `peek`.
 fn update_media(state: AppState, f: impl FnOnce(&mut MediaParams)) {
     let mut p = state
         .obs
-        .read()
+        .peek()
         .as_ref()
         .map(|o| o.media)
         .unwrap_or_default();

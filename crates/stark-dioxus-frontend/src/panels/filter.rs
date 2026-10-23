@@ -62,7 +62,7 @@ use crate::panels::color::ab_field_data_url;
 use crate::panels::gradients::GradientWell;
 use crate::platform::capture_pointer;
 use crate::preview;
-use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
+use crate::state::{AppState, dispatch, use_obs_opt};
 use crate::widgets::{ActChip, Bar, Chip, Choice, Face, PreviewSlider, Segmented, SliderShape};
 use stark_engine::LayerInfo;
 use stark_engine::command::{DocCommand, Edit};
@@ -133,9 +133,7 @@ fn aperture_run(state: AppState, id: LayerId, blur: FocalBlur) -> Element {
 /// document load stops being tuned with no invalidation to remember.
 /// The rule itself, asked of a projection already in hand.
 fn selected_filter_of(o: &stark_engine::ObservableState) -> Option<(LayerInfo, Filter)> {
-    o.layers
-        .iter()
-        .find(|l| l.id == o.active_layer)
+    o.active()
         .and_then(|l| l.filter.clone().map(|f| (l.clone(), f)))
 }
 
@@ -185,12 +183,6 @@ pub fn apply_ramp(state: AppState) {
     );
 }
 
-/// Stop tuning: select the topmost paint layer instead — a filter, like a frame, is
-/// only "deselected" by selecting something else.
-fn done_grading(state: AppState) {
-    super::frame::done_composing(state);
-}
-
 /// Land `filter` above the selected layer, in that layer's own stack, and select it
 /// — the body of the picker's items, shared so each kind is one entry there.
 ///
@@ -198,8 +190,8 @@ fn done_grading(state: AppState) {
 /// matters here: adding a filter while working inside a group grades that group.
 /// The new filter is selected immediately, so its bar comes up without a second
 /// click.
-fn add_filter(state: AppState, at: Option<(Option<LayerId>, Option<LayerId>)>, filter: Filter) {
-    let (carrier, above) = at.unwrap_or((None, None));
+fn add_filter(state: AppState, filter: Filter) {
+    let (carrier, above) = stark_ui::layer_tree::placement(state.obs.peek().as_ref());
     super::layer::add_and_select(
         state,
         DocCommand::AddFilter {
@@ -222,15 +214,6 @@ fn add_filter(state: AppState, at: Option<(Option<LayerId>, Option<LayerId>)>, f
 pub fn AddFilterButton() -> Element {
     let state = use_context::<AppState>();
     let mut open = use_signal(|| false);
-    // Where it goes, read out here rather than in the handler: the same pair
-    // `LayerPanel` computes for "+ Layer", for the same reason.
-    let at = use_obs(state, |o| {
-        o.layers
-            .iter()
-            .find(|l| l.id == o.active_layer)
-            .map(|l| (l.carrier, Some(l.id)))
-    })()
-    .flatten();
     rsx! {
         div {
             class: "filter-add",
@@ -262,7 +245,7 @@ pub fn AddFilterButton() -> Element {
                             class: "filter-add-item",
                             onpointerdown: move |_| {
                                 open.set(false);
-                                add_filter(state, at, f.clone());
+                                add_filter(state, f.clone());
                             },
                             "{name}"
                         }
@@ -906,7 +889,9 @@ pub fn FilterBar() -> Element {
             ActChip {
                 command: Command::CancelMode,
                 title: "Stop tuning and go back to painting \u{2014} the filter stays",
-                onclick: move |_| done_grading(state),
+                // A filter, like a frame, is only "deselected" by selecting
+                // something else.
+                onclick: move |_| super::frame::done_composing(state),
             }
         }
     }

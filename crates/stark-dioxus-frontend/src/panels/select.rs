@@ -6,7 +6,6 @@ use crate::commands;
 use dioxus::prelude::*;
 use stark_engine::command::Tool;
 use stark_model::Srgb;
-use stark_ui::icons::Icon;
 
 use crate::icons::{icon_tinted, label};
 use crate::preview;
@@ -58,35 +57,12 @@ pub fn SelectPanel() -> Element {
     ];
     // A mark and its word on every entry: one bare glyph would read as a different kind of
     // control.
-    /// The mark and the prose for each of `stark_ui::selection::SHAPE_ACTIONS`, in order.
-    const MARKS: [(Icon, &str); 5] = [
-        (
-            stark_ui::icons::SELECTION_NEW,
-            "Select this region, replacing the current selection",
-        ),
-        (
-            stark_ui::icons::SELECTION_ADD,
-            "Add this region to the selection (or hold shift). With nothing selected, this selects just the region",
-        ),
-        (
-            stark_ui::icons::SELECTION_SUB,
-            "Cut this region out of the selection (or hold alt)",
-        ),
-        (
-            stark_ui::icons::SELECTION_ISECT,
-            "Keep only the overlap with the selection (or hold shift+alt)",
-        ),
-        (
-            stark_ui::icons::PAINT_BUCKET,
-            "Fill this region with the brush's paint instead of selecting it. \
-             Stays armed, so you can keep blocking in",
-        ),
-    ];
     let actions: Vec<_> = stark_ui::selection::SHAPE_ACTIONS
         .into_iter()
-        .zip(MARKS)
-        .map(|(a, (glyph, hint))| {
+        .map(|a| {
+            let glyph = stark_ui::selection::action_glyph(a);
             let word = stark_ui::selection::action_word(a);
+            let hint = action_hint(a);
             // Fill's bucket is full of the color it would lay, at the fill's own opacity: the brush
             // color carries no amount (§6.2).
             let face = if a == ShapeAction::Fill {
@@ -274,4 +250,28 @@ pub fn current_action(state: AppState) -> ShapeAction {
         .peek()
         .as_ref()
         .map_or(ShapeAction::default(), |o| o.shape_action)
+}
+
+/// The hover prose for each shape action: this frontend's own, where the mark and the
+/// word are shared (`stark_ui::selection`).
+fn action_hint(action: ShapeAction) -> &'static str {
+    use stark_model::document::SelectionMode;
+    match action {
+        ShapeAction::Select(SelectionMode::Replace) => {
+            "Select this region, replacing the current selection"
+        }
+        ShapeAction::Select(SelectionMode::Union) => {
+            "Add this region to the selection (or hold shift). With nothing selected, this selects just the region"
+        }
+        ShapeAction::Select(SelectionMode::Subtract) => {
+            "Cut this region out of the selection (or hold alt)"
+        }
+        ShapeAction::Select(SelectionMode::Intersect) => {
+            "Keep only the overlap with the selection (or hold shift+alt)"
+        }
+        ShapeAction::Fill => {
+            "Fill this region with the brush's paint instead of selecting it. \
+             Stays armed, so you can keep blocking in"
+        }
+    }
 }

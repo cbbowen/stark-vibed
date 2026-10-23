@@ -12,7 +12,7 @@ use dioxus::prelude::*;
 use crate::icons::icon;
 use crate::input::{is_contact, mods_of};
 use crate::state::AppState;
-use crate::widgets::Modal;
+use crate::widgets::{Modal, ModalDone};
 use stark_ui::drags::{
     DragAction, DragBindings, DragButton, DragCapture, DragChord, DragPreset, capture, chord_label,
     persist_drags, stored_drags,
@@ -327,14 +327,7 @@ pub fn DragPresetModal(on_close: EventHandler<()>) -> Element {
                  change any of them at any time."
             }
 
-            div { class: "modal-actions",
-                button {
-                    class: "btn btn-primary",
-                    onclick: move |_| on_close.call(()),
-                    {icon(stark_ui::icons::DONE)}
-                    "Not now"
-                }
-            }
+            ModalDone { on_close, word: "Not now" }
         }
     }
 }

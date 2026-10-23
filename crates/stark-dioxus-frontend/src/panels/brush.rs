@@ -6,7 +6,7 @@ use dioxus::prelude::*;
 use crate::icons::icon;
 use crate::presets;
 use crate::state::{AppState, update_brush};
-use crate::widgets::{CommandButton, Modal, Slider, focus_selected};
+use crate::widgets::{CommandButton, Modal, RemoveButton, Slider, focus_selected};
 use stark_model::document::{BrushShape, OrientationSource};
 use stark_ui::brush_config::{MAX_RADIUS, MIN_RADIUS};
 use stark_ui::commands::Command;
@@ -146,14 +146,10 @@ fn PresetRow(name: String, active: bool, background: String, builtin: bool) -> E
                 }
             } else {
                 // The same trash the Layers and Guides rows wear: a third roster.
-                button {
+                RemoveButton {
                     class: "preset-remove",
                     title: "Remove preset",
-                    onclick: move |e| {
-                        e.stop_propagation();
-                        presets::remove(state, &remove_name);
-                    },
-                    {icon(stark_ui::icons::REMOVE)}
+                    onremove: move |_| presets::remove(state, &remove_name),
                 }
             }
         }
@@ -262,7 +258,7 @@ pub fn PresetSaveModal(on_close: EventHandler<()>) -> Element {
     }
 }
 
-/// Switch to a shape, also setting a sensible default spacing for it.
+/// Switch to a shape.
 pub fn set_shape(state: AppState, shape: BrushShape) {
     update_brush(state, move |b, _| b.shape = shape);
 }

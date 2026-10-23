@@ -71,22 +71,13 @@ pub fn begin_transform(state: AppState) {
     // Which layer and which rectangle are both `stark_ui::transform`'s answers,
     // and they come off one read: a hull from before a layer change with a layer
     // from after would mount the widget around paint it is not holding.
-    let Some(entry) = stark_ui::transform::entry(o) else {
+    let Some(ui) = stark_ui::transform::begin(o) else {
         return;
     };
-    let zoom = o.view.zoom;
     drop(obs);
     // `enter`, not a write: it is what puts down whatever else was composing,
     // and the only way in (`crate::modes`).
-    crate::modes::enter(
-        state,
-        Composing::Transform(stark_ui::transform::mount(
-            entry.layer,
-            Family::Free,
-            entry.hull,
-            Bands::at(zoom),
-        )),
-    );
+    crate::modes::enter(state, Composing::Transform(ui));
 }
 
 /// Update the gesture and show its consequence — every mutation funnels through

@@ -195,11 +195,7 @@ fn place_bytes(state: AppState, name: Option<String>, bytes: Vec<u8>, at: At) {
                 return tracing::error!("the canvas is not ready yet");
             };
             let above = o.active_layer;
-            let carrier = o
-                .layers
-                .iter()
-                .find(|l| l.id == above)
-                .and_then(|l| l.carrier);
+            let carrier = o.layer(above).and_then(|l| l.carrier);
             (Some(above), carrier)
         };
 

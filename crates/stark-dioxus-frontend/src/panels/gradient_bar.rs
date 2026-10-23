@@ -123,7 +123,7 @@ fn default_axis_rect(state: AppState, layer: stark_model::document::LayerId) -> 
     let obs = state.obs.peek();
     let matte_rect = obs
         .as_ref()
-        .and_then(|o| o.layers.iter().find(|l| l.id == layer))
+        .and_then(|o| o.layer(layer))
         .and_then(|l| l.matte.as_ref())
         .and_then(|m| m.rect);
     matte_rect.unwrap_or_else(|| {

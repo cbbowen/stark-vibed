@@ -12,7 +12,7 @@ use crate::icons::{icon, label as label_span};
 use crate::layout::chrome_dimmed;
 use crate::platform;
 use crate::preview::Preview;
-use crate::state::{AppState, use_obs_opt};
+use crate::state::AppState;
 use stark_ui::commands::Command;
 
 /// A button that runs a [`Command`], wearing the command's own mark, word and
@@ -32,15 +32,8 @@ pub fn CommandButton(
     #[props(default = String::from("chip"))] class: String,
 ) -> Element {
     let state = use_context::<AppState>();
-    // Memoized: the projection moves at pointer rate during a stroke, and these two bools
-    // almost never do.
-    let look = use_obs_opt(state, move |o| {
-        (
-            command.enabled(o),
-            commands::active(command, state) == Some(true),
-        )
-    });
-    let (enabled, lit) = look();
+    let (enabled, active) = commands::use_look(state, command);
+    let lit = active == Some(true);
     rsx! {
         button {
             class: "{class}",
@@ -541,14 +534,10 @@ pub fn AssetGallery<V: Clone + PartialEq + 'static>(
                         "{name}"
                     }
                     if let Some(id) = remove {
-                        button {
+                        RemoveButton {
                             class: "asset-remove",
                             title: "Remove from library",
-                            onclick: move |e| {
-                                e.stop_propagation();
-                                onremove.call(id);
-                            },
-                            {icon(stark_ui::icons::REMOVE)}
+                            onremove: move |_| onremove.call(id),
                         }
                     }
                 }
@@ -616,6 +605,46 @@ pub fn Modal(
                 onclick: move |e| e.stop_propagation(),
                 ..attributes,
                 {children}
+            }
+        }
+    }
+}
+
+/// A library row's trash: `onremove` on a click that goes no further, so the row it
+/// sits on is not also picked.
+#[component]
+pub fn RemoveButton(
+    class: &'static str,
+    title: &'static str,
+    onremove: EventHandler<()>,
+) -> Element {
+    rsx! {
+        button {
+            class,
+            title,
+            onclick: move |e| {
+                e.stop_propagation();
+                onremove.call(());
+            },
+            {icon(stark_ui::icons::REMOVE)}
+        }
+    }
+}
+
+/// A dialog's closing row when closing is all it offers: one primary button saying
+/// `word` — "Done" unless the dialog says otherwise.
+#[component]
+pub fn ModalDone(
+    on_close: EventHandler<()>,
+    #[props(default = String::from("Done"))] word: String,
+) -> Element {
+    rsx! {
+        div { class: "modal-actions",
+            button {
+                class: "btn btn-primary",
+                onclick: move |_| on_close.call(()),
+                {icon(stark_ui::icons::DONE)}
+                "{word}"
             }
         }
     }

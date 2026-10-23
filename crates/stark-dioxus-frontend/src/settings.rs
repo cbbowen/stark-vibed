@@ -32,10 +32,9 @@
 
 use dioxus::prelude::*;
 
-use crate::icons::icon;
 use crate::prefs;
 use crate::state::{AppState, use_obs};
-use crate::widgets::{Choice, Face, Modal, Segmented, SliderTrack};
+use crate::widgets::{Choice, Face, Modal, ModalDone, Segmented, SliderTrack};
 use stark_ui::collab::Phase;
 use stark_ui::prefs::{BUDGET_STEPS, ChromeHiding, budget_step};
 use strum::VariantArray;
@@ -177,14 +176,7 @@ pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
             // the dialog still reads down one column of labels.
             crate::drags::DragBindingSection {}
 
-            div { class: "modal-actions",
-                button {
-                    class: "btn btn-primary",
-                    onclick: move |_| on_close.call(()),
-                    {icon(stark_ui::icons::DONE)}
-                    "Done"
-                }
-            }
+            ModalDone { on_close }
         }
     }
 }

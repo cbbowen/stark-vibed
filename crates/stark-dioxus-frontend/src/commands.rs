@@ -123,6 +123,19 @@ pub fn active(command: Command, state: AppState) -> Option<bool> {
     stark_ui::commands::active(command, &state)
 }
 
+/// Whether `command` can run, and whether it is a switch that is on — what every
+/// surface showing a command reads (`rail::CmdItem`, `rail::PaletteRow`,
+/// `widgets::CommandButton`). A hook.
+///
+/// One memo per component, so each re-renders when its own answer changes rather
+/// than on every commit (`state::use_obs`'s argument). Both facts in the **one** memo,
+/// because [`active`] asks the projection too — for the three shape tools (`Lit::tool`)
+/// — so a row whose `enabled` alone were memoized would still be subscribed to every
+/// engine write.
+pub fn use_look(state: AppState, command: Command) -> (bool, Option<bool>) {
+    crate::state::use_obs_opt(state, move |o| (command.enabled(o), active(command, state)))()
+}
+
 impl Lit for AppState {
     fn showing(&self, what: VisibilityToggle) -> Option<bool> {
         Some(match what {

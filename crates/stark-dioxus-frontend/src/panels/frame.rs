@@ -27,7 +27,6 @@
 
 use dioxus::prelude::*;
 use stark_model::Srgb;
-use stark_model::document::GradientParcel;
 
 use crate::icons::{icon, label};
 use crate::input::page_xy;
@@ -53,9 +52,7 @@ use stark_ui::frame::{ASPECTS, CUSTOM, DEFAULT_BACKING, DEFAULT_MATTE, matched_a
 /// a rule to enforce — and it means a frame that is removed, undone, or replaced
 /// by a document load stops being composed with no invalidation to remember.
 pub fn selected_frame_of(o: &stark_engine::ObservableState) -> Option<(LayerInfo, MatteInfo)> {
-    o.layers
-        .iter()
-        .find(|l| l.id == o.active_layer)
+    o.active()
         .and_then(|l| l.matte.clone().map(|m| (l.clone(), m)))
 }
 
@@ -176,7 +173,7 @@ pub fn FrameBar() -> Element {
     };
     let c = matte.paint.swatch();
     let swatch = crate::cards::swatch_style(c.get());
-    let is_gradient = matches!(matte.paint, Parcel::Gradient(GradientParcel { .. }));
+    let is_gradient = matches!(matte.paint, Parcel::Gradient(_));
     // Offered only while there is no backing to make. Once there is one it is a
     // row in the Layers panel like any other layer, and a second could not mean
     // anything — "the whole plane" admits no second.

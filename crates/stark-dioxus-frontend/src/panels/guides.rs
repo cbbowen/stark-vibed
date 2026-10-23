@@ -41,7 +41,7 @@ use crate::icons::{icon, label};
 use crate::input::{Nav, canvas_xy};
 use crate::panels::reorder::{Grip, RowKey};
 use crate::preview;
-use crate::state::{AppState, dispatch, use_obs_opt};
+use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
 use crate::widgets::{ActChip, Bar, Chip, CommandButton, InlineRename, PreviewSlider, SliderShape};
 use stark_engine::GuideInfo;
 use stark_engine::command::{DocCommand, ViewCommand};
@@ -77,13 +77,22 @@ const OPACITY_RANGE: (f32, f32) = stark_ui::guides::Dial::Opacity.range();
 
 /// The engine's guide roster, as this client sees it (§20.5) — the document's
 /// guides, each row carrying whether this client's eye on it is open.
+///
+/// `peek`, for a handler: a body that shows the roster subscribes to it alone with
+/// [`use_guides`] instead, and re-renders when the roster moves rather than on every
+/// engine write.
 fn guides_of(state: AppState) -> Vec<GuideInfo> {
     state
         .obs
-        .read()
+        .peek()
         .as_ref()
         .map(|o| o.guides.to_vec())
         .unwrap_or_default()
+}
+
+/// [`guides_of`] for a body: the roster, re-rendering only when it moves. A hook.
+fn use_guides(state: AppState) -> Vec<GuideInfo> {
+    use_obs(state, |o| o.guides.to_vec())().unwrap_or_default()
 }
 
 /// The camera of the guide `id` as the engine holds it now, or `None` if it has
@@ -193,18 +202,7 @@ pub fn add_perspective(state: AppState) {
         .as_ref()
         .map(|o| o.view.center)
         .unwrap_or(Vec2::ZERO);
-    let after = guides_of(state).last().map(|g| g.id);
-    add_and_edit(
-        state,
-        DocCommand::AddGuide {
-            guide: PerspectiveGuide {
-                center,
-                ..Default::default()
-            },
-            after,
-            name: None,
-        },
-    );
+    add_and_edit(state, stark_ui::guides::add_at(&guides_of(state), center));
 }
 
 /// Dispatch `add` — a command that adds one guide — and pick up the guide it added.
@@ -310,7 +308,7 @@ fn guide_label(index: usize, guide: &GuideInfo) -> String {
 #[component]
 pub fn GuidesPanel() -> Element {
     let state = use_context::<AppState>();
-    let guides = guides_of(state);
+    let guides = use_guides(state);
     let editing = crate::modes::composing(state)
         .and_then(Composing::guide_edit)
         .map(|e| e.id);
@@ -500,7 +498,7 @@ pub fn PerspectiveGuideBar(edit: GuideEdit) -> Element {
     // mid-drag takes the pending value with it, and the mode's own exit drops the
     // preview it was showing (`end_guide_edit`).
     let pending = use_signal(|| None::<(GuideId, PerspectiveGuide)>);
-    let guides = guides_of(state);
+    let guides = use_guides(state);
     let Some((index, row)) = guides
         .iter()
         .position(|g| g.id == edit.id)
@@ -618,12 +616,7 @@ pub fn PerspectiveGuideBar(edit: GuideEdit) -> Element {
                 title: "Curvilinear (fisheye): a stereographic lens \u{2014} straight \
                         world lines bow into circles, and both poles of every axis \
                         come into view",
-                onclick: move |_| edit_guide(state, id, |g| {
-                    g.lens = match g.lens {
-                        Lens::Rectilinear => Lens::Fisheye,
-                        Lens::Fisheye => Lens::Rectilinear,
-                    };
-                }),
+                onclick: move |_| edit_guide(state, id, |g| g.lens = stark_ui::guides::toggled(g.lens)),
                 {icon(stark_ui::icons::FISHEYE)}
                 {label("Fisheye")}
             }

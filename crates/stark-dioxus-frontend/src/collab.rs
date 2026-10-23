@@ -27,16 +27,17 @@
 use dioxus::dioxus_core::{Task, spawn_forever};
 use dioxus::prelude::*;
 use stark_engine::Identity;
+use stark_model::AssetId;
 use stark_net::{
     AssetNeed, Broadcaster, CollabSession, Events, Joined, LinkKind, NetOptions, RemoteEvent,
-    SessionTicket, actor_from_endpoint_id,
+    SecretKey, SessionTicket, actor_from_endpoint_id,
 };
 use stark_ui::collab::{Peer, Phase};
 use stark_ui::desk::{Desk, Replacement};
 
 use crate::icons::icon;
 use crate::state::{AppState, root_signal};
-use crate::widgets::Modal;
+use crate::widgets::{Modal, ModalDone};
 
 /// The shared-session signals, grouped because they share one lifecycle: they are
 /// set together when a session starts and cleared together when it ends, and
@@ -132,24 +133,14 @@ pub fn share(state: AppState) {
             return;
         };
 
-        let opts = NetOptions {
-            secret: Some(id.secret),
-            resolvable: stark_ui::assets::resolvable(),
-            ..Default::default()
-        };
-        match CollabSession::host(doc, opts).await {
+        match CollabSession::host(doc, net_options(id.secret)).await {
             Ok((session, events)) => {
-                let tx = session.broadcaster();
-                // Seed every locally-imported brush so peers can fetch any the
-                // snapshot didn't already bundle (§12.4). The substrates need no
-                // equivalent: the snapshot carries every one the log names, and
-                // hosting seeds the blob store from it — a substrate imported *later*
-                // is seeded by `substrates::select` before its `SetSubstrate` goes out.
-                for (id, bytes) in assets {
-                    tx.add_content(AssetNeed::Brush(id), bytes);
-                }
-                let ticket_text = tx.ticket().await.to_string();
-                install(state, session, events, ticket_text);
+                // Every locally-imported brush, so peers can fetch any the snapshot
+                // didn't already bundle (§12.4). The substrates need no equivalent:
+                // the snapshot carries every one the log names, and hosting seeds the
+                // blob store from it — a substrate imported *later* is seeded by
+                // `substrates::select` before its `SetSubstrate` goes out.
+                seed_and_install(state, session, events, assets).await;
             }
             Err(e) => {
                 tracing::warn!("share failed: {e}");
@@ -190,12 +181,7 @@ pub fn join(state: AppState, link: String) {
         // every install already has (§12.4). A promise, settled below before anything is
         // replayed, and called in again by `ResolveLocally` for the rest of the
         // session.
-        let opts = NetOptions {
-            secret: Some(id.secret),
-            resolvable: stark_ui::assets::resolvable(),
-            ..Default::default()
-        };
-        match CollabSession::join(&ticket, opts).await {
+        match CollabSession::join(&ticket, net_options(id.secret)).await {
             Ok(Joined {
                 session,
                 events,
@@ -240,12 +226,7 @@ pub fn join(state: AppState, link: String) {
                     .as_ref()
                     .map(|r| r.desk.engine().all_asset_bytes())
                     .unwrap_or_default();
-                let tx = session.broadcaster();
-                for (id, bytes) in assets {
-                    tx.add_content(AssetNeed::Brush(id), bytes);
-                }
-                let ticket_text = tx.ticket().await.to_string();
-                install(state, session, events, ticket_text);
+                seed_and_install(state, session, events, assets).await;
             }
             Err(e) => {
                 tracing::warn!("join failed: {e}");
@@ -379,6 +360,33 @@ pub fn flush_outbox(state: AppState) {
 
 /// Store the live session and start the incoming pump. `ticket_text` is minted
 /// by the async caller — minting asks the network which members are reachable.
+/// What this client hands the transport: its persisted key — joining is not a
+/// different person from hosting — and what this build ships with, offered so a host
+/// can leave it out of a snapshot (§12.4).
+fn net_options(secret: SecretKey) -> NetOptions {
+    NetOptions {
+        secret: Some(secret),
+        resolvable: stark_ui::assets::resolvable(),
+        ..Default::default()
+    }
+}
+
+/// Seed the session's blob store with `assets` — this client's imported brushes, so a
+/// peer can fetch any the log names (§12.4) — and [`install`] it.
+async fn seed_and_install(
+    state: AppState,
+    session: CollabSession,
+    events: Events,
+    assets: Vec<(AssetId, Vec<u8>)>,
+) {
+    let tx = session.broadcaster();
+    for (id, bytes) in assets {
+        tx.add_content(AssetNeed::Brush(id), bytes);
+    }
+    let ticket_text = tx.ticket().await.to_string();
+    install(state, session, events, ticket_text);
+}
+
 fn install(state: AppState, session: CollabSession, mut events: Events, ticket_text: String) {
     // The page URL *is* the invitation: anyone opening it joins this session
     // (via this peer — every member is a valid entry point).
@@ -823,14 +831,7 @@ pub fn SessionModal(on_close: EventHandler<()>) -> Element {
                 },
             }
 
-            div { class: "modal-actions",
-                button {
-                    class: "btn btn-primary",
-                    onclick: move |_| on_close.call(()),
-                    {icon(stark_ui::icons::DONE)}
-                    "Done"
-                }
-            }
+            ModalDone { on_close }
         }
     }
 }
