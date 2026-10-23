@@ -85,8 +85,8 @@ pub enum DocError {
     /// wrong tooth into tiles no later arrival un-bakes (§6.4).
     #[error("{expected:?} arrived as {actual:?}; refusing to install it")]
     Misnamed {
-        expected: crate::AssetNeed,
-        actual: crate::AssetNeed,
+        expected: AssetNeed,
+        actual: AssetNeed,
     },
 
     /// Registered bytes a store could not read. The detail is whatever the decoder

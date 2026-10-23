@@ -6,16 +6,17 @@
 //!
 //! It is the model's first integration test, and the reason it is one is that what
 //! drives it is not about any single item in the crate. [`kinds`] is one of every
-//! action the document has a word for; it is held to being *every* one by
-//! `stark_testdata::vocabulary`, whose exhaustive match stops compiling when a
-//! variant appears and whose roster is this array's declared length.
+//! action the document has a word for; it is held to being *every* one by the
+//! model's own roster (`ActionTag`, read through `stark_testdata::vocabulary`):
+//! `ActionKind::tag`'s exhaustive match stops compiling when a variant appears, and
+//! the roster's length is this array's declared length.
 //!
 //! That device is shared with `stark-engine/tests/engine/footprint.rs`, which asks a
 //! different question of the same vocabulary (did a *run* reach every kind?) and
 //! needs a GPU to ask it — which is why the model's funnel cannot simply be checked
-//! beside it. The roster lives once, in `stark_testdata::vocabulary`, the crate both
-//! suites already depend on; kept per crate, the two copies drift the first time a
-//! variant lands, and that module's own note records what escaped.
+//! beside it. The roster lives once, in the model, and `stark_testdata::vocabulary`
+//! is the one view of it both suites read; kept per crate, the two copies drift the
+//! first time a variant lands, and that module's own note records what escaped.
 //!
 //! What is still local is the list itself, and deliberately: an action's payload is
 //! the model's vocabulary spelled out, and the run that drives it is three lines

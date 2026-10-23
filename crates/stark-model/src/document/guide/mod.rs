@@ -50,7 +50,7 @@ use serde::{Deserialize, Serialize};
 use glam::{Quat, Vec2, Vec3};
 
 use super::action::ActionId;
-use crate::sanitize::{finite_in, finite_or};
+use crate::sanitize::{finite_or, unit_or};
 
 mod camera;
 mod conic;
@@ -333,7 +333,7 @@ impl PerspectiveGuide {
             } else {
                 default.lattice
             },
-            opacity: finite_in(self.opacity, 1.0, (0.0, 1.0)),
+            opacity: unit_or(self.opacity, 1.0),
             pairs: self.pairs,
         }
     }

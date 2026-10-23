@@ -2,7 +2,7 @@
 //!
 //! A stroke travels and is saved as a short list of [`ControlPoint`]s. Fitting
 //! pointer reports down to them, and flattening them back into the segments the
-//! brush sweeps along, is `stark-engine`'s `path` — live work on a gesture in hand,
+//! brush sweeps along, is `stark-stroke`'s `path` — live work on a gesture in hand,
 //! and no part of what the document *is*.
 
 use serde::{Deserialize, Serialize};
@@ -11,7 +11,7 @@ use crate::geom::Vec2;
 
 /// A control point of the fitted stroke curve — the stored form of a path.
 ///
-/// Distinct from `stark-engine`'s `InputSample`: a sample is one raw pointer report,
+/// Distinct from `stark-stroke`'s `InputSample`: a sample is one raw pointer report,
 /// discarded once fitted; a control point is one coefficient of the fitted curve,
 /// saved to the file and sent to peers. It is a **cubic B-spline** control point, so
 /// the curve is pulled towards it rather than through it — only the first and last

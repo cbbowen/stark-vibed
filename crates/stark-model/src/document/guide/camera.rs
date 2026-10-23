@@ -203,7 +203,7 @@ impl PerspectiveGuide {
             // however the poles fall, unlike comparing arc angles — a stereographic
             // image does not preserve arc length, so the arc the hand is on can be
             // the long way round.
-            (PlaneTrace::Circle { .. }, Some(v), Some(w)) => cut_at(perp(w - v), v, at),
+            (PlaneTrace::Circle { .. }, Some(v), Some(w)) => cut_at((w - v).perp(), v, at),
             // Straight: the trace closes through infinity, so the line separating
             // its halves is the **perpendicular** at the pole — whichever pole is
             // on the canvas, an axis being unsigned (§20.1). Under the fisheye on
@@ -212,7 +212,7 @@ impl PerspectiveGuide {
             // edge where a fisheye trace straightens, crossed in well under a pixel
             // of travel.
             (PlaneTrace::Line { normal, .. }, fwd, back) => {
-                fwd.or(back).and_then(|v| cut_at(perp(normal), v, at))
+                fwd.or(back).and_then(|v| cut_at(normal.perp(), v, at))
             }
             // A bowed trace with one pole is a circle of astronomical radius,
             // both of whose ends are off any canvas (§20.8's `FISHEYE_LINE_EPS`
@@ -547,12 +547,6 @@ pub struct CursorRay {
     /// world line is in front of the eye along its whole length
     /// ([`axis_ray`](PerspectiveGuide::axis_ray)).
     pub cut: Option<Halfplane>,
-}
-
-/// The canvas normal of a line **along** `v` — a quarter turn, and the one place
-/// this file needs the operation by name.
-fn perp(v: Vec2) -> Vec2 {
-    Vec2::new(-v.y, v.x)
 }
 
 /// The half-plane whose boundary runs through `through` with normal along `n`,

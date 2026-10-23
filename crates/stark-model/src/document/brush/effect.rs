@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::modulation::{
     EraseModulations, LiquifyModulations, Modulations, PaintModulations, WetModulations,
 };
-use crate::sanitize::{at_least_zero, clamp01, finite_in, finite_or};
+use crate::sanitize::{at_least_zero, finite_in, unit_or};
 
 /// How a [`BrushEffect::Wet`] brush interacts with paint already on the canvas
 /// (§6.2). Every axis is a flux on the single conserved quantity — paint **height**
@@ -109,11 +109,11 @@ impl BrushDynamics {
     pub fn sanitized(self) -> Self {
         let d = Self::default();
         Self {
-            add: clamp01(finite_or(self.add, d.add)),
-            lift: clamp01(finite_or(self.lift, d.lift)),
-            deposit: clamp01(finite_or(self.deposit, d.deposit)),
+            add: unit_or(self.add, d.add),
+            lift: unit_or(self.lift, d.lift),
+            deposit: unit_or(self.deposit, d.deposit),
             charge: at_least_zero(self.charge, d.charge),
-            bleed: clamp01(finite_or(self.bleed, d.bleed)),
+            bleed: unit_or(self.bleed, d.bleed),
         }
     }
 }
@@ -569,7 +569,7 @@ impl BrushEffect {
             Self::Paint(p) => p.flow = flow,
             Self::Wet(w) => w.flow = flow,
             Self::Erase(e) => e.flow = flow,
-            Self::Liquify(l) => l.strength = clamp01(finite_or(flow, 1.0)),
+            Self::Liquify(l) => l.strength = unit_or(flow, 1.0),
         }
     }
 
@@ -635,14 +635,14 @@ impl BrushEffect {
                 color: crate::Srgb::new(p.color).get(),
                 // In `[0, 1]` by the field's own doc, for the erase twin's
                 // reason: a ceiling on the fraction laid, meaningless past 1.
-                opacity: clamp01(finite_or(p.opacity, 1.0)),
+                opacity: unit_or(p.opacity, 1.0),
                 flow: at_least_zero(p.flow, PaintEffect::default_flow()),
                 color_dynamics: p.color_dynamics.sanitized(),
                 modulation: p.modulation.sanitized(),
             }),
             Self::Wet(w) => Self::Wet(WetEffect {
                 color: crate::Srgb::new(w.color).get(),
-                opacity: clamp01(finite_or(w.opacity, 1.0)),
+                opacity: unit_or(w.opacity, 1.0),
                 flow: at_least_zero(w.flow, PaintEffect::default_flow()),
                 dynamics: w.dynamics.sanitized(),
                 color_dynamics: w.color_dynamics.sanitized(),
@@ -652,7 +652,7 @@ impl BrushEffect {
                 // In `[0, 1]` by the field's own doc: the removal `opacity` is
                 // a fraction of the visible opacity, and past 1 it would ask for
                 // less than none.
-                opacity: clamp01(finite_or(e.opacity, 1.0)),
+                opacity: unit_or(e.opacity, 1.0),
                 flow: at_least_zero(e.flow, 1.0),
                 modulation: e.modulation.sanitized(),
             }),
@@ -661,11 +661,11 @@ impl BrushEffect {
                 // the gather's snapshot margin is sized by the segment's travel, so a
                 // follow past 1 would read outside it (§6.13). Capped, unlike the
                 // flows, because this crate owns that bound.
-                strength: clamp01(finite_or(l.strength, 1.0)),
+                strength: unit_or(l.strength, 1.0),
                 // In `[0, 1]` by its own doc: a fraction of the step budget,
                 // meaningless past 1 — and a NaN lands on the full budget, the
                 // setting that cannot make a stroke tear.
-                quality: clamp01(finite_or(l.quality, 1.0)),
+                quality: unit_or(l.quality, 1.0),
                 modulation: l.modulation.sanitized(),
             }),
         }

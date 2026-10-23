@@ -279,6 +279,28 @@ pub const MAX_STROKE_TILES: u64 = 1 << 20;
 /// begins at [`StrokeRecord::start`] — the pre-marker stretch only ever
 /// *over*-declares, which is the safe direction (§12.6).
 pub fn stroke_rect(rec: &StrokeRecord) -> TileRect {
+    path_rect(rec, stroke_pad(&rec.brush))
+}
+
+/// The tile-aligned reach of a **liquify** stroke's reads (§6.13): [`stroke_rect`]
+/// grown by [`LiquifyEffect::REACH_PX`](super::brush::LiquifyEffect::REACH_PX) on
+/// every side.
+///
+/// A liquify stroke writes only its own mark, but resamples the run's pristine base
+/// under the *composed* displacement, which may point that far outside it. The engine
+/// holds the displacement under the constant, so this is the whole of what the
+/// stroke's render may read of the layer's paint — and a paint stroke inside it must
+/// be ordered against the liquify stroke (§12.6).
+pub fn liquify_reads(rec: &StrokeRecord) -> TileRect {
+    path_rect(
+        rec,
+        stroke_pad(&rec.brush) + super::brush::LiquifyEffect::REACH_PX,
+    )
+}
+
+/// The tiles within `pad` of every point of `rec`'s path — what [`stroke_rect`] and
+/// [`liquify_reads`] each are, at their own pad.
+fn path_rect(rec: &StrokeRecord, pad: f32) -> TileRect {
     let mut min = Vec2::splat(f32::INFINITY);
     let mut max = Vec2::splat(f32::NEG_INFINITY);
     for p in &rec.path {
@@ -297,33 +319,7 @@ pub fn stroke_rect(rec: &StrokeRecord) -> TileRect {
     }
     // A non-finite radius makes `pad` non-finite and the box unquantizable, which
     // `covering` answers with `ALL` — the safe direction.
-    let pad = Vec2::splat(stroke_pad(&rec.brush));
-    claim(min - pad, max + pad, 0)
-}
-
-/// The tile-aligned reach of a **liquify** stroke's reads (§6.13): [`stroke_rect`]
-/// grown by [`LiquifyEffect::REACH_PX`](super::brush::LiquifyEffect::REACH_PX) on
-/// every side.
-///
-/// A liquify stroke writes only its own mark, but resamples the run's pristine base
-/// under the *composed* displacement, which may point that far outside it. The engine
-/// holds the displacement under the constant, so this is the whole of what the
-/// stroke's render may read of the layer's paint — and a paint stroke inside it must
-/// be ordered against the liquify stroke (§12.6).
-pub fn liquify_reads(rec: &StrokeRecord) -> TileRect {
-    let mut min = Vec2::splat(f32::INFINITY);
-    let mut max = Vec2::splat(f32::NEG_INFINITY);
-    for p in &rec.path {
-        if !p.pos.is_finite() {
-            return TileRect::ALL;
-        }
-        min = min.min(p.pos);
-        max = max.max(p.pos);
-    }
-    if min.x > max.x {
-        return TileRect::EMPTY;
-    }
-    let pad = Vec2::splat(stroke_pad(&rec.brush) + super::brush::LiquifyEffect::REACH_PX);
+    let pad = Vec2::splat(pad);
     claim(min - pad, max + pad, 0)
 }
 

@@ -14,7 +14,7 @@ use super::paint::Parcel;
 use super::selection::SelectionOp;
 use crate::Srgb;
 use crate::geom::Vec2;
-use crate::sanitize::clamp01;
+use crate::sanitize::{at_least_zero, clamp01, unit_or};
 use crate::{SubstrateId, SubstrateScale};
 
 /// Identifies the author of an action: one local user, or a peer (§4).
@@ -720,11 +720,7 @@ impl ActionKind {
                 // flattening's to know — it clamps the top end itself. What the
                 // record can state alone is held here: finite, and not before
                 // the curve it marks a point on.
-                start: if rec.start.is_finite() {
-                    rec.start.max(0.0)
-                } else {
-                    0.0
-                },
+                start: at_least_zero(rec.start, 0.0),
                 translation: clamp_frame(rec.translation),
                 ..rec
             }),
@@ -750,7 +746,7 @@ impl ActionKind {
             // lands on 0 — an opacity that says nothing should leave the layer
             // *visible*, which is the neutral setting rather than the near end.
             ActionKind::SetLayerOpacity(id, a) => {
-                ActionKind::SetLayerOpacity(id, crate::sanitize::finite_in(a, 1.0, (0.0, 1.0)))
+                ActionKind::SetLayerOpacity(id, unit_or(a, 1.0))
             }
             // A guide's every number reaches the guide pass's uniform, and now
             // the saved log as well — `PerspectiveGuide::sanitized` is where what

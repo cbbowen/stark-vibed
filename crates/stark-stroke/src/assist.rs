@@ -206,4 +206,10 @@ impl Frame {
             residual.abs() / grad
         }
     }
+
+    /// The furthest any point of `trace` sits from the curve, by
+    /// [`distance`](Self::distance) — what a fit is scored on.
+    fn worst(&self, trace: &[Vec2]) -> f32 {
+        trace.iter().map(|p| self.distance(*p)).fold(0.0, f32::max)
+    }
 }

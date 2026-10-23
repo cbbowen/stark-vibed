@@ -65,6 +65,15 @@ impl AssetNeed {
         }
     }
 
+    /// The need a stroke laid with `shape` creates — `None` for `Round`, which is
+    /// procedural; [`for_substrate`](Self::for_substrate)'s twin for the brush tip.
+    pub fn for_shape(shape: BrushShape) -> Option<Self> {
+        match shape {
+            BrushShape::Round { .. } => None,
+            BrushShape::Stamp(id) => Some(AssetNeed::Brush(id)),
+        }
+    }
+
     /// The id the bytes are named and transferred under.
     pub fn content(self) -> AssetId {
         match self {
@@ -90,10 +99,7 @@ impl AssetNeed {
 /// bundle it.
 pub fn action_content(action: &Action) -> Option<AssetNeed> {
     match &action.kind {
-        ActionKind::CommitStroke(rec) => match rec.brush.shape {
-            BrushShape::Stamp(id) => Some(AssetNeed::Brush(id)),
-            BrushShape::Round { .. } => None,
-        },
+        ActionKind::CommitStroke(rec) => AssetNeed::for_shape(rec.brush.shape),
         ActionKind::SetSubstrate(id) => AssetNeed::for_substrate(*id),
         ActionKind::PlaceImage { image, .. } => Some(AssetNeed::Picture(*image)),
         ActionKind::AddLayer { .. }
@@ -142,10 +148,7 @@ pub fn action_content(action: &Action) -> Option<AssetNeed> {
 /// **Exhaustive, with no `_` arm**, for [`action_content`]'s reason.
 pub fn presence_content(frame: &PeerFrame) -> Option<AssetNeed> {
     match frame.gesture.as_ref()? {
-        GestureFrame::Stroke { head, .. } => match head.as_deref()?.brush.shape {
-            BrushShape::Stamp(id) => Some(AssetNeed::Brush(id)),
-            BrushShape::Round { .. } => None,
-        },
+        GestureFrame::Stroke { head, .. } => AssetNeed::for_shape(head.as_deref()?.brush.shape),
         // Geometry and paint carried whole, matching their committed twins above.
         GestureFrame::Selection { .. } | GestureFrame::Fill { .. } => None,
     }

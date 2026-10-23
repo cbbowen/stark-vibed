@@ -159,17 +159,12 @@ pub fn recognize(
         return None;
     }
     let bar = (GUIDE_LINE_RESIDUAL * size).max(floor);
-    Some(match snap_to_pencil(trace, free.a, &guides.axes, bar) {
-        Some(on) => AssistShape::Line {
-            a: on.a,
-            b: on.b,
-            on_axis: true,
-        },
-        None => AssistShape::Line {
-            a: free.a,
-            b: free.b,
-            on_axis: false,
-        },
+    let (fit, on_axis) =
+        snap_to_pencil(trace, free.a, &guides.axes, bar).map_or((free, false), |on| (on, true));
+    Some(AssistShape::Line {
+        a: fit.a,
+        b: fit.b,
+        on_axis,
     })
 }
 
@@ -222,7 +217,7 @@ fn snap_to_plane(trace: &[Vec2], planes: &[AxisPlane], bar: f32) -> Option<Assis
             continue;
         };
         let frame = Frame::of(seen);
-        let worst = trace.iter().map(|p| frame.distance(*p)).fold(0.0, f32::max);
+        let worst = frame.worst(trace);
         if worst > bar || best.as_ref().is_some_and(|(seen, _)| *seen <= worst) {
             continue;
         }
@@ -386,7 +381,7 @@ fn fit_ellipse(trace: &[Vec2]) -> Option<EllipseFit> {
     // closing chord is a licence taken to fit with, never evidence that the fit is good.
     Some(EllipseFit {
         shape: fit,
-        worst: trace.iter().map(|p| frame.distance(*p)).fold(0.0, f32::max),
+        worst: frame.worst(trace),
     })
 }
 

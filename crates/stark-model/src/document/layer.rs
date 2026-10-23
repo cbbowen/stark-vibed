@@ -69,11 +69,6 @@ impl LayerId {
         Self { action, k }
     }
 
-    /// Whether `actor` minted this layer — the author of the action it came from.
-    pub fn minted_by(self, actor: ActorId) -> bool {
-        self.action.actor == actor
-    }
-
     /// The id a **solo** author's action at `lamport` mints for its first layer.
     ///
     /// Not a test affordance: `ActorId::SOLO` authors every action in a document that

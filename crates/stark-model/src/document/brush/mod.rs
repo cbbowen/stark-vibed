@@ -21,7 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::sanitize::{at_least_zero, clamp01, finite_or};
+use crate::sanitize::{at_least_zero, clamp01, finite_or, unit_or};
 
 mod effect;
 mod modulation;
@@ -196,7 +196,7 @@ impl ToothParams {
     pub fn sanitized(self) -> Self {
         let d = Self::default();
         Self {
-            give: clamp01(finite_or(self.give, d.give)),
+            give: unit_or(self.give, d.give),
             softness: at_least_zero(self.softness, d.softness),
         }
     }
@@ -474,10 +474,7 @@ impl BrushParams {
     pub fn taper_px(&self) -> (f32, f32) {
         // `f32::max` returns the non-NaN operand, so this also normalizes NaN to 0.
         let r = self.size.max(0.0);
-        let px = |len: f32| {
-            let px = len.max(0.0) * r;
-            if px.is_finite() { px } else { 0.0 }
-        };
+        let px = |len: f32| finite_or(len.max(0.0) * r, 0.0);
         (px(self.start_taper_length), px(self.end_taper_length))
     }
 
@@ -491,9 +488,8 @@ impl BrushParams {
     /// run out.
     pub fn drain_px(&self) -> f32 {
         // `f32::max` returns the non-NaN operand, so a NaN in either field lands on
-        // the `is_finite` fallback below by way of a NaN quotient — as does 0/0.
-        let px = self.drain.max(0.0) / self.size.max(0.0);
-        if px.is_finite() { px } else { 0.0 }
+        // the `finite_or` fallback by way of a NaN quotient — as does 0/0.
+        finite_or(self.drain.max(0.0) / self.size.max(0.0), 0.0)
     }
 
     /// Whether either end of a stroke with this brush tapers.
@@ -551,7 +547,7 @@ impl BrushParams {
             tooth: self.tooth.sanitized(),
             // In `[0, 1]` by the field's own doc: the gate `1 + 2ε·centered` is
             // positive for every ε ≤ 1 and meaningless past it.
-            jitter: clamp01(finite_or(self.jitter, d.jitter)),
+            jitter: unit_or(self.jitter, d.jitter),
             orientation: self.orientation,
             effect: self.effect.sanitized(),
             modulation: self.modulation.sanitized(),

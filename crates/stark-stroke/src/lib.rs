@@ -15,7 +15,7 @@
 //!   in terms of a knot.
 //! - [`assist`] — drag-and-hold shape assist: what a held gesture is recognized as,
 //!   how the rest of the drag steers it, and the path it realizes back into (§6.9).
-//! - [`tow`] — the towed tip: stroke smoothing as a rope the pointer drags (§6.12).
+//! - [`tow`] — the towed tip: stroke smoothing as a rope the pointer drags (§6.11).
 //! - [`detmath`] — the deterministic series the **post-record** stages use in place
 //!   of libm, so a replay and a peer agree to the bit (§12.1).
 //!

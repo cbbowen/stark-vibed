@@ -63,7 +63,7 @@ impl Parcel {
 
     /// The same paint shifted whole by `by` (§14.12): a solid has no position
     /// and rides through; a gradient's axis is read from position and moves.
-    pub fn translated(&self, by: crate::geom::Vec2) -> Self {
+    pub fn translated(&self, by: Vec2) -> Self {
         match self {
             Self::Solid(_) => self.clone(),
             Self::Gradient(GradientParcel { gradient, axis }) => Self::Gradient(GradientParcel {

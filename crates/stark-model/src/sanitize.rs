@@ -23,6 +23,12 @@ pub(crate) fn finite_or(x: f32, fallback: f32) -> f32 {
     if x.is_finite() { x } else { fallback }
 }
 
+/// `x` into `[0, 1]`, with a non-finite `x` landing on `fallback` — [`clamp01`] for a
+/// knob whose `NaN` should mean the field's own default rather than the near end.
+pub(crate) fn unit_or(x: f32, fallback: f32) -> f32 {
+    clamp01(finite_or(x, fallback))
+}
+
 /// `x` as a non-negative length or rate: finite first, *then* floored at zero.
 ///
 /// A bare `x.max(0.0)` would turn a `NaN` into 0 but pass an infinity through, and it
