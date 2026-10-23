@@ -24,7 +24,7 @@ use crate::colorspace::ColorSpace;
 use crate::device::channels::Zeroes;
 use crate::device::channels::{ChannelFormats, Channels, Targets};
 use crate::device::context::GpuContext;
-use crate::device::desc;
+use crate::device::desc::{self, view};
 use crate::device::scratch::{LeasedSlots, ScratchPool, SubmitScope};
 use crate::device::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
 use crate::gpu::composite::{BlendPass, BlendUniform, FilterDraw, FilterPass, FilterUniform};
@@ -39,11 +39,6 @@ use stark_shaders::mirror::merge::decl as md;
 use stark_shaders::mirror::slab::Slab as SlabUniform;
 use stark_shaders::mirror::slab::binding as sl;
 use stark_shaders::mirror::slab::decl as sd;
-
-/// A texture view as the resource a bind-group entry takes.
-fn view(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
-    wgpu::BindingResource::TextureView(v)
-}
 
 /// One side of a merge: a layer's tiles and the opacity slider that scales them.
 ///

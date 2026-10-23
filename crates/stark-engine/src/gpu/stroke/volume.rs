@@ -221,11 +221,7 @@ pub(crate) const COVERAGE_PREFIX_LABEL: &str = "stark brush coverage prefix";
 /// [`VolumeCache`] prices an entry at, off [`PREFIX_FORMAT`]'s own texel size so it
 /// cannot drift from what [`build_prefix`] creates.
 pub(crate) fn prefix_bytes(width: u32, height: u32, layers: u32) -> u64 {
-    let texel = u64::from(
-        PREFIX_FORMAT
-            .block_copy_size(None)
-            .expect("an uncompressed format has one aspect"),
-    );
+    let texel = u64::from(desc::texel_bytes(PREFIX_FORMAT));
     u64::from(width) * u64::from(height) * u64::from(layers) * texel
 }
 

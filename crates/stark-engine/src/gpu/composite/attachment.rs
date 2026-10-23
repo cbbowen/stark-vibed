@@ -8,6 +8,7 @@
 use crate::view::Extent2;
 
 use crate::device::channels::{ChannelFormats, Targets};
+use crate::device::desc;
 
 /// A viewport-sized offscreen render target — pass A's channels, the blend
 /// scratch, the supersampled target, the focal blur's planes — that **returns its
@@ -52,19 +53,14 @@ impl Attachment {
         usage: wgpu::TextureUsages,
         label: &str,
     ) -> Self {
+        let size = wgpu::Extent3d {
+            width: size.width.max(1),
+            height: size.height.max(1),
+            depth_or_array_layers: 1,
+        };
         let tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some(label),
-            size: wgpu::Extent3d {
-                width: size.width.max(1),
-                height: size.height.max(1),
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
             usage,
-            view_formats: &[],
+            ..desc::sampled_texture(label, format, size)
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         Self { tex, view }

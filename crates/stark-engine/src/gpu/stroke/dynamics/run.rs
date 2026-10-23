@@ -23,7 +23,7 @@ use super::bleed::bleed_fires;
 use super::plan::{LoopDispatch, WetStep, cell_scratch_size, dynamics_plan};
 use super::region::{
     LOOP_USAGE, Piece, REGION_WRITES, RegionBox, RegionChannels, RegionRun, composite_tiles,
-    region_selection, slice_region,
+    loop_key, region_selection, slice_region,
 };
 use super::tool::{BRUSH_RES, ToolPingPong};
 use super::trio::{Life, Trio};
@@ -107,7 +107,7 @@ impl CarriedLanes {
             };
             scope.encoder().copy_texture_to_texture(
                 kept.tex().as_image_copy(),
-                block(region, piece.block_origin(*coord)),
+                desc::copy_at(region, piece.block_origin(*coord)),
                 self.key.extent(),
             );
         }
@@ -125,7 +125,7 @@ impl CarriedLanes {
         for coord in &piece.tiles {
             let kept = r.scratch.keep(&r.ctx.device, self.key);
             scope.encoder().copy_texture_to_texture(
-                block(region, piece.block_origin(*coord)),
+                desc::copy_at(region, piece.block_origin(*coord)),
                 kept.tex().as_image_copy(),
                 self.key.extent(),
             );
@@ -139,16 +139,6 @@ impl CarriedLanes {
             }
             self.tiles.insert_mut(*coord, Arc::new(kept));
         }
-    }
-}
-
-/// The tile-sized block of `region` at `origin`, as a copy addresses it.
-fn block(region: &wgpu::Texture, origin: wgpu::Origin3d) -> wgpu::TexelCopyTextureInfo<'_> {
-    wgpu::TexelCopyTextureInfo {
-        texture: region,
-        mip_level: 0,
-        origin,
-        aspect: wgpu::TextureAspect::All,
     }
 }
 
@@ -213,14 +203,11 @@ impl CeilingLane {
                 | wgpu::TextureUsages::COPY_DST,
             label: "stark dynamics region levels",
         });
-        region
-            .scope
-            .encoder()
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark dynamics region levels clear"),
-                color_attachments: &[Some(desc::attach(&lane.view, desc::CLEAR))],
-                ..Default::default()
-            });
+        desc::begin_pass(
+            region.scope.encoder(),
+            "stark dynamics region levels clear",
+            &lane.view,
+        );
         self.carried.seed(&mut region.scope, piece, &lane.tex);
         let instances: Vec<SegmentInstance> = segments.iter().map(segment_instance).collect();
         let bytes: &[u8] = bytemuck::cast_slice(&instances);
@@ -264,14 +251,11 @@ impl LanePiece<'_> {
     fn draw(&self, region: &mut RegionRun<'_>, index: u32) {
         let kit = &region.r.swept;
         let pipeline = kit.pipeline(SweepPass::Levels);
-        let mut pass = region
-            .scope
-            .encoder()
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark dynamics ceiling lane"),
-                color_attachments: &[Some(desc::attach(&self.lane.view, desc::LOAD))],
-                ..Default::default()
-            });
+        let mut pass = desc::begin_pass(
+            region.scope.encoder(),
+            "stark dynamics ceiling lane",
+            desc::Attachments::loaded([Some(&self.lane.view)]),
+        );
         pass.set_pipeline(pipeline);
         kit.uniform_bgl.set(&mut pass, &self.xform, &[0]);
         kit.prefix_bgl.set(&mut pass, self.prefix, &[]);
@@ -459,14 +443,7 @@ impl<'a> DynamicsRun<'a> {
         };
         // Each at the format its own `bake_*_w` declaration names (§6.10).
         let mut bake = |at: stark_shaders::Binding, label: &'static str| {
-            scope
-                .take_run(Key {
-                    size: (BAKE_RES, BAKE_RES),
-                    format: at.storage_format(),
-                    usage: LOOP_USAGE,
-                    label,
-                })
-                .view
+            scope.take_run(loop_key(at, BAKE_RES, label)).view
         };
         let bake_load = bake(d::BAKE_LOAD_W, "stark dynamics bake load");
         let bake_latm = bake(d::BAKE_LATM_W, "stark dynamics bake latm");
@@ -927,12 +904,7 @@ fn snapshot_scratch(region: &mut RegionRun<'_>, size: u32) -> Trio {
 fn bleed_scratch(region: &mut RegionRun<'_>, dsize: u32) -> wgpu::TextureView {
     region
         .scope
-        .take_piece(Key {
-            size: (dsize, dsize),
-            format: d::BLEED_W_W.storage_format(),
-            usage: LOOP_USAGE,
-            label: "stark dynamics bleed w",
-        })
+        .take_piece(loop_key(d::BLEED_W_W, dsize, "stark dynamics bleed w"))
         .view
 }
 
@@ -945,15 +917,7 @@ fn cell_scratch(region: &mut RegionRun<'_>, dsize: u32) -> Cells {
     let size = cell_scratch_size(dsize);
     // Each at the format its own `cell_*_w` declaration names (§6.10).
     let mut tex = |at: stark_shaders::Binding, label: &'static str| {
-        region
-            .scope
-            .take_piece(Key {
-                size: (size, size),
-                format: at.storage_format(),
-                usage: LOOP_USAGE,
-                label,
-            })
-            .view
+        region.scope.take_piece(loop_key(at, size, label)).view
     };
     Cells {
         tool: tex(d::CELL_TOOL_W, "stark dynamics cell tool"),

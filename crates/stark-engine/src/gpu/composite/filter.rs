@@ -164,14 +164,7 @@ impl FilterPass {
             (filter.vs_main, filter.fs_blur_decode),
             &blur_targets,
         );
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("stark filter sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
+        let sampler = desc::linear_sampler(device, "stark filter sampler");
         let blur_zero = (
             desc::zero_texture(ctx, bld::DST_LIGHT.storage_format(), "stark blur light 1x1"),
             desc::zero_texture(ctx, bld::DST_AUX.storage_format(), "stark blur aux 1x1"),

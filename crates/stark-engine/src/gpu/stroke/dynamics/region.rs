@@ -49,6 +49,17 @@ use stark_shaders::mirror::view::binding as vb;
 pub(super) const LOOP_USAGE: wgpu::TextureUsages =
     wgpu::TextureUsages::TEXTURE_BINDING.union(wgpu::TextureUsages::STORAGE_BINDING);
 
+/// A `side`-square loop texture at the format `at` declares (§6.10), with
+/// [`LOOP_USAGE`].
+pub(super) fn loop_key(at: stark_shaders::Binding, side: u32, label: &'static str) -> Key {
+    Key {
+        size: (side, side),
+        format: at.storage_format(),
+        usage: LOOP_USAGE,
+        label,
+    }
+}
+
 /// The three declarations the loop storage-writes a region's channels through — the
 /// formats a region trio, and anything a region is composited into, is created at
 /// (§6.10, and the `kit` assertion that ties them to the composite's own targets).
@@ -468,15 +479,18 @@ pub(super) fn slice_region(
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
         label: "stark dynamics narrow aux",
     });
-    let bg = kit.slice_bgl.group(device, "stark dynamics slice bg", |_| {
-        wgpu::BindingResource::TextureView(aux)
-    });
-    {
-        let mut pass = desc::begin_pass(scope.encoder(), "stark dynamics slice", &narrow_view);
-        pass.set_pipeline(&kit.slice_pipeline);
-        kit.slice_bgl.set(&mut pass, &bg, &[]);
-        pass.draw(desc::FULLSCREEN_VERTICES, 0..1);
-    }
+    let bg = kit
+        .slice
+        .bindings
+        .group(device, "stark dynamics slice bg", |_| {
+            wgpu::BindingResource::TextureView(aux)
+        });
+    scope.fullscreen_pass(
+        "stark dynamics slice",
+        &narrow_view,
+        &kit.slice.pipeline,
+        desc::Bound::one(&bg),
+    );
 
     let mut new_map = base.clone();
     for coord in &piece.tiles {

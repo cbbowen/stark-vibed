@@ -9,7 +9,7 @@
 //! per-target half (what this render is looking at, and the groups over it).
 
 use super::display::Transfer;
-use crate::device::desc::Bindings;
+use crate::device::desc::{self, Bindings};
 use crate::device::tile::{INTERIOR_UV_BIAS, INTERIOR_UV_SCALE};
 use crate::device::uniforms::UniformSlots;
 use crate::view::ViewTransform;
@@ -67,12 +67,7 @@ pub(super) struct View {
 impl View {
     pub(super) fn new(device: &wgpu::Device) -> Self {
         Self {
-            sampler: device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("stark composite sampler"),
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                ..Default::default()
-            }),
+            sampler: desc::linear_sampler(device, "stark composite sampler"),
         }
     }
 }

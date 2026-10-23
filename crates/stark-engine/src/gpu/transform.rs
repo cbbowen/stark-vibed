@@ -391,14 +391,7 @@ impl TransformRenderer {
             &mask_target,
         );
 
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("stark transform sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
+        let sampler = desc::linear_sampler(device, "stark transform sampler");
 
         Self {
             ctx: ctx.clone(),

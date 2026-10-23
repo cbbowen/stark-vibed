@@ -876,6 +876,37 @@ pub(crate) fn texture_with_data(
     )
 }
 
+/// A texture view as the resource a bind-group entry takes.
+pub(crate) fn view(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
+    wgpu::BindingResource::TextureView(v)
+}
+
+/// `texture` at `origin`, as a copy addresses it: mip 0, every aspect.
+pub(crate) fn copy_at(
+    texture: &wgpu::Texture,
+    origin: wgpu::Origin3d,
+) -> wgpu::TexelCopyTextureInfo<'_> {
+    wgpu::TexelCopyTextureInfo {
+        texture,
+        mip_level: 0,
+        origin,
+        aspect: wgpu::TextureAspect::All,
+    }
+}
+
+/// A bilinear sampler, clamped at the edge — what every pass here that filters a
+/// texture samples with, short of the few that tile or mip.
+pub(crate) fn linear_sampler(device: &wgpu::Device, label: &str) -> wgpu::Sampler {
+    device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some(label),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    })
+}
+
 /// One texel of `format`, in bytes — **the one answer to that question**.
 ///
 /// It was asked four ways, each with a different fallback for a format it is not

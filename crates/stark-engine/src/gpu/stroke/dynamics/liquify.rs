@@ -41,10 +41,10 @@ use super::super::{ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene};
 use super::plan::{Plan, WarpStep, liquify_plan};
 use super::region::{
     LOOP_USAGE, Piece, REGION_WRITES, RegionBox, RegionChannels, RegionRun, composite_tiles,
-    region_selection, slice_region,
+    loop_key, region_selection, slice_region,
 };
 use super::trio::{Life, Trio};
-use crate::device::desc;
+use crate::device::desc::{self, view};
 use crate::device::scratch::{Key, LeasedSlots, LeasedTex};
 use crate::device::tile::{AllocSource, FIELD_FORMAT, TileMap};
 use crate::document::PaintTiles;
@@ -446,14 +446,11 @@ impl<'a> LiquifyDraw<'a> {
                 | wgpu::TextureUsages::COPY_DST,
             label: "stark liquify region field",
         });
-        self.region
-            .scope
-            .encoder()
-            .begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("stark liquify field clear"),
-                color_attachments: &[Some(desc::attach(&field.view, desc::CLEAR))],
-                ..Default::default()
-            });
+        desc::begin_pass(
+            self.region.scope.encoder(),
+            "stark liquify field clear",
+            &field.view,
+        );
         let region_hi = origin + Vec2::new(w as f32, h as f32);
         for c in piece.halo() {
             let Some(tile) = self.run.field_at(*c) else {
@@ -507,18 +504,14 @@ impl<'a> LiquifyDraw<'a> {
         let under_field = self
             .region
             .scope
-            .take_piece(Key {
-                size: (plan.dsize, plan.dsize),
-                format: ld::UNDER_FIELD_W.storage_format(),
-                usage: LOOP_USAGE,
-                label: "stark liquify under field",
-            })
+            .take_piece(loop_key(
+                ld::UNDER_FIELD_W,
+                plan.dsize,
+                "stark liquify under field",
+            ))
             .view;
         let stamps = self.region.upload(&plan.slots);
         let params = stamps.window();
-        fn view(v: &wgpu::TextureView) -> wgpu::BindingResource<'_> {
-            wgpu::BindingResource::TextureView(v)
-        }
         let snapshot =
             kernels
                 .snapshot_field

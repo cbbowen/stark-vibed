@@ -192,8 +192,7 @@ pub(super) struct RegionKit {
     /// region as plain texture copies (`slice_region`), so the one pipeline the
     /// write-back keeps is the narrowing of the wide region aux to the persistent
     /// height channel — once over the whole region, not once per tile.
-    pub(super) slice_pipeline: wgpu::RenderPipeline,
-    pub(super) slice_bgl: desc::Bindings,
+    pub(super) slice: desc::OnePass,
 }
 
 /// The wet loop's kernels (§6.2) and the two stand-ins its groups bind where a stroke
@@ -322,12 +321,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             targets: &desc::targets_for(composite.fs_raw, &composite_targets),
         },
     );
-    let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-        label: Some("stark dynamics composite sampler"),
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Linear,
-        ..Default::default()
-    });
+    let composite_sampler = desc::linear_sampler(device, "stark dynamics composite sampler");
 
     // ---- The stamp loop: one module with eight entry points, and the liquify field's
     // module beside it with three more (§6.13).
@@ -389,14 +383,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             crate::gpu::stroke::swept::CEILING_FORMAT,
             "stark dynamics levels 1x1",
         ),
-        sampler: device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("stark dynamics exchange sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        }),
+        sampler: desc::linear_sampler(device, "stark dynamics exchange sampler"),
     };
     let warp = WarpKernels {
         snapshot_field: warp_kernel("stark liquify snapshot field", liquify.snapshot_field),
@@ -409,22 +396,13 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     // once over the whole region rather than once per tile, and needs neither a per-tile
     // uniform nor a residual variant.
     let slice = stark_shaders::slice();
-    let slice_shader = desc::Module::new(device, "stark dynamics slice", slice);
-    let slice_bgl = desc::Bindings::of(
+    let slice = desc::OnePass::fullscreen(
         device,
-        "stark dynamics slice bgl",
-        Stages::Render(slice.vs_main, slice.fs_main),
+        "stark dynamics slice",
+        &desc::Module::new(device, "stark dynamics slice", slice),
+        (slice.vs_main, slice.fs_main),
         sld::REGION_AUX,
         &[],
-    );
-    let slice_layout =
-        desc::pipeline_layout_of(device, "stark dynamics slice layout", &[&slice_bgl]);
-    let slice_pipeline = desc::fullscreen_pipeline(
-        device,
-        "stark dynamics slice pipeline",
-        &slice_layout,
-        &slice_shader,
-        (slice.vs_main, slice.fs_main),
         &[desc::target(TILE_AUX_FORMAT)],
     );
 
@@ -434,8 +412,7 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             composite_view_bgl,
             composite_tile_bgl,
             composite_sampler,
-            slice_pipeline,
-            slice_bgl,
+            slice,
         },
         wet,
         warp,

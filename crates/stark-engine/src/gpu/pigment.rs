@@ -109,14 +109,7 @@ impl PigmentLut {
             // Linear in x/y: Mixbox interpolates within a slice in hardware and only
             // blends the two z-slices in the shader. Clamped, so the `iz == 63` fetch
             // that runs off the end of the grid (at weight 0) stays in bounds.
-            sampler: ctx.device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("stark pigment lut sampler"),
-                address_mode_u: wgpu::AddressMode::ClampToEdge,
-                address_mode_v: wgpu::AddressMode::ClampToEdge,
-                mag_filter: wgpu::FilterMode::Linear,
-                min_filter: wgpu::FilterMode::Linear,
-                ..Default::default()
-            }),
+            sampler: crate::device::desc::linear_sampler(&ctx.device, "stark pigment lut sampler"),
         }
     }
 

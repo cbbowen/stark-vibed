@@ -26,6 +26,7 @@ use std::sync::{Arc, Mutex, OnceLock, Weak};
 use strum::{EnumCount, VariantArray};
 
 use crate::device::context::GpuContext;
+use crate::device::desc;
 use crate::unpoisoned;
 use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX, TileCoord, Vec2};
 
@@ -63,6 +64,13 @@ pub(crate) const INTERIOR_UV_BIAS: f32 = TILE_APRON as f32 / TILE_TEX as f32;
 pub(crate) fn mask_tex_origin(coord: TileCoord) -> Vec2 {
     coord.texture_box().0
 }
+
+/// One tile texture's size: interior and apron on every side (§6.4).
+const TILE_EXTENT: wgpu::Extent3d = wgpu::Extent3d {
+    width: TILE_TEX,
+    height: TILE_TEX,
+    depth_or_array_layers: 1,
+};
 
 const CHANNEL_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
     .union(wgpu::TextureUsages::RENDER_ATTACHMENT)
@@ -309,18 +317,9 @@ impl TexHandle {
     ) {
         let dst = self.0.texture();
         encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: src,
-                mip_level: 0,
-                origin,
-                aspect: wgpu::TextureAspect::All,
-            },
+            desc::copy_at(src, origin),
             dst.as_image_copy(),
-            wgpu::Extent3d {
-                width: TILE_TEX,
-                height: TILE_TEX,
-                depth_or_array_layers: 1,
-            },
+            TILE_EXTENT,
         );
     }
 
@@ -343,18 +342,8 @@ impl TexHandle {
     ) {
         let tex = self.0.texture();
         encoder.copy_texture_to_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: tex,
-                mip_level: 0,
-                origin: src,
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyTextureInfo {
-                texture: dst,
-                mip_level: 0,
-                origin: dst_origin,
-                aspect: wgpu::TextureAspect::All,
-            },
+            desc::copy_at(tex, src),
+            desc::copy_at(dst, dst_origin),
             extent,
         );
     }
@@ -392,11 +381,7 @@ impl TexHandle {
                 bytes_per_row: Some(row),
                 rows_per_image: Some(TILE_TEX),
             },
-            wgpu::Extent3d {
-                width: TILE_TEX,
-                height: TILE_TEX,
-                depth_or_array_layers: 1,
-            },
+            TILE_EXTENT,
         );
     }
 }
@@ -536,11 +521,10 @@ impl TilePairHandle {
             );
             decode_rgba16f(&read_one_blocking(ctx, tex, block))
         };
-        let tex = |h: &TexHandle| h.0.texture().clone();
         TileChannels {
-            color: read(&tex(&self.0.color), 4),
-            height: read(&tex(&self.0.aux), 1),
-            resid: self.0.resid.as_ref().map(|r| read(&tex(r), 4)),
+            color: read(self.0.color.0.texture(), 4),
+            height: read(self.0.aux.0.texture(), 1),
+            resid: self.0.resid.as_ref().map(|r| read(r.0.texture(), 4)),
         }
     }
 
@@ -821,15 +805,12 @@ const MAX_RELEASE_PER_EPOCH: usize = 256;
 
 /// One `TILE_TEX` square of `format`, in bytes.
 ///
-/// Asked of the format rather than tabulated, for [`bytes_per_texel`]'s reason one
-/// level up: a table would be a second statement of something wgpu already knows, and
-/// a wrong entry would under-report memory rather than fail. A format that cannot
-/// answer is counted at zero — it is telemetry, and telemetry degrading is the right
-/// failure for telemetry.
-///
-/// [`bytes_per_texel`]: crate::device::readback
+/// Asked of the format rather than tabulated: a table would be a second statement of
+/// something wgpu already knows, and a wrong entry would under-report memory rather
+/// than fail. [`texel_bytes`](crate::device::desc::texel_bytes)'s answer, since the
+/// pool only ever holds the uncompressed formats a tile channel is.
 fn texture_bytes(format: wgpu::TextureFormat) -> u64 {
-    let texel = format.block_copy_size(None).unwrap_or(0) as u64;
+    let texel = u64::from(crate::device::desc::texel_bytes(format));
     texel * TILE_TEX as u64 * TILE_TEX as u64
 }
 
@@ -1045,19 +1026,8 @@ impl TilePool {
     /// acquire.
     fn create_pooled(&self, format: wgpu::TextureFormat) -> Pooled {
         let tex = self.ctx.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("stark tile channel"),
-            // Interior + apron on every side (§6.4).
-            size: wgpu::Extent3d {
-                width: TILE_TEX,
-                height: TILE_TEX,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format,
             usage: CHANNEL_USAGE,
-            view_formats: &[],
+            ..desc::sampled_texture("stark tile channel", format, TILE_EXTENT)
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
         // Stamped when it is handed *back*; a texture on its way out has not

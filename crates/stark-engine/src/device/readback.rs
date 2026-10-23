@@ -10,20 +10,10 @@
 //! and is compiled out on wasm.
 
 use crate::device::context::GpuContext;
+use crate::device::desc;
 use crate::device::half::f16_to_f32;
 use crate::error::{EngineError, Result};
 use crate::view::Extent2;
-
-/// A texel of `texture`, in bytes.
-///
-/// Asked of the texture rather than of the caller: a mismatch would not fail, it would
-/// hand back rows shifted by the difference — a picture skewing progressively sideways.
-fn bytes_per_texel(texture: &wgpu::Texture) -> u32 {
-    texture
-        .format()
-        .block_copy_size(None)
-        .expect("readback of an uncompressed texture")
-}
 
 /// **The whole of a staging buffer's layout**: a row's real width, its padded width,
 /// the rows per texture, and how many textures are in there.
@@ -45,7 +35,10 @@ pub(super) struct Rows {
 
 impl Rows {
     fn of(texture: &wgpu::Texture, size: Extent2, count: usize) -> Self {
-        let unpadded = size.width * bytes_per_texel(texture);
+        // The texel asked of the texture rather than of the caller: a mismatch would
+        // not fail, it would hand back rows shifted by the difference — a picture
+        // skewing progressively sideways.
+        let unpadded = size.width * desc::texel_bytes(texture.format());
         let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         Self {
             unpadded,

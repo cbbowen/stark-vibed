@@ -337,14 +337,8 @@ impl ScratchPool {
         });
         let taken = reused.unwrap_or_else(|| {
             let tex = device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(key.label),
-                size: key.extent(),
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: key.format,
                 usage: key.usage,
-                view_formats: &[],
+                ..desc::sampled_texture(key.label, key.format, key.extent())
             });
             let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
             let tex = LeasedTex { tex, view };
@@ -668,9 +662,7 @@ impl SubmitScope {
         label: &'static str,
         value: &T,
     ) -> LeasedSlots<T> {
-        let buf = self.take_run_buffer(BufKey::uniform(size_of::<T>() as u64, label));
-        self.write_lease(&buf, bytemuck::bytes_of(value));
-        LeasedSlots::new(buf, 1)
+        self.uniform(label, value, Self::take_run_buffer)
     }
 
     /// [`run_uniform`](Self::run_uniform) for the piece being recorded, released at
@@ -680,7 +672,17 @@ impl SubmitScope {
         label: &'static str,
         value: &T,
     ) -> LeasedSlots<T> {
-        let buf = self.take_piece_buffer(BufKey::uniform(size_of::<T>() as u64, label));
+        self.uniform(label, value, Self::take_piece_buffer)
+    }
+
+    /// The two above, over the lease tier `take` checks out of.
+    fn uniform<T: bytemuck::Pod>(
+        &mut self,
+        label: &'static str,
+        value: &T,
+        take: fn(&mut Self, BufKey) -> wgpu::Buffer,
+    ) -> LeasedSlots<T> {
+        let buf = take(self, BufKey::uniform(size_of::<T>() as u64, label));
         self.write_lease(&buf, bytemuck::bytes_of(value));
         LeasedSlots::new(buf, 1)
     }
