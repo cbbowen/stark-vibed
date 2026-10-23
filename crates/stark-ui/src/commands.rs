@@ -37,7 +37,7 @@ use stark_engine::ObservableState;
 use stark_engine::command::Tool;
 
 use crate::icons::Icon;
-use crate::keys::{Keystroke, Mods, Role};
+use crate::keys::{Keystroke, Mods, Overrides, Role};
 use crate::panels::PanelId;
 use crate::slots;
 use crate::storage::{self, Entry, Store};
@@ -580,8 +580,9 @@ fn defaults() -> Vec<(Chord, Command)> {
 }
 
 /// The chord table as this browser has it: [`defaults`] with the user's
-/// rebindings laid over them. Lives on a frontend's app state as
-/// a signal, so a row's shortcut column re-renders the moment a rebind lands;
+/// rebindings laid over them. Held where each frontend keeps its state — a signal on
+/// the web, a field natively — so a row's shortcut column redraws the moment a
+/// rebind lands;
 /// stored under its own key like the preset library, since it is a table the
 /// palette edits rather than a ⚙ setting (`crate::prefs`'s remit).
 ///
@@ -592,39 +593,23 @@ fn defaults() -> Vec<(Chord, Command)> {
 /// this table before it existed.
 #[derive(Clone, Default, PartialEq, Debug)]
 pub struct Bindings {
-    /// The commands the user has taken over, each with the chord that is now
-    /// its **whole** binding — a rebind replaces every default row the command
-    /// had, secondary spellings included — or `None` for a command whose chord
-    /// was stolen by a later rebind and has nothing left.
-    ///
-    /// **Private, because the table's one invariant lives on the way in.** Two rows
-    /// on one chord make [`lookup`](Self::lookup) and [`of`](Self::of) answer by
-    /// vector position — the table would silently stop being a function — and a
-    /// record is exactly where such a pair arrives from: a hand-edited store, a
-    /// merged profile, a sync. [`from_stored`](Self::from_stored) is the only other
-    /// way to fill this, and it goes through [`rebind`](Self::rebind).
-    overrides: Vec<(Command, Option<Chord>)>,
+    /// The commands the user has taken over. A rebind replaces every default row the
+    /// command had, secondary spellings included. Private for the reason
+    /// [`Overrides`] gives.
+    overrides: Overrides<Command, Chord>,
 }
 
 impl Bindings {
-    /// Whether an override has claimed `chord` — the question that kills a
-    /// default row: the user's table always wins over the shipped one.
-    fn taken(&self, chord: &Chord) -> bool {
-        self.overrides
-            .iter()
-            .any(|(_, c)| c.as_ref() == Some(chord))
-    }
-
     /// The chord the chrome should advertise for `command`: its override, or
     /// its first default row still standing. `None` is a command the keyboard
     /// cannot reach — never bound, or rebound away.
     pub fn of(&self, command: Command) -> Option<Chord> {
-        if let Some((_, chord)) = self.overrides.iter().find(|(c, _)| *c == command) {
+        if let Some(chord) = self.overrides.get(command) {
             return chord.clone();
         }
         defaults()
             .into_iter()
-            .find(|(chord, c)| *c == command && !self.taken(chord))
+            .find(|(chord, c)| *c == command && !self.overrides.taken(chord))
             .map(|(chord, _)| chord)
     }
 
@@ -642,68 +627,34 @@ impl Bindings {
                 && chord.alt == stroke.mods.alt
                 && chord.key.hit(stroke)
         };
-        if let Some((command, _)) = self
-            .overrides
-            .iter()
-            .find(|(_, chord)| chord.as_ref().is_some_and(hit))
-        {
-            return Some(*command);
+        if let Some(command) = self.overrides.claimant(hit) {
+            return Some(command);
         }
         defaults()
             .into_iter()
-            .find(|(chord, command)| !self.overridden(*command) && !self.taken(chord) && hit(chord))
+            .find(|(chord, command)| {
+                !self.overrides.overridden(*command) && !self.overrides.taken(chord) && hit(chord)
+            })
             .map(|(_, command)| command)
     }
 
-    /// Whether the user has taken this command's binding over (even to nothing).
-    fn overridden(&self, command: Command) -> bool {
-        self.overrides.iter().any(|(c, _)| *c == command)
-    }
-
-    /// Give `command` the chord as its whole binding. If another rebinding
-    /// held that chord it is stolen — the loser keeps an override saying so,
-    /// which is what its row shows — and a default elsewhere dies by
-    /// [`taken`](Self::taken) with nothing stored about it.
+    /// Give `command` the chord as its whole binding, stealing it from any other
+    /// ([`Overrides::rebind`]).
     pub fn rebind(&mut self, command: Command, chord: Chord) {
-        for (other, held) in &mut self.overrides {
-            if *other != command && held.as_ref() == Some(&chord) {
-                *held = None;
-            }
-        }
-        self.set(command, Some(chord));
+        self.overrides.rebind(command, chord);
     }
 
-    /// Take `command`'s binding away — deliberately, which is why it is an
-    /// override to nothing rather than a removed entry: the defaults must not
-    /// resurrect a chord the user just erased.
+    /// Take `command`'s binding away ([`Overrides::unbind`]).
     pub fn unbind(&mut self, command: Command) {
-        self.set(command, None);
+        self.overrides.unbind(command);
     }
 
-    fn set(&mut self, command: Command, chord: Option<Chord>) {
-        match self.overrides.iter_mut().find(|(c, _)| *c == command) {
-            Some((_, held)) => *held = chord,
-            None => self.overrides.push((command, chord)),
-        }
-    }
-
-    /// The table a record's rows describe, laid down **one rebind at a time**.
-    ///
-    /// Not a collect: a record carrying two rows on one chord resolves by the same
-    /// steal rule a live rebind would ([`rebind`](Self::rebind)) rather than by
-    /// vector order, so a table read off disk is a function for the same reason one
-    /// built by hand is. A row with no chord is an unbind, which is what it meant
-    /// when it was written.
+    /// The table a record's rows describe ([`Overrides::from_rows`]).
     #[must_use]
     pub fn from_stored(rows: impl IntoIterator<Item = (Command, Option<Chord>)>) -> Self {
-        let mut bindings = Self::default();
-        for (command, chord) in rows {
-            match chord {
-                Some(chord) => bindings.rebind(command, chord),
-                None => bindings.unbind(command),
-            }
+        Self {
+            overrides: Overrides::from_rows(rows),
         }
-        bindings
     }
 
     /// This client's stored table, or `None` where it has never kept one.
@@ -792,11 +743,8 @@ pub fn capture(stroke: &Keystroke<'_>) -> Capture {
     if crate::keys::is_space(stroke) {
         return Capture::Pending;
     }
-    // The rack's own reading of the digit row, asked rather than restated — and
-    // asked under the same modifiers the rack claims under, which is neither: it
-    // tolerates Shift and refuses Alt, so Alt+1 is a chord going spare rather than a
-    // hold being stolen.
-    if !ctrl && !alt && slots::of_code(stroke.code).is_some() {
+    // The rack's own claim on the digit row, asked rather than restated.
+    if slots::claims(stroke).is_some() {
         return Capture::Pending;
     }
     // **Under Alt a key does not type its own character**, so there is no mnemonic to
@@ -1074,9 +1022,6 @@ pub fn search(query: &str) -> Vec<Command> {
     tiers.concat()
 }
 
-/// The command `e` asks for, if any — the one reader on the dispatch path,
-/// asking this browser's own table ([`Bindings`]). `peek`: a keydown is no
-/// reason for anything to re-render.
 impl Command {
     /// The command's display name: what a menu row or a search result would
     /// print. A trailing `…` is part of the name — it says the act opens a

@@ -17,6 +17,7 @@
 //! ([`anchor_at`]). The gesture itself is a composing mode with a full-viewport catcher,
 //! which one frontend has and the other defers (§11.2), so the catcher stays with it.
 
+use stark_engine::command::DocCommand;
 use stark_model::document::{GuideId, Lens, PerspectiveGuide, PlaneTrace};
 use stark_model::geom::Vec2;
 
@@ -92,6 +93,28 @@ pub fn label(index: usize, guide: &stark_engine::GuideInfo) -> String {
     match &guide.name {
         Some(name) => name.to_string(),
         None => unnamed_label(index),
+    }
+}
+
+/// What adding a perspective guide sends (`Command::AddPerspective`): a default guide
+/// centred on `center` — where the artist is looking — appended after `roster`'s last,
+/// since the roster reads in the order guides were added.
+pub fn add_at(roster: &[stark_engine::GuideInfo], center: Vec2) -> DocCommand {
+    DocCommand::AddGuide {
+        guide: PerspectiveGuide {
+            center,
+            ..Default::default()
+        },
+        after: roster.last().map(|g| g.id),
+        name: None,
+    }
+}
+
+/// The lens the bar's fisheye toggle switches to from `lens`.
+pub fn toggled(lens: Lens) -> Lens {
+    match lens {
+        Lens::Rectilinear => Lens::Fisheye,
+        Lens::Fisheye => Lens::Rectilinear,
     }
 }
 

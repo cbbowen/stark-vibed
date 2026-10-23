@@ -410,10 +410,6 @@ pub fn shipped(shapes: BuiltinShapes) -> Vec<PresetEntry> {
     ]
 }
 
-/// Populate the library signal with the **user's** presets from storage. Called
-/// once at app start, before the renderer exists, so what this browser saved is
-/// on screen right away.
-///
 /// Whether `name` belongs to one of the app's own presets — which the Save
 /// dialog asks before offering to write it, since a name taken by a built-in is
 /// not free to overwrite (a frontend's `save_current` refuses it) and a second row under

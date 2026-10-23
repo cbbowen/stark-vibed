@@ -147,6 +147,113 @@ pub fn one_char(s: &str) -> Option<char> {
     }
 }
 
+/// The half of a binding table that is the user's: the actions they have taken over,
+/// each with the chord that is now its **whole** binding — or `None` for one whose
+/// chord a later rebind stole, or whose binding was erased outright.
+///
+/// The chord table and the drag table ([`crate::commands::Bindings`],
+/// [`crate::drags::DragBindings`]) are each this laid over their own shipped rows. What
+/// differs between them is the rows and how a chord is matched; what is here is the
+/// one invariant they share, stated once.
+///
+/// **That invariant lives on the way in.** Two rows on one chord would make a lookup
+/// answer by vector position — the table would silently stop being a function — and a
+/// record is exactly where such a pair arrives from: a hand-edited store, a merged
+/// profile, a sync. So nothing fills this but [`rebind`](Self::rebind),
+/// [`unbind`](Self::unbind) and [`from_rows`](Self::from_rows), which goes through
+/// them.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) struct Overrides<A, C> {
+    rows: Vec<(A, Option<C>)>,
+}
+
+impl<A, C> Default for Overrides<A, C> {
+    fn default() -> Self {
+        Self { rows: Vec::new() }
+    }
+}
+
+impl<A: Copy + PartialEq, C: PartialEq> Overrides<A, C> {
+    /// The table `rows` describe, laid down **one rebind at a time**.
+    ///
+    /// Not a collect: two rows on one chord resolve by the same steal rule a live
+    /// rebind would rather than by vector order, so a table read off disk is a
+    /// function for the same reason one built by hand is. A row with no chord is an
+    /// unbind, which is what it meant when it was written.
+    pub(crate) fn from_rows(rows: impl IntoIterator<Item = (A, Option<C>)>) -> Self {
+        let mut table = Self::default();
+        for (action, chord) in rows {
+            match chord {
+                Some(chord) => table.rebind(action, chord),
+                None => table.unbind(action),
+            }
+        }
+        table
+    }
+
+    /// Whether an override has claimed `chord` — the question that kills a default
+    /// row: the user's table always wins over the shipped one.
+    pub(crate) fn taken(&self, chord: &C) -> bool {
+        self.rows.iter().any(|(_, c)| c.as_ref() == Some(chord))
+    }
+
+    /// Whether the user has taken `action`'s binding over (even to nothing).
+    pub(crate) fn overridden(&self, action: A) -> bool {
+        self.rows.iter().any(|(a, _)| *a == action)
+    }
+
+    /// `action`'s override, if it has one: `Some(None)` is a binding taken away.
+    pub(crate) fn get(&self, action: A) -> Option<&Option<C>> {
+        self.rows.iter().find(|(a, _)| *a == action).map(|(_, c)| c)
+    }
+
+    /// The action whose overriding chord `hit` accepts. Never ambiguous:
+    /// [`rebind`](Self::rebind) steals a colliding chord.
+    pub(crate) fn claimant(&self, hit: impl Fn(&C) -> bool) -> Option<A> {
+        self.rows
+            .iter()
+            .find(|(_, c)| c.as_ref().is_some_and(&hit))
+            .map(|(a, _)| *a)
+    }
+
+    /// Give `action` the chord as its whole binding. If another override held that
+    /// chord it is stolen — the loser keeps an override saying so, which is what its
+    /// row then shows — and a default elsewhere dies by [`taken`](Self::taken) with
+    /// nothing stored about it.
+    pub(crate) fn rebind(&mut self, action: A, chord: C) {
+        for (other, held) in &mut self.rows {
+            if *other != action && held.as_ref() == Some(&chord) {
+                *held = None;
+            }
+        }
+        self.set(action, Some(chord));
+    }
+
+    /// Take `action`'s binding away — deliberately, which is why it is an override to
+    /// nothing rather than a removed entry: the defaults must not resurrect a chord
+    /// the user just erased.
+    pub(crate) fn unbind(&mut self, action: A) {
+        self.set(action, None);
+    }
+
+    fn set(&mut self, action: A, chord: Option<C>) {
+        match self.rows.iter_mut().find(|(a, _)| *a == action) {
+            Some((_, held)) => *held = chord,
+            None => self.rows.push((action, chord)),
+        }
+    }
+
+    /// The rows, in the order they were first overridden — what a record stores.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &(A, Option<C>)> {
+        self.rows.iter()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -64,9 +64,9 @@ pub fn stored_showing(what: VisibilityToggle) -> bool {
 /// "never been here" and "closed everything" are one screen there. A **docked** column
 /// cannot take that reading: its panels are the window's furniture, and a first run
 /// that opened on a menu bar and nothing else would read as broken rather than tidy.
-/// So the native frontend asks this and keeps its own default for the absent case
-/// (`stark-wgpui-frontend`'s `visibility`).
-pub fn stored_open() -> Option<HashSet<PanelId>> {
+/// So the native frontend asks [`stored_screen`] and keeps its own default for the
+/// absent case (`stark-wgpui-frontend`'s `visibility`); [`stored_hidden`] asks this.
+fn stored_open() -> Option<HashSet<PanelId>> {
     Some(
         stored_screen()?
             .into_iter()
@@ -130,18 +130,6 @@ pub fn stored_collapsed() -> HashSet<PanelId> {
         .collect()
 }
 
-/// Write what is on screen. **The one writer**, called by everything that shows or
-/// hides anything — `layout::set_open` and `layout::toggle_collapse`,
-/// `navigator::set_open`, `slots::set_pinned`, `panels::timeline::set_open`.
-///
-/// Whole-record rather than incremental, and that is the point: the four facts live
-/// in four signals, and reading all of them here is what keeps the record from ever
-/// holding a half-updated screen. It is also what makes the `match` below the place
-/// a new menu entry is *made* to declare itself.
-///
-/// `peek` throughout, never `read`: this runs from inside the writers, and
-/// subscribing a click handler to the state it is in the middle of changing is how a
-/// signal read ends up live across a write of itself.
 /// Write this client's on-screen state back.
 ///
 /// `showing` answers for one menu entry at a time and `folded` says which of them are

@@ -241,10 +241,7 @@ pub fn float_child(o: &ObservableState, parent: LayerId) -> Hit {
 /// Where `id`'s frame stands, per the projection — zero for a layer the roster does not
 /// hold, which the engine will then refuse to move.
 pub fn layer_translation(o: &ObservableState, id: LayerId) -> IVec2 {
-    o.layers
-        .iter()
-        .find(|l| l.id == id)
-        .map_or(IVec2::ZERO, |l| l.translation)
+    o.layer(id).map_or(IVec2::ZERO, |l| l.translation)
 }
 
 #[cfg(test)]

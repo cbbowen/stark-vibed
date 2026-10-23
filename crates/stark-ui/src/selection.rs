@@ -43,8 +43,7 @@ pub const SHAPE_ACTIONS: [ShapeAction; 5] = [
 /// Here rather than in `commands` because these are not commands: an action is a
 /// *setting* the next gesture reads, and the registry names acts. Both frontends draw
 /// the row, so the words are shared for the reason every other pair of words in this
-/// crate is — and the mark beside each stays each frontend's, since one of them is
-/// inline SVG and the other is not.
+/// crate is — and the marks for the same reason ([`action_glyph`]).
 pub fn action_word(action: ShapeAction) -> &'static str {
     match action {
         ShapeAction::Select(SelectionMode::Replace) => "New",
@@ -52,6 +51,20 @@ pub fn action_word(action: ShapeAction) -> &'static str {
         ShapeAction::Select(SelectionMode::Subtract) => "Sub",
         ShapeAction::Select(SelectionMode::Intersect) => "Isect",
         ShapeAction::Fill => "Fill",
+    }
+}
+
+/// The mark each of [`SHAPE_ACTIONS`] wears, from the catalog both frontends draw from
+/// (`crate::icons`) — which matters more here than usual: the row's whole claim is that
+/// Add, Sub and Isect are one question answered three ways, and that claim is carried by
+/// the glyphs being a family.
+pub fn action_glyph(action: ShapeAction) -> Icon {
+    match action {
+        ShapeAction::Select(SelectionMode::Replace) => crate::icons::SELECTION_NEW,
+        ShapeAction::Select(SelectionMode::Union) => crate::icons::SELECTION_ADD,
+        ShapeAction::Select(SelectionMode::Subtract) => crate::icons::SELECTION_SUB,
+        ShapeAction::Select(SelectionMode::Intersect) => crate::icons::SELECTION_ISECT,
+        ShapeAction::Fill => crate::icons::PAINT_BUCKET,
     }
 }
 

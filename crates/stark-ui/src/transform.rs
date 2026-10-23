@@ -521,6 +521,15 @@ pub fn entry(o: &stark_engine::ObservableState) -> Option<Entry> {
     Some(Entry { layer, hull })
 }
 
+/// The gesture entering transform mode starts (§16.6): the Free family, mounted
+/// around [`entry`]'s rectangle on its layer — `None` when nothing can be transformed.
+/// What both frontends' "Transform" does, so they cannot come to disagree about what
+/// an unbounded selection means.
+pub fn begin(o: &stark_engine::ObservableState) -> Option<TransformUi> {
+    let Entry { layer, hull } = entry(o)?;
+    Some(mount(layer, Family::Free, hull, Bands::at(o.view.zoom)))
+}
+
 /// Mount a fresh gesture of `family` around `rect`.
 pub fn mount(layer: LayerId, family: Family, rect: (Vec2, Vec2), bands: Bands) -> TransformUi {
     match family {

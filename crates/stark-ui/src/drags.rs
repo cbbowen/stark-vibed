@@ -20,7 +20,7 @@
 use serde::{Deserialize, Serialize};
 use strum::VariantArray;
 
-use crate::keys::Mods;
+use crate::keys::{Mods, Overrides};
 use crate::storage::{self, Entry, Store};
 
 /// Which button a drag binding means, named the way the hand knows it.
@@ -127,9 +127,9 @@ fn defaults() -> impl Iterator<Item = (DragChord, DragAction)> {
 }
 
 /// The drag table as this browser has it: [`defaults`] with the user's own rows
-/// laid over them. Lives on a frontend's drag signal
-/// as a signal, so a settings row and the resting cursor both move the moment a
-/// rebind lands.
+/// laid over them. Held where each frontend keeps its state — a signal on the web,
+/// a field natively — so a settings row and the resting cursor both move the moment
+/// a rebind lands.
 ///
 /// Only the *overrides* are state, exactly as `stark_ui::commands::Bindings` holds only
 /// its own: an action the user never touched keeps its default row, minus any
@@ -137,38 +137,21 @@ fn defaults() -> impl Iterator<Item = (DragChord, DragAction)> {
 /// browser that stored this table before the move.
 #[derive(Clone, Default, PartialEq, Debug)]
 pub struct DragBindings {
-    /// The actions the user has taken over, each with the chord that is now its
-    /// **whole** binding, or `None` for an action whose chord a later rebind
-    /// stole or whose binding was erased outright.
-    ///
-    /// **Private for `commands::Bindings::overrides`' reason**: two rows on one chord
-    /// would make [`lookup`](Self::lookup) and [`of`](Self::of) answer by vector
-    /// position, and a record is where such a pair arrives from.
-    /// [`from_stored`](Self::from_stored) is the only other way to fill it.
-    overrides: Vec<(DragAction, Option<DragChord>)>,
+    /// The actions the user has taken over. Private for the reason [`Overrides`]
+    /// gives.
+    overrides: Overrides<DragAction, DragChord>,
 }
 
 impl DragBindings {
-    /// Whether an override has claimed `chord` — the question that kills a
-    /// default row: the user's table always wins over the shipped one.
-    fn taken(&self, chord: DragChord) -> bool {
-        self.overrides.iter().any(|(_, c)| *c == Some(chord))
-    }
-
-    /// Whether the user has taken this action's binding over (even to nothing).
-    fn overridden(&self, action: DragAction) -> bool {
-        self.overrides.iter().any(|(a, _)| *a == action)
-    }
-
     /// The chord the chrome should advertise for `action`: its override, or its
     /// default row if that row is still standing. `None` is an act no press can
     /// reach — never bound, or rebound away.
     pub fn of(&self, action: DragAction) -> Option<DragChord> {
-        if let Some((_, chord)) = self.overrides.iter().find(|(a, _)| *a == action) {
+        if let Some(chord) = self.overrides.get(action) {
             return *chord;
         }
         defaults()
-            .find(|(chord, a)| *a == action && !self.taken(*chord))
+            .find(|(chord, a)| *a == action && !self.overrides.taken(chord))
             .map(|(chord, _)| chord)
     }
 
@@ -180,54 +163,33 @@ impl DragBindings {
     /// answers only while its action is untouched and its chord unclaimed.
     pub fn lookup(&self, mods: Mods, button: DragButton) -> Option<DragAction> {
         let chord = DragChord { mods, button };
-        if let Some((action, _)) = self.overrides.iter().find(|(_, c)| *c == Some(chord)) {
-            return Some(*action);
+        if let Some(action) = self.overrides.claimant(|c| *c == chord) {
+            return Some(action);
         }
         defaults()
-            .find(|(c, action)| !self.overridden(*action) && !self.taken(*c) && *c == chord)
+            .find(|(c, action)| {
+                !self.overrides.overridden(*action) && !self.overrides.taken(c) && *c == chord
+            })
             .map(|(_, action)| action)
     }
 
-    /// Give `action` the chord as its whole binding. If another row held that
-    /// chord it is stolen — the loser keeps an override saying so, which is
-    /// what its settings row then shows — and a default elsewhere dies by
-    /// [`taken`](Self::taken) with nothing stored about it.
+    /// Give `action` the chord as its whole binding, stealing it from any other
+    /// ([`Overrides::rebind`]).
     pub fn rebind(&mut self, action: DragAction, chord: DragChord) {
-        for (other, held) in &mut self.overrides {
-            if *other != action && *held == Some(chord) {
-                *held = None;
-            }
-        }
-        self.set(action, Some(chord));
+        self.overrides.rebind(action, chord);
     }
 
-    /// Take `action`'s binding away — deliberately, which is why it is an
-    /// override to nothing rather than a removed entry: the defaults must not
-    /// resurrect a chord the user just erased.
+    /// Take `action`'s binding away ([`Overrides::unbind`]).
     pub fn unbind(&mut self, action: DragAction) {
-        self.set(action, None);
+        self.overrides.unbind(action);
     }
 
-    fn set(&mut self, action: DragAction, chord: Option<DragChord>) {
-        match self.overrides.iter_mut().find(|(a, _)| *a == action) {
-            Some((_, held)) => *held = chord,
-            None => self.overrides.push((action, chord)),
-        }
-    }
-
-    /// The table a record's rows describe, laid down **one rebind at a time** —
-    /// `commands::Bindings::from_stored`'s twin, and for its reason: a record carrying
-    /// two rows on one chord resolves by the steal rule rather than by vector order.
+    /// The table a record's rows describe ([`Overrides::from_rows`]).
     #[must_use]
     pub fn from_stored(rows: impl IntoIterator<Item = (DragAction, Option<DragChord>)>) -> Self {
-        let mut bindings = Self::default();
-        for (action, chord) in rows {
-            match chord {
-                Some(chord) => bindings.rebind(action, chord),
-                None => bindings.unbind(action),
-            }
+        Self {
+            overrides: Overrides::from_rows(rows),
         }
-        bindings
     }
 
     /// Take `preset`'s table whole.
@@ -239,14 +201,15 @@ impl DragBindings {
     /// reason — it is a claim about *another* app's table, and a default that
     /// moves must not move it.
     pub fn take(&mut self, preset: DragPreset) {
-        self.overrides.clear();
-        if preset == DragPreset::Stark {
-            return;
-        }
-        self.overrides = DragAction::VARIANTS
-            .iter()
-            .map(|&action| (action, preset.chord(action)))
-            .collect();
+        self.overrides = if preset == DragPreset::Stark {
+            Overrides::default()
+        } else {
+            Overrides::from_rows(
+                DragAction::VARIANTS
+                    .iter()
+                    .map(|&action| (action, preset.chord(action))),
+            )
+        };
     }
 }
 

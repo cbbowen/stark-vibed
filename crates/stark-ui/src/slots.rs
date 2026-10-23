@@ -35,6 +35,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::brush_config::{BrushConfig, Transient};
+use crate::keys::Keystroke;
 use crate::presets::PresetEntry;
 use crate::storage::{self, Store};
 
@@ -150,6 +151,22 @@ pub fn of_code(code: &str) -> Option<Digit> {
         [d @ b'0'..=b'9'] => Digit::new((d - b'0') as usize),
         _ => None,
     }
+}
+
+/// The slot a key-down claims as a **hold**, if it is one — the rack's rule for which
+/// presses are its own, asked by both frontends' keydown and by a capture.
+///
+/// A digit off the physical row ([`of_code`]), with **Shift tolerated**: on most
+/// layouts it is what the digit row types under, and a hand resting on it should not
+/// silently disarm the rack. Alt and Ctrl are refused — bare Alt is the eyedropper's,
+/// so Alt+1 is a chord going spare rather than a hold being stolen, and only a bare
+/// digit is ours. Claimed before the chord table is consulted, so a future row on a
+/// digit could never shadow it.
+pub fn claims(stroke: &Keystroke<'_>) -> Option<Digit> {
+    if stroke.mods.ctrl || stroke.mods.alt {
+        return None;
+    }
+    of_code(stroke.code)
 }
 
 /// What a digit holds: a **binding** to a preset, by name, and the transient half of

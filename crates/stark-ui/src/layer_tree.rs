@@ -22,8 +22,8 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 
 use crate::reorder::{Grab, Motion, Slide};
-use stark_engine::LayerInfo;
 use stark_engine::command::DocCommand;
+use stark_engine::{LayerInfo, ObservableState};
 use stark_model::document::{BlendMode, DRAGO_K_RANGE, LayerId, Place};
 
 /// How far one level of membership indents a row, in pixels. Named because three
@@ -135,6 +135,21 @@ fn clip_inert(info: &LayerInfo) -> bool {
         Some(_) => !info.has_underlay,
         None => !info.has_backdrop,
     }
+}
+
+/// Where an added layer lands, as the `(carrier, above)` an add command takes
+/// (§14.2): above the selected one, **in its own stack**, so adding while working
+/// inside a group lands in that group — or on top of the document with nothing
+/// selected. One rule for every kind of layer an add makes.
+pub fn placement(o: Option<&ObservableState>) -> (Option<LayerId>, Option<LayerId>) {
+    let selected = o.and_then(ObservableState::active);
+    (selected.and_then(|l| l.carrier), selected.map(|l| l.id))
+}
+
+/// What adding a paint layer sends, at [`placement`].
+pub fn add_layer(o: Option<&ObservableState>) -> DocCommand {
+    let (carrier, above) = placement(o);
+    DocCommand::AddLayer { carrier, above }
 }
 
 /// What a blend mode does, in one line, for the picker's hover.
