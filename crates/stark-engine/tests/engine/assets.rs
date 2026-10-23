@@ -70,21 +70,14 @@ fn a_capped_shape_paints_and_survives_save_load() {
         .expect("import");
     let mut brush = brush(RED_SOFT, 60.0);
     brush.shape = BrushShape::Stamp(id);
-    original.process(ViewCommand::set_brush(brush));
-    Gesture::new(Tool::Brush)
-        .drive(
-            &mut original,
-            [
-                InputSample::at(Vec2::new(-70.0, 0.0)),
-                InputSample::at(Vec2::new(70.0, 0.0)),
-            ],
-        )
-        .end();
+    stroke_with(
+        &mut original,
+        brush,
+        &[Vec2::new(-70.0, 0.0), Vec2::new(70.0, 0.0)],
+    );
     let before = original.render_to_image();
 
-    let bytes = original.save_bytes().expect("serialize");
-    let mut loaded = engine_or_skip_blue().expect("adapter");
-    loaded.load_bytes(&bytes).expect("load");
+    let mut loaded = reloaded(&original);
     let after = loaded.render_to_image();
 
     assert_images(
@@ -138,16 +131,7 @@ fn the_pen_bake_paints_what_the_follow_stroke_bake_does_at_zero_angle() {
         // the corpus draws.
         b.make_wet().dynamics.lift = 0.6;
         b.make_wet().dynamics.deposit = 0.6;
-        engine.process(ViewCommand::set_brush(b));
-        Gesture::new(Tool::Brush)
-            .drive(
-                engine,
-                [
-                    InputSample::at(Vec2::new(-70.0, 0.0)),
-                    InputSample::at(Vec2::new(70.0, 0.0)),
-                ],
-            )
-            .end();
+        stroke_with(engine, b, &[Vec2::new(-70.0, 0.0), Vec2::new(70.0, 0.0)]);
         let img = engine.render_to_image();
         engine.process(stark_engine::command::DocCommand::Undo);
         img

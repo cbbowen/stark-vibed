@@ -2604,7 +2604,7 @@ pub mod assets {
         read("shape/Worn_Bristles.png")
     }
 
-    /// The built-in bristle brush shape (§6.6).
+    /// The built-in flat-tip brush shape (§6.6).
     pub fn flat_tip() -> Vec<u8> {
         read("shape/Flat.png")
     }

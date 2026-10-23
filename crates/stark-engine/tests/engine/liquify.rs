@@ -17,7 +17,7 @@ use crate::common::*;
 use stark_engine::command::{GestureCommand, InputSample, Tool, ViewCommand};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::document::{BrushEffect, BrushParams, BrushShape, LayerId, LiquifyEffect};
-use stark_model::geom::{TileCoord, Vec2};
+use stark_model::geom::Vec2;
 
 /// A liquify brush of the given strength — no pigment (the effect carries none),
 /// no drain, no jitter, so a test's claim is about the warp alone.
@@ -411,41 +411,6 @@ fn stripes(engine: &mut Engine, x0: f32, count: u16) {
     }
 }
 
-/// Every tile of `layer` on `a` and `b`, compared **bitwise** channel by channel:
-/// `None` when they agree, else how many tiles differ and the first that does.
-fn tiles_differ(a: &Engine, b: &Engine, layer: LayerId) -> Option<String> {
-    let keys = |e: &Engine| -> Vec<TileCoord> {
-        let mut k = layer_tiles(e, layer);
-        k.sort();
-        k
-    };
-    let (ka, kb) = (keys(a), keys(b));
-    if ka != kb {
-        return Some(format!(
-            "tile sets differ: {} against {}",
-            ka.len(),
-            kb.len()
-        ));
-    }
-    let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
-    let mut first = None;
-    let mut differing = 0;
-    for c in &ka {
-        let (ta, tb) = (
-            a.tile_channels(layer, *c).expect("listed"),
-            b.tile_channels(layer, *c).expect("listed"),
-        );
-        let same = bits(&ta.color) == bits(&tb.color)
-            && bits(&ta.height) == bits(&tb.height)
-            && ta.resid.as_deref().map(bits) == tb.resid.as_deref().map(bits);
-        if !same {
-            differing += 1;
-            first.get_or_insert(*c);
-        }
-    }
-    first.map(|c| format!("{differing} of {} tiles differ, first {c:?}", ka.len()))
-}
-
 /// A drag whose accumulated pull passes the reach cap (512 px) re-bases its run
 /// mid-stroke (§6.13), and each re-base starts a piece that composites what the
 /// pieces before it wrote. Drawn live with fast commit off, the commit renders the
@@ -496,10 +461,7 @@ fn a_drag_that_rebases_mid_stroke_replays_bit_for_bit() {
         run_size(&weak, layer),
     );
 
-    let mut replayed = engine_or_skip().expect("the adapter answered once already");
-    replayed
-        .load_bytes(&live.save_bytes().expect("save"))
-        .expect("load + replay");
+    let replayed = reloaded(&live);
     if let Some(diff) = tiles_differ(&live, &replayed, layer) {
         panic!("the committed drag and its replay disagree: {diff}");
     }

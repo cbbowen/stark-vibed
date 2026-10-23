@@ -67,9 +67,7 @@ fn a_translation_touches_no_tile() {
     let layer = engine.observe().active_layer;
     let before = engine.observe();
     let row = |o: &stark_engine::ObservableState| {
-        o.layers
-            .iter()
-            .find(|l| l.id == layer)
+        o.layer(layer)
             .expect("the active layer is on the roster")
             .clone()
     };
@@ -219,11 +217,7 @@ fn a_float_leaves_the_picture_unchanged() {
     assert!(!o.has_selection, "the float consumes the selection");
     let child = o.active_layer;
     assert_ne!(child, source, "the float armed the child");
-    let row = o
-        .layers
-        .iter()
-        .find(|l| l.id == child)
-        .expect("the child is on the roster");
+    let row = o.layer(child).expect("the child is on the roster");
     assert_eq!(row.carrier, Some(source), "carried by the source");
     assert_eq!(
         row.translation,
@@ -259,11 +253,7 @@ fn a_float_from_a_translated_source_leaves_the_picture_unchanged() {
     let o = engine.observe();
     let child = o.active_layer;
     assert_ne!(child, source, "the float was made");
-    let row = o
-        .layers
-        .iter()
-        .find(|l| l.id == child)
-        .expect("the child is on the roster");
+    let row = o.layer(child).expect("the child is on the roster");
     assert_eq!(
         row.translation,
         IVec2::new(37, -13),

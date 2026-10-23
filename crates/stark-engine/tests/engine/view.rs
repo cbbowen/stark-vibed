@@ -177,10 +177,7 @@ struct Seed {
 
 impl Seed {
     fn plant(engine: &mut Engine) -> Self {
-        let linen = engine
-            .import_substrate(&stark_testdata::assets::linen())
-            .expect("the linen height map imports");
-        engine.process(DocCommand::SetSubstrate(linen));
+        on_substrate(engine, &stark_testdata::assets::linen());
         engine.process(ViewCommand::SetMediaParams(stark_engine::MediaParams {
             substrate_strength: 1.0,
             ..Default::default()
@@ -497,10 +494,7 @@ fn mirroring_reflects_every_pixel_of_the_screen_path() {
         return;
     };
     // The substrate, embossed hard enough to see — this is what `view_m` carries.
-    let linen = engine
-        .import_substrate(&stark_testdata::assets::linen())
-        .expect("the linen height map imports");
-    engine.process(DocCommand::SetSubstrate(linen));
+    on_substrate(&mut engine, &stark_testdata::assets::linen());
     engine.process(ViewCommand::SetMediaParams(stark_engine::MediaParams {
         // The substrate *on*, so where it is sampled is part of the answer, but its
         // embossing *off* — see the note above.

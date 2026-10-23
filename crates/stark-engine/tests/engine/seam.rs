@@ -16,8 +16,7 @@
 
 use crate::common::*;
 use stark_assetid::Picture;
-use stark_engine::command::Tool;
-use stark_engine::command::{DocCommand, Edit, InputSample, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, ViewCommand};
 use stark_engine::{MediaParams, RgbaImage};
 use stark_model::document::BrushDynamics;
 use stark_model::geom::{IVec2, Vec2};
@@ -54,16 +53,14 @@ fn render_shifted(shift: Vec2) -> RgbaImage {
     // so it too is deliberately not translation invariant and would differ between
     // the shifted renders.
     let b = brush(RED, 28.0).unjittered();
-    engine.process(ViewCommand::set_brush(b));
-    Gesture::new(Tool::Brush)
-        .drive(
-            &mut engine,
-            [
-                InputSample::at(shift + Vec2::new(-50.0, -50.0)),
-                InputSample::at(shift + Vec2::new(50.0, 50.0)),
-            ],
-        )
-        .end();
+    stroke_with(
+        &mut engine,
+        b,
+        &[
+            shift + Vec2::new(-50.0, -50.0),
+            shift + Vec2::new(50.0, 50.0),
+        ],
+    );
 
     // Center the view on `shift` (Pan: center -= delta/zoom, at zoom 1), then
     // magnify 2× about the viewport center so the canvas point under the center
@@ -202,16 +199,14 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
     // Jitter off on both brushes here, by `render_shifted`'s argument: the gate is
     // canvas-anchored (§6.2) and this test compares shifted renders.
     let field = brush(RED, 60.0).unjittered();
-    engine.process(ViewCommand::set_brush(field));
-    Gesture::new(Tool::Brush)
-        .drive(
-            &mut engine,
-            [
-                InputSample::at(shift + Vec2::new(-60.0, -60.0)),
-                InputSample::at(shift + Vec2::new(60.0, 60.0)),
-            ],
-        )
-        .end();
+    stroke_with(
+        &mut engine,
+        field,
+        &[
+            shift + Vec2::new(-60.0, -60.0),
+            shift + Vec2::new(60.0, 60.0),
+        ],
+    );
 
     // The smudge under test, through the same 4-tile corner.
     let mut smudge = brush(RED, 28.0).unjittered();
@@ -224,16 +219,14 @@ fn render_shifted_smudge(shift: Vec2) -> RgbaImage {
             ..Default::default()
         },
     );
-    engine.process(ViewCommand::set_brush(smudge));
-    Gesture::new(Tool::Brush)
-        .drive(
-            &mut engine,
-            [
-                InputSample::at(shift + Vec2::new(-50.0, -50.0)),
-                InputSample::at(shift + Vec2::new(50.0, 50.0)),
-            ],
-        )
-        .end();
+    stroke_with(
+        &mut engine,
+        smudge,
+        &[
+            shift + Vec2::new(-50.0, -50.0),
+            shift + Vec2::new(50.0, 50.0),
+        ],
+    );
 
     let center_px = Vec2::new(SIZE.width as f32 * 0.5, SIZE.height as f32 * 0.5);
     engine.process(ViewCommand::Pan { delta: -shift });
@@ -330,10 +323,7 @@ fn a_toothed_stroke_keeps_its_aprons() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let id = engine
-        .import_substrate(&stripe_substrate())
-        .expect("the stripes import");
-    engine.process(DocCommand::SetSubstrate(id));
+    on_substrate(&mut engine, &stripe_substrate());
     let effects = [
         BrushEffect::painted(RED),
         BrushEffect::wet_with(RED, BrushDynamics::default()),

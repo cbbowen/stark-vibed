@@ -10,7 +10,9 @@
 
 use crate::common::collab::{pair, pair_sized, snap, sync, sync_into};
 use crate::common::palette::{BLUE_VIVID, GREEN_SOFT, RED_VIVID};
-use crate::common::{Probe, assert_images, engine_or_skip, engine_or_skip_sized, paint};
+use crate::common::{
+    Probe, assert_images, engine_or_skip, engine_or_skip_sized, on_substrate, paint,
+};
 use stark_engine::Extent2;
 use stark_engine::command::DocCommand;
 use stark_engine::{Engine, RgbaImage};
@@ -243,7 +245,7 @@ fn undo_splices_past_a_rename() {
     assert_eq!(stats.fast_removes, 1);
     for e in [&mut a, &mut b] {
         let observed = e.observe();
-        let layer = observed.layers.iter().find(|l| l.id == LayerId::ROOT);
+        let layer = observed.layer(LayerId::ROOT);
         assert_eq!(
             layer.and_then(|l| l.name.as_deref()),
             Some("underpainting"),
@@ -295,10 +297,7 @@ fn undo_of_a_substrate_does_not_splice_past_the_strokes_it_toothed() {
 
     // Set before `b` joins, so the height map rides in the snapshot `b` joins from
     // and both peers tooth against the same bytes (§8, §12.4).
-    let rough = a
-        .import_substrate(&stark_testdata::assets::rough())
-        .expect("the rough height map imports");
-    a.process(DocCommand::SetSubstrate(rough));
+    on_substrate(&mut a, &stark_testdata::assets::rough());
     b.join_collaboration(&a.document_file(), ActorId(2))
         .expect("join a session this build can render");
 

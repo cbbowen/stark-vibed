@@ -484,13 +484,7 @@ fn a_filter_refuses_carried_layers() {
         at: Place::Top,
     });
     let obs = engine.observe();
-    let carrier_of = |target: LayerId| {
-        obs.layers
-            .iter()
-            .find(|l| l.id == target)
-            .expect("layer projected")
-            .carrier
-    };
+    let carrier_of = |target: LayerId| obs.layer(target).expect("layer projected").carrier;
     assert_eq!(
         carrier_of(paint_layer),
         None,
@@ -534,9 +528,7 @@ fn the_reach_note_agrees_with_the_renderer() {
     let underlay_of = |engine: &Engine, id: LayerId| {
         engine
             .observe()
-            .layers
-            .iter()
-            .find(|l| l.id == id)
+            .layer(id)
             .expect("filter projected")
             .has_underlay
     };
@@ -597,11 +589,7 @@ fn a_filter_can_be_selected_but_takes_no_paint() {
 
     let obs = engine.observe();
     assert_eq!(obs.active_layer, id, "a filter can be the selected layer");
-    let info = obs
-        .layers
-        .iter()
-        .find(|l| l.id == id)
-        .expect("the filter is projected");
+    let info = obs.layer(id).expect("the filter is projected");
     assert!(!info.is_paintable(), "a filter takes no paint");
     assert_eq!(info.filter, Some(NEUTRAL), "the filter itself is projected");
 
@@ -692,7 +680,7 @@ fn dragging_a_filter_previews_without_logging() {
             // The projection reports the *previewed* filter, which is what keeps the
             // sliders and the canvas agreeing under the pointer.
             let obs = engine.observe();
-            let info = obs.layers.iter().find(|l| l.id == id).expect("projected");
+            let info = obs.layer(id).expect("projected");
             assert_eq!(info.filter, shown, "observe() should report the preview");
         },
         |_| {},
@@ -849,12 +837,7 @@ fn clipping_a_point_filter_changes_nothing() {
 
     engine.process(DocCommand::SetLayerClip(id, true));
     assert!(
-        engine
-            .observe()
-            .layers
-            .iter()
-            .find(|l| l.id == id)
-            .is_some_and(|l| l.clip),
+        engine.observe().layer(id).is_some_and(|l| l.clip),
         "state refused the clip, so the render below proves nothing",
     );
     assert_images(
@@ -1046,10 +1029,7 @@ fn a_filter_survives_save_and_load() {
         }),
     )));
     let before = engine.render_to_image();
-    let bytes = engine.save_bytes().expect("serialize");
-
-    let mut loaded = engine_or_skip().expect("adapter available (original built)");
-    loaded.load_bytes(&bytes).expect("deserialize + replay");
+    let mut loaded = reloaded(&engine);
     assert_images(
         &before,
         &loaded.render_to_image(),
@@ -1092,10 +1072,7 @@ fn a_filters_id_is_not_reused_after_a_reload() {
             filter: NEUTRAL,
         },
     );
-    let bytes = engine.save_bytes().expect("serialize");
-
-    let mut loaded = engine_or_skip().expect("adapter available (original built)");
-    loaded.load_bytes(&bytes).expect("deserialize + replay");
+    let mut loaded = reloaded(&engine);
     let existing = loaded.observe().layers.len();
     assert_eq!(existing, 2, "the filter came back with the log");
 

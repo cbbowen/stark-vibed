@@ -9,7 +9,7 @@ use stark_engine::command::{DocCommand, Edit, ViewCommand};
 use stark_engine::{Engine, EngineError};
 use stark_model::Srgb;
 use stark_model::document::LayerId;
-use stark_model::{ColorSpaceId, DocError};
+use stark_model::{ColorSpaceId, DocError, SubstrateId};
 
 pub const SIZE: Extent2 = Extent2 {
     width: 256,
@@ -154,6 +154,23 @@ pub fn on_blue(mut engine: Engine) -> Engine {
         BG.b as f32,
     ]))));
     engine
+}
+
+/// `engine`'s document saved and loaded into a fresh engine — the round trip a file
+/// makes. On the default substrate, which the load replaces anyway: the substrate is
+/// document state (§15.5), so it travels in the file.
+pub fn reloaded(engine: &Engine) -> Engine {
+    let bytes = engine.save_bytes().expect("serialize");
+    let mut loaded = engine_or_skip().expect("the adapter answered once already");
+    loaded.load_bytes(&bytes).expect("deserialize + replay");
+    loaded
+}
+
+/// Import `bytes` as a substrate and lay the document on it, returning its id.
+pub fn on_substrate(engine: &mut Engine, bytes: &[u8]) -> SubstrateId {
+    let id = engine.import_substrate(bytes).expect("substrate decodes");
+    engine.process(DocCommand::SetSubstrate(id));
+    id
 }
 
 /// Add a layer at the top of the document and return its id.

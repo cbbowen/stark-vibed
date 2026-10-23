@@ -20,8 +20,8 @@
 //! *every kind in the roster*, and asserts at the end that it did, which is a claim
 //! about coverage that no amount of folding makes on its own.
 //!
-//! That it covers *every* kind is `stark_testdata::vocabulary`'s claim rather than
-//! this file's: the run collects what it reached by slot and insists at the end on
+//! That it covers *every* kind is the model roster's claim (`ActionTag`, read through
+//! `stark_testdata::vocabulary`) rather than this file's: the run collects what it reached by slot and insists at the end on
 //! the whole roster, and the roster is held complete by an exhaustive match no new
 //! variant can compile past. Written out here as well as in the model's own suite,
 //! both copies can miss the same variant — see that module's note for what that

@@ -176,10 +176,6 @@ impl Selection {
         self.tiles.iter()
     }
 
-    pub fn tile_count(&self) -> usize {
-        self.tiles.size()
-    }
-
     /// Whether two selections are the same state, for the fold's audit (§12.6).
     ///
     /// **Written as a destructuring `let`** so that a new field stops it compiling

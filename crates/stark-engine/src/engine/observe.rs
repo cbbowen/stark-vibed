@@ -303,6 +303,19 @@ pub struct ObservableState {
     pub gpu_failure: Option<Arc<crate::error::DeviceFailure>>,
 }
 
+impl ObservableState {
+    /// The layer `id` names, if the document holds one.
+    pub fn layer(&self, id: LayerId) -> Option<&LayerInfo> {
+        self.layers.iter().find(|l| l.id == id)
+    }
+
+    /// The selected layer — [`active_layer`](Self::active_layer)'s row, if it names
+    /// one.
+    pub fn active(&self) -> Option<&LayerInfo> {
+        self.layer(self.active_layer)
+    }
+}
+
 impl Engine {
     /// What every projection off `shown` is keyed on, read in one place so the two
     /// below cannot come to disagree about which counters say `shown` moved — see

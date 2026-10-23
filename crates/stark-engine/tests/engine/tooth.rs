@@ -440,10 +440,7 @@ fn both_paths_bite_the_same_substrate_texel() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let id = engine
-        .import_substrate(&stripe_substrate())
-        .expect("the stripes import");
-    engine.process(DocCommand::SetSubstrate(id));
+    on_substrate(&mut engine, &stripe_substrate());
     let xs = -100..100;
     let mut lay = |effect| {
         stroke_with(

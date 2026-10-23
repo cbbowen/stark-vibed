@@ -2180,63 +2180,6 @@ fn a_wet_deposit_never_stores_an_opacity_over_one() {
     );
 }
 
-/// Every tile of `layer` on `a` and `b`, compared **bitwise** lane by lane: `None`
-/// when they agree, else how many lanes differ, the largest difference and where.
-fn tiles_differ(
-    a: &stark_engine::Engine,
-    b: &stark_engine::Engine,
-    layer: LayerId,
-) -> Option<String> {
-    let keys = |e: &stark_engine::Engine| -> Vec<stark_model::geom::TileCoord> {
-        let mut k = layer_tiles(e, layer);
-        k.sort();
-        k
-    };
-    let (ka, kb) = (keys(a), keys(b));
-    if ka != kb {
-        return Some(format!(
-            "tile sets differ: {} against {}",
-            ka.len(),
-            kb.len()
-        ));
-    }
-    // (lanes differing, worst |Δ|, where: tile, channel, lane index)
-    let mut diff = (0usize, 0.0f32, None);
-    for c in &ka {
-        let (ta, tb) = (
-            a.tile_channels(layer, *c).expect("listed"),
-            b.tile_channels(layer, *c).expect("listed"),
-        );
-        let channels = [
-            ("color", ta.color, tb.color),
-            ("height", ta.height, tb.height),
-            (
-                "resid",
-                ta.resid.unwrap_or_default(),
-                tb.resid.unwrap_or_default(),
-            ),
-        ];
-        for (name, la, lb) in channels {
-            for (i, (x, y)) in la.iter().zip(&lb).enumerate() {
-                if x.to_bits() != y.to_bits() {
-                    diff.0 += 1;
-                    let d = (x - y).abs();
-                    if diff.2.is_none() || d > diff.1 {
-                        diff = (diff.0, d, Some((*c, name, i)));
-                    }
-                }
-            }
-        }
-    }
-    let (n, worst, at) = diff;
-    at.map(|(c, name, i)| {
-        format!(
-            "{n} lanes differ over {} tiles, worst {worst:e} in {name}[{i}] of {c:?}",
-            ka.len()
-        )
-    })
-}
-
 /// A wet stroke drawn live **near the canvas origin**, with fast commit off so its
 /// commit renders it whole, lands bit for bit what a fresh engine replaying the record
 /// lands (§1.3, §12.1). Near the origin a sweep's region-relative start
@@ -2291,10 +2234,7 @@ fn a_wet_stroke_near_the_origin_replays_bit_for_bit() {
         "the commit took the preview's tiles with fast commit off"
     );
 
-    let mut replayed = engine_or_skip().expect("the adapter answered once already");
-    replayed
-        .load_bytes(&live.save_bytes().expect("save"))
-        .expect("load + replay");
+    let replayed = reloaded(&live);
     if let Some(diff) = tiles_differ(&live, &replayed, layer) {
         panic!("the committed wet stroke and its replay disagree: {diff}");
     }

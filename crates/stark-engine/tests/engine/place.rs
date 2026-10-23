@@ -161,11 +161,7 @@ fn the_placed_layer_is_named_and_is_the_paint_target() {
     };
     place(&mut engine);
     let obs = engine.observe();
-    let layer = obs
-        .layers
-        .iter()
-        .find(|l| l.id == obs.active_layer)
-        .expect("the placed layer is the active one");
+    let layer = obs.active().expect("the placed layer is the active one");
     assert_eq!(layer.name.as_deref(), Some("swatch.png"));
     assert!(
         layer.matte.is_none() && layer.filter.is_none(),
@@ -272,11 +268,7 @@ fn a_placement_onto_a_held_id_is_refused() {
     let mut loaded = engine_or_skip_blue().expect("adapter available (original built)");
     loaded.load_document(&file).expect("deserialize + replay");
     let obs = loaded.observe();
-    let layer = obs
-        .layers
-        .iter()
-        .find(|l| l.id == id)
-        .expect("the placed layer");
+    let layer = obs.layer(id).expect("the placed layer");
     assert_eq!(
         layer.name.as_deref(),
         Some("swatch.png"),
@@ -317,10 +309,7 @@ fn a_placed_image_survives_a_save_and_reload() {
         &[Vec2::new(-40.0, 40.0), Vec2::new(40.0, -40.0)],
     );
     let before = original.render_to_image();
-    let bytes = original.save_bytes().expect("serialize");
-
-    let mut loaded = engine_or_skip_blue().expect("adapter available (original built)");
-    loaded.load_bytes(&bytes).expect("deserialize + replay");
+    let mut loaded = reloaded(&original);
 
     assert_images(
         &before,

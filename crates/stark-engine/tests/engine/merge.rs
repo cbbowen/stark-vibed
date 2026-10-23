@@ -57,7 +57,7 @@ fn paint_pale(engine: &mut Engine, radius: f32, points: &[Vec2]) {
 const AWAY: &[Vec2] = &[Vec2::new(-100.0, -90.0), Vec2::new(-60.0, -90.0)];
 
 fn info(engine: &Engine, id: LayerId) -> Option<LayerInfo> {
-    engine.observe().layers.iter().find(|l| l.id == id).cloned()
+    engine.observe().layer(id).cloned()
 }
 
 /// What the panel would offer on this row: the layer it merges down onto.
@@ -839,9 +839,7 @@ fn merging_a_neutral_filter_is_exact() {
     // fresh number for it anyway.
     let rev = |e: &stark_engine::Engine| {
         e.observe()
-            .layers
-            .iter()
-            .find(|l| l.id == ROOT)
+            .layer(ROOT)
             .expect("the destination is in the roster")
             .content_revision
     };

@@ -296,6 +296,63 @@ pub fn layer_tiles(engine: &Engine, layer: LayerId) -> Vec<stark_model::geom::Ti
         .unwrap_or_default()
 }
 
+/// Every tile of `layer` on `a` and `b`, compared **bitwise** lane by lane: `None`
+/// when they agree, else how many lanes differ, the largest difference and where. A
+/// residual one side holds and the other does not is a difference too.
+pub fn tiles_differ(a: &Engine, b: &Engine, layer: LayerId) -> Option<String> {
+    let keys = |e: &Engine| -> Vec<stark_model::geom::TileCoord> {
+        let mut k = layer_tiles(e, layer);
+        k.sort();
+        k
+    };
+    let (ka, kb) = (keys(a), keys(b));
+    if ka != kb {
+        return Some(format!(
+            "tile sets differ: {} against {}",
+            ka.len(),
+            kb.len()
+        ));
+    }
+    // (lanes differing, worst |Δ|, where: tile, channel, lane index)
+    let mut diff = (0usize, 0.0f32, None);
+    for c in &ka {
+        let (ta, tb) = (
+            a.tile_channels(layer, *c).expect("listed"),
+            b.tile_channels(layer, *c).expect("listed"),
+        );
+        if ta.resid.is_some() != tb.resid.is_some() {
+            return Some(format!("one side of {c:?} has a residual, the other none"));
+        }
+        let channels = [
+            ("color", ta.color, tb.color),
+            ("height", ta.height, tb.height),
+            (
+                "resid",
+                ta.resid.unwrap_or_default(),
+                tb.resid.unwrap_or_default(),
+            ),
+        ];
+        for (name, la, lb) in channels {
+            for (i, (x, y)) in la.iter().zip(&lb).enumerate() {
+                if x.to_bits() != y.to_bits() {
+                    diff.0 += 1;
+                    let d = (x - y).abs();
+                    if diff.2.is_none() || d > diff.1 {
+                        diff = (diff.0, d, Some((*c, name, i)));
+                    }
+                }
+            }
+        }
+    }
+    let (n, worst, at) = diff;
+    at.map(|(c, name, i)| {
+        format!(
+            "{n} lanes differ over {} tiles, worst {worst:e} in {name}[{i}] of {c:?}",
+            ka.len()
+        )
+    })
+}
+
 /// One straight run along `y = 0` from `−half` to `+half`, delivered coarsely or
 /// finely, folded whole, measured, and taken back off the canvas.
 ///

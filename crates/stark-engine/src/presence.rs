@@ -603,12 +603,7 @@ impl GestureRx {
 
     /// The live stroke being reassembled, if that is what this peer is drawing.
     pub(crate) fn live_stroke(&self) -> Option<&StrokeRecord> {
-        match self {
-            Self::Idle | Self::Region { .. } | Self::Stroke { assembly: None, .. } => None,
-            Self::Stroke {
-                assembly: Some(a), ..
-            } => Some(&a.record),
-        }
+        self.assembly().map(|a| &a.record)
     }
 
     /// How many leading control points the sender has declared final. Conservative:
@@ -617,22 +612,23 @@ impl GestureRx {
     /// [`frozen_spans`](Self::frozen_spans) instead.
     #[cfg(test)]
     pub(crate) fn frozen(&self) -> usize {
-        match self {
-            Self::Idle | Self::Region { .. } | Self::Stroke { assembly: None, .. } => 0,
-            Self::Stroke {
-                assembly: Some(a), ..
-            } => a.frozen,
-        }
+        self.assembly().map_or(0, |a| a.frozen)
     }
 
     /// How many spans of the reassembled stroke are settled, so the preview can
     /// repaint only the tail (§6.2, §17.6).
     pub(crate) fn frozen_spans(&self) -> usize {
+        self.assembly()
+            .map_or(0, |a| frozen_spans_for(a.frozen, a.record.path.len()))
+    }
+
+    /// The stroke being reassembled, if that is what this peer is drawing — the one
+    /// answer the three above read, with no wildcard arm, so a new gesture kind has
+    /// to say whether it is one.
+    fn assembly(&self) -> Option<&Assembly> {
         match self {
-            Self::Idle | Self::Region { .. } | Self::Stroke { assembly: None, .. } => 0,
-            Self::Stroke {
-                assembly: Some(a), ..
-            } => frozen_spans_for(a.frozen, a.record.path.len()),
+            Self::Idle | Self::Region { .. } => None,
+            Self::Stroke { assembly, .. } => assembly.as_ref(),
         }
     }
 

@@ -23,11 +23,11 @@
 use stark_engine::Engine;
 use stark_engine::Extent2;
 use stark_engine::command::Tool;
-use stark_engine::command::{DocCommand, InputSample, ViewCommand};
+use stark_engine::command::{InputSample, ViewCommand};
 use stark_model::document::{BrushParams, BrushShape, ModSource, Modulation, OrientationSource};
 use stark_model::geom::Vec2;
 
-use super::{SIZE, TestBrush, brush, engine_or_skip_sized, replay_with};
+use super::{SIZE, TestBrush, brush, engine_or_skip_sized, on_substrate, replay_with};
 
 // Not the palette's: every corpus golden was blessed on this red (§9).
 const RED: [f32; 3] = [0.86, 0.16, 0.12];
@@ -256,10 +256,7 @@ fn undercoat(engine: &mut Engine, at: Vec2) {
 /// `substrate_strength` defaults to 0, which leaves the relief there for paint to sit in
 /// but keeps the light from embossing it — so a case about the grain has to ask.
 fn linen_substrate(engine: &mut Engine) {
-    let linen = engine
-        .import_substrate(&stark_testdata::assets::linen())
-        .expect("the linen height map imports");
-    engine.process(DocCommand::SetSubstrate(linen));
+    on_substrate(engine, &stark_testdata::assets::linen());
     engine.process(ViewCommand::SetMediaParams(stark_engine::MediaParams {
         substrate_strength: 0.6,
         ..Default::default()

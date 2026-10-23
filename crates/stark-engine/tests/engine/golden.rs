@@ -11,9 +11,8 @@
 
 use crate::common::palette::{GREEN, RED};
 use crate::common::*;
-use stark_engine::command::Tool;
 
-use stark_engine::command::{DocCommand, InputSample, ViewCommand};
+use stark_engine::command::{DocCommand, ViewCommand};
 #[cfg(feature = "mixbox")]
 use stark_model::ColorSpaceId;
 use stark_model::document::{BrushDynamics, BrushEffect, BrushParams, BrushShape, PaintEffect};
@@ -130,18 +129,12 @@ fn golden_bristle_stroke() {
     let mut brush = brush(RED, 70.0);
     brush.shape = BrushShape::Stamp(id);
     brush.drain = 0.0;
-    engine.process(ViewCommand::set_brush(brush));
-
     // A horizontal stroke; the worn-bristle mask should break up its coverage.
-    Gesture::new(Tool::Brush)
-        .drive(
-            &mut engine,
-            [
-                InputSample::at(Vec2::new(-90.0, 0.0)),
-                InputSample::at(Vec2::new(90.0, 0.0)),
-            ],
-        )
-        .end();
+    stroke_with(
+        &mut engine,
+        brush,
+        &[Vec2::new(-90.0, 0.0), Vec2::new(90.0, 0.0)],
+    );
 
     let img = engine.render_to_image();
     assert_golden("bristle_stroke", &img, 6);
@@ -158,10 +151,7 @@ fn golden_canvas_substrate() {
     // linen bytes, so they fall back to the flat builtin and test orthogonally. The
     // substrate bytes are read from disk and registered (the engine embeds none — the
     // frontend provides them at runtime).
-    let linen = engine
-        .import_substrate(&stark_testdata::assets::linen())
-        .expect("the linen height map imports");
-    engine.process(DocCommand::SetSubstrate(linen));
+    on_substrate(&mut engine, &stark_testdata::assets::linen());
     // Turn the substrate up: `substrate_strength` defaults to 0, which leaves the relief
     // there for paint to sit in but keeps the light from embossing it. This golden is
     // about the embossing, so it has to ask for it.
@@ -172,16 +162,11 @@ fn golden_canvas_substrate() {
     let mut brush = brush(RED, 60.0);
     // Per radius (§6.2): 0.3 over a 60px tip is the 0.005 per canvas px this was.
     brush.drain = 0.3;
-    engine.process(ViewCommand::set_brush(brush));
-    Gesture::new(Tool::Brush)
-        .drive(
-            &mut engine,
-            [
-                InputSample::at(Vec2::new(-95.0, 0.0)),
-                InputSample::at(Vec2::new(95.0, 0.0)),
-            ],
-        )
-        .end();
+    stroke_with(
+        &mut engine,
+        brush,
+        &[Vec2::new(-95.0, 0.0), Vec2::new(95.0, 0.0)],
+    );
 
     let img = engine.render_to_image();
     assert_golden("linen_substrate", &img, 6);

@@ -61,7 +61,7 @@
 //! CLAUDE.md names twice. The `.config/nextest.toml` window is what it runs behind:
 //! ~5 s is a real adapter's number, and CI renders on lavapipe.
 
-use crate::common::{Probe, assert_images, engine_or_skip};
+use crate::common::{Probe, assert_images, engine_or_skip, on_substrate};
 use stark_engine::command::{DocCommand, Edit, InputCommand, PeerCommand};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::document::{
@@ -110,10 +110,7 @@ fn base(e: &mut Engine) -> DocumentFile {
     // test makes upwards of a thousand of them. The bundled rough map is 2.6 MB and
     // cost more than the rest of the table put together. What the tooth needs is
     // *relief*, not resolution.
-    let grain = e
-        .import_substrate(&grain())
-        .expect("the synthesized height map imports");
-    e.process(DocCommand::SetSubstrate(grain));
+    on_substrate(e, &grain());
     e.process(DocCommand::AddLayer {
         carrier: None,
         above: None,

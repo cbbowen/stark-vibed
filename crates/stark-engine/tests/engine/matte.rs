@@ -249,9 +249,7 @@ fn a_matte_can_be_selected_but_takes_no_paint() {
     assert!(
         !engine
             .observe()
-            .layers
-            .iter()
-            .find(|l| l.id == matte_id)
+            .layer(matte_id)
             .expect("matte")
             .is_paintable(),
         "and it must report that it takes no paint"
@@ -875,11 +873,7 @@ fn a_matte_carried_by_a_moved_group_rides_along() {
             .find(|l| l.carrier == Some(base) && want(l))
             .expect("the member is on the roster")
     };
-    assert_eq!(
-        o.layers.iter().find(|l| l.id == base).map(translation),
-        Some(D),
-        "the base moved"
-    );
+    assert_eq!(o.layer(base).map(translation), Some(D), "the base moved");
     assert_eq!(
         translation(of(|l| l.matte.is_some())),
         D,

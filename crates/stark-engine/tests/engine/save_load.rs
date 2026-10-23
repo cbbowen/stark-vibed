@@ -7,8 +7,7 @@
 use crate::common::palette::{GREEN_SOFT, RED_SOFT};
 use crate::common::*;
 use stark_engine::Engine;
-use stark_engine::command::Tool;
-use stark_engine::command::{DocCommand, InputSample, ViewCommand};
+use stark_engine::command::DocCommand;
 #[cfg(feature = "mixbox")]
 use stark_model::ColorSpaceId;
 use stark_model::SubstrateId;
@@ -49,10 +48,7 @@ fn save_load_roundtrip_is_lossless() {
     };
     paint_two(&mut original);
     let before = original.render_to_image();
-    let bytes = original.save_bytes().expect("serialize");
-
-    let mut loaded = engine_or_skip_blue().expect("adapter available (original built)");
-    loaded.load_bytes(&bytes).expect("deserialize + replay");
+    let mut loaded = reloaded(&original);
     let after = loaded.render_to_image();
 
     assert_images(
@@ -89,10 +85,7 @@ fn a_document_is_edited_only_once_it_moves_from_what_arrived() {
     );
     paint_two(&mut original);
     assert!(original.observe().edited, "two strokes are two edits");
-    let bytes = original.save_bytes().expect("serialize");
-
-    let mut loaded = engine_or_skip().expect("adapter available (original built)");
-    loaded.load_bytes(&bytes).expect("deserialize + replay");
+    let mut loaded = reloaded(&original);
     assert!(
         !loaded.observe().edited,
         "a document just loaded stands exactly as the file it came out of"
@@ -135,9 +128,7 @@ fn a_step_with_nowhere_to_go_leaves_the_document_unedited() {
     unmoved(&fresh, at, "a redo on a blank document");
 
     paint_two(&mut fresh);
-    let bytes = fresh.save_bytes().expect("serialize");
-    let mut loaded = engine_or_skip().expect("adapter available (original built)");
-    loaded.load_bytes(&bytes).expect("deserialize + replay");
+    let mut loaded = reloaded(&fresh);
     let at = loaded.observe().doc_revision;
     loaded.process(DocCommand::Redo);
     unmoved(&loaded, at, "a redo straight after a load");
@@ -258,24 +249,16 @@ fn brush_assets_survive_save_load() {
         .expect("import");
     let mut brush = brush(RED_SOFT, 60.0);
     brush.shape = BrushShape::Stamp(id);
-    original.process(ViewCommand::set_brush(brush));
-    Gesture::new(Tool::Brush)
-        .drive(
-            &mut original,
-            [
-                InputSample::at(Vec2::new(-70.0, 0.0)),
-                InputSample::at(Vec2::new(70.0, 0.0)),
-            ],
-        )
-        .end();
+    stroke_with(
+        &mut original,
+        brush,
+        &[Vec2::new(-70.0, 0.0), Vec2::new(70.0, 0.0)],
+    );
     let before = original.render_to_image();
-
-    let bytes = original.save_bytes().expect("serialize");
 
     // A fresh engine that never imported the brush must still reproduce it,
     // because the asset is bundled in the file.
-    let mut loaded = engine_or_skip_blue().expect("adapter");
-    loaded.load_bytes(&bytes).expect("load");
+    let mut loaded = reloaded(&original);
     let after = loaded.render_to_image();
 
     assert_images(
@@ -533,10 +516,7 @@ fn a_lean_file_replays_identically_once_its_content_is_resolved() {
         return;
     };
     let rough_bytes = stark_testdata::assets::rough();
-    let rough = original
-        .import_substrate(&rough_bytes)
-        .expect("import substrate");
-    original.process(DocCommand::SetSubstrate(rough));
+    let rough = on_substrate(&mut original, &rough_bytes);
     paint_toothed(&mut original);
     let expected = original.render_to_image();
 
@@ -597,10 +577,7 @@ fn a_complete_file_owes_nothing() {
     let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
-    let rough = engine
-        .import_substrate(&stark_testdata::assets::rough())
-        .expect("import substrate");
-    engine.process(DocCommand::SetSubstrate(rough));
+    on_substrate(&mut engine, &stark_testdata::assets::rough());
     paint_toothed(&mut engine);
 
     let file = stark_model::DocumentFile::from_bytes(&engine.save_bytes().expect("serialize"))
@@ -636,10 +613,7 @@ fn an_unsettled_lean_file_is_refused_and_changes_nothing() {
     let Some(mut original) = engine_or_skip_blue() else {
         return;
     };
-    let rough = original
-        .import_substrate(&stark_testdata::assets::rough())
-        .expect("import substrate");
-    original.process(DocCommand::SetSubstrate(rough));
+    let rough = on_substrate(&mut original, &stark_testdata::assets::rough());
     paint_toothed(&mut original);
     let SubstrateId::Image(substrate_id) = rough else {
         panic!("an imported substrate is an image");

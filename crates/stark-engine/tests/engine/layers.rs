@@ -194,10 +194,7 @@ fn a_duplicates_ids_are_not_reused_after_a_reload() {
     };
     two_layers(&mut engine);
     engine.process(DocCommand::DuplicateLayer(top(&engine)));
-    let bytes = engine.save_bytes().expect("serialize");
-
-    let mut loaded = engine_or_skip_blue().expect("adapter");
-    loaded.load_bytes(&bytes).expect("load");
+    let mut loaded = reloaded(&engine);
     let existing: Vec<LayerId> = loaded.observe().layers.iter().map(|l| l.id).collect();
     assert_eq!(existing.len(), 3, "the copy came back with the log");
 
@@ -253,9 +250,7 @@ fn undoing_an_add_leaves_the_brush_somewhere_it_can_paint() {
 fn name_of(engine: &Engine, id: LayerId) -> Option<String> {
     engine
         .observe()
-        .layers
-        .iter()
-        .find(|l| l.id == id)
+        .layer(id)
         .and_then(|l| l.name.as_ref().map(|n| n.to_string()))
 }
 
@@ -435,10 +430,7 @@ fn layer_names_survive_save_load() {
     };
     two_layers(&mut engine);
     engine.process(DocCommand::SetLayerName(top(&engine), Some("Sky".into())));
-    let bytes = engine.save_bytes().expect("serialize");
-
-    let mut loaded = engine_or_skip_blue().expect("adapter");
-    loaded.load_bytes(&bytes).expect("load");
+    let loaded = reloaded(&engine);
     assert_eq!(name_of(&loaded, top(&engine)), Some("Sky".to_string()));
     assert_eq!(name_of(&loaded, ROOT), None);
 }
@@ -446,22 +438,12 @@ fn layer_names_survive_save_load() {
 /// The opacity of a layer, off the projection the panel reads — which is the
 /// *previewed* document while a drag is in flight.
 fn opacity_of(engine: &Engine, id: LayerId) -> Option<f32> {
-    engine
-        .observe()
-        .layers
-        .iter()
-        .find(|l| l.id == id)
-        .map(|l| l.opacity)
+    engine.observe().layer(id).map(|l| l.opacity)
 }
 
 /// The blend mode of a layer, off the same projection and for the same reason.
 fn blend_of(engine: &Engine, id: LayerId) -> Option<BlendMode> {
-    engine
-        .observe()
-        .layers
-        .iter()
-        .find(|l| l.id == id)
-        .map(|l| l.blend)
+    engine.observe().layer(id).map(|l| l.blend)
 }
 
 /// `Radiance` at the bend a fresh layer wears — what a Bend drag opens on.
@@ -579,10 +561,7 @@ fn layer_state_survives_save_load() {
     two_layers(&mut engine);
     engine.process(DocCommand::Set(Edit::LayerOpacity(top(&engine), 0.4)));
     let before = engine.render_to_image();
-    let bytes = engine.save_bytes().expect("serialize");
-
-    let mut loaded = engine_or_skip_blue().expect("adapter");
-    loaded.load_bytes(&bytes).expect("load");
+    let mut loaded = reloaded(&engine);
     let after = loaded.render_to_image();
 
     assert_images(
@@ -661,9 +640,7 @@ fn a_moved_document_projects_a_fresh_layer_list() {
         "a preview commits nothing"
     );
     let shown = previewed
-        .layers
-        .iter()
-        .find(|l| l.id == top(&engine))
+        .layer(top(&engine))
         .expect("the top layer")
         .opacity;
     assert!(
@@ -786,14 +763,7 @@ fn content_revision_tracks_the_tiles_and_nothing_else() {
     };
     two_layers(&mut engine);
 
-    let key = |e: &Engine, id: LayerId| {
-        e.observe()
-            .layers
-            .iter()
-            .find(|l| l.id == id)
-            .expect("the layer")
-            .content_revision
-    };
+    let key = |e: &Engine, id: LayerId| e.observe().layer(id).expect("the layer").content_revision;
 
     let before = key(&engine, top(&engine));
     assert!(before.is_some(), "a paint layer has a content revision");
