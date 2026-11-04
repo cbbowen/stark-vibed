@@ -394,7 +394,7 @@ impl Canvas {
         // start on one color rather than the picker showing something the first stroke
         // would not lay (`stark_ui::color::INITIAL_COLOR`).
         let wheel = color::Wheel::default();
-        let mut brush = Brush::new(crate::assets::builtin_shapes(
+        let mut brush = Brush::new(stark_ui::presets::BuiltinShapes::from_desk(
             renderer.as_ref().map(|r| &r.desk),
         ));
         brush.tune.color = wheel.rgb(color::WHEEL_GAMUT);

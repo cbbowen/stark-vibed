@@ -68,6 +68,29 @@ pub struct BuiltinShapes {
     pub pencil: BrushShape,
 }
 
+impl BuiltinShapes {
+    /// The two stamps as `desk` has loaded them — **each on its own**: one that has not
+    /// arrived stands on the round tip, and does not take the other down with it.
+    ///
+    /// Read off the desk's index rather than the build-time id table, as the gallery's
+    /// cards are: a preset naming a stamp the engine never took would lay nothing a
+    /// press could wear. The web app used to resolve the pair all-or-nothing and the
+    /// native one each alone, so one missing stamp cost the web app both presets.
+    pub fn from_desk(desk: Option<&crate::desk::Desk>) -> Self {
+        Self::resolve(|name| desk.and_then(|d| d.builtin_shape(name)))
+    }
+
+    /// [`from_desk`](Self::from_desk) over any lookup from a catalog name to an id —
+    /// the rule without the engine, which is what lets a test reach it.
+    fn resolve(id_of: impl Fn(&str) -> Option<stark_model::AssetId>) -> Self {
+        let stamp = |name| id_of(name).map(BrushShape::Stamp).unwrap_or_default();
+        Self {
+            bristles: stamp(crate::assets::BRISTLES),
+            pencil: stamp(crate::assets::PENCIL),
+        }
+    }
+}
+
 /// The presets the app ships, with their one dependency on a running engine passed
 /// in: the two stamps, each a content id that cannot be written down until its bytes
 /// have been imported.
@@ -668,6 +691,15 @@ pub fn read_storage() -> Option<Vec<PresetEntry>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A stamp that has not loaded costs its own preset its shape and nothing else.
+    #[test]
+    fn a_missing_stamp_costs_only_its_own_preset() {
+        let id = stark_model::AssetId([7; 32]);
+        let shapes = BuiltinShapes::resolve(|name| (name == crate::assets::PENCIL).then_some(id));
+        assert_eq!(shapes.pencil, BrushShape::Stamp(id));
+        assert_eq!(shapes.bristles, BrushShape::default());
+    }
 
     /// The list as the app ships it, with the built-in stamps standing in — the
     /// one thing a live canvas would supply, and nothing here depends on which

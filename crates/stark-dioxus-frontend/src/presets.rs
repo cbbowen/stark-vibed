@@ -46,7 +46,6 @@ use dioxus::prelude::*;
 
 use stark_model::document::BrushShape;
 
-use crate::builtins;
 use crate::slots;
 use crate::state::{AppState, update_brush};
 use stark_ui::brush_config::{BrushConfig, Transient};
@@ -70,14 +69,8 @@ pub fn worn(state: AppState) -> (BrushConfig, Transient) {
 /// place **for this session only**, since nothing here is persisted; the next start
 /// resolves it properly rather than inheriting a bad one.
 fn default_presets(state: AppState) -> Vec<PresetEntry> {
-    presets::shipped(builtins_for(state).unwrap_or_default())
-}
-
-fn builtins_for(state: AppState) -> Option<BuiltinShapes> {
-    Some(BuiltinShapes {
-        bristles: builtins::shape(state, stark_ui::assets::BRISTLES)?,
-        pencil: builtins::shape(state, stark_ui::assets::PENCIL)?,
-    })
+    let renderer = state.renderer.peek();
+    presets::shipped(BuiltinShapes::from_desk(renderer.as_ref().map(|r| &r.desk)))
 }
 
 /// Read this browser's saved presets into the library. Called at app start, before

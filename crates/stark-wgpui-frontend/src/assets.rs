@@ -34,7 +34,6 @@
 //! shared.
 
 use stark_ui::assets::{self, Decoded};
-use stark_ui::desk::Desk;
 
 /// Every image this build ships, by the catalog path that names it.
 ///
@@ -83,24 +82,6 @@ pub fn shipped_shape_files() -> impl Iterator<Item = (&'static assets::Shipped, 
     assets::SHIPPED_SHAPES
         .iter()
         .filter_map(|row| Some((row, bundled(row.path?)?)))
-}
-
-/// The two stamps the shipped preset table needs, as `desk` loaded them.
-///
-/// Read off the desk's index rather than the build-time id table, as the gallery's
-/// cards are: a preset naming a stamp the engine never took would lay nothing a press
-/// could wear. One that did not load stands on the round tip, as the web app's do
-/// until their fetches land.
-pub fn builtin_shapes(desk: Option<&Desk>) -> stark_ui::presets::BuiltinShapes {
-    let stamp = |name: &str| {
-        desk.and_then(|d| d.builtin_shape(name))
-            .map(stark_model::document::BrushShape::Stamp)
-            .unwrap_or_default()
-    };
-    stark_ui::presets::BuiltinShapes {
-        bristles: stamp(assets::BRISTLES),
-        pencil: stamp(assets::PENCIL),
-    }
 }
 
 /// Decode an image file to straight RGBA8, no larger than `cap` on its longest edge.
