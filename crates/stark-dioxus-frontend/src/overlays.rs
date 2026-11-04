@@ -101,10 +101,7 @@ pub fn BrushCursor() -> Element {
     // supplies what only the engine knows (the zoom, the layer, the tool).
     let size = (state.transient)().size;
     let look = use_obs(state, |o| {
-        let paintable = o
-            .layers
-            .iter()
-            .any(|l| l.id == o.active_layer && l.is_paintable());
+        let paintable = stark_ui::layer_tree::active_paintable(o).is_some();
         (o.view.zoom, paintable, o.tool)
     });
     let Some(at) = (state.brush_cursor)() else {

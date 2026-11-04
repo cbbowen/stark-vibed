@@ -146,6 +146,28 @@ pub fn placement(o: Option<&ObservableState>) -> (Option<LayerId>, Option<LayerI
     (selected.and_then(|l| l.carrier), selected.map(|l| l.id))
 }
 
+/// The selected layer, if it takes paint ([`LayerInfo::is_paintable`]) — what a stroke
+/// lands on, and so what the canvas cursor promises.
+pub fn active_paintable(o: &ObservableState) -> Option<&LayerInfo> {
+    o.active().filter(|l| l.is_paintable())
+}
+
+/// The topmost layer that takes paint — where an act that needs a paint layer goes
+/// when the selected one is a matte or a filter, and what leaving a frame selects.
+pub fn topmost_paintable(o: &ObservableState) -> Option<&LayerInfo> {
+    o.layers.iter().rev().find(|l| l.is_paintable())
+}
+
+/// What an act on one paint layer acts on: the selected layer when it takes paint,
+/// otherwise the topmost that does (§15.2) — a matte refuses a transform or a gradient
+/// fill the same way it refuses a stroke, and the act goes to the paint rather than
+/// being refused. The transform's choice and the gradient fill's, stated once.
+pub fn paint_target(o: &ObservableState) -> Option<LayerId> {
+    active_paintable(o)
+        .or_else(|| topmost_paintable(o))
+        .map(|l| l.id)
+}
+
 /// What adding a paint layer sends, at [`placement`].
 pub fn add_layer(o: Option<&ObservableState>) -> DocCommand {
     let (carrier, above) = placement(o);

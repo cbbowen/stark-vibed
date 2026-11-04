@@ -210,19 +210,13 @@ pub fn pinned_layer(o: &ObservableState) -> Option<Hit> {
     if !o.has_selection {
         return None;
     }
-    Some(
-        match o
-            .layers
-            .iter()
-            .find(|l| l.id == o.active_layer && l.is_paintable())
-        {
-            Some(l) => Hit::Layer {
-                id: l.id,
-                base: l.translation,
-            },
-            None => Hit::Nothing,
+    Some(match crate::layer_tree::active_paintable(o) {
+        Some(l) => Hit::Layer {
+            id: l.id,
+            base: l.translation,
         },
-    )
+        None => Hit::Nothing,
+    })
 }
 
 /// What a float of `parent`'s selection left to carry: the child it made active, from

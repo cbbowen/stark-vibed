@@ -62,10 +62,7 @@ pub fn Canvas() -> Element {
     //   re-render it, which is precisely what subscribing to the whole projection
     //   was accidentally covering up.
     let look = use_obs(state, |o| {
-        let paintable = o
-            .layers
-            .iter()
-            .any(|l| l.id == o.active_layer && l.is_paintable());
+        let paintable = stark_ui::layer_tree::active_paintable(o).is_some();
         (paintable, o.tool)
     });
     let paintable = look().is_some_and(|(paintable, _)| paintable);

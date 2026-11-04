@@ -41,8 +41,8 @@ use stark_ui::commands::Command;
 use stark_ui::modes::{Composing, GradientAxisKind, GradientTarget, GradientUi};
 
 /// Enter the mode for a **fill of the selection**. The target layer is the
-/// transform's choice — the active layer if paintable, else the topmost
-/// paintable. An empty library does not refuse: the ramp is read live, so
+/// transform's choice (`layer_tree::paint_target`) — the active layer if paintable,
+/// else the topmost paintable. An empty library does not refuse: the ramp is read live, so
 /// nothing previews until the bar's well supplies one — and the well is where
 /// one is picked or traced.
 ///
@@ -53,13 +53,9 @@ pub fn begin_fill(state: AppState) {
     crate::modes::leave(state);
     let obs = state.obs.peek();
     let Some(o) = obs.as_ref() else { return };
-    let layer = o
-        .layers
-        .iter()
-        .find(|l| l.id == o.active_layer && l.is_paintable())
-        .or_else(|| o.layers.iter().rev().find(|l| l.is_paintable()))
-        .map(|l| l.id);
-    let Some(layer) = layer else { return };
+    let Some(layer) = stark_ui::layer_tree::paint_target(o) else {
+        return;
+    };
     drop(obs);
     // `enter`, which puts down whatever else was composing — the only way in
     // (`crate::modes`). No preview yet: there is no drag, so there is no axis.

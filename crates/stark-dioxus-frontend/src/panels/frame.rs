@@ -74,13 +74,11 @@ pub fn use_selected_frame(state: AppState) -> Memo<Option<(LayerInfo, MatteInfo)
 /// "Done" and `Command::FinishMode`'s Esc, since a frame is only "deselected" by
 /// selecting something else.
 pub fn done_composing(state: AppState) {
-    let next = state.obs.peek().as_ref().and_then(|o| {
-        o.layers
-            .iter()
-            .rev()
-            .find(|l| l.is_paintable())
-            .map(|l| l.id)
-    });
+    let next = state
+        .obs
+        .peek()
+        .as_ref()
+        .and_then(|o| stark_ui::layer_tree::topmost_paintable(o).map(|l| l.id));
     if let Some(id) = next {
         dispatch(state, PeerCommand::SetActiveLayer(id));
     }

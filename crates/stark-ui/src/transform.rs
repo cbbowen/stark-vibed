@@ -508,12 +508,7 @@ pub struct Entry {
 /// which holds the whole layer) the painted content's bounds; failing that, on an
 /// empty canvas, what is on screen.
 pub fn entry(o: &stark_engine::ObservableState) -> Option<Entry> {
-    let layer = o
-        .layers
-        .iter()
-        .find(|l| l.id == o.active_layer && l.is_paintable())
-        .or_else(|| o.layers.iter().rev().find(|l| l.is_paintable()))
-        .map(|l| l.id)?;
+    let layer = crate::layer_tree::paint_target(o)?;
     let hull = o
         .selection_hull
         .or_else(|| crate::bounds::content(o))
