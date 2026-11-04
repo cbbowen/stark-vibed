@@ -3444,7 +3444,7 @@ impl Canvas {
     /// the frame the drag lands.
     pub(crate) fn turn_mapping(
         &mut self,
-        shape: brush_editor::Shape,
+        shape: stark_ui::brush_editor::Shape,
         v: f32,
         cx: &mut Context<'_, Self>,
     ) {

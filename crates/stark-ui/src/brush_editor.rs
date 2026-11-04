@@ -391,6 +391,90 @@ pub const NOISE_KINDS: [NoiseKind; 4] = [
 /// The two pen axes, in the order the chips offer them.
 pub const SOURCES: [ModSource; 2] = [ModSource::Pressure, ModSource::Tilt];
 
+/// Which of an open pen mapping's two shape knobs a track is (§6.2): what survives
+/// no pen at all, and how the response bends between there and full.
+///
+/// A value rather than an accessor into a [`Modulation`], because a frontend's track
+/// outlives the borrow one would need: the mapping it writes into is resolved on the
+/// frame the drag lands, out of whichever row is open then.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, strum::VariantArray, strum::EnumCount)]
+pub enum Shape {
+    /// What survives a feather touch, or an upright pen — which is what makes a
+    /// tilt-driven brush usable with a mouse, since a mouse reports no tilt at all.
+    Floor,
+    /// Negative is late, positive early, 0 exactly linear.
+    Curve,
+}
+
+/// The two shape knobs, in the order the panel stacks them.
+pub const SHAPES: [Shape; Shape::COUNT] = variants();
+
+impl Shape {
+    /// Where this knob sits in [`SHAPES`].
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    /// The word on the track.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Floor => "At zero",
+            Self::Curve => "Response",
+        }
+    }
+
+    /// What the hover says it does — unlabelled at its ends, because the plot beside
+    /// it moves as the knob does, which says which way is which better than two words
+    /// either side of a narrow track.
+    pub fn tip(self) -> &'static str {
+        match self {
+            Self::Floor => {
+                "At zero \u{2014} how much of the value survives with no pen pressure or tilt \
+                 at all"
+            }
+            Self::Curve => {
+                "Response \u{2014} how the value comes in: late below zero, early above, \
+                 exactly linear at zero"
+            }
+        }
+    }
+
+    /// The ends of its track: the floor is a fraction of the base value, the response
+    /// is quoted −1..=1.
+    pub fn range(self) -> (f32, f32) {
+        match self {
+            Self::Floor => (0.0, 1.0),
+            Self::Curve => (-1.0, 1.0),
+        }
+    }
+
+    /// The step a track moves in.
+    pub fn step(self) -> f32 {
+        0.01
+    }
+
+    /// Where it stands in `mapping`.
+    pub fn get(self, mapping: &Modulation) -> f32 {
+        match self {
+            Self::Floor => mapping.floor,
+            Self::Curve => mapping.curve,
+        }
+    }
+
+    /// Write it into `mapping` — the one place either number is stored.
+    pub fn set(self, mapping: &mut Modulation, v: f32) {
+        match self {
+            Self::Floor => mapping.floor = v,
+            Self::Curve => mapping.curve = v,
+        }
+    }
+
+    /// How the number beside the track prints: enough digits to see a change.
+    pub fn readout(self, v: f32) -> String {
+        format!("{v:.2}")
+    }
+}
+
 /// How many points [`curve_points`] samples the response at.
 pub const CURVE_N: usize = 25;
 
@@ -1650,6 +1734,21 @@ mod tests {
         };
         for s in SOURCES {
             assert_eq!(source(s), s);
+        }
+    }
+
+    /// A shape knob reads back what it wrote, across its whole track.
+    #[test]
+    fn a_shape_knob_reads_back_what_it_wrote() {
+        for shape in SHAPES {
+            assert_eq!(SHAPES[shape.index()], shape);
+            let (lo, hi) = shape.range();
+            for v in [lo, (lo + hi) * 0.5, hi] {
+                let mut m = Modulation::default();
+                shape.set(&mut m, v);
+                assert_eq!(shape.get(&m), v, "{shape:?}");
+            }
+            assert!(shape.tip().starts_with(shape.label()), "{shape:?}");
         }
     }
 

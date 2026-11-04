@@ -107,31 +107,6 @@ pub enum Region {
     Source(ModRow, Option<ModSource>),
 }
 
-/// Which of an open mapping's two shape knobs a track is.
-///
-/// A value rather than a `&mut` accessor, because the track's subscription outlives the
-/// borrow it would need: the closure is `'static` and the mapping it writes into is
-/// resolved on the frame the drag lands, out of whichever row is open then.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Shape {
-    /// What survives a feather touch, or an upright pen — which is what makes a
-    /// tilt-driven brush usable with a mouse, since a mouse reports no tilt at all.
-    Floor,
-    /// Negative is late, positive early, 0 exactly linear.
-    Curve,
-}
-
-impl Shape {
-    /// Write it into `mapping`. The response arrives already mapped out of the track's
-    /// fraction, so this is the one place either number is stored.
-    pub fn set(self, mapping: &mut stark_model::document::Modulation, v: f32) {
-        match self {
-            Self::Floor => mapping.floor = v,
-            Self::Curve => mapping.curve = v,
-        }
-    }
-}
-
 /// Where each control was laid out, as of the last frame that painted ([`crate::regions`]).
 pub type Regions = crate::regions::Regions<Region>;
 
@@ -773,25 +748,16 @@ fn mod_row(
                     .flex()
                     .items_center()
                     .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(track(
-                                &controls.mod_floor,
+                    .child(div().flex_1().min_w_0().flex().flex_col().children(
+                        stark_ui::brush_editor::SHAPES.map(|shape| {
+                            track(
+                                controls.mod_shape(shape),
                                 None,
-                                "At zero",
-                                figure(mapping.floor),
-                            ))
-                            .child(track(
-                                &controls.mod_curve,
-                                None,
-                                "Response",
-                                figure(mapping.curve),
-                            )),
-                    )
+                                shape.label(),
+                                shape.readout(shape.get(&mapping)),
+                            )
+                        }),
+                    ))
                     .child(curve_plot(mapping))
             }))
     });

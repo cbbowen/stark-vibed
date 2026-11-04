@@ -25,7 +25,6 @@ use wgpui_component::slider::{SliderEvent, SliderState};
 use stark_ui::brush_editor::{self, Knob, ModRow, Shown};
 
 use crate::brush::Brush;
-use crate::brush_editor::Shape;
 use crate::canvas::Canvas;
 use crate::panel::KNOBS;
 use stark_ui::dial::Dial;
@@ -62,8 +61,7 @@ pub struct Controls {
     editor_knobs: [Entity<SliderState>; brush_editor::KNOBS.len()],
     /// The open mapping's two shape knobs — one pair rather than a pair per row,
     /// because only ever one mapping is open at a time (`crate::brush_editor::Editor`).
-    pub mod_floor: Entity<SliderState>,
-    pub mod_curve: Entity<SliderState>,
+    mod_shapes: [Entity<SliderState>; brush_editor::SHAPES.len()],
     _subscriptions: Vec<Subscription>,
 }
 
@@ -193,13 +191,18 @@ impl Controls {
                 },
             )
         });
-        let mod_floor = turns(cx, &mut subs, (0.0, 1.0), EDITOR_STEP, |this, v, cx| {
-            this.turn_mapping(Shape::Floor, v, cx);
-        });
-        // The response is quoted −1..=1 — late, linear, early — and the track is a
-        // fraction like every other here, so the view spends the one mapping.
-        let mod_curve = turns(cx, &mut subs, (0.0, 1.0), EDITOR_STEP, |this, v, cx| {
-            this.turn_mapping(Shape::Curve, v, cx);
+        // In the knobs' own units: their ranges are constants, so a track has no
+        // reason to be a fraction the view maps back.
+        let mod_shapes = brush_editor::SHAPES.map(|shape| {
+            turns(
+                cx,
+                &mut subs,
+                shape.range(),
+                shape.step(),
+                move |this, v, cx| {
+                    this.turn_mapping(shape, v, cx);
+                },
+            )
         });
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Find a command\u{2026}"));
         subs.push(cx.subscribe_in(
@@ -227,8 +230,7 @@ impl Controls {
             search,
             editor_mods,
             editor_knobs,
-            mod_floor,
-            mod_curve,
+            mod_shapes,
             _subscriptions: subs,
         }
     }
@@ -256,6 +258,11 @@ impl Controls {
     /// frame the dialog opened.
     pub fn editor_mod(&self, row: ModRow) -> &Entity<SliderState> {
         &self.editor_mods[row.index()]
+    }
+
+    /// The state behind one of the open mapping's two shape knobs.
+    pub fn mod_shape(&self, shape: brush_editor::Shape) -> &Entity<SliderState> {
+        &self.mod_shapes[shape.index()]
     }
 
     /// The state behind one of its plain ones.
@@ -336,8 +343,9 @@ impl Controls {
         // The shape knobs follow whichever mapping is open, so opening a second row's
         // shows that row's floor and response rather than the last one's.
         if let Some(mapping) = mapping {
-            settle(&self.mod_floor, mapping.floor, window, cx);
-            settle(&self.mod_curve, (mapping.curve + 1.0) * 0.5, window, cx);
+            for (shape, state) in brush_editor::SHAPES.iter().zip(&self.mod_shapes) {
+                settle(state, shape.get(&mapping), window, cx);
+            }
         }
         settle(&self.opacity, opacity, window, cx);
         let want = obs

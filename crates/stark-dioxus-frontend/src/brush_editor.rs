@@ -59,7 +59,7 @@ use crate::widgets::{AssetCard, AssetGallery, Choice, Face, Modal, Segmented, Sl
 use stark_engine::command::{DocCommand, Edit, GestureCommand};
 use stark_ui::brush_config::{BrushConfig, BrushEffectType, Transient};
 use stark_ui::brush_editor::{
-    self, ModRow, Row, SECTIONS, Section, Shown, TestStroke, noise_label, source_label,
+    self, ModRow, Row, SECTIONS, SHAPES, Section, Shown, TestStroke, noise_label, source_label,
 };
 use stark_ui::commands::Command;
 
@@ -552,24 +552,18 @@ fn mod_slider(
                     // them — the factor is what actually reaches the renderer, and a
                     // number pair for a curve is the one thing a picture reads better.
                     div { class: "mod-shape",
+                        // The floor and the response, off the shared table
+                        // (`stark_ui::brush_editor::Shape`) the native editor's are.
                         div { class: "mod-shape-knobs",
-                            // What survives a feather touch (or an upright pen). This
-                            // is what makes a tilt-driven brush usable with a mouse,
-                            // which reports no tilt at all.
-                            Slider { label: "At zero".to_string(), min: 0.0, max: 1.0, value: m.floor,
-                                oninput: move |v| edit(state, preview, move |b, _| {
-                                    if let Some(m) = row.slot(b) { m.floor = v; }
-                                }) }
-                            // Negative = late, positive = early; 0 is linear,
-                            // exactly. Unlabelled at its ends because the plot
-                            // beside it moves as the knob does, which says which
-                            // way is which better than two words either side of a
-                            // track this narrow.
-                            Slider { label: "Response".to_string(),
-                                min: -1.0, max: 1.0, value: m.curve,
-                                oninput: move |v| edit(state, preview, move |b, _| {
-                                    if let Some(m) = row.slot(b) { m.curve = v; }
-                                }) }
+                            for shape in SHAPES {
+                                Slider { key: "{shape:?}", label: shape.label(),
+                                    title: shape.tip(), min: shape.range().0,
+                                    max: shape.range().1, step: shape.step(),
+                                    value: shape.get(&m),
+                                    oninput: move |v| edit(state, preview, move |b, _| {
+                                        if let Some(m) = row.slot(b) { shape.set(m, v); }
+                                    }) }
+                            }
                         }
                         {curve_plot(m)}
                     }
