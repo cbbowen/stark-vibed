@@ -71,10 +71,10 @@ use stark_model::document::{Aperture, ChromaticAberration, ColorAdjust, Filter, 
 use stark_model::gradient::Gradient;
 use stark_ui::commands::Command;
 use stark_ui::filter::{
-    ANGLE_STEP, BLUR_KNOBS, COLOR_KNOBS, DEG, DIAL_AB, DIAL_CHROMA, DIAL_GRAB, DIAL_L, DIAL_PX,
-    DIAL_SCALE, FilterKnob, PAD_HANDLE, PAD_MID, PAD_PX, PAD_R, PAD_RINGS, SATURATION_STEP,
-    SPREAD_STEP, TINT_STEP, aperture_glyph, aperture_hint, aperture_knobs, dial_ab, dial_xy,
-    fmt_degrees, pad_radius, pad_spread, pad_xy, snapped, spectrum_stops,
+    BLUR_KNOBS, COLOR_KNOBS, DEG, DIAL_AB, DIAL_CHROMA, DIAL_L, DIAL_PX, DIAL_SCALE, DialGrab,
+    FilterKnob, PAD_HANDLE, PAD_MID, PAD_PX, PAD_R, PAD_RINGS, aperture_glyph, aperture_hint,
+    aperture_knobs, dial_drag, dial_grab, dial_rim, dial_xy, fmt_degrees, pad_drag, pad_radius,
+    pad_xy, spectrum_stops,
 };
 
 /// The run of shape buttons: which aperture the light is spread through (§21.12).
@@ -296,31 +296,6 @@ fn knob_rows<F: Copy + 'static>(
 /// `LazyLock` rather than a memo per mount, and selecting a filter costs no BMP.
 static DIAL_FIELD: LazyLock<String> = LazyLock::new(|| ab_field_data_url(DIAL_L, DIAL_AB));
 
-/// Which of the dial's two handles a drag has hold of.
-///
-/// Decided once, on pointer-down, and held for the whole gesture — so a rotation
-/// swung in past the centre does not become a translation halfway through, which is
-/// the one way a live hit test could rewrite a number the hand was not on.
-#[derive(Copy, Clone, PartialEq)]
-enum Grab {
-    /// The rim handle: its direction and its distance from the centre, which are the
-    /// hue and the saturation. Taken when the pointer comes down within [`DIAL_GRAB`]
-    /// of it — including when saturation is 0 and it sits *on* the centre, because
-    /// then it is the only way back out and the centre is still reachable everywhere
-    /// else in the field.
-    ///
-    /// `hold` is where the handle sat relative to the pointer that took it, carried
-    /// for the gesture so the first sample is the setting already held. Without it a
-    /// grab at the edge of [`DIAL_GRAB`] would fling the saturation by half a unit
-    /// before the hand had moved — a target has to be wider than the dot it takes,
-    /// and everything inside it has to mean *this one*, not *this position*.
-    Rim { hold: [f32; 2] },
-    /// Anywhere else in the field: the centre, which is the tint. Absolute rather than
-    /// held, and that is the difference in kind: the rim is a handle to grab, the
-    /// field is a place to put the grey.
-    Centre,
-}
-
 /// One pointer sample on the dial: the filter that sample means, previewed to the
 /// canvas and stashed for the settle — the same live-preview/log-once bargain the
 /// sliders make (§21.6), through the same [`Preview::settle`](crate::preview::Preview::settle).
@@ -329,45 +304,14 @@ fn drag_dial(
     id: LayerId,
     c: ColorAdjust,
     tuning: Signal<Option<(LayerId, Filter)>>,
-    grab: Grab,
+    grab: DialGrab,
     e: &Event<PointerData>,
 ) {
     let p = e.element_coordinates();
-    let at = dial_ab(p.x as f32, p.y as f32);
     let step = e.modifiers().contains(Modifiers::SHIFT);
-    let next = match grab {
-        // Absolute, not by delta: the pointer *is* where the grey goes. Which also
-        // makes a single click on the field a complete edit, the way a grading wheel
-        // behaves — and a click that lands on the setting already held is refused
-        // engine-side, so it costs no undo step (§21.6).
-        Grab::Centre => ColorAdjust {
-            tint: if step {
-                [snapped(at[0], TINT_STEP), snapped(at[1], TINT_STEP)]
-            } else {
-                at
-            },
-            ..c
-        },
-        Grab::Rim { hold } => {
-            let (dx, dy) = (at[0] + hold[0] - c.tint[0], at[1] + hold[1] - c.tint[1]);
-            let r = dx.hypot(dy);
-            // At the centre a direction does not exist and `atan2` would answer 0 —
-            // which would fling the hue back to red every time a drag crossed the
-            // middle on its way somewhere. Keep the angle the gesture already had and
-            // move the radius alone.
-            let hue = if r > 1e-4 { dy.atan2(dx) } else { c.hue };
-            let saturation = r / DIAL_CHROMA;
-            ColorAdjust {
-                hue: if step { snapped(hue, ANGLE_STEP) } else { hue },
-                saturation: if step {
-                    snapped(saturation, SATURATION_STEP)
-                } else {
-                    saturation
-                },
-                ..c
-            }
-        }
-    };
+    // A click that lands on the setting already held is refused engine-side, so it
+    // costs no undo step (§21.6).
+    let next = dial_drag(c, grab, (p.x as f32, p.y as f32), step);
     // Through the core's own funnel *before* it is shown, so the pointer cannot
     // preview a setting the commit would then clamp: at the stops the canvas, the
     // readout and the log all say the same number.
@@ -395,14 +339,11 @@ fn ChromaDial(id: LayerId, c: ColorAdjust, tuning: Signal<Option<(LayerId, Filte
     let state = use_context::<AppState>();
     // Which handle a drag has hold of, `None` between drags — the dial's own, so the
     // picture another kind of filter mounts in its place starts with nothing in hand.
-    let mut grabbed = use_signal(|| None::<Grab>);
+    let mut grabbed = use_signal(|| None::<DialGrab>);
     let (ox, oy) = dial_xy([0.0, 0.0]);
     let (cx, cy) = dial_xy(c.tint);
     let ring = c.saturation * DIAL_CHROMA * DIAL_SCALE;
-    let (hx, hy) = dial_xy([
-        c.tint[0] + c.saturation * DIAL_CHROMA * c.hue.cos(),
-        c.tint[1] + c.saturation * DIAL_CHROMA * c.hue.sin(),
-    ]);
+    let (hx, hy) = dial_xy(dial_rim(&c));
     // How far the centre may travel — a good deal less than the plane is drawn, since
     // the plane is drawn wide enough to hold the *rim* as well (see `DIAL_AB`). Shown
     // only while the centre is the thing being dragged: the rest of the time it is one
@@ -411,23 +352,13 @@ fn ChromaDial(id: LayerId, c: ColorAdjust, tuning: Signal<Option<(LayerId, Filte
     // stopped responding.
     let (tx, ty) = dial_xy([ColorAdjust::TINT.0, ColorAdjust::TINT.1]);
     let tspan = (ColorAdjust::TINT.1 - ColorAdjust::TINT.0) * DIAL_SCALE;
-    let bounding = grabbed() == Some(Grab::Centre);
+    let bounding = grabbed() == Some(DialGrab::Centre);
     // Which handle a pointer-down takes, decided against where the handle *is* on this
     // render — the closure is over this render's `c`, which is what makes the answer a
     // fact about the picture the user is looking at.
     let take = move |e: &Event<PointerData>| {
         let p = e.element_coordinates();
-        let (px, py) = (p.x as f32, p.y as f32);
-        if (px - hx).hypot(py - hy) > DIAL_GRAB {
-            return Grab::Centre;
-        }
-        let at = dial_ab(px, py);
-        Grab::Rim {
-            hold: [
-                c.tint[0] + c.saturation * DIAL_CHROMA * c.hue.cos() - at[0],
-                c.tint[1] + c.saturation * DIAL_CHROMA * c.hue.sin() - at[1],
-            ],
-        }
+        dial_grab(&c, p.x as f32, p.y as f32)
     };
     let commit = move |_| preview::FILTER.settle(state, tuning);
 
@@ -549,28 +480,8 @@ fn drag_fringe(
     e: &Event<PointerData>,
 ) {
     let p = e.element_coordinates();
-    let (dx, dy) = (p.x as f32 - PAD_MID, p.y as f32 - PAD_MID);
-    let r = dx.hypot(dy);
-    // At the centre a direction does not exist and `atan2` would answer 0, snapping the
-    // axis back to horizontal every time a drag crossed the middle. Keep the axis the
-    // gesture already had and move the spread alone — `drag_dial`'s hue does the same,
-    // and it is the same fact about polar coordinates.
-    let angle = if r > 1e-4 { dy.atan2(dx) } else { c.angle };
-    let spread = pad_spread(r);
     let step = e.modifiers().contains(Modifiers::SHIFT);
-    let next = Filter::Chromatic(ChromaticAberration {
-        spread: if step {
-            snapped(spread, SPREAD_STEP)
-        } else {
-            spread
-        },
-        angle: if step {
-            snapped(angle, ANGLE_STEP)
-        } else {
-            angle
-        },
-    })
-    .sanitized();
+    let next = Filter::Chromatic(pad_drag(c, (p.x as f32, p.y as f32), step)).sanitized();
     preview::FILTER.during(state, tuning, (id, next));
 }
 
@@ -596,7 +507,7 @@ fn FringePad(
     tuning: Signal<Option<(LayerId, Filter)>>,
 ) -> Element {
     let state = use_context::<AppState>();
-    // Whether the pad's one handle is in hand: a `bool` rather than a second [`Grab`],
+    // Whether the pad's one handle is in hand: a `bool` rather than a second [`DialGrab`],
     // because the pad has one thing to grab.
     let mut pulling = use_signal(|| false);
     let (bx, by) = pad_xy(c);

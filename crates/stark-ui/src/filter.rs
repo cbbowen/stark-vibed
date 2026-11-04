@@ -369,6 +369,99 @@ pub fn snapped(v: f32, step: f32) -> f32 {
     (v / step).round() * step
 }
 
+/// [`snapped`] when `step` (Shift is held), `v` as it is otherwise.
+fn snap_if(step: bool, v: f32, by: f32) -> f32 {
+    if step { snapped(v, by) } else { v }
+}
+
+/// A vector's length and direction, the direction `keep` where the vector has none.
+///
+/// At the centre a direction does not exist and `atan2` would answer 0 — which would
+/// fling a hue back to red, or an axis back to horizontal, every time a drag crossed
+/// the middle on its way somewhere. Both pictures keep the angle the gesture already
+/// had and move the radius alone; it is one fact about polar coordinates.
+fn polar(dx: f32, dy: f32, keep: f32) -> (f32, f32) {
+    let r = dx.hypot(dy);
+    (r, if r > 1e-4 { dy.atan2(dx) } else { keep })
+}
+
+/// What a press on the chroma dial takes hold of.
+///
+/// Decided once, on pointer-down ([`dial_grab`]), and held for the whole gesture — so a
+/// rotation swung in past the centre does not become a translation halfway through,
+/// which is the one way a live hit test could rewrite a number the hand was not on.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum DialGrab {
+    /// The rim handle: its direction and its distance from the centre, which are the
+    /// hue and the saturation. Taken when the pointer comes down within [`DIAL_GRAB`]
+    /// of it — including when saturation is 0 and it sits *on* the centre, because
+    /// then it is the only way back out and the centre is still reachable everywhere
+    /// else in the field.
+    ///
+    /// `hold` is where the handle sat relative to the pointer that took it, carried
+    /// for the gesture so the first sample is the setting already held. Without it a
+    /// grab at the edge of [`DIAL_GRAB`] would fling the saturation by half a unit
+    /// before the hand had moved — a target has to be wider than the dot it takes,
+    /// and everything inside it has to mean *this one*, not *this position*.
+    Rim { hold: [f32; 2] },
+    /// Anywhere else in the field: the centre, which is the tint. Absolute rather than
+    /// held, and that is the difference in kind: the rim is a handle to grab, the
+    /// field is a place to put the grey.
+    Centre,
+}
+
+/// Where `c` sends red — the rim handle — in Oklab `(a, b)`.
+pub fn dial_rim(c: &ColorAdjust) -> [f32; 2] {
+    [
+        c.tint[0] + c.saturation * DIAL_CHROMA * c.hue.cos(),
+        c.tint[1] + c.saturation * DIAL_CHROMA * c.hue.sin(),
+    ]
+}
+
+/// What a press at `(x, y)` in the dial's box takes, against where the rim handle is
+/// drawn for `c`.
+pub fn dial_grab(c: &ColorAdjust, x: f32, y: f32) -> DialGrab {
+    let rim = dial_rim(c);
+    let (hx, hy) = dial_xy(rim);
+    if (x - hx).hypot(y - hy) > DIAL_GRAB {
+        return DialGrab::Centre;
+    }
+    let at = dial_ab(x, y);
+    DialGrab::Rim {
+        hold: [rim[0] - at[0], rim[1] - at[1]],
+    }
+}
+
+/// The setting one pointer sample at `(x, y)` in the dial's box means, for a gesture
+/// that took `grab` of `c`; `step` snaps (Shift). Unsanitized, for [`dial_ab`]'s reason.
+pub fn dial_drag(c: ColorAdjust, grab: DialGrab, (x, y): (f32, f32), step: bool) -> ColorAdjust {
+    let at = dial_ab(x, y);
+    match grab {
+        // Absolute, not by delta: the pointer *is* where the grey goes. Which also
+        // makes a single click on the field a complete edit, the way a grading wheel
+        // behaves.
+        DialGrab::Centre => ColorAdjust {
+            tint: [
+                snap_if(step, at[0], TINT_STEP),
+                snap_if(step, at[1], TINT_STEP),
+            ],
+            ..c
+        },
+        DialGrab::Rim { hold } => {
+            let (r, hue) = polar(
+                at[0] + hold[0] - c.tint[0],
+                at[1] + hold[1] - c.tint[1],
+                c.hue,
+            );
+            ColorAdjust {
+                hue: snap_if(step, hue, ANGLE_STEP),
+                saturation: snap_if(step, r / DIAL_CHROMA, SATURATION_STEP),
+                ..c
+            }
+        }
+    }
+}
+
 // —— the dispersion pad ——————————————————————————————————————————————————————
 
 /// The pad's field, on screen (px) — the dial's size, because the two are the same bar's
@@ -433,6 +526,17 @@ pub fn pad_xy(c: ChromaticAberration) -> (f32, f32) {
     (PAD_MID + r * c.angle.cos(), PAD_MID + r * c.angle.sin())
 }
 
+/// The setting a pointer at `(x, y)` in the pad means: the pointer *is* the blue end,
+/// so a single click anywhere in the field is a complete edit. `step` snaps (Shift);
+/// unsanitized, for [`dial_ab`]'s reason.
+pub fn pad_drag(c: ChromaticAberration, (x, y): (f32, f32), step: bool) -> ChromaticAberration {
+    let (r, angle) = polar(x - PAD_MID, y - PAD_MID, c.angle);
+    ChromaticAberration {
+        spread: snap_if(step, pad_spread(r), SPREAD_STEP),
+        angle: snap_if(step, angle, ANGLE_STEP),
+    }
+}
+
 /// The dispersion spectrum as gradient stops: `(offset, display sRGB)` from the red end at
 /// 0 to the blue end at 1.
 ///
@@ -459,6 +563,61 @@ pub fn spectrum_stops() -> [(f32, [u8; 3]); PAD_STOPS] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A press on the rim handle takes it *where it is*: the first sample of the drag,
+    /// at the press itself, is the setting already held — however far inside
+    /// [`DIAL_GRAB`] the press landed.
+    #[test]
+    fn taking_the_rim_moves_nothing_until_the_hand_does() {
+        let c = ColorAdjust {
+            hue: 1.0,
+            saturation: 0.8,
+            tint: [0.01, -0.02],
+            ..ColorAdjust::default()
+        };
+        let (hx, hy) = dial_xy(dial_rim(&c));
+        let press = (hx + 4.0, hy - 3.0);
+        let grab = dial_grab(&c, press.0, press.1);
+        assert!(matches!(grab, DialGrab::Rim { .. }));
+        let next = dial_drag(c, grab, press, false);
+        assert!((next.hue - c.hue).abs() < 1e-4, "{} vs {}", next.hue, c.hue);
+        assert!((next.saturation - c.saturation).abs() < 1e-4);
+        assert_eq!(next.tint, c.tint);
+        // Far from the handle, the press is the centre's.
+        assert_eq!(dial_grab(&c, 0.0, 0.0), DialGrab::Centre);
+    }
+
+    /// Crossing the centre keeps the angle the gesture had, on both pictures.
+    #[test]
+    fn the_centre_keeps_the_angle() {
+        let c = ColorAdjust {
+            hue: 2.0,
+            ..ColorAdjust::default()
+        };
+        let centre = dial_xy(c.tint);
+        let next = dial_drag(c, DialGrab::Rim { hold: [0.0, 0.0] }, centre, false);
+        assert_eq!((next.hue, next.saturation), (2.0, 0.0));
+        let fringe = ChromaticAberration {
+            spread: 4.0,
+            angle: 0.7,
+        };
+        let next = pad_drag(fringe, (PAD_MID, PAD_MID), false);
+        assert_eq!((next.spread, next.angle), (0.0, 0.7));
+    }
+
+    /// The pad's handle, pressed where it is drawn, reads back as the setting it shows.
+    #[test]
+    fn the_pad_reads_back_its_own_handle() {
+        let c = ChromaticAberration {
+            spread: 20.0,
+            angle: -0.5,
+        };
+        let next = pad_drag(c, pad_xy(c), false);
+        assert!((next.spread - c.spread).abs() < 1e-3);
+        assert!((next.angle - c.angle).abs() < 1e-4);
+        let stepped = pad_drag(c, pad_xy(c), true);
+        assert_eq!(stepped.spread, 20.0);
+    }
 
     /// How close two px positions or two Oklab coordinates have to be to count as the
     /// same point. Generous, because what is pinned is that the two halves of a mapping

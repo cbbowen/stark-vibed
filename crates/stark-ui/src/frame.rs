@@ -1,8 +1,9 @@
 //! The frame bar's presets (§15.7): the aspects a frame is reshaped to, and the paint a
 //! new matte arrives in.
 //!
-//! The bar, the on-canvas handles and the acts that add a matte are each frontend's.
-//! What is here is what two bars would otherwise spell twice — and a preset list that
+//! The bar, the on-canvas handles and the acts that add a matte are each frontend's —
+//! all but what a handle's drag *does* to the rect ([`Grip::apply`]), which is
+//! arithmetic. What is here is what two bars would otherwise spell twice — and a preset list that
 //! differed between them would read one frame as 16:9 in one app and "Custom" in the
 //! other.
 
@@ -55,9 +56,114 @@ pub fn to_aspect(min: Vec2, max: Vec2, aspect: f32) -> (Vec2, Vec2) {
     (center - half, center + half)
 }
 
+/// Which part of the frame a drag has hold of. The eight edge/corner handles plus
+/// the frame itself (moved by its edges, never its interior — the interior is
+/// where you paint).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Grip {
+    N,
+    S,
+    E,
+    W,
+    Nw,
+    Ne,
+    Sw,
+    Se,
+    Move,
+}
+
+impl Grip {
+    /// Every grip, including the move pill. `Move` is a small handle sitting
+    /// *outside* the top edge rather than the frame's interior: dragging the
+    /// inside is what every other crop tool uses to move a frame, and it is the
+    /// one thing this frame cannot borrow, because the inside is where you paint.
+    pub const ALL: [Grip; 9] = [
+        Grip::N,
+        Grip::S,
+        Grip::E,
+        Grip::W,
+        Grip::Nw,
+        Grip::Ne,
+        Grip::Sw,
+        Grip::Se,
+        Grip::Move,
+    ];
+
+    /// Apply a canvas-space pointer delta to the rect this grip was pressed on.
+    /// Edges move one side, corners two, `Move` translates. The rect is normalized
+    /// afterwards, so dragging a side past its opposite flips rather than inverts.
+    pub fn apply(self, (min, max): (Vec2, Vec2), d: Vec2) -> (Vec2, Vec2) {
+        let (mut lo, mut hi) = (min, max);
+        let (north, south) = (
+            matches!(self, Grip::N | Grip::Nw | Grip::Ne),
+            matches!(self, Grip::S | Grip::Sw | Grip::Se),
+        );
+        let (west, east) = (
+            matches!(self, Grip::W | Grip::Nw | Grip::Sw),
+            matches!(self, Grip::E | Grip::Ne | Grip::Se),
+        );
+        if north {
+            lo.y += d.y;
+        }
+        if south {
+            hi.y += d.y;
+        }
+        if west {
+            lo.x += d.x;
+        }
+        if east {
+            hi.x += d.x;
+        }
+        if self == Grip::Move {
+            lo += d;
+            hi += d;
+        }
+        (
+            Vec2::new(lo.x.min(hi.x), lo.y.min(hi.y)),
+            Vec2::new(lo.x.max(hi.x), lo.y.max(hi.y)),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const RECT: (Vec2, Vec2) = (Vec2::new(0.0, 0.0), Vec2::new(100.0, 50.0));
+
+    /// An edge moves its own side and nothing else; a corner its two; `Move` all four.
+    #[test]
+    fn a_grip_moves_the_sides_it_names() {
+        let d = Vec2::new(10.0, 5.0);
+        assert_eq!(
+            Grip::N.apply(RECT, d),
+            (Vec2::new(0.0, 5.0), Vec2::new(100.0, 50.0))
+        );
+        assert_eq!(
+            Grip::E.apply(RECT, d),
+            (Vec2::new(0.0, 0.0), Vec2::new(110.0, 50.0))
+        );
+        assert_eq!(
+            Grip::Sw.apply(RECT, d),
+            (Vec2::new(10.0, 0.0), Vec2::new(100.0, 55.0))
+        );
+        assert_eq!(
+            Grip::Move.apply(RECT, d),
+            (Vec2::new(10.0, 5.0), Vec2::new(110.0, 55.0))
+        );
+    }
+
+    /// Dragging a side past its opposite flips the rect rather than inverting it, so
+    /// what comes back is always a rect with `min <= max`.
+    #[test]
+    fn a_side_dragged_past_its_opposite_flips() {
+        let (lo, hi) = Grip::W.apply(RECT, Vec2::new(130.0, 0.0));
+        assert_eq!((lo, hi), (Vec2::new(100.0, 0.0), Vec2::new(130.0, 50.0)));
+        for grip in Grip::ALL {
+            let (lo, hi) = grip.apply(RECT, Vec2::new(-300.0, 200.0));
+            assert!(lo.x <= hi.x && lo.y <= hi.y, "{grip:?}");
+        }
+    }
 
     /// Reshaping to a preset **preserves area** (§15.7), which is what makes the
     /// drop-down a way to change the shape of a piece rather than its size — flick

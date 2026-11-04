@@ -40,7 +40,9 @@ use stark_engine::{LayerInfo, MatteInfo};
 use stark_model::document::{MatteRegion, Parcel, Place};
 use stark_model::geom::Vec2;
 use stark_ui::commands::Command;
-use stark_ui::frame::{ASPECTS, CUSTOM, DEFAULT_BACKING, DEFAULT_MATTE, matched_aspect, to_aspect};
+use stark_ui::frame::{
+    ASPECTS, CUSTOM, DEFAULT_BACKING, DEFAULT_MATTE, Grip, matched_aspect, to_aspect,
+};
 
 /// The frame being composed, if the **selected layer** is one — the rule itself,
 /// asked of a projection already in hand.
@@ -349,89 +351,20 @@ pub fn FrameBar() -> Element {
 
 // --- on-canvas handles ---------------------------------------------------
 
-/// Which part of the frame a drag has hold of. The eight edge/corner handles plus
-/// the frame itself (moved by its edges, never its interior — the interior is
-/// where you paint).
-#[derive(Clone, Copy, PartialEq)]
-pub enum Grip {
-    N,
-    S,
-    E,
-    W,
-    Nw,
-    Ne,
-    Sw,
-    Se,
-    Move,
-}
-
-impl Grip {
-    /// `(class suffix, cursor)`. Placement itself lives in the stylesheet — edges
-    /// are thin bars, corners are squares, all positioned against the frame box's
-    /// own edges, so nothing here needs measuring.
-    pub(crate) fn spec(self) -> (&'static str, &'static str) {
-        match self {
-            Grip::N => ("n", "n-resize"),
-            Grip::S => ("s", "s-resize"),
-            Grip::E => ("e", "e-resize"),
-            Grip::W => ("w", "w-resize"),
-            Grip::Nw => ("nw", "nw-resize"),
-            Grip::Ne => ("ne", "ne-resize"),
-            Grip::Sw => ("sw", "sw-resize"),
-            Grip::Se => ("se", "se-resize"),
-            Grip::Move => ("move", "move"),
-        }
-    }
-
-    /// Every grip, including the move pill. `Move` is a small handle sitting
-    /// *outside* the top edge rather than the frame's interior: dragging the
-    /// inside is what every other crop tool uses to move a frame, and it is the
-    /// one thing this frame cannot borrow, because the inside is where you paint.
-    pub(crate) const ALL: [Grip; 9] = [
-        Grip::N,
-        Grip::S,
-        Grip::E,
-        Grip::W,
-        Grip::Nw,
-        Grip::Ne,
-        Grip::Sw,
-        Grip::Se,
-        Grip::Move,
-    ];
-
-    /// Apply a canvas-space pointer delta to the rect this grip was pressed on.
-    /// Edges move one side, corners two, `Move` translates. The rect is normalized
-    /// afterwards, so dragging a side past its opposite flips rather than inverts.
-    pub(crate) fn apply(self, (min, max): (Vec2, Vec2), d: Vec2) -> (Vec2, Vec2) {
-        let (mut lo, mut hi) = (min, max);
-        let (north, south) = (
-            matches!(self, Grip::N | Grip::Nw | Grip::Ne),
-            matches!(self, Grip::S | Grip::Sw | Grip::Se),
-        );
-        let (west, east) = (
-            matches!(self, Grip::W | Grip::Nw | Grip::Sw),
-            matches!(self, Grip::E | Grip::Ne | Grip::Se),
-        );
-        if north {
-            lo.y += d.y;
-        }
-        if south {
-            hi.y += d.y;
-        }
-        if west {
-            lo.x += d.x;
-        }
-        if east {
-            hi.x += d.x;
-        }
-        if self == Grip::Move {
-            lo += d;
-            hi += d;
-        }
-        (
-            Vec2::new(lo.x.min(hi.x), lo.y.min(hi.y)),
-            Vec2::new(lo.x.max(hi.x), lo.y.max(hi.y)),
-        )
+/// `(class suffix, cursor)` for a handle ([`Grip`], `stark_ui::frame`). Placement
+/// itself lives in the stylesheet — edges are thin bars, corners are squares, all
+/// positioned against the frame box's own edges, so nothing here needs measuring.
+fn grip_spec(grip: Grip) -> (&'static str, &'static str) {
+    match grip {
+        Grip::N => ("n", "n-resize"),
+        Grip::S => ("s", "s-resize"),
+        Grip::E => ("e", "e-resize"),
+        Grip::W => ("w", "w-resize"),
+        Grip::Nw => ("nw", "nw-resize"),
+        Grip::Ne => ("ne", "ne-resize"),
+        Grip::Sw => ("sw", "sw-resize"),
+        Grip::Se => ("se", "se-resize"),
+        Grip::Move => ("move", "move"),
     }
 }
 
@@ -518,7 +451,7 @@ pub fn FrameOverlay() -> Element {
 
             for grip in Grip::ALL {
                 {
-                    let (suffix, cursor) = grip.spec();
+                    let (suffix, cursor) = grip_spec(grip);
                     rsx! {
                         div {
                             key: "{suffix}",
