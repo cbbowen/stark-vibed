@@ -118,7 +118,7 @@ impl Lasso {
 
 /// A region-producing shape, in canvas space (§6.8).
 ///
-/// **Decoded through [`RawSelectionShape`]**, whose lasso is a bare vertex list: the
+/// **Decoded through `RawSelectionShape`**, whose lasso is a bare vertex list: the
 /// wire is unchanged (§8), and a list that cannot enclose anything lands as
 /// [`SelectionShape::Nothing`] — said by the value rather than re-derived by each
 /// reader.
@@ -141,7 +141,7 @@ pub enum SelectionShape {
     /// it can enclose something.
     ///
     /// Not on the wire as itself: it is written as the empty lasso it stands for
-    /// ([`RawSelectionShape`]), so the encoding has no variant an older build lacks.
+    /// (`RawSelectionShape`), so the encoding has no variant an older build lacks.
     /// It has no box ([`bounds`](Self::bounds) is `None`), which is the answer every
     /// reader already gives a shape it cannot measure: a selection op through it is
     /// declined — the selection is left as it was, which is what a degenerate lasso

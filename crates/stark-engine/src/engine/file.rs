@@ -160,7 +160,7 @@ impl Engine {
         // over the same transport as the blobs, and the waitlist parks a `SetSubstrate`
         // until its substrate lands (§12.4). A load or a timelapse refuses outright
         // instead (`DocError::MissingContent`).
-        let missing = self.unresolved_content(&file);
+        let missing = self.unresolved_content(file);
         if !missing.is_empty() {
             tracing::warn!(
                 ?missing,

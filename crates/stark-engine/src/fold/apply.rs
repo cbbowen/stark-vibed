@@ -894,15 +894,13 @@ pub(crate) fn preview_of(
     if let Some(edit) = edit_onto(&kind, state, ctx, actor) {
         return edit.ok();
     }
-    match &kind {
-        // The pure half's partition is exhaustive, so this is every other kind.
-        other => match apply_pure(other, state.clone(), actor) {
-            Folded::Done(shown) => Some(shown),
-            Folded::NeedsRenderer(_) => {
-                debug_assert!(false, "{} has no preview", other.label());
-                None
-            }
-        },
+    // The pure half's partition is exhaustive, so this is every other kind.
+    match apply_pure(&kind, state.clone(), actor) {
+        Folded::Done(shown) => Some(shown),
+        Folded::NeedsRenderer(_) => {
+            debug_assert!(false, "{} has no preview", kind.label());
+            None
+        }
     }
 }
 

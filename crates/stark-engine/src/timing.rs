@@ -349,7 +349,7 @@ impl Timings {
     pub fn rate(&self, name: &str) -> Option<f64> {
         let phase = self.phases.iter().find(|p| p.name == name)?;
         let window = self.window.as_secs_f64();
-        (window > 0.0).then(|| phase.count as f64 / window)
+        (window > 0.0).then_some(phase.count as f64 / window)
     }
 }
 
