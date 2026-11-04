@@ -351,22 +351,35 @@ impl PathFitter {
     /// on its clock and pressures replaced with its own — see
     /// [`seed_runup`](Self::seed_runup).
     fn adopt_runup(&mut self, first: &InputSample) {
-        let pending = std::mem::take(&mut self.runup);
-        for s in pending {
-            if let Some(prev) = self.pts.last() {
-                let step = (s.pos - prev.pos).length();
-                // The same zero-step gate `push` applies, for the same reason.
-                if step < MIN_STEP_PX {
-                    continue;
-                }
-                self.arc += step;
-            }
-            self.pts.push(Accepted {
-                pos: s.pos,
-                channels: pen_row(first.pressure, s.tilt, self.rel_time(s.time)),
-                arc: self.arc,
-            });
+        for s in std::mem::take(&mut self.runup) {
+            self.append(
+                s.pos,
+                pen_row(first.pressure, s.tilt, self.rel_time(s.time)),
+            );
         }
+    }
+
+    /// Append one report to the accepted run, accruing the step to it — or, for a
+    /// report that did not move, drop it and say so. **The** zero-step gate: the run-up
+    /// walks in through it as every pushed report does.
+    ///
+    /// A report that did not move carries no geometry, and a run of them would put
+    /// several samples at one parameter. Its attributes are no loss: they apply to a
+    /// zero-length piece of path.
+    fn append(&mut self, pos: Vec2, channels: [f32; CHANNELS]) -> bool {
+        if let Some(prev) = self.pts.last() {
+            let step = (pos - prev.pos).length();
+            if step < MIN_STEP_PX {
+                return false;
+            }
+            self.arc += step;
+        }
+        self.pts.push(Accepted {
+            pos,
+            channels,
+            arc: self.arc,
+        });
+        true
     }
 
     /// Feed one pointer report. Ignored once the stroke is [`finish`](Self::finish)ed,
@@ -401,33 +414,16 @@ impl PathFitter {
             self.t0 = s.time;
             self.adopt_runup(&s);
         }
-        // Whether this is the stroke's own first report — where the marker
-        // lands, even for a report the spacing gate drops.
+        // Whether this is the stroke's own first report — where the marker lands.
         let pressed = self.start_arc.is_none();
-        if let Some(prev) = self.pts.last() {
-            let step = (s.pos - prev.pos).length();
-            // A report that did not move carries no geometry, and a run of them
-            // would put several samples at one parameter. Its attributes are no
-            // loss: they apply to a zero-length piece of path. A press coinciding
-            // with the run-up's newest report still marks the start — the marker
-            // is a place on the curve, and the place exists.
-            if step < MIN_STEP_PX {
-                if pressed {
-                    self.start_arc = Some(self.arc);
-                }
-                return false;
-            }
-            self.arc += step;
-        }
-        self.pts.push(Accepted {
-            pos: s.pos,
-            channels: self.channels(s),
-            arc: self.arc,
-        });
+        let appended = self.append(s.pos, self.channels(s));
+        // Even for a press the zero-step gate dropped: one coinciding with the run-up's
+        // newest report still marks the start — the marker is a place on the curve,
+        // and the place exists.
         if pressed {
             self.start_arc = Some(self.arc);
         }
-        self.pts.len() >= 2
+        appended && self.pts.len() >= 2
     }
 
     /// Fit as we are, and fit with one more control point. Keeping the better of the
@@ -1084,18 +1080,12 @@ pub fn fit(samples: &[InputSample]) -> Vec<ControlPoint> {
     fit_at(samples.iter().copied(), InputTolerance::DEFAULT)
 }
 
-/// [`fit`] for input of a stated resolution (see [`PathFitter::with_tolerance`]), held
-/// to [`MIN_TOLERANCE`](super::MIN_TOLERANCE)`..=`[`MAX_TOLERANCE`](super::MAX_TOLERANCE):
-/// the path `End` would adopt for these samples, which is what makes anything built
-/// from it the commit's own pixels.
-pub fn fit_with_tolerance(
-    samples: impl IntoIterator<Item = InputSample>,
-    tolerance: f32,
-) -> Vec<ControlPoint> {
-    fit_at(samples, InputTolerance::new(tolerance))
-}
-
-/// [`fit_with_tolerance`] for a tolerance already held.
+/// [`fit`] for input of a stated resolution (see [`PathFitter::with_tolerance`]): the
+/// path `End` would adopt for these samples, which is what makes anything built from it
+/// the commit's own pixels.
+///
+/// Takes the tolerance already held ([`InputTolerance::new`]), like every other door
+/// into the fit, so no caller converts a raw `f32` more than once.
 pub fn fit_at(
     samples: impl IntoIterator<Item = InputSample>,
     tolerance: InputTolerance,
@@ -1111,10 +1101,10 @@ pub fn fit_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::path::test_support::{
+    use crate::path::{DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, flatten, flatten_spans, point_at};
+    use crate::test_support::{
         RECORDED, bits, fit_incrementally, max_deviation, sample, split_runup, with_pen,
     };
-    use crate::path::{DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, flatten, flatten_spans, point_at};
     use proptest::prelude::*;
 
     /// Largest distance (canvas px) from any input sample to the fitted curve.
@@ -1398,7 +1388,7 @@ mod tests {
             .iter()
             .map(|&[x, y]| sample(x, y))
             .collect();
-        let reference = fit_with_tolerance(screen.iter().copied(), DEFAULT_TOLERANCE);
+        let reference = fit_at(screen.iter().copied(), InputTolerance::DEFAULT);
         // Powers of two, so scaling the input is exact in f32 and any difference
         // that shows up is the growth rule's and not the arithmetic's.
         for zoom in [0.25f32, 4.0, 16.0] {
@@ -1410,7 +1400,10 @@ mod tests {
                     ..*s
                 })
                 .collect();
-            let got = fit_with_tolerance(pts.iter().copied(), DEFAULT_TOLERANCE * k);
+            let got = fit_at(
+                pts.iter().copied(),
+                InputTolerance::new(DEFAULT_TOLERANCE * k),
+            );
             assert_eq!(
                 got.len(),
                 reference.len(),
@@ -1435,7 +1428,7 @@ mod tests {
     fn a_degenerate_tolerance_is_held_to_the_usable_range() {
         let pts: Vec<InputSample> = (0..48).map(|i| sample(i as f32 * 3.0, 0.0)).collect();
         for t in [0.0, -5.0, f32::NAN, f32::INFINITY, 1e9] {
-            let m = fit_with_tolerance(pts.iter().copied(), t).len();
+            let m = fit_at(pts.iter().copied(), InputTolerance::new(t)).len();
             assert!(
                 (2..=pts.len() + 1).contains(&m),
                 "tolerance {t}: {m} control points"
@@ -1445,7 +1438,7 @@ mod tests {
         // the range — there is nothing to read from it in either direction.
         for t in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert_eq!(
-                fit_with_tolerance(pts.iter().copied(), t),
+                fit_at(pts.iter().copied(), InputTolerance::new(t)),
                 fit(&pts),
                 "tolerance {t}"
             );
@@ -1593,14 +1586,14 @@ mod tests {
             stair.push(sample(b + 2.0, b));
             stair.push(sample(b + 2.0, b + 2.0));
         }
-        let fine = fit_with_tolerance(stair.iter().copied(), DEFAULT_TOLERANCE).len();
-        let coarse = fit_with_tolerance(stair.iter().copied(), 2.0).len();
+        let fine = fit_at(stair.iter().copied(), InputTolerance::DEFAULT).len();
+        let coarse = fit_at(stair.iter().copied(), InputTolerance::new(2.0)).len();
         // What the *shape* is worth with the quantization taken out: the same reports
         // projected onto the diagonal they are a staircase of. Declaring the grid can
         // only buy back what the zigzag costs, never what the stroke is, so that is
         // the baseline both counts are measured from — a bare ratio of totals would
         // instead move whenever the finer fit improved, which is not under test.
-        let ideal = fit_with_tolerance(
+        let ideal = fit_at(
             stair.iter().map(|s| {
                 let d = 0.5 * (s.pos.x + s.pos.y);
                 InputSample {
@@ -1608,7 +1601,7 @@ mod tests {
                     ..*s
                 }
             }),
-            DEFAULT_TOLERANCE,
+            InputTolerance::DEFAULT,
         )
         .len();
         // The premise. At 1px the zigzag is above the declared tolerance, so the fit does
@@ -1625,7 +1618,7 @@ mod tests {
         // And what is left is still the diagonal, not a shortcut across it: every
         // sample is within a step of the curve.
         let poly = flatten(
-            &fit_with_tolerance(stair.iter().copied(), 2.0),
+            &fit_at(stair.iter().copied(), InputTolerance::new(2.0)),
             FLATTEN_TOLERANCE,
         );
         let worst = max_deviation(stair.iter().map(|s| s.pos), &poly);
@@ -1943,7 +1936,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(crate::path::test_support::cases())]
+        #![proptest_config(crate::test_support::cases())]
 
         /// `committed_knots_are_never_revised` over any walk: after every report, the
         /// control points the fitter calls frozen are the finished stroke's to the bit,

@@ -155,8 +155,9 @@ impl Tow {
         let len = run.length();
         // A report that did not move tows nothing — the same answer the fitter
         // gives a stationary report (§6.2), stated here so the taut math never
-        // sees a zero (or garbage) direction.
-        if !len.is_normal() || len <= 0.0 {
+        // sees a zero (or garbage) direction. A length is never negative, so "normal"
+        // is exactly "positive, finite and not subnormal".
+        if !len.is_normal() {
             return;
         }
         let u = run / len;
@@ -243,7 +244,7 @@ impl Tow {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::path::test_support::sample;
+    use crate::test_support::sample;
 
     /// Feed a polyline through a tow, collecting every emission. At
     /// [`DEFAULT_TOLERANCE`](crate::path::DEFAULT_TOLERANCE), which is what

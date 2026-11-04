@@ -126,8 +126,8 @@ impl AssistShape {
     /// Which family this is.
     pub fn family(&self) -> Assisted {
         match self {
-            AssistShape::Line { .. } => Assisted::Line,
-            AssistShape::Ellipse { .. } => Assisted::Ellipse,
+            Self::Line { .. } => Assisted::Line,
+            Self::Ellipse { .. } => Assisted::Ellipse,
         }
     }
 
@@ -140,6 +140,24 @@ impl AssistShape {
             Self::Ellipse { .. } => std::f32::consts::TAU,
         };
         (0..=32).map(|i| self.at(reach * i as f32 / 32.0)).collect()
+    }
+
+    /// A line's parts, or a panic naming what this is instead.
+    #[cfg(test)]
+    fn as_line(self) -> (Vec2, Vec2, bool) {
+        match self {
+            Self::Line { a, b, on_axis } => (a, b, on_axis),
+            other => panic!("{other:?} is not a line"),
+        }
+    }
+
+    /// An ellipse's shape and plane, or a panic naming what this is instead.
+    #[cfg(test)]
+    fn as_ellipse(self) -> (Ellipse, Option<AxisPlane>) {
+        match self {
+            Self::Ellipse { shape, plane, .. } => (shape, plane),
+            other => panic!("{other:?} is not an ellipse"),
+        }
     }
 }
 

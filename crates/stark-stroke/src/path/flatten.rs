@@ -5,6 +5,7 @@
 
 use super::arc::{fit_arc, point_arc_distance};
 use super::span_count;
+use crate::spline::SplineIndex;
 use stark_model::geom::Vec2;
 use stark_model::path::ControlPoint;
 use std::ops::Range;
@@ -31,6 +32,21 @@ pub struct IntermediateSample {
     /// taper's radius steps at every curved joint and a bleed firing's window is
     /// scanned twice (§6.2).
     pub dist: f32,
+}
+
+impl IntermediateSample {
+    /// The curve sample whose position and pen channels are `k`'s, heading along `vel`
+    /// with `dist` travelled.
+    fn of(k: ControlPoint, vel: Vec2, dist: f32) -> Self {
+        Self {
+            pos: k.pos,
+            vel,
+            pressure: k.pressure,
+            tilt: k.tilt,
+            time: k.time,
+            dist,
+        }
+    }
 }
 
 /// The error budget [`flatten`] may spend when it replaces a piece of curve with a
@@ -165,12 +181,11 @@ fn span_pieces(sp: &Span, max_len: f32) -> u32 {
 /// spans back from the live end of a stroke measuring chords without paying for the
 /// polyline (see `gpu::stroke::safe_frozen`).
 pub fn span_end(knots: &[ControlPoint], k: usize) -> Vec2 {
-    // Fewer than two control points is not a curve: one is a click, zero nothing.
-    let Ok(ix) = crate::spline::SplineIndex::new(knots.len()) else {
-        return knots.first().map_or(Vec2::ZERO, |k| k.pos);
+    let ix = match curve_of(knots) {
+        Ok(ix) => ix,
+        Err(point) => return point,
     };
-    let last = ix.num_spans();
-    span(ix, knots, k.min(last - 1)).eval(1.0).pos
+    span(ix, knots, k.min(ix.num_spans() - 1)).eval(1.0).pos
 }
 
 /// The curve point at parameter `t`, in span units, clamped to the domain — the
@@ -179,17 +194,29 @@ pub fn span_end(knots: &[ControlPoint], k: usize) -> Vec2 {
 /// ([`StrokeRecord::start`](stark_model::document::StrokeRecord::start)), which names
 /// a place mid-span. A non-finite `t` reads the curve's own start.
 pub fn point_at(knots: &[ControlPoint], t: f32) -> Vec2 {
-    let Ok(ix) = crate::spline::SplineIndex::new(knots.len()) else {
-        return knots.first().map_or(Vec2::ZERO, |k| k.pos);
+    let ix = match curve_of(knots) {
+        Ok(ix) => ix,
+        Err(point) => return point,
     };
-    let last = ix.num_spans();
-    let t = if t.is_finite() {
-        t.clamp(0.0, last as f32)
+    let (k, u) = ix.span_and_local(in_domain(ix, t));
+    span(ix, knots, k).eval(u).pos
+}
+
+/// The clamped knot view over `knots` — or, fewer than two control points not being a
+/// curve, the one point they are: a lone knot is a click, and none is the origin.
+fn curve_of(knots: &[ControlPoint]) -> Result<SplineIndex, Vec2> {
+    SplineIndex::new(knots.len()).map_err(|_| knots.first().map_or(Vec2::ZERO, |k| k.pos))
+}
+
+/// `t` held to the domain of the curve `ix` indexes, `[0, num_spans]`, and the curve's
+/// start for a non-finite `t` — a parameter can arrive in a record from a file or a
+/// peer, and reading one must not panic.
+fn in_domain(ix: SplineIndex, t: f32) -> f32 {
+    if t.is_finite() {
+        t.clamp(0.0, ix.num_spans() as f32)
     } else {
         0.0
-    };
-    let k = (t.floor() as usize).min(last - 1);
-    span(ix, knots, k).eval(t - k as f32).pos
+    }
 }
 
 /// Expand `knots` into a polyline, subdividing only where the error budget
@@ -249,24 +276,12 @@ pub fn flatten_spans_from(
     // is a fact about the polygon where the branch below is one about the request —
     // conflated, an empty range on a real curve would yield a stray point rather than
     // nothing, which is not a tiling of the stroke.
-    let Ok(ix) = crate::spline::SplineIndex::new(knots.len()) else {
-        let k = knots[0];
-        return vec![IntermediateSample {
-            pos: k.pos,
-            vel: Vec2::ZERO,
-            pressure: k.pressure,
-            tilt: k.tilt,
-            time: k.time,
-            dist: dist0,
-        }];
+    let Ok(ix) = SplineIndex::new(knots.len()) else {
+        return vec![IntermediateSample::of(knots[0], Vec2::ZERO, dist0)];
     };
     let last_span = ix.num_spans(); // one past the last valid span index
     let spans = spans.start.min(last_span)..spans.end.min(last_span);
-    let from = if from.is_finite() {
-        from.clamp(0.0, last_span as f32)
-    } else {
-        0.0
-    };
+    let from = in_domain(ix, from);
     if spans.is_empty() {
         // Adjacent ranges tile the stroke, so a range holding no spans of a real
         // curve contributes none of it.
@@ -279,8 +294,7 @@ pub fn flatten_spans_from(
     }
     // Where the polyline begins: the range's own start, or the marker mid-span.
     let (first_span, u0) = if from > spans.start as f32 {
-        let k = (from.floor() as usize).min(last_span - 1);
-        (k, from - k as f32)
+        ix.span_and_local(from)
     } else {
         (spans.start, 0.0)
     };
@@ -452,14 +466,7 @@ impl Span {
         );
         let [b0, b1, b2, b3] = [self.b[0].pos, self.b[1].pos, self.b[2].pos, self.b[3].pos];
         let vel = (b1 - b0) * (3.0 * v * v) + (b2 - b1) * (6.0 * v * u) + (b3 - b2) * (3.0 * u * u);
-        IntermediateSample {
-            pos: at.pos,
-            vel,
-            pressure: at.pressure,
-            tilt: at.tilt,
-            time: at.time,
-            dist: 0.0,
-        }
+        IntermediateSample::of(at, vel, 0.0)
     }
 }
 
@@ -478,8 +485,7 @@ impl Span {
 ///
 /// The clamp at the two ends is not a special case here but a consequence of the
 /// control sequence [`CubicBSpline`](crate::spline::CubicBSpline) fits against, in
-/// which each end control point appears `degree` times
-/// ([`SplineIndex`](crate::spline::SplineIndex)'s knot view): repeating `Q0` collapses
+/// which each end control point appears `degree` times ([`SplineIndex`]'s knot view): repeating `Q0` collapses
 /// `b0`, `b1` and `b2` onto it, pinning the curve to the first control point and
 /// starting it down the first leg.
 ///
@@ -487,7 +493,7 @@ impl Span {
 /// parameterization
 /// ([`SplineIndex::fit_into`](crate::spline::SplineIndex::fit_into)), so the
 /// identical conversion carries them.
-fn span(view: crate::spline::SplineIndex, knots: &[ControlPoint], k: usize) -> Span {
+fn span(view: SplineIndex, knots: &[ControlPoint], k: usize) -> Span {
     // The clamped knot view is the caller's, built once: its existence *is* the
     // "fewer than two control points is not a curve" branch, so no `expect` here.
     let q: [ControlPoint; 4] = std::array::from_fn(|a| knots[view.knot_row(k + a)]);
@@ -523,9 +529,14 @@ fn blend(q: &[ControlPoint; 4], w: [f32; 4]) -> ControlPoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::path::test_support::{knot, max_deviation};
     use crate::spline::CubicBSpline;
+    use crate::test_support::{knot, max_deviation};
     use proptest::prelude::*;
+
+    /// Span `k` of the curve through `knots`, which has to be one.
+    fn span_of(knots: &[ControlPoint], k: usize) -> Span {
+        span(SplineIndex::new(knots.len()).expect("a curve"), knots, k)
+    }
 
     /// The load-bearing link between the two halves of this module: the span form
     /// used to *render* a stored path must be the same curve [`CubicBSpline`](crate::spline::CubicBSpline) **fitted**.
@@ -555,8 +566,7 @@ mod tests {
                 "span count disagrees at m = {m}"
             );
             for k in 0..span_count(m) {
-                let ix = crate::spline::SplineIndex::new(knots.len()).expect("a curve");
-                let sp = span(ix, &knots, k);
+                let sp = span_of(&knots, k);
                 for i in 0..=8 {
                     let u = i as f32 / 8.0;
                     let want = reference.evaluate(k as f32 + u);
@@ -575,8 +585,7 @@ mod tests {
         // direction only becomes readable just after. What matters is that it heads
         // down the first leg once it does.
         let knots = [knot(0.0, 0.0), knot(30.0, 0.0), knot(60.0, 20.0)];
-        let ix = crate::spline::SplineIndex::new(knots.len()).expect("a curve");
-        let head = span(ix, &knots, 0).eval(0.25);
+        let head = span_of(&knots, 0).eval(0.25);
         assert!(head.vel.length() > 1e-3, "start derivative {:?}", head.vel);
         assert!(head.vel.normalize().dot(Vec2::X) > 0.99);
     }
@@ -611,8 +620,7 @@ mod tests {
         // Every point of the true curve is within the budget of the polyline (a
         // little slack for the midpoint-only test the sampler uses).
         for i in 0..knots.len() - 1 {
-            let ix = crate::spline::SplineIndex::new(knots.len()).expect("a curve");
-            let sp = span(ix, &knots, i);
+            let sp = span_of(&knots, i);
             let worst = max_deviation((0..=64).map(|s| sp.eval(s as f32 / 64.0).pos), &poly);
             assert!(
                 worst < FLATTEN_TOLERANCE.position * 2.0,
@@ -965,7 +973,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(crate::path::test_support::cases())]
+        #![proptest_config(crate::test_support::cases())]
 
         /// `flatten_spans_tile_the_whole_path` over any polygon, budget and marker: a
         /// range cut in two at any span flattens to the whole range, sample for sample

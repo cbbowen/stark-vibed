@@ -153,7 +153,7 @@ impl SplineIndex {
     }
 
     /// Span index and local coordinate `u ∈ [0, 1]` for `t`, clamped to the domain.
-    fn span_and_local(self, t: f32) -> (usize, f32) {
+    pub(crate) fn span_and_local(self, t: f32) -> (usize, f32) {
         let spans = self.num_spans();
         let tf = t.clamp(0.0, spans as f32);
         let k = (tf.floor() as usize).min(spans - 1);

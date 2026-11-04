@@ -129,14 +129,6 @@ mod tests {
     use super::*;
     use crate::assist::Winding;
 
-    /// A line's parts, or a panic naming what came back instead.
-    fn as_line(shape: AssistShape) -> (Vec2, Vec2, bool) {
-        match shape {
-            AssistShape::Line { a, b, on_axis } => (a, b, on_axis),
-            other => panic!("adjusted into {other:?}, not a line"),
-        }
-    }
-
     /// Adjustment is always measured from the shape as recognized, so the same total
     /// travel means the same thing however it is broken up.
     #[test]
@@ -188,7 +180,7 @@ mod tests {
         let u = (b - a).normalize();
         // A pointer that has wandered a long way off the line, and some way along it.
         let target = b + u * 90.0 + u.perp() * 140.0;
-        let (a2, b2, on) = as_line(shape.adjust(shape.grip(), target));
+        let (a2, b2, on) = shape.adjust(shape.grip(), target).as_line();
         assert_eq!((a2, on), (a, true));
         assert!(
             (b2 - a).perp_dot(u).abs() < 1e-3,
@@ -275,7 +267,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(crate::path::test_support::cases())]
+        #![proptest_config(crate::test_support::cases())]
 
         /// **The point being held follows the pointer** — onto it, or, for a line held to
         /// an axis, onto the axis's nearest point to it. The drag decides nothing but

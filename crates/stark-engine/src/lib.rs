@@ -110,8 +110,8 @@ pub(crate) use stark_stroke::{assist, detmath, tow};
 pub mod path {
     pub use stark_stroke::path::{
         DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, FlattenTolerance, IntermediateSample, MAX_TOLERANCE,
-        MIN_TOLERANCE, PathFitter, cumulative_lengths, fit, fit_with_tolerance, flatten,
-        flatten_spans_from, locate, point_at, span_count, span_end,
+        MIN_TOLERANCE, PathFitter, cumulative_lengths, fit, flatten, flatten_spans_from, locate,
+        point_at, span_count, span_end,
     };
 
     pub(crate) use stark_stroke::path::{

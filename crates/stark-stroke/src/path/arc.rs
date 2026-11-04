@@ -85,7 +85,7 @@ pub fn fit_arc(vel: Vec2, v: Vec2, max_curvature: f32) -> Arc {
         // No chord names no direction. Length 0 makes the edge a point, which is what
         // the caller will do with it either way.
         return Arc {
-            dir: Vec2::new(1.0, 0.0),
+            dir: Vec2::X,
             curvature: 0.0,
             length: chord,
         };
@@ -110,13 +110,14 @@ pub fn fit_arc(vel: Vec2, v: Vec2, max_curvature: f32) -> Arc {
     if u.abs() > MAX_HALF_TURN_SIN || v.dot(t) <= 0.0 || curvature.abs() > max_curvature {
         return straight;
     }
-    if arc_sagitta(curvature, chord * asin_over_x(u)) < MIN_SAGITTA {
+    let length = chord * asin_over_x(u);
+    if arc_sagitta(curvature, length) < MIN_SAGITTA {
         return straight;
     }
     Arc {
         dir: t,
         curvature,
-        length: chord * asin_over_x(u),
+        length,
     }
 }
 
@@ -168,7 +169,8 @@ pub(super) fn point_arc_distance(p: Vec2, start: Vec2, arc: &Arc) -> f32 {
     ((p - centre).length() - r.abs()).abs()
 }
 
-pub(super) fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
+/// Distance from `p` to the segment `a → b`, and to `a` itself when the two coincide.
+pub(crate) fn point_segment_distance(p: Vec2, a: Vec2, b: Vec2) -> f32 {
     let ab = b - a;
     let len2 = ab.length_squared();
     let t = if len2 < 1e-12 {

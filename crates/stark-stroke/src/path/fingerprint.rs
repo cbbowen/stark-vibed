@@ -6,11 +6,11 @@
 //! only has to agree with itself in-process, while flattening re-runs at every replay
 //! and on every peer.
 
-use super::test_support::{RECORDED, split_runup, with_pen};
 use super::{
-    DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, FlattenTolerance, IntermediateSample, PathFitter,
-    fit_with_tolerance, flatten_spans_from, span_count,
+    FLATTEN_TOLERANCE, FlattenTolerance, InputTolerance, IntermediateSample, PathFitter, fit_at,
+    flatten_spans_from, span_count,
 };
+use crate::test_support::{RECORDED, bits, split_runup, with_pen};
 use stark_model::path::ControlPoint;
 
 /// blake3 of every fitted control point's channels and marker, in [`fitted`] order.
@@ -38,7 +38,7 @@ fn fitted() -> Vec<(Vec<ControlPoint>, f32)> {
         .into_iter()
         .flat_map(|(_, pts)| {
             let samples = with_pen(pts);
-            let whole = fit_with_tolerance(samples.iter().copied(), DEFAULT_TOLERANCE);
+            let whole = fit_at(samples.iter().copied(), InputTolerance::DEFAULT);
 
             let (hover, stroke) = split_runup(&samples);
             let mut f = PathFitter::new();
@@ -53,10 +53,14 @@ fn fitted() -> Vec<(Vec<ControlPoint>, f32)> {
         .collect()
 }
 
-fn update_f32s(h: &mut blake3::Hasher, xs: impl IntoIterator<Item = f32>) {
+fn update_bits(h: &mut blake3::Hasher, xs: impl IntoIterator<Item = u32>) {
     for x in xs {
-        h.update(&x.to_bits().to_le_bytes());
+        h.update(&x.to_le_bytes());
     }
+}
+
+fn update_f32s(h: &mut blake3::Hasher, xs: impl IntoIterator<Item = f32>) {
+    update_bits(h, xs.into_iter().map(f32::to_bits));
 }
 
 fn update_len(h: &mut blake3::Hasher, n: usize) {
@@ -67,12 +71,9 @@ fn hash_fit(fits: &[(Vec<ControlPoint>, f32)]) -> String {
     let mut h = blake3::Hasher::new();
     for (path, start) in fits {
         update_len(&mut h, path.len());
-        for k in path {
-            update_f32s(
-                &mut h,
-                [k.pos.x, k.pos.y, k.pressure, k.tilt.x, k.tilt.y, k.time],
-            );
-        }
+        // Every field of every control point, through the one statement of what "the
+        // same path" means to a test.
+        update_bits(&mut h, bits(path).into_iter().flatten());
         update_f32s(&mut h, [*start]);
     }
     h.finalize().to_hex().to_string()

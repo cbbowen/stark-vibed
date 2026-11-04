@@ -19,11 +19,13 @@
 //! - [`detmath`] — the deterministic series the **post-record** stages use in place
 //!   of libm, so a replay and a peer agree to the bit (§12.1).
 //!
-//! **Which side of the record decides what the math may use.** The fit, the
-//! arc-length map, the spline solve and the assist run *before* a record exists, so
-//! they only have to agree with themselves within one process; flattening and the arc
-//! run at every replay and on every peer, so they go through [`detmath`].
-//! `path::fingerprint` is the gate on both halves.
+//! **Which side of the record decides what the math may use.** The fit, the arc-length
+//! map, the spline solve, the assist and the tow run *before* a record exists: the log
+//! keeps their control points, not their samples, so they only have to agree with
+//! themselves within one process (`preview == committed`, the goldens, the
+//! fingerprint). Flattening and the arc run *after* it, at every replay and on every
+//! peer, so they fall under §12.1's bit-agreement rule and go through [`detmath`]
+//! rather than libm. `path::fingerprint` is the gate on both halves.
 
 #![warn(unreachable_pub)]
 
@@ -32,6 +34,8 @@ pub mod detmath;
 mod input;
 pub mod path;
 pub(crate) mod spline;
+#[cfg(test)]
+mod test_support;
 pub mod tow;
 
 pub use input::{COORD_LIMIT, InputSample};

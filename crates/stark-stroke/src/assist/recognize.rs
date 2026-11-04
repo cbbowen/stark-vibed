@@ -10,7 +10,7 @@ use super::{AssistShape, Frame, Winding};
 use crate::path::{InputTolerance, cumulative_lengths, locate, polyline_length};
 use stark_model::document::{AxisPencil, AxisPlane, Scaffold};
 use stark_model::geom::{Ellipse, Vec2, principal_axis};
-use std::f32::consts::TAU;
+use std::f32::consts::{PI, TAU};
 
 /// Reports below this many are not a shape, whatever they look like: a click, a twitch
 /// or a flick has no trace to recognize, and would snap to noise.
@@ -277,13 +277,7 @@ fn fit_line(trace: &[Vec2]) -> Option<LineFit> {
         return None;
     }
     let anchor = trace[0];
-    let (mut sxx, mut sxy, mut syy) = (0.0f32, 0.0f32, 0.0f32);
-    for p in trace {
-        let d = *p - anchor;
-        sxx += d.x * d.x;
-        sxy += d.x * d.y;
-        syy += d.y * d.y;
-    }
+    let (sxx, sxy, syy) = scatter(trace.iter().map(|p| (*p, 1.0)), anchor);
     let (_, _, dir) = principal_axis(sxx, sxy, syy);
     Some(line_along(trace, anchor, dir))
 }
@@ -407,19 +401,27 @@ fn moments(weighted: &[(Vec2, f32)]) -> Option<Ellipse> {
     }
     let inv = 1.0 / total;
     let center = weighted.iter().fold(Vec2::ZERO, |s, (p, w)| s + *p * *w) * inv;
-    let (mut sxx, mut sxy, mut syy) = (0.0f32, 0.0f32, 0.0f32);
-    for (p, w) in weighted {
-        let d = *p - center;
-        sxx += w * d.x * d.x;
-        sxy += w * d.x * d.y;
-        syy += w * d.y * d.y;
-    }
+    let (sxx, sxy, syy) = scatter(weighted.iter().copied(), center);
     let (major, minor, dir) = principal_axis(sxx * inv, sxy * inv, syy * inv);
     let radii = Vec2::new((2.0 * major).max(0.0).sqrt(), (2.0 * minor).max(0.0).sqrt());
     if !(radii.is_finite() && radii.min_element() > 0.0) {
         return None;
     }
     Some(Ellipse::new(center, radii, dir.y.atan2(dir.x)))
+}
+
+/// The weighted scatter of `points` about `about` — the sums `Σw·dx²`, `Σw·dx·dy` and
+/// `Σw·dy²` both fits read their principal axis off, the line's about its anchor and the
+/// ellipse's about its centre.
+fn scatter(points: impl IntoIterator<Item = (Vec2, f32)>, about: Vec2) -> (f32, f32, f32) {
+    let (mut sxx, mut sxy, mut syy) = (0.0f32, 0.0f32, 0.0f32);
+    for (p, w) in points {
+        let d = p - about;
+        sxx += w * d.x * d.x;
+        sxy += w * d.x * d.y;
+        syy += w * d.y * d.y;
+    }
+    (sxx, sxy, syy)
 }
 
 /// How much of the ellipse's own parameter each sample stands for: the circle is cut
@@ -439,7 +441,7 @@ fn weigh(frame: &Frame, pts: &[Vec2]) -> Vec<(Vec2, f32)> {
     let bins: Vec<usize> = pts
         .iter()
         .map(|p| {
-            let f = (frame.param(*p) + std::f32::consts::PI) / TAU;
+            let f = (frame.param(*p) + PI) / TAU;
             let bin = (f * PARAM_BINS as f32) as usize;
             bin.min(PARAM_BINS - 1)
         })
@@ -465,7 +467,7 @@ fn weigh(frame: &Frame, pts: &[Vec2]) -> Vec<(Vec2, f32)> {
             .enumerate()
             .filter(|&(_, &n)| n == 0)
             .map(|(bin, _)| {
-                let t = (bin as f32 + 0.5) / PARAM_BINS as f32 * TAU - std::f32::consts::PI;
+                let t = (bin as f32 + 0.5) / PARAM_BINS as f32 * TAU - PI;
                 (frame.point(t), 1.0)
             }),
     );
@@ -500,9 +502,9 @@ fn resample(trace: &[Vec2], n: usize) -> Option<Vec<Vec2>> {
 /// `x` folded into `(-π, π]` — the shortest way round.
 fn wrap_pi(x: f32) -> f32 {
     let mut x = x % TAU;
-    if x > std::f32::consts::PI {
+    if x > PI {
         x -= TAU;
-    } else if x <= -std::f32::consts::PI {
+    } else if x <= -PI {
         x += TAU;
     }
     x
@@ -771,13 +773,6 @@ mod tests {
         line_trace(a, a + dir * len, wobble)
     }
 
-    fn as_line(shape: AssistShape) -> (Vec2, Vec2, bool) {
-        match shape {
-            AssistShape::Line { a, b, on_axis } => (a, b, on_axis),
-            other => panic!("recognized {other:?}, not a line"),
-        }
-    }
-
     /// The feature itself: a line drawn roughly toward a vanishing point comes back
     /// aimed exactly at it, *from where the hand started it* — turned onto the grid,
     /// not moved onto it.
@@ -790,7 +785,7 @@ mod tests {
         for (axis, vp) in vps.iter().enumerate() {
             let vp = vp.expect("3-point: all finite");
             let trace = aimed(&g, axis, start, 420.0, 0.05, 2.5);
-            let (a, b, on_axis) = as_line(recognize(&trace, TOL, &up).expect("a line"));
+            let (a, b, on_axis) = recognize(&trace, TOL, &up).expect("a line").as_line();
             assert!(on_axis, "axis {axis} was not taken");
             assert_eq!(a, start, "the drawn start moved to {a}");
             let (u, to_vp) = ((b - a).normalize(), (vp - a).normalize());
@@ -811,7 +806,7 @@ mod tests {
         // A fifth of a turn off the X axis — and, in this pose, well away from the
         // other two as well.
         let trace = aimed(&g, 0, start, 420.0, 0.6, 2.5);
-        let (a, b, on_axis) = as_line(recognize(&trace, TOL, &up).expect("a line"));
+        let (a, b, on_axis) = recognize(&trace, TOL, &up).expect("a line").as_line();
         assert!(!on_axis, "a deliberate diagonal was pulled onto an axis");
         let drawn = (trace[trace.len() - 1] - trace[0]).normalize();
         assert!((b - a).normalize().perp_dot(drawn).abs() < 0.02);
@@ -828,17 +823,17 @@ mod tests {
         for len in [120.0f32, 400.0, 1600.0] {
             // Inside the cone at every length…
             let near = aimed(&g, 2, start, len, 0.04, 0.0);
-            let (_, _, on) = as_line(recognize(&near, TOL, &up).expect("a line"));
+            let (_, _, on) = recognize(&near, TOL, &up).expect("a line").as_line();
             assert!(on, "{len}px missed an axis 2.3° away");
             // …out to the edge of it, which is the width the *aim* needs rather than
             // the width the wrist needs: a vanishing point off the page is not
             // somewhere the eye can look while drawing toward it.
             let wide = aimed(&g, 2, start, len, 0.12, 0.0);
-            let (_, _, on) = as_line(recognize(&wide, TOL, &up).expect("a line"));
+            let (_, _, on) = recognize(&wide, TOL, &up).expect("a line").as_line();
             assert!(on, "{len}px missed an axis 6.9° away");
             // …and outside it at every length.
             let far = aimed(&g, 2, start, len, 0.25, 0.0);
-            let (_, _, on) = as_line(recognize(&far, TOL, &up).expect("a line"));
+            let (_, _, on) = recognize(&far, TOL, &up).expect("a line").as_line();
             assert!(!on, "{len}px was claimed by an axis 14° away");
         }
     }
@@ -853,14 +848,14 @@ mod tests {
         let start = Vec2::new(-260.0, 210.0);
         let trace = aimed(&g, 1, start, 420.0, 0.05, 2.5);
         assert!(
-            as_line(
-                recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(&g))).expect("a line")
-            )
-            .2
+            recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(&g)))
+                .expect("a line")
+                .as_line()
+                .2
         );
 
         let shut = Scaffold::of(std::iter::empty());
-        assert!(!as_line(recognize(&trace, TOL, &shut).expect("a line")).2);
+        assert!(!recognize(&trace, TOL, &shut).expect("a line").as_line().2);
     }
 
     /// A curve is still a curve. The grid may only choose *which* line a line is, and
@@ -896,13 +891,6 @@ mod tests {
     /// on one of this guide's planes and 1500px on another, and a residual bar quoted as
     /// a fraction of the shape means something quite different at those two sizes.
     const DRAWN_SIZE: f32 = 180.0;
-
-    fn as_ellipse(shape: AssistShape) -> (Ellipse, Option<AxisPlane>) {
-        match shape {
-            AssistShape::Ellipse { shape, plane, .. } => (shape, plane),
-            other => panic!("recognized {other:?}, not an ellipse"),
-        }
-    }
 
     /// The circle at [`ON_PLANE`] on plane `k` whose image is [`DRAWN_SIZE`] across the
     /// mean: the plane, its radius there, and the ellipse it is seen as.
@@ -948,7 +936,9 @@ mod tests {
             let (plane, radius, _) = perspective_circle(&g, k);
             // A tenth too round and leaning 3° off — a hand that saw it about right.
             let trace = perspective_loop(&g, k, 1.1, 0.05);
-            let (seen, on) = as_ellipse(recognize(&trace, TOL, &up).expect("an ellipse"));
+            let (seen, on) = recognize(&trace, TOL, &up)
+                .expect("an ellipse")
+                .as_ellipse();
             let on = on.unwrap_or_else(|| panic!("plane {k} was not taken"));
             assert_eq!(Some(plane), Some(on), "plane {k}: another plane claimed it");
 
@@ -972,9 +962,9 @@ mod tests {
     fn the_snapped_loop_is_round_in_its_plane() {
         let g = guide();
         let trace = perspective_loop(&g, 2, 1.1, -0.05);
-        let (seen, plane) = as_ellipse(
-            recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(&g))).expect("an ellipse"),
-        );
+        let (seen, plane) = recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(&g)))
+            .expect("an ellipse")
+            .as_ellipse();
         let plane = plane.expect("a perspective circle");
         let (flat, r) = plane.circle_behind(seen).expect("a circle");
 
@@ -996,9 +986,9 @@ mod tests {
         let g = guide();
         // Twice as eccentric as the plane calls for, and turned 40° out of its tilt.
         let trace = perspective_loop(&g, 2, 1.6, 0.5);
-        let (_, plane) = as_ellipse(
-            recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(&g))).expect("an ellipse"),
-        );
+        let (_, plane) = recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(&g)))
+            .expect("an ellipse")
+            .as_ellipse();
         assert!(plane.is_none(), "a deliberate ellipse was made a circle");
     }
 
@@ -1009,11 +999,11 @@ mod tests {
         let mut g = guide();
         let trace = perspective_loop(&g, 2, 1.1, -0.05);
         let claimed = |g: &PerspectiveGuide| {
-            as_ellipse(
-                recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(g))).expect("an ellipse"),
-            )
-            .1
-            .is_some()
+            recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(g)))
+                .expect("an ellipse")
+                .as_ellipse()
+                .1
+                .is_some()
         };
         assert!(claimed(&g));
 
@@ -1030,11 +1020,11 @@ mod tests {
         g.pairs = [true; 3];
         assert!(claimed(&g));
         assert!(
-            as_ellipse(
-                recognize(&trace, TOL, &Scaffold::of(std::iter::empty())).expect("an ellipse")
-            )
-            .1
-            .is_none(),
+            recognize(&trace, TOL, &Scaffold::of(std::iter::empty()))
+                .expect("an ellipse")
+                .as_ellipse()
+                .1
+                .is_none(),
             "a guide that was never handed over reshaped a loop"
         );
     }
@@ -1051,7 +1041,9 @@ mod tests {
             let (plane, _, _) = perspective_circle(&g, k);
             for (wrong, tilt) in [(1.2f32, 0.0f32), (1.0, 0.105), (1.12, 0.06)] {
                 let trace = perspective_loop(&g, k, wrong, tilt);
-                let (.., on) = as_ellipse(recognize(&trace, TOL, &up).expect("an ellipse"));
+                let (.., on) = recognize(&trace, TOL, &up)
+                    .expect("an ellipse")
+                    .as_ellipse();
                 assert_eq!(
                     on,
                     Some(plane),
@@ -1075,13 +1067,13 @@ mod tests {
         let trace = perspective_loop(&g, 2, 1.08, 0.04);
         let shape =
             recognize(&trace, TOL, &Scaffold::of(std::slice::from_ref(&g))).expect("an ellipse");
-        let (seen, plane) = as_ellipse(shape);
+        let (seen, plane) = shape.as_ellipse();
         let plane = plane.expect("a perspective circle");
         let (flat, r) = plane.circle_behind(seen).expect("a circle behind it");
 
         let wider = plane.circle_seen(flat, r * 1.5).expect("a wider circle");
         let target = Frame::of(wider).point(1.0);
-        let (steered, kept) = as_ellipse(shape.adjust(shape.grip(), target));
+        let (steered, kept) = shape.adjust(shape.grip(), target).as_ellipse();
         assert_eq!(kept, Some(plane), "the circle left its plane");
 
         let (moved, wider) = plane.circle_behind(steered).expect("still a circle");
@@ -1105,7 +1097,6 @@ mod tests {
     // --- a rigid motion of the canvas ------------------------------------------
 
     use proptest::prelude::*;
-    use std::f32::consts::PI;
 
     /// A line or a loop drawn with the wobble of a steady hand — far inside every bar, so
     /// what varies is where the shape was drawn, never whether it snaps.
@@ -1124,7 +1115,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(crate::path::test_support::cases())]
+        #![proptest_config(crate::test_support::cases())]
 
         /// Recognition moves with the canvas: the same trace turned and shifted anywhere
         /// snaps to the same shape turned and shifted, since the canvas itself can be

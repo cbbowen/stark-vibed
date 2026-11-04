@@ -160,7 +160,7 @@ mod tests {
     }
 
     proptest! {
-        #![proptest_config(crate::path::test_support::cases())]
+        #![proptest_config(crate::test_support::cases())]
 
         /// The map is monotone and lands inside `[0, spans]` for any fraction, in range
         /// or not — what lets samples keep their order along the curve.

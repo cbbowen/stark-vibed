@@ -35,8 +35,8 @@ use std::time::Duration;
 use stark_model::geom::Vec2;
 use stark_stroke::InputSample;
 use stark_stroke::path::{
-    self, DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, FlattenTolerance, MAX_TOLERANCE, MIN_TOLERANCE,
-    PathFitter,
+    self, DEFAULT_TOLERANCE, FLATTEN_TOLERANCE, FlattenTolerance, InputTolerance, MAX_TOLERANCE,
+    MIN_TOLERANCE, PathFitter,
 };
 
 /// The recorded strokes, by the property of the fit each one stresses.
@@ -209,7 +209,7 @@ fn fit_tolerance(c: &mut Criterion) {
             BenchmarkId::from_parameter(format!("tol-{tol}")),
             &(pts.clone(), tol),
             |b, (pts, tol)| {
-                b.iter(|| path::fit_with_tolerance(black_box(pts).iter().copied(), *tol))
+                b.iter(|| path::fit_at(black_box(pts).iter().copied(), InputTolerance::new(*tol)))
             },
         );
     }
@@ -283,8 +283,7 @@ fn end_to_end(c: &mut Criterion) {
         g.throughput(criterion::Throughput::Elements(pts.len() as u64));
         g.bench_with_input(BenchmarkId::from_parameter(name), &pts, |b, pts| {
             b.iter(|| {
-                let knots =
-                    path::fit_with_tolerance(black_box(pts).iter().copied(), DEFAULT_TOLERANCE);
+                let knots = path::fit_at(black_box(pts).iter().copied(), InputTolerance::DEFAULT);
                 path::flatten(&knots, FLATTEN_TOLERANCE)
             });
         });
