@@ -161,7 +161,7 @@ fn read(state: AppState, command: &InputCommand) -> Vec<Deed> {
         InputCommand::Gesture(GestureCommand::End) => stroke(state),
         // Not the transport's: playback drives the playhead with these very commands
         // (§18.2.4), and the user's own stops playback before it dispatches
-        // (`commands::edit_history`).
+        // (`stark_ui::commands::admit`, `Gate::History`).
         InputCommand::Doc(DocCommand::Redo) => one(Deed::Redo, !playing(state)),
         InputCommand::Doc(DocCommand::Undo) => one(Deed::Undo, !playing(state)),
         // Nothing inside a bracket ([`not_reaching`]).

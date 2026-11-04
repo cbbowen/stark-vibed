@@ -466,7 +466,7 @@ pub fn hand(state: AppState, tool: Tool) -> Hand {
     Hand {
         panning: (state.space_down)(),
         selecting: tool.is_selection(),
-        playing: crate::panels::timeline::is_playing(state),
+        playing: (state.timeline.playing)(),
         sampling: (state.pick.dragging)(),
         busy: (state.canvas_active)(),
     }
@@ -483,8 +483,7 @@ pub fn hand(state: AppState, tool: Tool) -> Hand {
 /// other than paint. What is here is only this frontend's reading of each — the
 /// signals it keeps them in, and the drag table asked of the modifiers held.
 pub fn hover_stroke(state: AppState, s: InputSample, e: &Event<PointerData>) {
-    let shadowed = stark_ui::drags::armed(&state.drags.peek(), *state.held_mods.peek())
-        .is_some_and(stark_ui::drags::DragAction::shadows_paint);
+    let shadowed = stark_ui::drags::shadowed(&state.drags.peek(), *state.held_mods.peek());
     let hovering = hand(state, crate::panels::select::current_tool(state)).hovering(shadowed);
     let Some(tolerance) = input_tolerance(state, e) else {
         return;

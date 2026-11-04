@@ -38,9 +38,9 @@
 //! storage is rewritten without them. The app's definition wins, which is the
 //! whole point: a stored copy is a staler one.
 //!
-//! Like the shape library (`crate::shapes`), the user's half is frontend state
-//! that follows this browser across documents via `localStorage` — and degrades
-//! to a per-session library where storage is unavailable.
+//! Like the shape library (`crate::library`), the user's half is frontend state
+//! that follows this browser across documents — and degrades to a per-session
+//! library where storage is unavailable.
 
 use dioxus::prelude::*;
 
@@ -215,24 +215,26 @@ pub fn apply_first(state: AppState) {
 /// Snapshot the live brush under `name` and persist ([`presets::upsert`]): over the
 /// user's preset of that name in its own row, and never under a name one of the app's
 /// presets holds — which the dialog says before the button is reachable
-/// ([`presets::is_builtin`]).
-pub fn save_current(state: AppState, name: String) {
+/// ([`presets::is_builtin`]). Whether it saved: a refused name leaves the library and
+/// the brush in hand as they were.
+pub fn save_current(state: AppState, name: String) -> bool {
     let mut entries = state.presets;
     // Refused off a `peek`: a write guard wakes every reader of the library when it drops,
     // changed or not.
     if presets::check_save(&entries.peek(), &name).is_err() {
-        return;
+        return false;
     }
     let (brush, transient) = worn(state);
     // Its own statement: the write guard must be gone before `persist` reads the list.
     let saved = presets::upsert(&mut entries.write(), &name, brush, transient);
     if saved.is_err() {
-        return;
+        return false;
     }
     persist(&entries.peek());
     // The brush in hand now *is* this preset, whichever it was taken from.
     let mut in_hand = state.preset_in_hand;
     in_hand.set(Some(name));
+    true
 }
 
 /// Drop one of the user's presets from the library ([`presets::remove`]). The live

@@ -187,7 +187,7 @@ pub fn download_bytes(_bytes: &[u8], _filename: &str, _mime: &str) -> Result<(),
     Err("no browser to download through".to_string())
 }
 
-pub fn pick_file(_accept: &str, _on_file: impl Fn(String, Vec<u8>) + 'static) {}
+pub fn pick_file(_accept: &str, _on_file: impl FnOnce(String, Vec<u8>) + 'static) {}
 
 pub fn on_file_launch(_on_file: impl Fn(String, Vec<u8>) + 'static) {}
 

@@ -15,9 +15,9 @@
 use dioxus::prelude::*;
 
 use crate::icons::{icon, label};
-use crate::panels::select::current_tool;
-use crate::state::AppState;
+use crate::state::{AppState, use_obs};
 use crate::widgets::{Bar, Chip, Choice, CommandButton, Face, Segmented};
+use stark_engine::command::Tool;
 use stark_ui::commands::Command;
 use stark_ui::commands::PickScope;
 use stark_ui::pick::{PATCHES, patch_word};
@@ -33,7 +33,12 @@ pub fn PickBar() -> Element {
     // chord pressed mid-stroke must not pop a bar up over the painting. `dragging`
     // is the pick itself, which deliberately leaves `canvas_active` alone so the
     // Color panel stays legible while sampling.
-    let hand = crate::input::hand(state, current_tool(state));
+    //
+    // The tool is *read*, through a memo, for the canvas cursor's reason
+    // (`canvas.rs`): `current_tool` peeks, and the bar would stay up over a tool
+    // switch made while the chord is held.
+    let tool = use_obs(state, |o| o.tool);
+    let hand = crate::input::hand(state, tool().unwrap_or(Tool::Brush));
     if !hand.shows_options(&state.drags.read(), (state.held_mods)()) {
         return rsx! {};
     }

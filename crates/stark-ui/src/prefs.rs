@@ -286,10 +286,14 @@ pub const BUDGET_STEPS: &[(u64, &str)] = &[
 /// not name, and it has to read as *something*; the safe direction is the smaller budget,
 /// which errs toward less memory rather than more.
 pub fn budget_step(bytes: u64) -> usize {
-    BUDGET_STEPS
-        .iter()
-        .rposition(|(v, _)| *v <= bytes)
-        .unwrap_or(0)
+    step_at(BUDGET_STEPS, bytes)
+}
+
+/// The notch `value` sits at on an ascending ladder of `steps`, or the nearest one below
+/// it — [`budget_step`]'s rule for any ladder, so a slider handed its steps finds its
+/// notch on the same ones it indexes.
+pub fn step_at(steps: &[(u64, &str)], value: u64) -> usize {
+    steps.iter().rposition(|(v, _)| *v <= value).unwrap_or(0)
 }
 
 #[cfg(test)]

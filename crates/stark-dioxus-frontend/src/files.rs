@@ -136,10 +136,6 @@ pub fn save_document(state: AppState) {
 pub fn open_document(state: AppState) {
     // Called straight from the menu handler: a file picker may only be opened
     // inside the user gesture that asked for it.
-    //
-    // The handler is `Fn`, not `FnMut` — it may be re-entered per selected file —
-    // so the signals are copied out of the capture on each call rather than
-    // mutated in place. `Signal` is `Copy`, which is what makes that free.
     pick_file(
         &format!(".{}", stark_ui::files::DOC_EXT),
         move |_name, bytes| open_bytes(state, bytes),

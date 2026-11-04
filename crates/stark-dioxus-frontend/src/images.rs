@@ -159,7 +159,7 @@ fn place_bytes(state: AppState, name: Option<String>, bytes: Vec<u8>, at: At) {
         // **Before the commit that names it**, which is the ordering `add_content`
         // documents: an action broadcast without its content registered leaves every
         // receiver unable to fetch what it needs (§12.4). A no-op when solo.
-        seed_session(state, id, png);
+        crate::collab::offer(state, stark_net::AssetNeed::Picture(id), png);
 
         // Centred on whatever the gesture meant ([`At`]). The view is the frontend's
         // (§18.1.2), so this is the frontend's arithmetic — the engine is told a
@@ -189,14 +189,13 @@ fn place_bytes(state: AppState, name: Option<String>, bytes: Vec<u8>, at: At) {
         // Read once into a scope that ends before the dispatch below. A projection
         // guard held across the command would be borrowed while `dispatch` publishes
         // the new one, which is the borrow panic `crate::state` warns about.
-        let (above, carrier) = {
+        // The rule every add shares (`layer_tree::placement`).
+        let (carrier, above) = {
             let obs = state.obs.peek();
-            let Some(o) = obs.as_ref() else {
+            if obs.is_none() {
                 return tracing::error!("the canvas is not ready yet");
-            };
-            let above = o.active_layer;
-            let carrier = o.layer(above).and_then(|l| l.carrier);
-            (Some(above), carrier)
+            }
+            stark_ui::layer_tree::placement(obs.as_ref())
         };
 
         tracing::info!(width, height, ?name, "placing an image");
@@ -211,22 +210,4 @@ fn place_bytes(state: AppState, name: Option<String>, bytes: Vec<u8>, at: At) {
             },
         );
     });
-}
-
-/// Register the picture with a live session's mirror so peers can fetch it by hash.
-/// A no-op when solo; idempotent when repeated, because it is content-addressed.
-///
-/// `library::seed_session`'s twin, and the reason a placed image needs no chunking of
-/// its own: the log carries 32 bytes and the pixels travel over the blob ALPN, so a
-/// photograph never has to fit in a gossip message (§12.4).
-fn seed_session(state: AppState, id: stark_model::AssetId, bytes: Vec<u8>) {
-    if let Some(broadcaster) = state
-        .collab
-        .session
-        .read()
-        .as_ref()
-        .map(|s| s.broadcaster())
-    {
-        broadcaster.add_content(stark_net::AssetNeed::Picture(id), bytes);
-    }
 }

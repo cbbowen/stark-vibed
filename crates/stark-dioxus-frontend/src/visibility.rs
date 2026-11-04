@@ -13,8 +13,8 @@ use stark_ui::commands::VisibilityToggle;
 /// hides anything — `layout::set_open` and `layout::toggle_collapse`,
 /// `navigator::set_open`, `slots::set_pinned`, `panels::timeline::set_open`.
 ///
-/// Whole-record rather than incremental, and that is the point: the four facts live
-/// in four signals, and reading all of them here is what keeps the record from ever
+/// Whole-record rather than incremental, and that is the point: the facts live in
+/// separate signals, and reading all of them here is what keeps the record from ever
 /// holding a half-updated screen. It is also what makes the `match` in it the place
 /// a new menu entry is *made* to declare itself.
 ///

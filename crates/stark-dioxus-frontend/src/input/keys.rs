@@ -36,8 +36,18 @@ pub fn bind_shortcuts(state: AppState) {
     // The one event that takes a key away without ever sending its keyup: focus
     // leaving the window. A number held across an Alt+Tab would otherwise hold
     // its brush for the rest of the session, with the key that ends it now
-    // belonging to another window (`slots::release_all`).
-    on_window_blur(move || slots::release_all(state));
+    // belonging to another window (`slots::release_all`). Space and the modifiers
+    // likewise: a space held across the switch would turn every later press into a
+    // pan, and the Alt of Alt+Tab would leave the eyedropper's cursor up, until the
+    // next keystroke corrected them.
+    on_window_blur(move || {
+        slots::release_all(state);
+        let mut space_down = state.space_down;
+        if *space_down.peek() {
+            space_down.set(false);
+        }
+        track_mods(state, Mods::default());
+    });
 }
 
 /// Bind the pen's eraser end to its brush slot, once, for the life of the page
@@ -212,9 +222,7 @@ fn track_mods(state: AppState, now: Mods) {
         // back as paint: the wrong color for one and the wrong layer for the
         // other (§18.1.10). Asked of the table rather than named here, so a
         // rebinding moves it (§25.5).
-        if stark_ui::drags::armed(&state.drags.peek(), now)
-            .is_some_and(stark_ui::drags::DragAction::shadows_paint)
-        {
+        if stark_ui::drags::shadowed(&state.drags.peek(), now) {
             clear_hover_mark(state);
         }
     }

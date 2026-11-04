@@ -54,7 +54,7 @@ use crate::panels::brush::{set_orientation, set_shape};
 use crate::platform::{capture_pointer, pick_file, sleep_ms};
 use crate::presets;
 use crate::render::Renderer;
-use crate::state::{AppState, update_brush};
+use crate::state::{AppState, update_brush, use_obs};
 use crate::widgets::{AssetCard, AssetGallery, Choice, Face, Modal, Segmented, Slider, Thumb};
 use stark_engine::command::{DocCommand, Edit, GestureCommand, ViewCommand};
 use stark_ui::brush_config::{BrushConfig, BrushEffectType, Transient};
@@ -83,7 +83,7 @@ type BrushEdit = Box<dyn FnOnce(&mut BrushConfig, &mut Transient)>;
 struct Preview {
     /// The preview surface + engine; `None` until its async init completes.
     ///
-    /// A writable `Signal`, unlike [`Signals::renderer`](crate::state::Signals::renderer)(crate::state::AppState),
+    /// A writable `Signal`, unlike [`Signals::renderer`](crate::state::Signals::renderer),
     /// and deliberately: this engine has no observable projection and no chrome
     /// reading one back — the dialog renders from its own signals. There is
     /// therefore no publish to pair a mutation with, which is the whole of what
@@ -170,6 +170,9 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
         restroke(state, preview);
     });
 
+    // The two document facts the rows depend on, below (`Shown`).
+    let document_facts = use_obs(state, |o| (o.color_space, o.substrate));
+
     // Section fold state, one signal per group in `SECTIONS`' order: the everyday
     // groups start open, the specialised ones closed (`Section::open_by_default`).
     // `use_signal` in a fixed-length loop rather than four named signals, because the
@@ -197,19 +200,10 @@ pub fn BrushEditorModal(on_close: EventHandler<()>) -> Element {
     //
     // The jitter channels are the *color space's* channels, so the space is one of the
     // two document facts the table has to be told.
-    let space = state
-        .renderer
-        .read()
-        .as_ref()
-        .map(|r| r.desk.engine().color_space())
-        .unwrap_or(ColorSpaceId::Oklab);
-    // The substrate the document is on (§6.4) — what the tooth has to bite into.
-    let substrate = state
-        .renderer
-        .read()
-        .as_ref()
-        .map(|r| r.desk.engine().substrate())
-        .unwrap_or_default();
+    // The other is the substrate the document is on (§6.4) — what the tooth has to
+    // bite into. Both off the projection, not the renderer signal: every command
+    // writes that, and a read of it here would wake the dialog on each one.
+    let (space, substrate) = document_facts().unwrap_or((ColorSpaceId::Oklab, Default::default()));
     // The brush and the two document facts its rows depend on, in the one shape the
     // shared table takes (`stark_ui::brush_editor::Shown`).
     let shown = Shown {
@@ -974,7 +968,7 @@ fn edit(
 
 /// Match the preview surface to a new canvas size. The column runs the dialog's
 /// full height, so folding a section or resizing the window changes it, and the
-/// drawing buffer — sized once in `finish_init` — would otherwise stretch.
+/// drawing buffer — sized once in [`init_preview`] — would otherwise stretch.
 ///
 /// The **seeded** stroke is then re-laid to the new extent, so the default keeps
 /// running the length of the column instead of ending short of it. A stroke the

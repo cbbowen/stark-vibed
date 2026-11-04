@@ -101,10 +101,7 @@ impl Anchor {
             // freed it is what set this — but written out rather than relied upon,
             // so the card cannot be shown pointing at a box that is not in the DOM.
             Anchor::PanelColumn => crate::layout::sleep_panels(state),
-            Anchor::QuickSlots => {
-                let mut pinned = state.slots.pinned;
-                pinned.set(true);
-            }
+            Anchor::QuickSlots => crate::slots::set_pinned(state, true),
             Anchor::Navigator => crate::navigator::set_open(state, true),
             // Nothing to do. The rail and the canvas are always there, and the editor
             // is up already — opening it is the deed that brings these due, and opening

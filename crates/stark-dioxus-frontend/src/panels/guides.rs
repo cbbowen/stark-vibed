@@ -499,18 +499,25 @@ pub fn PerspectiveGuideBar(edit: GuideEdit) -> Element {
     // preview it was showing (`end_guide_edit`).
     let pending = use_signal(|| None::<(GuideId, PerspectiveGuide)>);
     let guides = use_guides(state);
-    let Some((index, row)) = guides
+    let found = guides
         .iter()
         .position(|g| g.id == edit.id)
-        .map(|i| (i, &guides[i]))
-    else {
-        // The guide went away under the mode — a peer removed it, or an undo
-        // crossed the add. Fold the bar rather than pointing it at nothing.
-        //
-        // A guide is *found* here rather than indexed, which is the whole of what
-        // its having an id buys the mode: a removal or a reorder elsewhere in the
-        // roster used to have to re-point this, and now moves nothing it holds.
-        end_guide_edit(state);
+        .map(|i| (i, &guides[i]));
+    // The guide went away under the mode — a peer removed it, or an undo crossed the
+    // add. Fold the bar rather than pointing it at nothing. Left from an effect, not
+    // from this body: leaving writes the mode `ModeBars` renders this from, and a
+    // write while a component runs is one Dioxus refuses to order.
+    //
+    // A guide is *found* here rather than indexed, which is the whole of what its
+    // having an id buys the mode: a removal or a reorder elsewhere in the roster used
+    // to have to re-point this, and now moves nothing it holds.
+    let gone = found.is_none();
+    use_effect(use_reactive!(|gone| {
+        if gone {
+            end_guide_edit(state);
+        }
+    }));
+    let Some((index, row)) = found else {
         return rsx! {};
     };
     let id = edit.id;

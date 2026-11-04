@@ -126,6 +126,13 @@ pub struct Hovering {
 }
 
 impl Hovering {
+    /// Whether a press here is promised to paint: none of the four states that hand
+    /// it to something else holds. What [`report`](Self::report) asks, for a frontend
+    /// whose brush ring has to make the same promise the mark does.
+    pub fn promises_paint(self) -> bool {
+        !(self.panning || self.shadowed || self.sampling || self.playing)
+    }
+
     /// The report a hovering move owes `ViewCommand::PreviewHover`, or `None` where
     /// the press is promised elsewhere — which is the answer that takes a standing
     /// mark **down** rather than merely declining to renew it.
@@ -140,7 +147,7 @@ impl Hovering {
     /// [`tolerance`] gives it to a gesture — restated per report, because the zoom it
     /// derives from can change mid-hover.
     pub fn report(self, sample: InputSample, tolerance: f32) -> Option<HoverReport> {
-        if self.panning || self.shadowed || self.sampling || self.playing {
+        if !self.promises_paint() {
             return None;
         }
         Some(HoverReport {

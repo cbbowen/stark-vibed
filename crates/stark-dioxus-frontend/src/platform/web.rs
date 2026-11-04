@@ -1024,8 +1024,10 @@ pub fn download_bytes(bytes: &[u8], filename: &str, mime: &str) -> Result<(), St
 ///
 /// Clicks a detached `<input type=file>`. The click must happen inside the user
 /// gesture that asked for it, so call this straight from the handler, not from a task.
-/// The change closure is `forget`ten, since the picker outlives this call.
-pub fn pick_file(accept: &str, on_file: impl Fn(String, Vec<u8>) + 'static) {
+/// The change closure outlives this call, so it is handed to JS as a one-shot
+/// (`Closure::once_into_js`): a detached input that is clicked once changes at most once,
+/// and the closure frees itself when it runs. Only a cancelled picker leaves it behind.
+pub fn pick_file(accept: &str, on_file: impl FnOnce(String, Vec<u8>) + 'static) {
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
 
@@ -1042,14 +1044,11 @@ pub fn pick_file(accept: &str, on_file: impl Fn(String, Vec<u8>) + 'static) {
     input.set_type("file");
     input.set_accept(accept);
 
-    // Shared: `Fn` is not `Clone`, and each file's task needs its own handle.
-    let on_file = std::rc::Rc::new(on_file);
     let input_for_change = input.clone();
-    let on_change = Closure::<dyn FnMut()>::new(move || {
+    let on_change = Closure::once_into_js(move || {
         let Some(file) = input_for_change.files().and_then(|f| f.get(0)) else {
             return;
         };
-        let on_file = on_file.clone();
         wasm_bindgen_futures::spawn_local(async move {
             let name = file.name();
             match read_file(file).await {
@@ -1058,8 +1057,7 @@ pub fn pick_file(accept: &str, on_file: impl Fn(String, Vec<u8>) + 'static) {
             }
         });
     });
-    input.set_onchange(Some(on_change.as_ref().unchecked_ref()));
-    on_change.forget();
+    input.set_onchange(Some(on_change.unchecked_ref()));
     input.click();
 }
 

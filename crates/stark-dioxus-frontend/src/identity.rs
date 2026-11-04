@@ -6,8 +6,9 @@
 //! bytes to keep, how to count runs of them, and what an absent record means are the
 //! shared crate's — it is the record and the policy, and it says why both exist. What
 //! is left here is that a secret key is `stark-net`'s type, and a crate two frontends
-//! share should not name it: the native one has no collaboration yet, and putting
-//! iroh under it for a 32-byte array would be the tail wagging the dog.
+//! share should not name it: putting iroh under the frontends' shared crate for a
+//! 32-byte array would be the tail wagging the dog, so each frontend that
+//! collaborates keeps these few lines of its own.
 //!
 //! The minting is here for the same reason. `SecretKey::generate` is where the CSPRNG
 //! choice belongs, so the shared crate asks for a closure rather than choosing one

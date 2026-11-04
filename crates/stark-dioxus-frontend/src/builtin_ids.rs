@@ -93,7 +93,7 @@ pub fn install(desk: &mut Desk, need: AssetNeed, bytes: &[u8]) {
 mod tests {
     use super::*;
     use stark_model::AssetId;
-    use std::task::{Context, Poll, Waker};
+    use stark_ui::storage::at_once;
 
     fn brush(n: u8) -> AssetNeed {
         AssetNeed::Brush(AssetId([n; 32]))
@@ -129,21 +129,12 @@ mod tests {
         assert_eq!(all_or_short(Vec::new()), Ok(Vec::new()));
     }
 
-    /// Poll a future that has nothing to wait on.
-    fn ready<T>(fut: impl Future<Output = T>) -> T {
-        let mut cx = Context::from_waker(Waker::noop());
-        match std::pin::pin!(fut).poll(&mut cx) {
-            Poll::Ready(out) => out,
-            Poll::Pending => panic!("the future waited on something"),
-        }
-    }
-
     /// No build ships these ids, so each is answered without a read — and what
     /// `fetch_each` hands back is the shape `all_or_short` refuses by name.
     #[test]
     fn fetch_each_answers_every_need_in_order() {
         let owed = [brush(1), AssetNeed::Substrate(AssetId([2; 32])), brush(3)];
-        let fetched = ready(fetch_each(&owed));
+        let fetched = at_once(fetch_each(&owed));
         assert_eq!(
             fetched,
             owed.iter().map(|&need| (need, None)).collect::<Vec<_>>()
@@ -153,6 +144,6 @@ mod tests {
 
     #[test]
     fn nothing_owed_fetches_nothing() {
-        assert_eq!(ready(fetch_each(&[])), Vec::new());
+        assert_eq!(at_once(fetch_each(&[])), Vec::new());
     }
 }

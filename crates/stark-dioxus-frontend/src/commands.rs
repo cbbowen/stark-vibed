@@ -12,7 +12,6 @@
 //!   the boundary reporting itself: every arm reaches `AppState`.
 //! - **`active`** is the registry's list of switches over this frontend's own state
 //!   ([`Lit`]), which no rule over `ObservableState` could read the way `enabled` does.
-//! - **`icon`** is inline SVG (`crate::icons`), which is a DOM idiom.
 //! - **`find`** and the four store doors, which hold signals.
 
 use dioxus::html::{Key, Modifiers};

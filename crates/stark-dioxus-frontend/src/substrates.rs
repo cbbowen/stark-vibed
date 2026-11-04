@@ -58,7 +58,7 @@
 use dioxus::dioxus_core::spawn_forever;
 use dioxus::prelude::*;
 use stark_engine::command::DocCommand;
-use stark_model::{AssetNeed, SubstrateId};
+use stark_model::SubstrateId;
 
 use crate::library;
 use crate::render::Renderer;
@@ -217,19 +217,7 @@ fn seed_session(state: AppState, id: SubstrateId) {
     let SubstrateId::Image(asset) = id else {
         return;
     };
-    // Solo there is nobody to offer it to, and a height map is megabytes to copy out
-    // of the engine for nobody.
-    if state.collab.session.peek().is_none() {
-        return;
-    }
-    let bytes = state
-        .renderer
-        .peek()
-        .as_ref()
-        .and_then(|r| r.desk.engine().content_bytes(AssetNeed::Substrate(asset)));
-    if let Some(bytes) = bytes {
-        library::seed_session::<Substrates>(state, asset, bytes);
-    }
+    library::offer::<Substrates>(state, asset);
 }
 
 /// Every catalog substrate paired with the id it resolved to — `None` for one whose

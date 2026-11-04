@@ -26,13 +26,6 @@ use stark_ui::panels::PanelId;
 use stark_ui::reorder::{Grab, Motion, Slide};
 use strum::VariantArray;
 
-/// The panel's mark, worn by its title bar and its visibility-menu entry
-/// (`stark_ui::commands::VisibilityToggle`). A free function for the orphan rule; which
-/// mark it is belongs to the crate (§11.2 N8).
-pub fn panel_glyph(id: PanelId) -> stark_ui::icons::Icon {
-    id.glyph()
-}
-
 /// The shortest a resizable panel may be dragged.
 const MIN_PANEL_HEIGHT: f32 = 140.0;
 
@@ -530,7 +523,7 @@ pub fn Panel(id: PanelId, slot: usize, count: usize, motion: Motion, children: E
                     // Refuse the browser's own drag, which would take the reorder's press. The
                     // stack is also unselectable (`.panel-stack`).
                     ondragstart: move |e| e.prevent_default(),
-                    {icon(crate::layout::panel_glyph(id))}
+                    {icon(id.glyph())}
                     "{id.title()}"
                     // The fold caret, inside the grip, rotated to point where the content
                     // goes. The layer tree's fold (`stark_ui::icons::FOLD_OPEN`) cannot turn,

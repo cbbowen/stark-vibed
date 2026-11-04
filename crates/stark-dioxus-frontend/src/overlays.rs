@@ -23,7 +23,6 @@ use crate::collab::css_color;
 use crate::input::{BrushRing, FlowBar, TuneReadout};
 use crate::state::{AppState, use_obs};
 use stark_model::geom::Vec2;
-use stark_ui::drags::DragAction;
 
 /// Collaborators' pointers, drawn in each peer's own color (§17.4).
 ///
@@ -119,16 +118,19 @@ pub fn BrushCursor() -> Element {
     // that takes none (the cursor already says not-allowed — §15.7), not under a
     // marquee tool, whose mark is the shape dragged rather than the brush, and
     // not while space arms a pan or a chord arms an act that shadows the brush —
-    // the eyedropper, the layer carry. Those announce themselves through the
-    // cursor, and the circle must not outbid them; which acts they are is the
-    // table's answer rather than a list kept here (`DragAction::shadows_paint`).
-    // It stays up through a stroke, where it goes on being true.
+    // the eyedropper, the layer carry — nor while the timeline plays, where the
+    // press is refused. Those announce themselves through the cursor, and the circle
+    // must not outbid them. The list is the hover mark's own
+    // (`Hovering::promises_paint`), so the ring and the mark under it come and go
+    // together; which acts shadow the brush is the table's answer rather than a list
+    // kept here (`drags::shadowed`). It stays up through a stroke, where it goes on
+    // being true.
+    let shadowed = stark_ui::drags::shadowed(&state.drags.read(), (state.held_mods)());
     if !paintable
         || tool.is_selection()
-        || (state.space_down)()
-        || stark_ui::drags::armed(&state.drags.read(), (state.held_mods)())
-            .is_some_and(DragAction::shadows_paint)
-        || (state.pick.dragging)()
+        || !crate::input::hand(state, tool)
+            .hovering(shadowed)
+            .promises_paint()
     {
         return rsx! {};
     }

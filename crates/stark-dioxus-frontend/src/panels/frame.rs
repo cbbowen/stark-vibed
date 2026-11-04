@@ -70,8 +70,9 @@ pub fn use_selected_frame(state: AppState) -> Memo<Option<(LayerInfo, MatteInfo)
     use_obs_opt(state, |o| o.and_then(selected_frame_of))
 }
 
-/// Stop composing: select the topmost paint layer instead. Used by the frame bar's
-/// "Done", since a frame is only "deselected" by selecting something else.
+/// Stop composing: select the topmost paint layer instead. The frame and filter bars'
+/// "Done" and `Command::FinishMode`'s Esc, since a frame is only "deselected" by
+/// selecting something else.
 pub fn done_composing(state: AppState) {
     let next = state.obs.peek().as_ref().and_then(|o| {
         o.layers

@@ -144,6 +144,12 @@ pub fn share(state: AppState) {
             }
             Err(e) => {
                 tracing::warn!("share failed: {e}");
+                // Undo the conversion above: a replicated timeline refuses to seek and
+                // to fold its oldest actions away on behalf of peers, and there are
+                // none. Quiet for the reason the conversion was.
+                crate::state::with_engine_quiet(state, |r| {
+                    r.desk.engine_mut().end_collaboration();
+                });
                 fail(state, format!("Sharing failed: {e}"));
             }
         }
@@ -245,13 +251,7 @@ pub fn join(state: AppState, link: String) {
 /// is the transfer — a collaborator switching to a substrate the app ships with costs
 /// a read from its own files instead of megabytes off a peer (§12.4).
 fn supply_locally(state: AppState, need: AssetNeed) {
-    let Some(broadcaster): Option<Broadcaster> = state
-        .collab
-        .session
-        .read()
-        .as_ref()
-        .map(|s| s.broadcaster())
-    else {
+    let Some(broadcaster) = broadcaster(state) else {
         return;
     };
     spawn_forever(async move {
@@ -324,6 +324,29 @@ pub fn leave(state: AppState) {
     });
 }
 
+/// The live session's broadcaster, or `None` when solo. Peeked: every caller is a
+/// handler or a task, and one reached from an effect (`dispatch`) must not leave the
+/// effect subscribed to the session.
+pub fn broadcaster(state: AppState) -> Option<Broadcaster> {
+    state
+        .collab
+        .session
+        .peek()
+        .as_ref()
+        .map(|s| s.broadcaster())
+}
+
+/// Offer `bytes` to a live session's blob store under `need`, so a peer can fetch them
+/// by hash the moment an action names them (§12.4). A no-op when solo; idempotent when
+/// repeated, being content-addressed. The one door for a brush, a substrate and a
+/// placed picture alike: the log carries 32 bytes and the pixels travel over the blob
+/// ALPN, so none of them ever has to fit in a gossip message.
+pub fn offer(state: AppState, need: AssetNeed, bytes: Vec<u8>) {
+    if let Some(tx) = broadcaster(state) {
+        tx.add_content(need, bytes);
+    }
+}
+
 /// After a dispatched command: broadcast whatever the engine just committed.
 /// Cheap when solo (the outbox is empty and no session exists).
 pub fn flush_outbox(state: AppState) {
@@ -338,13 +361,7 @@ pub fn flush_outbox(state: AppState) {
     if actions.is_empty() {
         return;
     }
-    let Some(tx): Option<Broadcaster> = state
-        .collab
-        .session
-        .read()
-        .as_ref()
-        .map(|s| s.broadcaster())
-    else {
+    let Some(tx) = broadcaster(state) else {
         return;
     };
     // Inline, not spawned. Broadcasting queues; the session's one send task puts
@@ -358,8 +375,6 @@ pub fn flush_outbox(state: AppState) {
     }
 }
 
-/// Store the live session and start the incoming pump. `ticket_text` is minted
-/// by the async caller — minting asks the network which members are reachable.
 /// What this client hands the transport: its persisted key — joining is not a
 /// different person from hosting — and what this build ships with, offered so a host
 /// can leave it out of a snapshot (§12.4).
@@ -387,6 +402,8 @@ async fn seed_and_install(
     install(state, session, events, ticket_text);
 }
 
+/// Store the live session and start the incoming pump. `ticket_text` is minted
+/// by the async caller — minting asks the network which members are reachable.
 fn install(state: AppState, session: CollabSession, mut events: Events, ticket_text: String) {
     // The page URL *is* the invitation: anyone opening it joins this session
     // (via this peer — every member is a valid entry point).
@@ -511,13 +528,7 @@ fn start_presence_pump(state: AppState) {
             // rather than `continue`, so that stays true however the body grows —
             // `continue` here would skip the sleep and spin.
             'tick: {
-                let Some(tx): Option<Broadcaster> = state
-                    .collab
-                    .session
-                    .read()
-                    .as_ref()
-                    .map(|s| s.broadcaster())
-                else {
+                let Some(tx) = broadcaster(state) else {
                     // The session is gone; so is the reason for this loop.
                     return;
                 };

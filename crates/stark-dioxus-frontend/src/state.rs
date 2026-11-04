@@ -121,14 +121,14 @@ pub struct Signals {
     pub written_revision: Signal<u64>,
     /// Whether the user is holding space.
     pub space_down: Signal<bool>,
-    /// The modifiers currently held, tracked off key events and corrected off every
-    /// event's modifier set, so a change made while unfocused is caught up on the next
-    /// keystroke. Only ever shown: the resting cursor and the eyedropper's options bar ask
+    /// The modifiers currently held, tracked off key events' modifier sets — so a change
+    /// made while unfocused is caught up on the next keystroke — and cleared when the
+    /// window loses focus. Only ever shown: the resting cursor and the eyedropper's options bar ask
     /// the drag table what a press under these would open (`stark_ui::drags::armed`).
     pub held_mods: Signal<stark_ui::keys::Mods>,
-    /// Whether a canvas gesture is in flight (a stroke, a selection drag, a pan,
-    /// or a run of wheel zooming). The floating chrome fades out while it is set —
-    /// see [`chrome_dimmed`](crate::layout::chrome_dimmed).
+    /// Whether a canvas gesture is in flight (a stroke, a selection drag, a pan or a
+    /// pinch) — written through [`set_canvas_active`]. The floating chrome fades out
+    /// while it is set — see [`chrome_dimmed`](crate::layout::chrome_dimmed).
     pub canvas_active: Signal<bool>,
     /// Whether the panel stack is asleep: still faded after the gesture ended, until the
     /// pointer reaches into its column (§11).
@@ -480,6 +480,16 @@ fn schedule_paint(state: AppState) {
             publish_observation(state);
         }
     });
+}
+
+/// Say whether a canvas gesture is in flight ([`Signals::canvas_active`]). Peeked
+/// first: the release paths clear it on every lift, and the mode interruption on
+/// every move, and a write wakes every faded container whether or not it changed.
+pub fn set_canvas_active(state: AppState, active: bool) {
+    let mut flag = state.canvas_active;
+    if *flag.peek() != active {
+        flag.set(active);
+    }
 }
 
 /// Reach the engine as `&mut`, publish what it now looks like, and repaint. `None` when

@@ -6,7 +6,10 @@
 //! `.segmented`, and `widgets::SliderTrack` every track's `.slider`, to the first spelling.
 //! Render tests in `widgets` guard those two; this guards the spelling everywhere else.
 
-use std::path::{Path, PathBuf};
+mod common;
+
+use common::{read, rust_files};
+use std::path::Path;
 
 #[test]
 fn no_element_splits_its_classes_across_string_attributes() {
@@ -148,31 +151,4 @@ fn past_value(source: &str, at: usize) -> Option<usize> {
         i += 1;
     }
     None
-}
-
-fn read(path: &Path) -> String {
-    std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("{} does not read: {e}", path.display()))
-}
-
-/// Every `.rs` file under `root`, recursively.
-fn rust_files(root: &Path) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        for entry in std::fs::read_dir(&dir).expect("a readable directory") {
-            let path = entry.expect("a readable directory entry").path();
-            if path.is_dir() {
-                stack.push(path);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                found.push(path);
-            }
-        }
-    }
-    assert!(
-        found.len() > 1,
-        "the walk found no source under `src`, which is a green test that read nothing"
-    );
-    found.sort();
-    found
 }

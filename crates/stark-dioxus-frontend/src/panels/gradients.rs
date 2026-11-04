@@ -259,7 +259,7 @@ pub fn GradientTraceOverlay() -> Element {
         // The capture goes first, and the order is load-bearing: it samples the
         // **composite** at the instant it is called (§22.2), while ending the
         // mode stands the suspended gradient bar back up *with its preview*
-        // (`gradient_bar::resume`). The other way round, a fill preview would be
+        // (`gradient_bar::resume_from`). The other way round, a fill preview would be
         // traced as if it were paint and the new ramp fitted through the one it
         // was drawn to replace.
         if gradients::trace_long_enough(&points) {

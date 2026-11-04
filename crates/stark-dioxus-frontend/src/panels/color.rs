@@ -274,7 +274,7 @@ fn pick_wheel(
     apply_color(onchange, wheel);
 }
 
-/// Set `L` from a pointer position over the vertical slider (top = light), then apply.
+/// Set `L` from a pointer position along the horizontal slider, then apply.
 fn pick_l(
     onchange: EventHandler<[f32; 3]>,
     mut wheel: Signal<Wheel>,

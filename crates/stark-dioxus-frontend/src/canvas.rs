@@ -27,7 +27,7 @@ use crate::panels;
 use crate::panels::select::current_tool;
 use crate::platform::capture_pointer;
 use crate::render::CANVAS_ID;
-use crate::state::{AppState, resize, use_obs};
+use crate::state::{AppState, resize, set_canvas_active, use_obs};
 use stark_ui::commands::Command;
 use stark_ui::drags::DragAction;
 use stark_ui::nav::Lift;
@@ -39,9 +39,9 @@ pub fn Canvas() -> Element {
     // Paint — behind the wait a finger's press is held in (§18.1.11) — navigation,
     // the brush-tuning drag (§18.1.9) and the layer carry (§16.11), as one value.
     let gestures = use_gestures(state);
-    // Set for as long as the canvas is the thing being used, which fades the floating
-    // chrome out of the way. Pointer gestures clear it on release (`end_interaction`).
-    let mut canvas_active = state.canvas_active;
+    // `canvas_active` is set for as long as the canvas is the thing being used, which
+    // fades the floating chrome out of the way. Pointer gestures clear it on release
+    // (`end_interaction`).
 
     // Everything this component reads off the projection, in **one** memo — so the
     // canvas is re-rendered when its cursor would change and not when the engine is
@@ -151,7 +151,7 @@ pub fn Canvas() -> Element {
                 // sampling.
                 if gestures.begin_nav(&e) {
                     // Faded, unlike tuning: the pinch goes on using the canvas.
-                    canvas_active.set(true);
+                    set_canvas_active(state, true);
                     return;
                 }
                 // The drag table (`drags`): which bound gesture this press's
@@ -195,7 +195,7 @@ pub fn Canvas() -> Element {
                             // gesture's answer is the painting itself moving, so
                             // there is no panel to keep legible and every reason
                             // to hand the screen back to the picture (§25.3).
-                            canvas_active.set(true);
+                            set_canvas_active(state, true);
                         }
                         taken
                     }
@@ -222,7 +222,7 @@ pub fn Canvas() -> Element {
                 // pointer's gesture refuses, or one with no view to land in is not.
                 if input::is_contact(&e) && gestures.begin_paint(&e, current_tool(state)) {
                     capture_pointer(&e);
-                    canvas_active.set(true);
+                    set_canvas_active(state, true);
                 }
             },
             onpointermove: move |e| {
@@ -309,8 +309,8 @@ pub fn Canvas() -> Element {
                 // has to be taught (§18.1.11).
                 //
                 // Spent *after* the teardown, because undo puts down whatever is in
-                // hand (`commands::edit_history`) and this handler is what is
-                // holding it.
+                // hand (`stark_ui::commands::admit`, `Gate::History`) and this
+                // handler is what is holding it.
                 let Lift::Ended { tap } = gestures.release(&e) else {
                     return;
                 };
@@ -320,7 +320,7 @@ pub fn Canvas() -> Element {
                 // gesture that lasted a tenth of a second was not somebody
                 // asking for the panels to get out of the way.
                 if matches!(tap, Some(2 | 3)) {
-                    canvas_active.set(false);
+                    set_canvas_active(state, false);
                 }
                 end_interaction(gestures);
                 match tap {

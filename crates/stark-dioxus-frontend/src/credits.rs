@@ -130,8 +130,9 @@ fn Credit(
     name: String,
     url: String,
     description: String,
-    /// The licence text verbatim. `&'static str`, because it is always an
-    /// `include_str!` of a file in the tree — see [`PHOSPHOR_LICENSE`].
+    /// The licence text verbatim, or the licence's name where that is the whole of
+    /// what it asks. `&'static str`: either an `include_str!` of a file in the tree —
+    /// see [`PHOSPHOR_LICENSE`] — or a literal.
     license: &'static str,
 ) -> Element {
     rsx! {

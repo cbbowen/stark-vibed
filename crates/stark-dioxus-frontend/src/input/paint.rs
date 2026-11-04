@@ -445,8 +445,7 @@ impl Landing {
         let mut picker = state.pick.holder;
         picker.set(Some(h.pointer));
         // Unfade the chrome: the sample's answer is read off the Color panel.
-        let mut canvas_active = state.canvas_active;
-        canvas_active.set(false);
+        crate::state::set_canvas_active(state, false);
         // A finger has no cursor, so the loupe shows the answer (`PickState::loupe`).
         let mut loupe = state.pick.loupe;
         loupe.set(Some(h.press.at()));

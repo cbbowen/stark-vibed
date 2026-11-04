@@ -350,6 +350,13 @@ pub fn armed(bindings: &DragBindings, held: Mods) -> Option<DragAction> {
     bindings.lookup(held, DragButton::Left)
 }
 
+/// Whether `held` arms an act that shadows the brush ([`DragAction::shadows_paint`]) —
+/// [`Hovering::shadowed`](crate::input::Hovering::shadowed), asked of the table, so
+/// the hover mark, the brush ring and the keystroke that takes the mark down agree.
+pub fn shadowed(bindings: &DragBindings, held: Mods) -> bool {
+    armed(bindings, held).is_some_and(DragAction::shadows_paint)
+}
+
 /// What the chrome knows about the hand that the drag table does not (§18.0.2).
 ///
 /// A fact about **presses** rather than about sampling, which is why it sits with the

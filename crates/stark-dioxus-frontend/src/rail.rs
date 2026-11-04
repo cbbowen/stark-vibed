@@ -369,7 +369,7 @@ fn menu_mark(command: Command, active: Option<bool>, words: &str) -> Element {
 ///
 /// **A component and not an inline `button`**, for [`CmdItem`]'s reason and one
 /// more of its own. `Command::enabled` reads the projection and `Command::active`
-/// reads it too for the shape tools (`commands::armed`), so written inline both
+/// reads it too for the shape tools (`Lit::tool`), so written inline both
 /// ran in the palette's own body — which subscribed the whole surface, field and
 /// all, to every engine write, and re-ran `active` twice per row on each of them.
 /// A row that owns its own memo re-renders when *its* answer moves and sleeps

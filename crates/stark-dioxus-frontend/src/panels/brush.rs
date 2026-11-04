@@ -194,11 +194,13 @@ pub fn PresetSaveModal(on_close: EventHandler<()>) -> Element {
     let replaces = taken && !builtin;
 
     let save = move || {
+        // Enter reaches here with the button disabled, so the refusal is asked again
+        // rather than assumed: a name the app's own presets hold saves nothing, and
+        // the dialog stays up to say so.
         let name = name().trim().to_string();
-        if name.is_empty() {
+        if name.is_empty() || !presets::save_current(state, name) {
             return;
         }
-        presets::save_current(state, name);
         // A name confirmed is the brush kept, and the editor's work is done with
         // it: the editor this dialog was raised from goes down too — a no-op when
         // the command raised this dialog with no editor up. Cancel leaves it as it

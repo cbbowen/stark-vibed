@@ -178,8 +178,7 @@ impl Gestures {
         }
         self.landing.abandon();
         self.carry.abandon();
-        let mut canvas_active = self.state.canvas_active;
-        canvas_active.set(false);
+        crate::state::set_canvas_active(self.state, false);
         true
     }
 
@@ -240,8 +239,7 @@ impl Gestures {
         if loupe.peek().is_some() {
             loupe.set(None);
         }
-        let mut canvas_active = state.canvas_active;
-        canvas_active.set(false);
+        crate::state::set_canvas_active(state, false);
     }
 }
 

@@ -1125,8 +1125,7 @@ impl Canvas {
         // and the layer carry on the day it lands. The mark is a hypothesis about paint,
         // so it has to be off the canvas before a press can read one: the wrong color
         // for the sample.
-        let shadowed = stark_ui::drags::armed(&self.drags, mods_of(&window.modifiers()))
-            .is_some_and(DragAction::shadows_paint);
+        let shadowed = stark_ui::drags::shadowed(&self.drags, mods_of(&window.modifiers()));
         // The hand the cursor, the bar and the press read (`pick_hand`), so the mark
         // cannot stand down for a different reading of it.
         let hand = self.pick_hand().hovering(shadowed);

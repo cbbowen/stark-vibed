@@ -459,9 +459,9 @@ fn heal<K: Kind>(library: LibraryState, stale: AssetId, actual: AssetId, png: Ve
     });
 }
 
-/// Offer what this document holds under `id` to a live session. Copied only when there
-/// is one: a height map is megabytes to copy for nobody.
-fn offer<K: Kind>(state: AppState, id: AssetId)
+/// Offer what this document holds under `id` to a live session (`collab::offer`).
+/// Copied only when there is one: a height map is megabytes to copy for nobody.
+pub(crate) fn offer<K: Kind>(state: AppState, id: AssetId)
 where
     Desk: Engine<K>,
 {
@@ -474,7 +474,7 @@ where
         .as_ref()
         .and_then(|r| <Desk as Engine<K>>::held(&r.desk, id));
     if let Some(bytes) = bytes {
-        seed_session::<K>(state, id, bytes);
+        crate::collab::offer(state, K::need(id), bytes);
     }
 }
 
@@ -490,21 +490,6 @@ pub fn remove<K: Shelf>(state: AppState, id: AssetId) {
     } = K::library(state);
     assets::remove::<K>(&mut entries.write(), &mut unread.write(), id);
     spawn_forever(async move { assets::drop_bytes::<K>(id).await });
-}
-
-/// Offer `bytes` to a live session as `K`'s need, so a peer can fetch them by hash the
-/// moment an action names `id` (§12.4). A no-op when solo; idempotent when repeated,
-/// being content-addressed.
-pub fn seed_session<K: Kind>(state: AppState, id: AssetId, bytes: Vec<u8>) {
-    if let Some(broadcaster) = state
-        .collab
-        .session
-        .read()
-        .as_ref()
-        .map(|s| s.broadcaster())
-    {
-        broadcaster.add_content(K::need(id), bytes);
-    }
 }
 
 #[cfg(test)]

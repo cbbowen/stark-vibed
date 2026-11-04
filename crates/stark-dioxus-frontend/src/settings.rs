@@ -36,7 +36,7 @@ use crate::prefs;
 use crate::state::{AppState, use_obs};
 use crate::widgets::{Choice, Face, Modal, ModalDone, Segmented, SliderTrack};
 use stark_ui::collab::Phase;
-use stark_ui::prefs::{BUDGET_STEPS, ChromeHiding, budget_step};
+use stark_ui::prefs::{BUDGET_STEPS, ChromeHiding, step_at};
 use strum::VariantArray;
 
 /// The settings dialog, opened from the command rail's ⚙ button and dismissed by
@@ -197,7 +197,7 @@ fn SettingSlider(
     value: u64,
     onchange: EventHandler<u64>,
 ) -> Element {
-    let at = budget_step(value);
+    let at = step_at(steps, value);
     let max = steps.len().saturating_sub(1);
 
     rsx! {
