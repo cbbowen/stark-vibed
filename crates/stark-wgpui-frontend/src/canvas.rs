@@ -4,7 +4,7 @@
 //! One view rather than two, and that is a decision rather than an economy. A press
 //! on a slider and a press on the canvas are the same event arriving at the same
 //! place, and which of them it is depends on where the panel *ends* — so the split
-//! lives in one hit test ([`panel::hit`]) instead of in two elements racing for the
+//! lives in one hit test ([`regions::hit`](crate::regions::hit)) instead of in two elements racing for the
 //! pointer. It is also what lets a slider drag keep working once the pointer has left
 //! the track, which an element handler cannot do: wgpui gates `on_mouse_move` on the
 //! hitbox, so an element that loses the pointer stops hearing about it.

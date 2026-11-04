@@ -81,7 +81,7 @@ const CURVE_STROKE: f32 = 1.5;
 /// moves as a section folds cannot come to mean a different act.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Region {
-    /// The panel itself. Recorded first and read last ([`hit`] scans in reverse), so
+    /// The panel itself. Recorded first and read last ([`hit`](crate::regions::hit) scans in reverse), so
     /// every control in the dialog wins over it and a press that hit none of them stops
     /// here rather than reaching the canvas.
     Sheet,
