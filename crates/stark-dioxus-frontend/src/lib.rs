@@ -145,7 +145,9 @@ fn app() -> Element {
     // while a key is held, which is far too late to start rendering the thing it
     // is there to show. Generation needs the main renderer, so this watches the
     // renderer alongside the two libraries: whichever lands last kicks it off, and a
-    // slot tuned under a hold re-runs it on the release that stores it.
+    // slot tuned under a hold re-runs it on the release that stores it. And the shape
+    // library, which lands after both: a preset on one of its stamps is not wanted
+    // until it does (`thumbs::wanted`).
     //
     // Subscribing reads, because `thumbs::refresh` peeks. The renderer through
     // `renderer_ready`, which moves once, rather than the renderer signal, which every
@@ -153,6 +155,7 @@ fn app() -> Element {
     use_effect(move || {
         let _ = state.presets.read();
         let _ = state.slots.brushes.read();
+        let _ = state.shapes.entries.read();
         let _ = (state.renderer_ready)();
         thumbs::refresh(state);
     });

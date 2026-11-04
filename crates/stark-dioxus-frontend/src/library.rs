@@ -361,6 +361,36 @@ pub fn ensure<K: Shelf>(state: AppState, id: AssetId) -> Option<AssetId>
 where
     Desk: Engine<K>,
 {
+    let id = ready::<K>(state, id)?;
+    offer::<K>(state, id);
+    Some(id)
+}
+
+/// Whether [`ready`] could answer `id` without a fetch: the engine holds it, or this
+/// library's bytes for it have been read. Asked under `peek`, and changes nothing —
+/// for a reader that must not import as a side effect of *asking* (the brush
+/// thumbnails, `crate::thumbs`).
+///
+/// `false` before the library's start-up read lands (`library::load`), which is the
+/// case the asking is for: a stamp asked about then is not gone, only not here yet.
+pub fn reachable<K: Shelf>(state: AppState, id: AssetId) -> bool
+where
+    Desk: Engine<K>,
+{
+    let held = state
+        .renderer
+        .peek()
+        .as_ref()
+        .is_some_and(|r| <Desk as Engine<K>>::holds(&r.desk, id));
+    held || K::library(state).entries.peek().iter().any(|e| e.id == id)
+}
+
+/// [`ensure`] without the offer to a live session: the bytes in the engine and the id to
+/// reference them by, for a render no peer will see (the brush thumbnails' rig).
+pub fn ready<K: Shelf>(state: AppState, id: AssetId) -> Option<AssetId>
+where
+    Desk: Engine<K>,
+{
     if gpu_lost(state) {
         return None;
     }
@@ -380,7 +410,6 @@ where
         }
         id
     };
-    offer::<K>(state, id);
     Some(id)
 }
 

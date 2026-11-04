@@ -48,12 +48,14 @@ use stark_engine::command::InputSample;
 use stark_engine::command::{DocCommand, Edit, ViewCommand};
 use stark_engine::{Background, Engine, EnvironmentId, MediaParams, Offscreen, Rendered};
 use stark_model::SubstrateId;
-use stark_model::document::{FillOp, SelectionShape};
+use stark_model::document::{BrushShape, FillOp, SelectionShape};
 use stark_model::geom::Vec2;
 
+use crate::library;
 use crate::state::{AppState, root_signal};
 use crate::thumb_cache::{Insert, NoRenderer, Pace, Picture, ThumbCache, readback_url};
 use key::Key;
+use stark_ui::assets::Shapes;
 use stark_ui::brush_config::{BrushConfig, Transient};
 
 /// Thumbnail pixel size: 2× the box a preset row shows it in (a full-bleed row,
@@ -127,7 +129,7 @@ mod key {
 pub struct ThumbState {
     /// Finished thumbnails, found by comparing the [`Key`] itself ([`lookup`]).
     /// Appended: a snapshot is the whole of what its picture shows, so no later
-    /// render supersedes one.
+    /// render supersedes one — and pruned to what is still shown by [`refresh`].
     pictures: ThumbCache<Key>,
     /// The kept engine + offscreen attachments; `None` until first use.
     pub rig: Signal<Option<Rig>>,
@@ -187,9 +189,15 @@ pub fn url(state: AppState, brush: &BrushConfig, tune: Transient) -> Option<Stri
 }
 
 /// Make sure every brush that has a picture to show has a thumbnail, generating
-/// the missing ones in the background ([`ThumbCache::refresh`]). Cheap when nothing
-/// is missing; safe to call from a render effect.
+/// the missing ones in the background ([`ThumbCache::refresh`]), and drop the
+/// pictures of brushes nothing shows any more. Cheap when nothing is missing; safe to
+/// call from a render effect.
+///
+/// The cache is [`Insert::Append`], so without the prune every re-tuned slot and every
+/// preset overwritten in place would leave its old picture behind for the session.
 pub fn refresh(state: AppState) {
+    let shown = wanted(state);
+    state.thumbs.pictures.retain(|key| shown.contains(key));
     state.thumbs.pictures.refresh(
         move || wanted(state),
         // The rig is this cache's own, so there is nothing to wait for.
@@ -205,6 +213,12 @@ pub fn refresh(state: AppState) {
 /// of its own (`slots::resolve`), and one tuned off the preset's is a brush no preset
 /// holds. Presets first, so the list a user is looking at fills in before the rack
 /// they have to hold a key to see.
+///
+/// **A brush on a library stamp is not wanted until its shape can be reached**
+/// ([`library::reachable`]): the presets load before the shape library does, and a
+/// stamp the engine does not hold renders as whatever it substitutes — a picture that
+/// would then be filed under the brush for the session. It is wanted once the library
+/// lands, which the root effect that calls [`refresh`] watches for.
 fn wanted(state: AppState) -> Vec<Key> {
     let presets = state.presets.peek();
     let rack = state.slots.brushes.peek();
@@ -216,15 +230,41 @@ fn wanted(state: AppState) -> Vec<Key> {
                 .flatten()
                 .filter_map(|slot| stark_ui::slots::resolve(&presets, slot)),
         )
+        .filter(|(brush, _)| match brush.shape {
+            BrushShape::Stamp(id) => library::reachable::<Shapes>(state, id),
+            BrushShape::Round { .. } => true,
+        })
         .map(|(brush, tune)| Key::new(brush, tune))
         .collect()
+}
+
+/// `brush` as the rig can draw it: a library stamp imported into the shared asset
+/// store first ([`library::ready`]), under the id the engine answers — healed where the
+/// stored one predates a canonicalization (§19). `None` for a stamp the import refused,
+/// which the shape gallery says why about; drawn anyway, it would be the engine's
+/// substitute shape filed under this brush.
+fn drawable(state: AppState, brush: &BrushConfig) -> Option<BrushConfig> {
+    match brush.shape {
+        BrushShape::Stamp(id) => Some(BrushConfig {
+            shape: BrushShape::Stamp(library::ready::<Shapes>(state, id)?),
+            ..*brush
+        }),
+        BrushShape::Round { .. } => Some(*brush),
+    }
 }
 
 /// Render the thumbnail for `key` as a `data:` URL, `None` for a render that failed
 /// for its own reasons. [`NoRenderer`] when there is no main renderer to share an
 /// engine from yet.
 async fn generate(state: AppState, key: Key) -> Result<Picture, NoRenderer> {
-    let (w, t) = (key.brush(), key.tune());
+    // Before the rig is borrowed: an import takes the main renderer's write door.
+    if state.renderer.peek().is_none() || crate::state::gpu_lost(state) {
+        return Err(NoRenderer);
+    }
+    let Some(brush) = drawable(state, key.brush()) else {
+        return Ok(None);
+    };
+    let (w, t) = (&brush, key.tune());
     // Everything up to the readback happens under the rig borrow, which must end
     // before the await — the same borrow bargain as `Engine::export` itself.
     let readback = {
