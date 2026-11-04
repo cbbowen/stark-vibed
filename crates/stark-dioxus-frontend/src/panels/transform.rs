@@ -37,11 +37,10 @@
 //! space-drag pan, the wheel zooms (see `input::Nav`). All gesture maths is in
 //! canvas space, so panning or zooming mid-gesture cannot corrupt it.
 
-use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::icons::{icon, label};
-use crate::input::{Nav, canvas_xy};
+use crate::input::{Catcher, canvas_xy};
 use crate::layout::chrome_dimmed;
 use crate::preview;
 use crate::state::{AppState, use_obs};
@@ -215,9 +214,6 @@ pub fn TransformOverlay(ui: TransformUi) -> Element {
     let mut drag = use_signal(|| None::<Grab>);
     // The cursor the resting pointer has earned, for feedback only.
     let mut hover = use_signal(|| "");
-    // The canvas's own navigation bindings, live on the catcher: composing a
-    // transform must not cost the view (see `input::Nav`).
-    let nav = Nav::use_nav(state);
     // The view through a memo, unconditionally and ahead of the early return
     // below like any `use_*`: the one field it draws with (`state::use_obs`).
     let live_view = use_obs(state, |o| o.view);
@@ -242,9 +238,6 @@ pub fn TransformOverlay(ui: TransformUi) -> Element {
     };
 
     let mut follow = move |e: &Event<PointerData>| {
-        if nav.advance(e) {
-            return;
-        }
         let pc = canvas_xy(view, e);
         // Resting: report what a press here would do, for the cursor. Asked with a
         // `peek` and answered before the write below, because a `with_mut` dirties
@@ -261,53 +254,32 @@ pub fn TransformOverlay(ui: TransformUi) -> Element {
             update(state, next);
         }
     };
-    let mut finish = move |e: &Event<PointerData>| {
-        follow(e);
-        nav.stop();
-        drag.set(None);
-    };
-
-    // The cursor announces the region the press would grab; the pan class wins
-    // while space is held (an inline cursor would override it, so none is set).
-    let panning = (state.space_down)();
-    let catcher_class = if panning {
-        "transform-catcher pan"
-    } else {
-        "transform-catcher"
-    };
-    let cursor = match (panning, drag()) {
-        (true, _) => "",
-        (_, Some(_)) => "cursor: grabbing;",
-        (_, None) => hover(),
+    // The cursor announces the region the press would grab; the catcher drops it
+    // for the pan class's while space is held.
+    let cursor = match drag() {
+        Some(_) => "cursor: grabbing;",
+        None => hover(),
     };
 
     rsx! {
-        div {
-            class: "{catcher_class}",
-            style: "{cursor}",
-            onpointerdown: move |e| {
-                if nav.begin(&e) {
-                    // A second finger turns the drag into navigation (§18.1.7).
-                    // The preview it had built stands — a transform commits on
-                    // "Done", not on release, so letting go to look around costs
-                    // nothing.
-                    drag.set(None);
-                    return;
-                }
-                if e.trigger_button() != Some(MouseButton::Primary) {
-                    return;
-                }
-                e.stop_propagation();
-                crate::platform::capture_pointer(&e);
-                let pc = canvas_xy(view, &e);
-                drag.set(Some(Grab::take(ui, pc, bands)));
+        // The canvas's own navigation bindings, live on the catcher: composing a
+        // transform must not cost the view.
+        Catcher {
+            class: "transform-catcher",
+            cursor,
+            onpress: move |e: Event<PointerData>| {
+                drag.set(Some(Grab::take(ui, canvas_xy(view, &e), bands)));
             },
-            onpointermove: move |e| follow(&e),
-            // Fingers still on the glass mean the gesture is not over — see the
-            // canvas's own release handler.
-            onpointerup: move |e| if !nav.release(&e) { finish(&e) },
-            onpointercancel: move |e| if !nav.release(&e) { nav.stop(); drag.set(None); },
-            onwheel: move |e| nav.wheel(e),
+            onfollow: move |e: Event<PointerData>| follow(&e),
+            onrelease: move |e: Event<PointerData>| {
+                follow(&e);
+                drag.set(None);
+            },
+            oncancel: move |_| drag.set(None),
+            // A second finger turns the drag into navigation (§18.1.7). The preview
+            // it had built stands — a transform commits on "Done", not on release,
+            // so letting go to look around costs nothing.
+            onyield: move |_| drag.set(None),
         }
 
         {match ui {

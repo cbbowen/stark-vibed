@@ -34,11 +34,10 @@
 //! in is something the canvas *shows* (the count of finite vanishing points),
 //! not something a control stores.
 
-use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::icons::{icon, label};
-use crate::input::{Nav, canvas_xy};
+use crate::input::{Catcher, canvas_xy};
 use crate::panels::reorder::{Grip, RowKey};
 use crate::preview;
 use crate::state::{AppState, dispatch, use_obs, use_obs_opt};
@@ -703,7 +702,6 @@ pub fn GuideEditOverlay(edit: GuideEdit) -> Element {
     // state, so a canvas drag makes the bargain every continuous control in the app
     // makes: preview per sample, one logged action on release (`crate::preview`).
     let pending = use_signal(|| None::<(GuideId, PerspectiveGuide)>);
-    let nav = Nav::use_nav(state);
 
     // The two things this overlay draws with, through **one** memo — the pair
     // moves together (a drag writes the guide, and the pose it is judged against
@@ -730,9 +728,6 @@ pub fn GuideEditOverlay(edit: GuideEdit) -> Element {
     let classify = move |pc: Vec2| handles.at(pc, view.zoom);
 
     let mut follow = move |e: &Event<PointerData>| {
-        if nav.advance(e) {
-            return;
-        }
         let pc = canvas_xy(view, e);
         let Some(d) = drag() else {
             hover.set(Some(classify(pc)));
@@ -770,57 +765,34 @@ pub fn GuideEditOverlay(edit: GuideEdit) -> Element {
             }
         }
     };
-    let mut finish = move |e: &Event<PointerData>| {
-        follow(e);
-        // One logged action for the whole gesture, laying down exactly the pose the
-        // canvas is showing (§20.5). After `follow`, so a release that also moved the
-        // pointer commits where it ended rather than where the last move left it.
+    // Whatever ends the gesture lays down what it reached rather than dropping it:
+    // the pose on the canvas is the one the artist was looking at (§20.5).
+    // `settle` is idempotent, so an end that follows another costs nothing.
+    let mut put_down = move || {
         settle_guide(state, pending);
-        nav.stop();
         drag.set(None);
     };
 
-    let panning = (state.space_down)();
-    let catcher_class = if panning {
-        "guide-catcher pan"
-    } else {
-        "guide-catcher"
-    };
-    let cursor = match (panning, drag(), hover()) {
-        (true, ..) => "",
-        (_, Some(d), _) => match d.region {
+    // The catcher drops this for the pan class's cursor while space is held.
+    let cursor = match (drag(), hover()) {
+        (Some(d), _) => match d.region {
             GuideRegion::Center => "cursor: move;",
             _ => "cursor: grabbing;",
         },
-        (_, None, Some(GuideRegion::Center)) => "cursor: move;",
+        (None, Some(GuideRegion::Center)) => "cursor: move;",
         // A ring and a horizon are both handles lying on the canvas, so both
         // read as something to take hold of; the free world grab is the one
         // that is not a handle, and says so.
-        (_, None, Some(GuideRegion::Focal(_) | GuideRegion::Horizon(_))) => "cursor: grab;",
-        (_, None, Some(GuideRegion::Orbit)) => "cursor: crosshair;",
-        (_, None, None) => "",
+        (None, Some(GuideRegion::Focal(_) | GuideRegion::Horizon(_))) => "cursor: grab;",
+        (None, Some(GuideRegion::Orbit)) => "cursor: crosshair;",
+        (None, None) => "",
     };
 
     rsx! {
-        div {
-            class: "{catcher_class}",
-            style: "{cursor}",
-            onpointerdown: move |e| {
-                if nav.begin(&e) {
-                    // A second finger turns the drag into navigation (§18.1.7).
-                    // What the drag had reached is *laid down* rather than dropped:
-                    // the pose on the canvas is the one the artist was looking at
-                    // when they reached for the second finger, and abandoning it
-                    // would take the work back for navigating (§20.5).
-                    settle_guide(state, pending);
-                    drag.set(None);
-                    return;
-                }
-                if e.trigger_button() != Some(MouseButton::Primary) {
-                    return;
-                }
-                e.stop_propagation();
-                crate::platform::capture_pointer(&e);
+        Catcher {
+            class: "guide-catcher",
+            cursor,
+            onpress: move |e: Event<PointerData>| {
                 let pc = canvas_xy(view, &e);
                 drag.set(Some(Drag {
                     region: classify(pc),
@@ -828,18 +800,22 @@ pub fn GuideEditOverlay(edit: GuideEdit) -> Element {
                     start: guide,
                 }));
             },
-            onpointermove: move |e| follow(&e),
-            onpointerup: move |e| if !nav.release(&e) { finish(&e) },
-            onpointercancel: move |e| if !nav.release(&e) {
-                // A cancel lays down what was reached, like a release: the browser
-                // taking the gesture or a pen leaving the tablet is not the artist
-                // asking for the pose back (§20.5). `settle` is idempotent, so a
-                // cancel that follows a release costs nothing.
-                settle_guide(state, pending);
-                nav.stop();
-                drag.set(None);
+            onfollow: move |e: Event<PointerData>| follow(&e),
+            // One logged action for the whole gesture, laying down exactly the pose
+            // the canvas is showing (§20.5). After `follow`, so a release that also
+            // moved the pointer commits where it ended rather than where the last
+            // move left it.
+            onrelease: move |e: Event<PointerData>| {
+                follow(&e);
+                put_down();
             },
-            onwheel: move |e| nav.wheel(e),
+            // The browser taking the gesture or a pen leaving the tablet is not the
+            // artist asking for the pose back.
+            oncancel: move |_| put_down(),
+            // A second finger turns the drag into navigation (§18.1.7), and the
+            // pose reached is kept: abandoning it would take the work back for
+            // navigating.
+            onyield: move |_| put_down(),
         }
     }
 }

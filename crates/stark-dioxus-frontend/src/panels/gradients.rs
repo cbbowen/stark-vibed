@@ -17,13 +17,11 @@
 //! sees — so it is a frontend mode ending in a request, the eyedropper's
 //! pattern stretched along a line (§4, §18.0.2).
 
-use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::gradients;
 use crate::icons::{icon, label};
-use crate::input::{Nav, canvas_xy};
-use crate::platform::capture_pointer;
+use crate::input::{Catcher, canvas_xy};
 use crate::state::{AppState, use_obs};
 use crate::widgets::{
     Bar, Chip, CommandButton, InlineRename, PopoutId, RemoveButton, close_popout, toggle_popout,
@@ -239,7 +237,6 @@ pub fn GradientTraceOverlay() -> Element {
     // The trace in flight, canvas space; `None` while armed but not yet pressed.
     // Local to the overlay, which disarming unmounts, so a fresh arm starts clean.
     let mut trace = use_signal(|| None::<Vec<Vec2>>);
-    let nav = Nav::use_nav(state);
     // The view through a memo, unconditionally and ahead of the early return
     // below like any `use_*`: the one field it draws with (`state::use_obs`).
     let live_view = use_obs(state, |o| o.view);
@@ -250,12 +247,11 @@ pub fn GradientTraceOverlay() -> Element {
     // Decimation of the hand, converted to the space the points are kept in.
     let min_step = TRACE_MIN_STEP_PX / view.zoom;
 
-    let mut finish = move |e: &Event<PointerData>| {
-        nav.stop();
+    let finish = move |e: Event<PointerData>| {
         let Some(mut points) = trace.write().take() else {
             return;
         };
-        points.push(canvas_xy(view, e));
+        points.push(canvas_xy(view, &e));
         // The capture goes first, and the order is load-bearing: it samples the
         // **composite** at the instant it is called (§22.2), while ending the
         // mode stands the suspended gradient bar back up *with its preview*
@@ -271,46 +267,29 @@ pub fn GradientTraceOverlay() -> Element {
         gradients::set_armed(state, false);
     };
 
-    let panning = (state.space_down)();
-    let catcher_class = if panning {
-        "gradient-catcher pan"
-    } else {
-        "gradient-catcher"
-    };
-
     rsx! {
-        div {
-            class: "{catcher_class}",
-            onpointerdown: move |e| {
-                if nav.begin(&e) {
-                    // A second finger or the pan bindings take the press: the
-                    // view moves, the armed mode stands, and any half-drawn
-                    // trace is abandoned — its points would straddle two views
-                    // of the hand even though they are sound in canvas space.
-                    trace.set(None);
-                    return;
-                }
-                if e.trigger_button() != Some(MouseButton::Primary) {
-                    return;
-                }
-                e.stop_propagation();
-                capture_pointer(&e);
-                trace.set(Some(vec![canvas_xy(view, &e)]));
-            },
-            onpointermove: move |e| {
-                if nav.advance(&e) {
-                    return;
-                }
-                let mut guard = trace.write();
-                let Some(points) = guard.as_mut() else { return };
+        Catcher {
+            class: "gradient-catcher",
+            onpress: move |e: Event<PointerData>| trace.set(Some(vec![canvas_xy(view, &e)])),
+            onfollow: move |e: Event<PointerData>| {
+                // Peeked first: a resting pointer has no trace to extend, and a write
+                // guard would re-render the overlay per move for nothing.
                 let p = canvas_xy(view, &e);
-                if points.last().is_none_or(|q| q.distance(p) >= min_step) {
+                let far = trace
+                    .peek()
+                    .as_ref()
+                    .is_some_and(|points| points.last().is_none_or(|q| q.distance(p) >= min_step));
+                if far && let Some(points) = trace.write().as_mut() {
                     points.push(p);
                 }
             },
-            onpointerup: move |e| if !nav.release(&e) { finish(&e) },
-            onpointercancel: move |e| if !nav.release(&e) { nav.stop(); trace.set(None); },
-            onwheel: move |e| nav.wheel(e),
+            onrelease: finish,
+            oncancel: move |_| trace.set(None),
+            // A second finger or the pan bindings take the press: the view moves,
+            // the armed mode stands, and any half-drawn trace is abandoned — its
+            // points would straddle two views of the hand even though they are
+            // sound in canvas space.
+            onyield: move |_| trace.set(None),
         }
 
         div { class: "gradient-trace-hint",

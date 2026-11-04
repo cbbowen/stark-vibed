@@ -24,13 +24,11 @@
 //! library no longer refuses the mode: the bar is where ramps come *from*, so
 //! it has to be reachable before there are any.
 
-use dioxus::html::input_data::MouseButton;
 use dioxus::prelude::*;
 
 use crate::gradients;
-use crate::input::{Nav, canvas_xy};
+use crate::input::{Catcher, canvas_xy};
 use crate::panels::gradients::GradientWell;
-use crate::platform::capture_pointer;
 use crate::preview;
 use crate::state::{AppState, use_obs};
 use crate::widgets::{ActChip, Bar, Choice, CommandButton, Face, Segmented};
@@ -384,7 +382,6 @@ pub fn GradientBar(ui: GradientUi, parked: bool) -> Element {
 pub fn GradientBarOverlay(ui: GradientUi) -> Element {
     let state = use_context::<AppState>();
     let mut dragging = use_signal(|| false);
-    let nav = Nav::use_nav(state);
     // The view through a memo, unconditionally and ahead of the early return
     // below like any `use_*`: the one field it draws with (`state::use_obs`).
     let live_view = use_obs(state, |o| o.view);
@@ -393,12 +390,6 @@ pub fn GradientBarOverlay(ui: GradientUi) -> Element {
         return rsx! {};
     };
 
-    let panning = (state.space_down)();
-    let catcher_class = if panning {
-        "gradient-catcher pan"
-    } else {
-        "gradient-catcher"
-    };
     // What to do, said the way the trace says it (§22.2): the catcher is
     // invisible and the axis has no chrome until it is dragged, so before the
     // first drag the mode is a pointer that mysteriously stopped painting.
@@ -413,35 +404,26 @@ pub fn GradientBarOverlay(ui: GradientUi) -> Element {
     let move_ui = ui.clone();
 
     rsx! {
-        div {
-            class: "{catcher_class}",
-            onpointerdown: move |e| {
-                if nav.begin(&e) {
-                    // Navigation takes the press; the composed axis stands — it
-                    // is canvas-space, so the view moving under it costs nothing.
-                    dragging.set(false);
-                    return;
-                }
-                if e.trigger_button() != Some(MouseButton::Primary) {
-                    return;
-                }
-                e.stop_propagation();
-                capture_pointer(&e);
+        Catcher {
+            class: "gradient-catcher",
+            onpress: move |e: Event<PointerData>| {
                 dragging.set(true);
                 let p = canvas_xy(view, &e);
                 update(state, GradientUi { drag: Some((p, p)), ..down_ui.clone() });
             },
-            onpointermove: move |e| {
-                if nav.advance(&e) || !dragging() {
+            onfollow: move |e: Event<PointerData>| {
+                if !*dragging.peek() {
                     return;
                 }
                 if let Some((from, _)) = move_ui.drag {
                     update(state, GradientUi { drag: Some((from, canvas_xy(view, &e))), ..move_ui.clone() });
                 }
             },
-            onpointerup: move |e| if !nav.release(&e) { nav.stop(); dragging.set(false); },
-            onpointercancel: move |e| if !nav.release(&e) { nav.stop(); dragging.set(false); },
-            onwheel: move |e| nav.wheel(e),
+            onrelease: move |_| dragging.set(false),
+            oncancel: move |_| dragging.set(false),
+            // Navigation takes the press; the composed axis stands — it is
+            // canvas-space, so the view moving under it costs nothing.
+            onyield: move |_| dragging.set(false),
         }
 
         if ui.drag.is_none() {

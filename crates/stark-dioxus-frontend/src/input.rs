@@ -61,7 +61,7 @@ mod tune;
 pub use carry::PickMove;
 pub(crate) use gestures::{end_interaction, use_gestures};
 pub use keys::{bind_context_menu, bind_pen, bind_shortcuts};
-pub use nav::Nav;
+pub use nav::{Catcher, Nav};
 pub use paint::{Landing, Paint};
 pub use tune::{BrushRing, FlowBar, Tune, TuneReadout};
 

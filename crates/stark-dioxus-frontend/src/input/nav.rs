@@ -285,3 +285,83 @@ impl Nav {
         }
     }
 }
+
+/// A mode's catcher: the full-viewport surface that owns the pointer while a mode
+/// composes — a transform, a gradient axis, a trace, a perspective guide — so a press
+/// shapes the mode rather than painting, with [`Nav`] live on it so the view stays
+/// reachable mid-compose.
+///
+/// What every catcher does is here, once: navigation offered each event first, a
+/// **contact** ([`is_contact`]) taken as the mode's press — the pen's eraser end as
+/// well as its tip, which a test of the primary button alone refused — the pointer
+/// captured, the release that only lifts one finger of a pinch held back, and the pan
+/// class worn while space is down. What each mode does with the pointer is its own:
+///
+/// - `onpress`: a contact the mode takes, already captured;
+/// - `onfollow`: a move navigation did not take — resting or dragging, the mode's to
+///   tell apart;
+/// - `onrelease`: the lift that ends the gesture, navigation already stopped;
+/// - `oncancel`: a cancel, navigation already stopped;
+/// - `onyield`: navigation took the press — a second finger, the middle button, space
+///   — and any gesture the mode had in flight is over.
+///
+/// `cursor` is the inline cursor the mode has earned, dropped while space is down so
+/// the pan class's own wins.
+#[component]
+pub fn Catcher(
+    class: &'static str,
+    #[props(default)] cursor: &'static str,
+    onpress: EventHandler<Event<PointerData>>,
+    onfollow: EventHandler<Event<PointerData>>,
+    onrelease: EventHandler<Event<PointerData>>,
+    oncancel: EventHandler<()>,
+    onyield: EventHandler<()>,
+) -> Element {
+    let state = use_context::<AppState>();
+    let nav = Nav::use_nav(state);
+    let panning = (state.space_down)();
+    let (class, cursor) = if panning {
+        (format!("{class} pan"), "")
+    } else {
+        (class.to_string(), cursor)
+    };
+
+    rsx! {
+        div {
+            class: "{class}",
+            style: "{cursor}",
+            onpointerdown: move |e| {
+                if nav.begin(&e) {
+                    onyield.call(());
+                    return;
+                }
+                if !is_contact(&e) {
+                    return;
+                }
+                e.stop_propagation();
+                capture_pointer(&e);
+                onpress.call(e);
+            },
+            onpointermove: move |e| {
+                if !nav.advance(&e) {
+                    onfollow.call(e);
+                }
+            },
+            // Fingers still on the glass mean the gesture is not over — see the
+            // canvas's own release handler.
+            onpointerup: move |e| {
+                if !nav.release(&e) {
+                    nav.stop();
+                    onrelease.call(e);
+                }
+            },
+            onpointercancel: move |e| {
+                if !nav.release(&e) {
+                    nav.stop();
+                    oncancel.call(());
+                }
+            },
+            onwheel: move |e| nav.wheel(e),
+        }
+    }
+}
