@@ -97,7 +97,7 @@ pub fn lighting_body(
     let color = obs.map_or(stark_engine::document::DEFAULT_SUBSTRATE_COLOR, |o| {
         o.substrate_color
     });
-    let swatch = packed(color.get());
+    let swatch = stark_ui::color::packed(color.get());
     let flat = obs.is_some_and(|o| o.substrate == SubstrateId::Flat);
     let shown_dials = dials(hdr, hdr_capable, display_headroom);
 
@@ -213,12 +213,6 @@ fn track(
         dial.readout(v),
         controls.light(dial),
     )
-}
-
-/// A straight-sRGB triple as the packed value the toolkit paints with.
-fn packed(rgb: [f32; 3]) -> u32 {
-    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
-    (byte(rgb[0]) << 16) | (byte(rgb[1]) << 8) | byte(rgb[2])
 }
 
 /// The colour the well would lay, given the colour in hand.

@@ -89,7 +89,7 @@ impl Pictures {
     /// plane, so two lightnesses a 255th apart draw the same thing, and a drag that
     /// crosses one step is what should cost a rebuild.
     fn wheel(&mut self, l: f32) -> Option<Arc<RenderImage>> {
-        let key = (l.clamp(0.0, 1.0) * 255.0).round() as u32;
+        let key = u32::from(color::byte(l));
         if self.wheel.as_ref().is_none_or(|(k, _)| *k != key) {
             let picture = texture(
                 FIELD_N,
@@ -106,7 +106,7 @@ impl Pictures {
     fn track(&mut self, hue: f32, sat: f32) -> Option<Arc<RenderImage>> {
         let key = (
             (hue.rem_euclid(std::f32::consts::TAU) * 40.0).round() as u32,
-            (sat.clamp(0.0, 1.0) * 255.0).round() as u32,
+            u32::from(color::byte(sat)),
         );
         if self.track.as_ref().is_none_or(|(k, _)| *k != key) {
             let picture = texture(
@@ -161,8 +161,7 @@ fn inside_the_rim(x: usize, y: usize) -> u8 {
     let r = (dx * dx + dy * dy).sqrt();
     // The ramp is a texel of the *picture*, which is scaled up — so the edge it draws
     // is soft at the size the panel shows, which is what an unclipped circle needs.
-    let t = ((1.0 - r) * last * 0.5 + 0.5).clamp(0.0, 1.0);
-    (t * 255.0) as u8
+    color::byte((1.0 - r) * last * 0.5 + 0.5)
 }
 
 /// Build the panel.
@@ -174,9 +173,7 @@ pub fn color_panel(
 ) -> impl IntoElement + use<> {
     let (mx, my) = color::wheel_xy(wheel.hue, wheel.sat);
     let rgb_now = wheel.rgb(WHEEL_GAMUT);
-    let swatch = ((rgb_now[0] * 255.0) as u32) << 16
-        | ((rgb_now[1] * 255.0) as u32) << 8
-        | (rgb_now[2] * 255.0) as u32;
+    let swatch = color::packed(rgb_now);
     div()
         .flex()
         .flex_col()

@@ -633,9 +633,7 @@ fn start_presence_pump(state: AppState) {
 /// A peer's color as a CSS `rgb(...)`, for the dots, chips and cursors that stand for
 /// them.
 pub fn css_color(peer: &Peer) -> String {
-    let [r, g, b] = peer
-        .color
-        .map(|c| (c.clamp(0.0, 1.0) * 255.0).round() as u8);
+    let [r, g, b] = stark_ui::color::bytes(peer.color);
     format!("rgb({r},{g},{b})")
 }
 

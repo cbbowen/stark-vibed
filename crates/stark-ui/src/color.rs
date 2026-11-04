@@ -369,12 +369,33 @@ pub fn notation_of(rgb: [f32; 3]) -> String {
     format!("color(display-p3 {:.4} {:.4} {:.4})", p3[0], p3[1], p3[2])
 }
 
+/// One encoded channel in `[0, 1]` as the byte a display stores it in: clamped, then
+/// rounded to the nearest of the 256.
+///
+/// **The one quantization in the app.** It was written six ways — truncating in one,
+/// unclamped in another — and the unclamped one packed a wide color's red past its
+/// own eight bits into a swatch's alpha. A hex code, a CSS `rgb()`, a packed toolkit
+/// color and a picture's texels are the same question, so they get the same answer.
+pub fn byte(v: f32) -> u8 {
+    (v.clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// A straight-sRGB color as three [`byte`]s.
+pub fn bytes(rgb: [f32; 3]) -> [u8; 3] {
+    rgb.map(byte)
+}
+
+/// A straight-sRGB color as `0xRRGGBB`, the packed form a native toolkit paints with.
+pub fn packed(rgb: [f32; 3]) -> u32 {
+    let [r, g, b] = bytes(rgb).map(u32::from);
+    (r << 16) | (g << 8) | b
+}
+
 /// A straight-sRGB color as `#rrggbb`, at the display's own precision — clamped, so
 /// a wide color prints as the nearest sRGB one. [`notation_of`] is what a readout
 /// wants; this is for a control whose value *is* a hex code.
 pub fn hex_of(rgb: [f32; 3]) -> String {
-    let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-    format!("#{:02x}{:02x}{:02x}", q(rgb[0]), q(rgb[1]), q(rgb[2]))
+    format!("#{:06x}", packed(rgb))
 }
 
 /// What [`notation_of`] prints, read back as extended sRGB: `#rgb`, `#rrggbb` or
@@ -445,7 +466,7 @@ fn quantize(gamut: Gamut, rgb: [f32; 3]) -> [u8; 3] {
         Gamut::Srgb => rgb,
         Gamut::DisplayP3 => stark_model::color::srgb_to_display_p3(rgb),
     };
-    own.map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
+    bytes(own)
 }
 
 /// The picker's wheel at lightness `l`, [`FIELD_N`] square: hue by direction, chroma
@@ -533,6 +554,16 @@ pub fn ab_field_rgb(l: f32, ab: f32) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A channel is clamped before it is rounded, so a wide color cannot carry into
+    /// the next channel's bits, and the three forms are one number.
+    #[test]
+    fn a_channel_is_one_byte_whatever_it_is_asked_as() {
+        assert_eq!(bytes([0.0, 0.5, 1.0]), [0, 128, 255]);
+        assert_eq!(bytes([-0.2, 1.3, f32::NAN]), [0, 255, 0]);
+        assert_eq!(packed([1.2, 0.0, 0.0]), 0xff_00_00);
+        assert_eq!(hex_of([1.0, 0.5, 0.0]), "#ff8000");
+    }
 
     /// The point of the fit: every position the wheel can hold is a color the display
     /// shows as asked. Stated as what the artist would see — how far the clamp in

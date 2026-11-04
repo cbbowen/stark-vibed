@@ -556,7 +556,7 @@ pub fn spectrum_stops() -> [(f32, [u8; 3]); PAD_STOPS] {
         .copied()
         .fold(0.0f32, f32::max)
         .max(1e-6);
-    let quantized = |v: f32| (linear_to_srgb(v / peak).clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    let quantized = |v: f32| crate::color::byte(linear_to_srgb(v / peak));
     std::array::from_fn(|i| (offset(i), weights[i].map(quantized)))
 }
 

@@ -90,7 +90,7 @@ pub fn icon_large(mark: Icon) -> Element {
 /// opacity the bucket is exactly its four neighbours, and it fades with a disabled
 /// chip like they do. One path, twice: the layers cannot drift apart.
 pub fn icon_tinted(mark: Icon, color: [f32; 4]) -> Element {
-    let c = |i: usize| (color[i] * 255.0).round().clamp(0.0, 255.0) as u8;
+    let c = |i: usize| stark_ui::color::byte(color[i]);
     let paint = format!("color: rgba({}, {}, {}, {})", c(0), c(1), c(2), color[3]);
     let svg = mark.svg();
     rsx! {
