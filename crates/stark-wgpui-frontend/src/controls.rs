@@ -266,12 +266,10 @@ impl Controls {
     }
 
     /// The state behind one of its plain ones.
+    ///
+    /// Seated rather than searched, as the modulatable rows are (`Knob::index`).
     pub fn editor_knob(&self, knob: Knob) -> &Entity<SliderState> {
-        let i = brush_editor::KNOBS
-            .iter()
-            .position(|k| *k == knob)
-            .expect("every editor knob is in `stark_ui::brush_editor::KNOBS`");
-        &self.editor_knobs[i]
+        &self.editor_knobs[knob.index()]
     }
 
     /// The state behind one of the Select section's dials.

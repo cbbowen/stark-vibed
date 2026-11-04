@@ -628,6 +628,31 @@ pub const KNOBS: [Knob; PLAIN.len() + Channel::COUNT + Axis::COUNT] = {
 };
 
 impl Knob {
+    /// Where this knob sits in [`KNOBS`] — the seat a frontend's control for it is kept
+    /// in, as [`ModRow::index`] is for the modulatable rows.
+    ///
+    /// Read off the same three pieces [`KNOBS`] is built from, in the same order: a
+    /// plain knob's place in `PLAIN`, then a channel's, then an axis's. Exhaustive, so a
+    /// new knob does not compile until it says where it sits, and
+    /// `tests::every_knob_sits_in_its_seat` holds the numbers to the roster. It replaces
+    /// a frontend's `position().expect()` — a panic on the frame the dialog opened, for
+    /// a knob added without its seat.
+    pub fn index(self) -> usize {
+        match self {
+            Self::Hardness => 0,
+            Self::StartTaper => 1,
+            Self::EndTaper => 2,
+            Self::Smoothing => 3,
+            Self::Quality => 4,
+            Self::ToothSoftness => 5,
+            Self::Jitter => 6,
+            Self::Drain => 7,
+            Self::Charge => 8,
+            Self::Amplitude(c) => PLAIN.len() + c.index(),
+            Self::Frequency(a) => PLAIN.len() + Channel::COUNT + a.index(),
+        }
+    }
+
     /// The word on the row. Takes the space because the three color-dynamics channels
     /// are the *space's* channels, and Mixbox's are pigments rather than a lightness
     /// and two opponents (§6.7).
@@ -1734,6 +1759,15 @@ mod tests {
         };
         for s in SOURCES {
             assert_eq!(source(s), s);
+        }
+    }
+
+    /// Every knob sits in the seat its index names, so a frontend indexing its
+    /// controls by it finds the one it built for that knob.
+    #[test]
+    fn every_knob_sits_in_its_seat() {
+        for (i, knob) in KNOBS.iter().enumerate() {
+            assert_eq!(knob.index(), i, "{knob:?}");
         }
     }
 
