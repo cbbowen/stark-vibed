@@ -214,24 +214,15 @@ impl Editor {
         }
     }
 
-    /// Lay the fixed reference band, then seed the default test stroke.
-    ///
-    /// The band is committed **once**, beneath everything the dialog replays, so the
-    /// single undo a re-stroke spends never reaches it — which is what lets a smudge,
-    /// a knife or a liquify brush be shown working paint that is already there.
+    /// Lay the fixed reference band (`stark_ui::brush_editor::lay_reference`), then
+    /// seed the default test stroke.
     pub fn lay_reference(&mut self) {
         let Some(p) = self.preview.as_mut() else {
             return;
         };
         let (w, h) = size_of(p);
-        let view = p.view();
-        p.process(stark_engine::command::ViewCommand::SetBrush {
-            brush: stark_ui::brush_editor::reference_brush(),
-            color: stark_ui::brush_editor::REFERENCE_COLOR,
-        });
-        let samples = stark_ui::brush_editor::reference_stroke(w, h, view);
-        p.replay_stroke(&samples, stark_ui::brush_editor::PREVIEW_STROKE_SEED, 0.0);
-        self.stroke.seed(w, h, view);
+        stark_ui::brush_editor::lay_reference(p.engine_mut(), w, h);
+        self.stroke.seed(w, h, p.view());
     }
 
     /// Put the seeded stroke back, whatever the artist drew over it.
@@ -254,47 +245,15 @@ impl Editor {
         self.stroke.relay_after_resize(w, h, p.view());
     }
 
-    /// Undo the committed test stroke, push `brush`, and replay the recorded hand as a
-    /// single commit.
-    ///
-    /// One render rather than one per sample: an interactive gesture folds its samples
-    /// once a frame, and a replay that asked for the same would be O(n²) across the
-    /// stroke and would starve the GPU for the length of every drag.
-    ///
-    /// A no-op while a hand is on the test canvas — what is on screen then is the
-    /// stroke being drawn, and replacing it mid-gesture would take it out from under
-    /// the pointer.
+    /// Re-lay the test stroke under `brush` (`TestStroke::restroke`). A stamp needs no
+    /// handing over: the sibling engine shares the content-addressed asset store, so
+    /// whatever the brush names is already here.
     pub fn restroke(&mut self, brush: &crate::brush::Brush) {
-        if self.stroke.drawing() {
-            return;
-        }
         let Some(p) = self.preview.as_mut() else {
             return;
         };
-        if self.stroke.needs_undo() {
-            p.process(stark_engine::command::DocCommand::Undo);
-        }
-        // The test stroke wears the fixed preview gold whatever the palette holds, so
-        // it reads over the red band beneath it; the effect's own opacity is untouched,
-        // which is what keeps the Opacity track honest. A stamp needs no handing over:
-        // the sibling engine shares the content-addressed asset store, so whatever the
-        // brush names is already here.
-        let mut tune = brush.tune;
-        tune.color = stark_ui::brush_editor::PREVIEW_STROKE_COLOR;
-        p.process(stark_engine::command::ViewCommand::SetBrush {
-            brush: brush.config.params(tune),
-            color: tune.color,
-        });
-        // The §6.11 rope the Smoothing track means *on this canvas*: the recorded test
-        // stroke is a hand, and replaying it through the tow is what lets the track
-        // show its work on the stroke beside it.
-        let rope = stark_ui::input::rope(p.view(), brush.config.smoothing);
-        let committed = p.replay_stroke(
-            self.stroke.samples(),
-            stark_ui::brush_editor::PREVIEW_STROKE_SEED,
-            rope,
-        );
-        self.stroke.replayed(committed);
+        self.stroke
+            .restroke(p.engine_mut(), &brush.config, brush.tune);
     }
 
     /// Begin a stroke the artist is drawing on the test canvas: clear the committed

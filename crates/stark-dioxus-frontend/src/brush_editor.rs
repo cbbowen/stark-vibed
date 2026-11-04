@@ -56,11 +56,10 @@ use crate::presets;
 use crate::render::Renderer;
 use crate::state::{AppState, update_brush, use_obs};
 use crate::widgets::{AssetCard, AssetGallery, Choice, Face, Modal, Segmented, Slider, Thumb};
-use stark_engine::command::{DocCommand, Edit, GestureCommand, ViewCommand};
+use stark_engine::command::{DocCommand, Edit, GestureCommand};
 use stark_ui::brush_config::{BrushConfig, BrushEffectType, Transient};
 use stark_ui::brush_editor::{
-    self, ModRow, PREVIEW_STROKE_COLOR, PREVIEW_STROKE_SEED, Row, SECTIONS, Section, Shown,
-    TestStroke, noise_label, source_label,
+    self, ModRow, Row, SECTIONS, Section, Shown, TestStroke, noise_label, source_label,
 };
 use stark_ui::commands::Command;
 
@@ -853,71 +852,34 @@ async fn init_preview(state: AppState, mut preview: Preview) {
     restroke(state, preview);
 }
 
-/// The fixed reference stroke laid on the preview canvas before any test
-/// stroke: a simple, hard-edged, opaque **red horizontal** band across the
-/// middle, committed once at init so the user can see how the brush being
-/// edited interacts with paint already on the canvas (smudge, drag, bleed, …).
-/// Plain `add` paint, no dynamics, no drain — a clean, unchanging target.
-///
-/// Across, because the test stroke runs down: the two have to *cross*, or the
-/// brush never meets the paint it is meant to be shown moving. It runs off both
-/// edges so the crossing is never near an end of it.
+/// The fixed reference band beneath every test stroke
+/// (`stark_ui::brush_editor::lay_reference`).
 fn paint_reference_stroke(r: &mut Renderer) {
     let (w, h) = r.size();
-    let samples =
-        stark_ui::brush_editor::reference_stroke(w as f32, h as f32, r.desk.engine().view());
-    r.process(ViewCommand::SetBrush {
-        brush: stark_ui::brush_editor::reference_brush(),
-        color: stark_ui::brush_editor::REFERENCE_COLOR,
-    });
-    r.desk.engine_mut().replay_stroke(&samples);
+    stark_ui::brush_editor::lay_reference(r.desk.engine_mut(), w as f32, h as f32);
 }
 
-/// Re-render the test stroke with the current brush: undo the committed one,
-/// push the brush, replay as a single commit, paint. `Engine::replay_stroke_seeded`
-/// skips the per-sample live-preview refresh (O(n²) across a replay), so the
-/// whole re-stroke is one full-stroke render — about a frame's worth of GPU —
-/// and the finished stroke is presented in one go, no progressive redraw.
-/// The replay is seeded with [`PREVIEW_STROKE_SEED`] so the jitter stays put
-/// across edits and only the changed parameter moves.
-/// No-op while the user is drawing on the preview.
+/// Re-render the test stroke with the current brush and present it in one go
+/// (`TestStroke::restroke`): one full-stroke render, about a frame's worth of GPU,
+/// and no progressive redraw. A stamp shape needs no handing over: the preview engine
+/// shares the main engine's content-addressed asset store, so whatever the brush
+/// holds is already here.
+///
+/// Peeked first so a hand on the preview takes no write of either signal.
 fn restroke(state: AppState, mut preview: Preview) {
     if preview.stroke.peek().drawing() {
         return;
     }
     let brush = *state.brush.peek();
-    let mut tune = *state.transient.peek();
-    // Force the test stroke to the fixed preview blue so it reads over the red
-    // reference stroke; the effect's own opacity (the Opacity slider) is left
-    // untouched. A stamp shape needs no handing over: the preview engine shares
-    // the main engine's content-addressed asset store, so whatever the brush
-    // holds is already here.
-    tune.color = PREVIEW_STROKE_COLOR;
-    // Each read is its own statement: no guard on the stroke may be alive when the
-    // replay's answer is written back into it below.
-    let samples = preview.stroke.peek().samples().to_vec();
-    let undo = preview.stroke.peek().needs_undo();
+    let tune = *state.transient.peek();
     let mut renderer = preview.renderer;
     let mut guard = renderer.write();
     let Some(r) = guard.as_mut() else { return };
-    if undo {
-        r.process(DocCommand::Undo);
-    }
-    r.process(ViewCommand::SetBrush {
-        brush: brush.params(tune),
-        color: tune.color,
-    });
-    // The §6.11 rope the smoothing slider means *on this canvas*: the recorded
-    // test stroke is a hand, and replaying it through the tow is what lets the
-    // slider show its work on the stroke beside it.
-    let rope = stark_ui::input::rope(r.desk.engine().view(), brush.smoothing);
-    // What the replay actually did, not what it was asked for: samples that hold no
-    // stroke commit nothing, and claiming otherwise would send the next undo one
-    // step too far — into the reference band beneath (`TestStroke`).
-    let committed = r.replay_stroke_seeded(&samples, PREVIEW_STROKE_SEED, rope);
+    preview
+        .stroke
+        .write()
+        .restroke(r.desk.engine_mut(), &brush, tune);
     r.paint();
-    drop(guard);
-    preview.stroke.write().replayed(committed);
 }
 
 /// Apply a brush edit to the real document brush and re-stroke the preview —

@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::platform::Canvas;
 use stark_engine::Extent2;
 use stark_engine::command::ViewCommand;
-use stark_engine::command::{InputCommand, InputSample};
+use stark_engine::command::InputCommand;
 use stark_engine::{Engine, GpuContext};
 use stark_ui::desk::Desk;
 
@@ -128,22 +128,6 @@ impl Renderer {
     /// startup, and the brush editor's private preview engine.
     pub fn process(&mut self, command: impl Into<InputCommand>) {
         self.desk.engine_mut().process(command);
-    }
-
-    /// Replay a full stroke with a caller-chosen jitter seed, so repeated
-    /// replays of the same samples keep the same color dynamics and dither
-    /// (see `Engine::replay_stroke_seeded`).
-    ///
-    /// **Answers whether it committed one.** Samples that hold no stroke — none at
-    /// all, or a hand that never left its first point — commit nothing, and the brush
-    /// editor's preview has to know: it undoes the committed stroke before each
-    /// replay, and an undo for a commit that never happened reaches past into the
-    /// reference band beneath (`stark_ui::brush_editor::TestStroke`).
-    pub fn replay_stroke_seeded(&mut self, samples: &[InputSample], seed: u64, rope: f32) -> bool {
-        self.desk
-            .engine_mut()
-            .replay_stroke_seeded(samples, seed, rope)
-            .is_some()
     }
 
     /// How far above SDR white the display says it can go (§6.5). On the web:

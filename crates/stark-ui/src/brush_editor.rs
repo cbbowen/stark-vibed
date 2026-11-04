@@ -24,8 +24,8 @@
 //! the same reason: a preview whose stroke ran a different way in the two apps would
 //! be two previews of two brushes.
 
-use stark_engine::ViewTransform;
-use stark_engine::command::InputSample;
+use stark_engine::command::{DocCommand, InputSample, ViewCommand};
+use stark_engine::{Engine, ViewTransform};
 use stark_model::document::{
     BrushEffect, BrushParams, BrushShape, ModSource, Modulation, NoiseKind, OrientationSource,
     PenState,
@@ -1056,6 +1056,47 @@ pub fn reference_brush() -> BrushParams {
     }
 }
 
+/// Lay `samples` on `engine` as one commit, worn by `brush` at `tune`: the brush
+/// pushed, the hand towed by the §6.11 rope `brush`'s smoothing means under `view`,
+/// the jitter pinned to `seed`. Answers whether a stroke was committed
+/// (`Engine::replay_stroke_seeded`).
+///
+/// One render rather than one per sample: an interactive gesture folds its samples
+/// once a frame, and a replay that asked for the same would be O(n²) across the
+/// stroke. What the brush editor's test stroke and a preset's thumbnail both are — a
+/// recorded hand replayed under a brush — so both frontends' previews and the web
+/// thumbnail rig lay it the same way.
+pub fn replay_worn(
+    engine: &mut Engine,
+    view: ViewTransform,
+    brush: &BrushConfig,
+    tune: Transient,
+    samples: &[InputSample],
+    seed: u64,
+) -> bool {
+    engine.process(ViewCommand::SetBrush {
+        brush: brush.params(tune),
+        color: tune.color,
+    });
+    let rope = crate::input::rope(view, brush.smoothing);
+    engine.replay_stroke_seeded(samples, seed, rope).is_some()
+}
+
+/// Lay the fixed reference band on a `w`×`h` preview ([`reference_stroke`],
+/// [`reference_brush`]).
+///
+/// Committed **once**, beneath everything the dialog replays, so the single undo a
+/// re-stroke spends never reaches it — which is what lets a smudge, a knife or a
+/// liquify brush be shown working paint that is already there.
+pub fn lay_reference(engine: &mut Engine, w: f32, h: f32) {
+    let samples = reference_stroke(w, h, engine.view());
+    engine.process(ViewCommand::SetBrush {
+        brush: reference_brush(),
+        color: REFERENCE_COLOR,
+    });
+    engine.replay_stroke_seeded(&samples, PREVIEW_STROKE_SEED, 0.0);
+}
+
 /// The test stroke a preview replays, and what a hand on the preview canvas does to
 /// it (§6.2, §11.2).
 ///
@@ -1186,6 +1227,42 @@ impl TestStroke {
     /// would take it out from under the pointer.
     pub fn drawing(&self) -> bool {
         self.drawing
+    }
+
+    /// Re-lay the test stroke on `engine` under `brush` at `tune`: the committed one
+    /// undone, the recorded hand replayed as one commit ([`replay_worn`]) at
+    /// [`PREVIEW_STROKE_SEED`], so the jitter stays put across edits and only the
+    /// changed parameter moves.
+    ///
+    /// The stroke wears [`PREVIEW_STROKE_COLOR`] whatever the palette holds, so it reads
+    /// over the red band beneath; the effect's own opacity is untouched, which is what
+    /// keeps the Opacity row honest. A no-op while a hand is on the test canvas — what
+    /// is on screen then is the stroke being drawn, and replacing it mid-gesture would
+    /// take it out from under the pointer.
+    pub fn restroke(&mut self, engine: &mut Engine, brush: &BrushConfig, tune: Transient) {
+        if self.drawing {
+            return;
+        }
+        if self.needs_undo() {
+            engine.process(DocCommand::Undo);
+        }
+        let tune = Transient {
+            color: PREVIEW_STROKE_COLOR,
+            ..tune
+        };
+        let view = engine.view();
+        // What the replay actually did, not what it was asked for: samples that hold
+        // no stroke commit nothing, and claiming otherwise would send the next undo one
+        // step too far — into the reference band beneath.
+        let committed = replay_worn(
+            engine,
+            view,
+            brush,
+            tune,
+            &self.samples,
+            PREVIEW_STROKE_SEED,
+        );
+        self.replayed(committed);
     }
 }
 

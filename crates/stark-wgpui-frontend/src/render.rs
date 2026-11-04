@@ -344,19 +344,11 @@ impl Preview {
         self.engine.view()
     }
 
-    /// Replay a whole recorded stroke as one commit, with the jitter seed pinned
-    /// (`Engine::replay_stroke_seeded`) so only the edited parameter moves between
-    /// renders. `rope` is the §6.11 smoothing string, because the preview replays a
-    /// recorded hand and has to show what the smoothing slider would do to it.
-    pub fn replay_stroke(
-        &mut self,
-        samples: &[stark_engine::command::InputSample],
-        seed: u64,
-        rope: f32,
-    ) -> bool {
-        self.engine
-            .replay_stroke_seeded(samples, seed, rope)
-            .is_some()
+    /// The sibling engine itself, for the test-stroke replay the two frontends share
+    /// (`stark_ui::brush_editor::{lay_reference, TestStroke::restroke}`), which takes
+    /// an engine rather than either frontend's wrapper around one.
+    pub fn engine_mut(&mut self) -> &mut Engine {
+        &mut self.engine
     }
 
     /// The handle the element composites.

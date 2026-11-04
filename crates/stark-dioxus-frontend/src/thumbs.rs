@@ -279,13 +279,14 @@ async fn generate(state: AppState, key: Key) -> Result<Picture, NoRenderer> {
         }
         // The key's tune, normalized by [`Key::new`]: the tune the cache files this
         // under is the tune the stroke is laid at.
-        rig.engine.process(ViewCommand::SetBrush {
-            brush: w.params(t),
-            color: t.color,
-        });
-        let rope = stark_ui::input::rope(view, w.smoothing);
-        rig.engine
-            .replay_stroke_seeded(&test_stroke(&view), THUMB_SEED, rope);
+        stark_ui::brush_editor::replay_worn(
+            &mut rig.engine,
+            view,
+            w,
+            t,
+            &test_stroke(&view),
+            THUMB_SEED,
+        );
         // The whole rig document, which is only ever the thumbnail in flight — there
         // is no layer here to single out.
         let readback = rig.engine.export_view(
