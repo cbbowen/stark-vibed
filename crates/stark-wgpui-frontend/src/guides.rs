@@ -27,6 +27,7 @@ use stark_engine::ObservableState;
 use stark_engine::command::{DocCommand, Edit, ViewCommand};
 use stark_model::document::{GuideId, Lens};
 use stark_ui::commands::{Bindings, Command};
+use stark_ui::dial::Dial as _;
 use stark_ui::guides::{AXIS_NAMES, Dial, PAIR_AXES, label};
 use stark_ui::icons::Icon;
 use wgpui::{IntoElement, SharedString, div, prelude::*, px};

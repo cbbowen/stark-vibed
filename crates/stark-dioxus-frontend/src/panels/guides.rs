@@ -47,9 +47,8 @@ use stark_engine::command::{DocCommand, ViewCommand};
 use stark_model::document::{GuideId, Lens, PerspectiveGuide};
 use stark_model::geom::Vec2;
 use stark_ui::commands::Command;
-use stark_ui::guides::{
-    AXIS_NAMES, CELL_OCTAVES, FOCAL_RANGE, GuideRegion, Handles, PAIR_AXES, anchor_at,
-};
+use stark_ui::dial::Dial as _;
+use stark_ui::guides::{AXIS_NAMES, Dial, FOCAL_RANGE, GuideRegion, Handles, PAIR_AXES, anchor_at};
 use stark_ui::modes::{Composing, GuideEdit};
 use stark_ui::reorder::{Grab, Motion, Slide};
 
@@ -68,11 +67,6 @@ use stark_ui::reorder::{Grab, Motion, Slide};
 /// `tests::the_chips_are_painted_in_the_shader_s_own_axis_hues` parses the
 /// stylesheet and holds the two together.
 const AXIS_CSS: [&str; 3] = ["var(--axis-x)", "var(--axis-y)", "var(--axis-z)"];
-
-/// The opacity track's ends, off the dial that owns them
-/// (`stark_ui::guides::Dial::Opacity`) rather than spelled here three times as the
-/// fill, the `min` and the `max`.
-const OPACITY_RANGE: (f32, f32) = stark_ui::guides::Dial::Opacity.range();
 
 /// The engine's guide roster, as this client sees it (§20.5) — the document's
 /// guides, each row carrying whether this client's eye on it is open.
@@ -527,10 +521,10 @@ pub fn PerspectiveGuideBar(edit: GuideEdit) -> Element {
     // The grid's scale is the *length* of the lattice: how many cells lie
     // between the eye and its corner, which is all a camera with no world scale
     // of its own can say about the size of a cell (§20.3). The bar states it in
-    // halvings of the default ([`CELL_OCTAVES`]) — the guide's own length is the
-    // ladder's rung, so there is no separate number to keep in step.
-    let octave = stark_ui::guides::octave(g);
-    let (opacity, pairs, lens) = (g.opacity, g.pairs, g.lens);
+    // halvings of the default ([`CELL_OCTAVES`], read by `Dial::Cells`) — the
+    // guide's own length is the ladder's rung, so there is no separate number to
+    // keep in step.
+    let (pairs, lens) = (g.pairs, g.lens);
     let locked = edit.locked;
 
     rsx! {
@@ -635,35 +629,35 @@ pub fn PerspectiveGuideBar(edit: GuideEdit) -> Element {
             // for it yet (§20.5) — the grid stays hung on the viewer either way (§20.3).
             PreviewSlider {
                 shape: SliderShape::Bar,
-                label: "Cells",
-                glyph: stark_ui::icons::DENSITY,
-                min: CELL_OCTAVES.0 as f32,
-                max: CELL_OCTAVES.1 as f32,
-                step: 1.0,
-                value: octave,
-                title: "How fine the grid is \u{2014} each step halves the cell, so \
-                        every line of the coarser grid is still a line of this one",
+                label: Dial::Cells.label(),
+                glyph: Dial::Cells.glyph(),
+                min: Dial::Cells.range().0,
+                max: Dial::Cells.range().1,
+                step: Dial::Cells.step(),
+                value: Dial::Cells.read(g),
+                readout: Dial::Cells.readout(Dial::Cells.read(g)),
+                title: Dial::Cells.tip(),
                 preview: preview::GUIDE,
                 pending,
-                map: move |k: f32| {
-                    camera_of(state, id).map(|g| (id, stark_ui::guides::with_octave(g, k)))
-                },
+                map: move |k: f32| camera_of(state, id).map(|g| (id, Dial::Cells.write(g, k))),
             }
             // The ghost the Layers panel and the brush editor wear: how much of what
             // is under this shows through, asked of a guide over the paint.
+            // Written through the dial, which is what holds the opacity floor: a
+            // guide cannot be left on and invisible from either app.
             PreviewSlider {
                 shape: SliderShape::Bar,
-                label: "Opacity",
-                glyph: stark_ui::icons::OPACITY,
-                min: OPACITY_RANGE.0,
-                max: OPACITY_RANGE.1,
-                value: opacity,
-                title: "How strongly the guide reads over the paint",
+                label: Dial::Opacity.label(),
+                glyph: Dial::Opacity.glyph(),
+                min: Dial::Opacity.range().0,
+                max: Dial::Opacity.range().1,
+                step: Dial::Opacity.step(),
+                value: Dial::Opacity.read(g),
+                readout: Dial::Opacity.readout(Dial::Opacity.read(g)),
+                title: Dial::Opacity.tip(),
                 preview: preview::GUIDE,
                 pending,
-                map: move |v: f32| {
-                    camera_of(state, id).map(|g| (id, PerspectiveGuide { opacity: v, ..g }))
-                },
+                map: move |v: f32| camera_of(state, id).map(|g| (id, Dial::Opacity.write(g, v))),
             }
             span { class: "bar-sep" }
             ActChip {

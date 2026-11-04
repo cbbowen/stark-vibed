@@ -52,6 +52,8 @@
 //!   §22.4): values a chrome holds for the length of a mode.
 //! - [`guides`] — the drawing guides' vocabulary (§20): the axis names and pairs a
 //!   perspective quad is read through, and the octave a lattice sits on.
+//! - [`dial`] — a panel's continuous knob as a table row: its seat, mark, words, track
+//!   and readout, asked once for the Lighting, Guides and Select dials (§11.2).
 //! - [`reorder`] — moving a row of a list by dragging it, with no opinion about
 //!   what the list is. Two panels are rosters; this is the gesture they share.
 //! - [`library`] — the gallery thumbnails a browser-held asset library shows
@@ -128,6 +130,7 @@ pub mod collab;
 pub mod color;
 pub mod commands;
 pub mod desk;
+pub mod dial;
 pub mod drags;
 pub mod files;
 pub mod filter;

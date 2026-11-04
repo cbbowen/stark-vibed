@@ -241,19 +241,12 @@ pub enum Dial {
     Opacity,
 }
 
-impl Dial {
-    /// Which seat this dial has, so a view holding one state per dial can index
-    /// rather than search. Exhaustive, so a third dial does not compile until it
-    /// says where it sits.
-    pub fn index(self) -> usize {
-        match self {
-            Dial::Cells => 0,
-            Dial::Opacity => 1,
-        }
+impl crate::dial::Dial for Dial {
+    fn index(self) -> usize {
+        self as usize
     }
 
-    /// The mark the control wears.
-    pub fn glyph(self) -> Icon {
+    fn glyph(self) -> Icon {
         match self {
             // A fan of lines from a point, which is exactly what this number counts:
             // the guide's fans are its parametrization (§20.5).
@@ -262,16 +255,14 @@ impl Dial {
         }
     }
 
-    /// The one word a caption gives it.
-    pub fn label(self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
             Dial::Cells => "Cells",
             Dial::Opacity => "Opacity",
         }
     }
 
-    /// What it says on hover.
-    pub fn tip(self) -> &'static str {
+    fn tip(self) -> &'static str {
         match self {
             Dial::Cells => {
                 "Cells \u{2014} how fine the grid is; each step halves the cell, so every \
@@ -281,11 +272,7 @@ impl Dial {
         }
     }
 
-    /// The ends of its track.
-    ///
-    /// `const`, so a frontend that wants one end as its own named constant can take it
-    /// from here rather than spelling the number again.
-    pub const fn range(self) -> (f32, f32) {
+    fn range(self) -> (f32, f32) {
         match self {
             Dial::Cells => (CELL_OCTAVES.0 as f32, CELL_OCTAVES.1 as f32),
             Dial::Opacity => (MIN_OPACITY, 1.0),
@@ -293,13 +280,23 @@ impl Dial {
     }
 
     /// Whole rungs for the ladder, a hundredth for a strength.
-    pub const fn step(self) -> f32 {
+    fn step(self) -> f32 {
         match self {
             Dial::Cells => 1.0,
             Dial::Opacity => 0.01,
         }
     }
 
+    /// A signed rung, two places for a strength.
+    fn readout(self, v: f32) -> String {
+        match self {
+            Dial::Cells => format!("{v:+.0}"),
+            Dial::Opacity => format!("{v:.2}"),
+        }
+    }
+}
+
+impl Dial {
     /// Where the dial stands for `guide`.
     pub fn read(self, guide: &PerspectiveGuide) -> f32 {
         match self {
@@ -310,7 +307,8 @@ impl Dial {
 
     /// The guide `value` asks for. Stated as a whole edit of the camera rather than as
     /// a field write, because that is the shape every act on a guide takes:
-    /// `Edit::Guide` carries the camera entire (§20.5).
+    /// `Edit::Guide` carries the camera entire (§20.5). Both frontends write through
+    /// here, so the opacity floor holds whichever one the hand is on.
     pub fn write(self, guide: PerspectiveGuide, value: f32) -> PerspectiveGuide {
         match self {
             Dial::Cells => with_octave(guide, value),
@@ -321,20 +319,17 @@ impl Dial {
             }
         }
     }
-
-    /// How a readout prints it: a signed rung, two places for a strength.
-    pub fn readout(self, v: f32) -> String {
-        match self {
-            Dial::Cells => format!("{v:+.0}"),
-            Dial::Opacity => format!("{v:.2}"),
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use strum::VariantArray;
+
+    /// What every dial table owes ([`crate::dial`]).
+    #[test]
+    fn the_dial_table_holds() {
+        crate::dial::tests::check::<Dial>();
+    }
 
     /// The default guide is rung zero by construction — the ladder is defined off it,
     /// so anything else means `octave` and [`with_octave`] disagree about their origin.
@@ -385,35 +380,6 @@ mod tests {
         assert_eq!(seen, [2, 2, 2], "the pair planes do not close a cycle");
     }
 
-    /// Both dials say something on hover, and say it about themselves — what a column
-    /// with no captions stands on. The label leads the tip so the two cannot come to
-    /// call one knob two things.
-    #[test]
-    fn every_dial_says_what_it_does() {
-        for dial in Dial::VARIANTS {
-            assert!(!dial.label().is_empty(), "{dial:?} has no caption");
-            assert!(
-                dial.tip().starts_with(dial.label()),
-                "{dial:?}'s hover does not lead with its own name: {:?}",
-                dial.tip()
-            );
-        }
-    }
-
-    /// A track a hand cannot move back off is the failure this table rules out.
-    #[test]
-    fn every_track_is_one_a_hand_can_move() {
-        for dial in Dial::VARIANTS {
-            let (lo, hi) = dial.range();
-            assert!(lo < hi, "{dial:?} has an empty track: {lo}..={hi}");
-            assert!(dial.step() > 0.0, "{dial:?} steps by nothing");
-            assert!(
-                dial.step() <= hi - lo,
-                "{dial:?} steps further than its own track"
-            );
-        }
-    }
-
     /// The opacity floor holds on the way in, so a value from anywhere — a track, a
     /// stored record, a peer — cannot land a guide on "on and invisible".
     #[test]
@@ -433,15 +399,6 @@ mod tests {
     fn an_unnamed_guide_is_the_nth_one() {
         assert_eq!(unnamed_label(0), "Perspective 1");
         assert_eq!(unnamed_label(107), "Perspective 108");
-    }
-
-    /// The seat and the roster are one order. They are two statements, and a view
-    /// indexes by the first into a list built from the second.
-    #[test]
-    fn every_dial_sits_in_the_seat_its_index_names() {
-        for (i, dial) in Dial::VARIANTS.iter().enumerate() {
-            assert_eq!(dial.index(), i, "{dial:?} names a seat it does not sit in");
-        }
     }
 
     /// Where each of the default guide's horizons sits, as the one coordinate it is a

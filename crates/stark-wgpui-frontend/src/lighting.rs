@@ -20,6 +20,7 @@
 
 use stark_engine::{EnvironmentId, ObservableState};
 use stark_model::{Srgb, SubstrateId};
+use stark_ui::dial::Dial as _;
 use stark_ui::lighting::{Dial, dials};
 use stark_ui::prefs::Hdr;
 use wgpui::{AnyElement, IntoElement, div, prelude::*, px, rgb};

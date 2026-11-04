@@ -1357,30 +1357,20 @@ impl Canvas {
     /// and the headroom is this client's own preference and reaches the engine only
     /// through the window's own capability (`Desk::apply_output`).
     pub(crate) fn turn_light(&mut self, dial: light::Dial, v: f32, cx: &mut Context<'_, Self>) {
-        match dial {
-            light::Dial::Impasto | light::Dial::Texture | light::Dial::Gloss => {
-                let mut media = self
-                    .obs
-                    .as_ref()
-                    .map_or_else(stark_engine::MediaParams::default, |o| o.media);
-                match dial {
-                    light::Dial::Impasto => media.height_strength = v,
-                    light::Dial::Texture => media.substrate_strength = v,
-                    _ => media.specular = v,
-                }
-                self.send(ViewCommand::SetMediaParams(media), cx);
-            }
+        // What the value *asks for* is the crate's (`lighting::Dial::write`); which door
+        // each kind of state goes through is this view's.
+        match dial.write(self.obs.as_ref(), v) {
+            light::Setting::Media(media) => self.send(ViewCommand::SetMediaParams(media), cx),
             // Document state, so previewed per sample and laid down on release
             // ([`settle_light`]): committing each sample would spend an undo step and
             // bake a substrate per pointer move.
-            light::Dial::Scale => {
-                let scale = stark_model::SubstrateScale::new(v.round().max(0.0) as u16);
+            light::Setting::Scale(scale) => {
                 self.laying = Some(scale);
                 self.send(ViewCommand::Preview(Some(Edit::SubstrateScale(scale))), cx);
             }
             // Shown but not kept: a headroom is written down when the hand comes off
             // it ([`settle_light`]), so one drag is one write rather than one a frame.
-            light::Dial::Headroom => {
+            light::Setting::Headroom(v) => {
                 self.hdr.headroom = v;
                 // The display's own figure is a *window* question and this is not
                 // one; the switch re-asks it whenever the window can answer, and a
@@ -2705,10 +2695,9 @@ impl Canvas {
     pub(crate) fn turn_dial(
         &mut self,
         dial: stark_ui::selection::Dial,
-        fraction: f32,
+        v: f32,
         cx: &mut Context<'_, Self>,
     ) {
-        let v = dial.value_at(fraction);
         match dial {
             stark_ui::selection::Dial::Feather => {
                 self.send(ViewCommand::SetSelectionFeather(v), cx)
@@ -2731,16 +2720,13 @@ impl Canvas {
     pub(crate) fn settle_dial(
         &mut self,
         dial: stark_ui::selection::Dial,
-        fraction: f32,
+        v: f32,
         cx: &mut Context<'_, Self>,
     ) {
         // The commit supersedes the preview engine-side; dropping it first would cost
         // an epoch and a frame at the committed value.
         if dial == stark_ui::selection::Dial::MaskOpacity {
-            self.send(
-                DocCommand::Set(Edit::SelectionOpacity(dial.value_at(fraction))),
-                cx,
-            );
+            self.send(DocCommand::Set(Edit::SelectionOpacity(v)), cx);
         }
     }
 

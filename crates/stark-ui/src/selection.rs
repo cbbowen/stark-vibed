@@ -134,23 +134,15 @@ pub enum Dial {
     MaskOpacity,
 }
 
-impl Dial {
-    /// Which seat this dial has, so a view holding one state per dial can index rather
-    /// than search. Exhaustive, so a fourth does not compile until it says where it sits.
-    pub fn index(self) -> usize {
-        match self {
-            Dial::Feather => 0,
-            Dial::FillOpacity => 1,
-            Dial::MaskOpacity => 2,
-        }
+impl crate::dial::Dial for Dial {
+    fn index(self) -> usize {
+        self as usize
     }
 
-    /// The mark the track wears.
-    ///
     /// The fill's dial takes the bucket its own action chip wears, and the adjacency is
     /// the point: it is mounted only while Fill is the armed action, so it appears
     /// directly under the lit chip whose strength it sets.
-    pub fn glyph(self) -> Icon {
+    fn glyph(self) -> Icon {
         match self {
             Dial::Feather => crate::icons::FEATHER,
             Dial::FillOpacity => crate::icons::PAINT_BUCKET,
@@ -158,8 +150,7 @@ impl Dial {
         }
     }
 
-    /// The one word a caption gives it.
-    pub fn label(self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
             Dial::Feather => "Feather",
             Dial::FillOpacity => "Fill opacity",
@@ -167,8 +158,7 @@ impl Dial {
         }
     }
 
-    /// What the hover says the mark means.
-    pub fn tip(self) -> &'static str {
+    fn tip(self) -> &'static str {
         match self {
             Dial::Feather => {
                 "Feather \u{2014} how far the next shape's edge is softened, in canvas px"
@@ -180,23 +170,32 @@ impl Dial {
         }
     }
 
-    /// The ends of its track. Feather is a canvas-px length; the other two are
-    /// strengths.
-    pub const fn range(self) -> (f32, f32) {
+    /// Feather is a canvas-px length; the other two are strengths.
+    fn range(self) -> (f32, f32) {
         match self {
             Dial::Feather => (0.0, MAX_FEATHER),
             Dial::FillOpacity | Dial::MaskOpacity => (0.0, 1.0),
         }
     }
 
-    /// The step a track moves in: whole px for a length, a hundredth for a strength.
-    pub const fn step(self) -> f32 {
+    /// Whole px for a length, a hundredth for a strength.
+    fn step(self) -> f32 {
         match self {
             Dial::Feather => 1.0,
             Dial::FillOpacity | Dial::MaskOpacity => 0.01,
         }
     }
 
+    /// Whole px for a length, two places for a strength.
+    fn readout(self, v: f32) -> String {
+        match self {
+            Dial::Feather => format!("{v:.0}"),
+            Dial::FillOpacity | Dial::MaskOpacity => format!("{v:.2}"),
+        }
+    }
+}
+
+impl Dial {
     /// Where the dial stands, off the engine's projection.
     pub fn read(self, o: &ObservableState) -> f32 {
         match self {
@@ -204,12 +203,6 @@ impl Dial {
             Dial::FillOpacity => o.shape_opacity,
             Dial::MaskOpacity => o.selection_opacity,
         }
-    }
-
-    /// The value a fraction along this dial's track means.
-    pub fn value_at(self, fraction: f32) -> f32 {
-        let (lo, hi) = self.range();
-        lo + fraction.clamp(0.0, 1.0) * (hi - lo)
     }
 }
 
@@ -365,44 +358,10 @@ mod tests {
         );
     }
 
-    /// The seat and the roster are one order — a view indexes by the first into a list
-    /// built from the second.
+    /// What every dial table owes ([`crate::dial`]).
     #[test]
-    fn every_dial_sits_in_the_seat_its_index_names() {
-        for (i, dial) in <Dial as strum::VariantArray>::VARIANTS.iter().enumerate() {
-            assert_eq!(dial.index(), i, "{dial:?} names a seat it does not sit in");
-        }
-    }
-
-    /// Every dial says what it does, leading with its own caption so the two cannot
-    /// come to call one knob two things.
-    #[test]
-    fn every_dial_says_what_it_does() {
-        for dial in <Dial as strum::VariantArray>::VARIANTS {
-            assert!(
-                dial.tip().starts_with(dial.label()),
-                "{dial:?}: {:?}",
-                dial.tip()
-            );
-            let (lo, hi) = dial.range();
-            assert!(
-                lo < hi && dial.step() > 0.0 && dial.step() <= hi - lo,
-                "{dial:?}"
-            );
-        }
-    }
-
-    /// A fraction along a track is the value it points at, and past either end is that
-    /// end — a drag off the trough cannot ask for a feather the rasterizer refuses.
-    #[test]
-    #[expect(
-        clippy::float_cmp_const,
-        reason = "a fraction of an exactly-representable track lands on the value itself, so the assertion is identity rather than proximity"
-    )]
-    fn a_fraction_along_a_track_is_the_value_under_it() {
-        assert_eq!(Dial::Feather.value_at(0.5), MAX_FEATHER / 2.0);
-        assert_eq!(Dial::Feather.value_at(-1.0), 0.0);
-        assert_eq!(Dial::MaskOpacity.value_at(2.0), 1.0);
+    fn the_dial_table_holds() {
+        crate::dial::tests::check::<Dial>();
     }
 
     /// With nothing in hand there is nothing to set. The bar draws no track at all

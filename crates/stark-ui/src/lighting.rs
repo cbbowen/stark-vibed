@@ -62,23 +62,12 @@ pub enum Dial {
     Headroom,
 }
 
-impl Dial {
-    /// Which seat this dial has, so a view holding one state per dial can index
-    /// rather than search. Exhaustive, so a sixth dial does not compile until it
-    /// says where it sits — where a `position().expect()` would have panicked at
-    /// the moment the panel opened.
-    pub fn index(self) -> usize {
-        match self {
-            Dial::Impasto => 0,
-            Dial::Texture => 1,
-            Dial::Gloss => 2,
-            Dial::Scale => 3,
-            Dial::Headroom => 4,
-        }
+impl crate::dial::Dial for Dial {
+    fn index(self) -> usize {
+        self as usize
     }
 
-    /// The mark the control wears.
-    pub fn glyph(self) -> Icon {
+    fn glyph(self) -> Icon {
         match self {
             Dial::Impasto => crate::icons::IMPASTO,
             Dial::Texture => crate::icons::TEXTURE,
@@ -88,8 +77,7 @@ impl Dial {
         }
     }
 
-    /// The one word a caption gives it.
-    pub fn label(self) -> &'static str {
+    fn label(self) -> &'static str {
         match self {
             Dial::Impasto => "Impasto",
             Dial::Texture => "Texture",
@@ -99,9 +87,7 @@ impl Dial {
         }
     }
 
-    /// What it says on hover, where a frontend has hover to say it on — the label and
-    /// then what the knob is actually *for*, since a one-word caption cannot carry it.
-    pub fn tip(self) -> &'static str {
+    fn tip(self) -> &'static str {
         match self {
             Dial::Impasto => {
                 "Impasto \u{2014} how strongly the paint's own relief catches the light"
@@ -113,11 +99,9 @@ impl Dial {
         }
     }
 
-    /// The ends of its track.
-    ///
-    /// Each is either the model's own bound or a ceiling this control owns, and the
-    /// second kind is why one copy of this table rather than one per frontend.
-    pub fn range(self) -> (f32, f32) {
+    /// Each end is either the model's own bound or a ceiling this control owns, and
+    /// the second kind is why one copy of this table rather than one per frontend.
+    fn range(self) -> (f32, f32) {
         match self {
             Dial::Impasto | Dial::Texture => (0.0, 1.0),
             // A ceiling this control owns: past a third the specular lobe is a mirror
@@ -128,10 +112,10 @@ impl Dial {
         }
     }
 
-    /// The step a track moves in. The substrate's is the *lattice its own value lands
-    /// on* ([`SubstrateScale::STEP`]), so a track cannot offer a position `new` would
-    /// move the handle off.
-    pub fn step(self) -> f32 {
+    /// The substrate's is the *lattice its own value lands on*
+    /// ([`SubstrateScale::STEP`]), so a track cannot offer a position `new` would move
+    /// the handle off.
+    fn step(self) -> f32 {
         match self {
             Dial::Impasto | Dial::Texture | Dial::Gloss => 0.01,
             Dial::Scale => SubstrateScale::STEP as f32,
@@ -139,31 +123,77 @@ impl Dial {
         }
     }
 
-    /// Where the dial stands, off the engine's projection and this client's record —
-    /// never off a copy kept beside it, which would go stale under an undo or a load
-    /// (§4).
-    pub fn read(self, o: Option<&ObservableState>, hdr: Hdr) -> f32 {
-        let media = o.map_or_else(MediaParams::default, |o| o.media);
-        match self {
-            Dial::Impasto => media.height_strength,
-            Dial::Texture => media.substrate_strength,
-            Dial::Gloss => media.specular,
-            Dial::Scale => o
-                .map_or(SubstrateScale::NATURAL, |o| o.substrate_scale)
-                .percent() as f32,
-            Dial::Headroom => hdr.clamped_headroom(),
-        }
-    }
-
-    /// How a readout prints it: a percentage for the substrate, a multiple for the
-    /// headroom, two places otherwise.
-    pub fn readout(self, v: f32) -> String {
+    /// A percentage for the substrate, a multiple for the headroom, two places
+    /// otherwise.
+    fn readout(self, v: f32) -> String {
         match self {
             Dial::Scale => format!("{v:.0}%"),
             Dial::Headroom => format!("{v:.1}\u{00d7}"),
             _ => format!("{v:.2}"),
         }
     }
+}
+
+/// What a value on a [`Dial`] asks for — one of the three kinds of state the shelf
+/// holds (§4), each of which a frontend reaches by its own door.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Setting {
+    /// The media parameters entire, with the one dial's field moved — a **view**
+    /// setting (`ViewCommand::SetMediaParams`).
+    Media(MediaParams),
+    /// The substrate's scale — **document** state, so previewed while the hand is on
+    /// it and laid down on release (`Edit::SubstrateScale`).
+    Scale(SubstrateScale),
+    /// This client's display headroom — its own preference, reaching the engine only
+    /// through `Desk::apply_output`.
+    Headroom(f32),
+}
+
+impl Dial {
+    /// Where the dial stands, off the engine's projection and this client's record —
+    /// never off a copy kept beside it, which would go stale under an undo or a load
+    /// (§4).
+    pub fn read(self, o: Option<&ObservableState>, hdr: Hdr) -> f32 {
+        self.read_from(
+            o.map_or_else(MediaParams::default, |o| o.media),
+            o.map_or(SubstrateScale::NATURAL, |o| o.substrate_scale),
+            hdr,
+        )
+    }
+
+    /// [`read`](Self::read) off the three things a dial stands on, for a frontend that
+    /// holds them apart — the web panel subscribes to a few fields of the projection
+    /// rather than to all of it.
+    pub fn read_from(self, media: MediaParams, scale: SubstrateScale, hdr: Hdr) -> f32 {
+        match self {
+            Dial::Impasto => media.height_strength,
+            Dial::Texture => media.substrate_strength,
+            Dial::Gloss => media.specular,
+            Dial::Scale => scale.percent() as f32,
+            Dial::Headroom => hdr.clamped_headroom(),
+        }
+    }
+
+    /// What setting the dial to `v` asks for, against the projection in hand — the
+    /// media dials move one field of the parameters the engine reports, so the other
+    /// two ride along unchanged.
+    pub fn write(self, o: Option<&ObservableState>, v: f32) -> Setting {
+        let mut media = o.map_or_else(MediaParams::default, |o| o.media);
+        match self {
+            Dial::Impasto => media.height_strength = v,
+            Dial::Texture => media.substrate_strength = v,
+            Dial::Gloss => media.specular = v,
+            Dial::Scale => return Setting::Scale(scale_at(v)),
+            Dial::Headroom => return Setting::Headroom(v),
+        }
+        Setting::Media(media)
+    }
+}
+
+/// The substrate scale a track position names: the nearest whole percent, which
+/// `SubstrateScale::new` then puts on its own lattice.
+pub fn scale_at(v: f32) -> SubstrateScale {
+    SubstrateScale::new(v.round().max(0.0) as u16)
 }
 
 /// Which dials this frame shows.
@@ -202,6 +232,30 @@ mod tests {
     use super::*;
     use strum::VariantArray;
 
+    /// What every dial table owes ([`crate::dial`]).
+    #[test]
+    fn the_dial_table_holds() {
+        crate::dial::tests::check::<Dial>();
+    }
+
+    /// A media dial moves its own field and no other; the scale lands on its lattice.
+    #[test]
+    fn a_dial_writes_only_what_it_names() {
+        let Setting::Media(m) = Dial::Gloss.write(None, 0.2) else {
+            panic!("gloss is a media parameter");
+        };
+        let rest = MediaParams::default();
+        assert_eq!(m.specular, 0.2);
+        assert_eq!(
+            (m.height_strength, m.substrate_strength),
+            (rest.height_strength, rest.substrate_strength)
+        );
+        assert_eq!(
+            Dial::Scale.write(None, 99.6),
+            Setting::Scale(SubstrateScale::new(100))
+        );
+    }
+
     /// The reference light leads, and it is what the app opens on — the two are one
     /// claim, and a list reordered without the constant following would break it
     /// silently.
@@ -219,36 +273,6 @@ mod tests {
         let before = names.len();
         names.dedup();
         assert_eq!(names.len(), before, "two environments share a name");
-    }
-
-    /// Every dial says something on hover, and says it about itself — what a column
-    /// with no captions stands on. The label leads the tip so the two cannot come to
-    /// call one knob two things.
-    #[test]
-    fn every_dial_says_what_it_does() {
-        for dial in Dial::VARIANTS {
-            assert!(!dial.label().is_empty(), "{dial:?} has no caption");
-            assert!(
-                dial.tip().starts_with(dial.label()),
-                "{dial:?}'s hover does not lead with its own name: {:?}",
-                dial.tip()
-            );
-        }
-    }
-
-    /// A track a hand cannot move back off is the failure this table exists to rule
-    /// out, so every range is non-empty and every step fits inside it.
-    #[test]
-    fn every_track_is_one_a_hand_can_move() {
-        for dial in Dial::VARIANTS {
-            let (lo, hi) = dial.range();
-            assert!(lo < hi, "{dial:?} has an empty track: {lo}..={hi}");
-            assert!(dial.step() > 0.0, "{dial:?} steps by nothing");
-            assert!(
-                dial.step() <= hi - lo,
-                "{dial:?} steps further than its own track"
-            );
-        }
     }
 
     /// The headroom is the one dial that comes and goes, and it wants all three of its
@@ -274,15 +298,6 @@ mod tests {
         );
         // The other four are unconditional.
         assert_eq!(dials(off, false, None).len(), Dial::VARIANTS.len() - 1);
-    }
-
-    /// The seat and the roster are one order. They are two statements, and a view
-    /// indexes by the first into a list built from the second.
-    #[test]
-    fn every_dial_sits_in_the_seat_its_index_names() {
-        for (i, dial) in Dial::VARIANTS.iter().enumerate() {
-            assert_eq!(dial.index(), i, "{dial:?} names a seat it does not sit in");
-        }
     }
 
     /// With the switch on over a surface that can show range, the headroom is the

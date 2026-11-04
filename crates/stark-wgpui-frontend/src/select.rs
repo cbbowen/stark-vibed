@@ -26,8 +26,9 @@ use stark_engine::ObservableState;
 use stark_engine::command::Tool;
 use stark_model::document::ShapeAction;
 use stark_ui::commands::{Bindings, Command};
+use stark_ui::dial::Dial as _;
 use stark_ui::icons::Icon;
-use stark_ui::selection::{Dial, SHAPE_ACTIONS, SHAPE_TOOLS, action_word, dials};
+use stark_ui::selection::{SHAPE_ACTIONS, SHAPE_TOOLS, action_word, dials};
 use wgpui::{IntoElement, SharedString, div, prelude::*, rgb, rgba};
 
 use crate::controls::Controls;
@@ -123,10 +124,7 @@ pub fn select_body(
             crate::panel::Slider::new(
                 dial.glyph(),
                 dial.tip(),
-                match dial {
-                    Dial::Feather => format!("{v:.0}"),
-                    _ => format!("{v:.2}"),
-                },
+                dial.readout(v),
                 controls.dial(dial),
             )
         }))

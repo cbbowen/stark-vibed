@@ -13,7 +13,8 @@ use dioxus::dioxus_core::spawn_forever;
 use stark_engine::command::ViewCommand;
 use stark_engine::{EnvironmentId, MediaParams};
 use stark_model::{SubstrateId, SubstrateScale};
-use stark_ui::lighting::{Dial, ENVIRONMENTS};
+use stark_ui::dial::Dial as _;
+use stark_ui::lighting::{Dial, ENVIRONMENTS, Setting};
 
 /// Built-in assets, bundled as static files and **fetched at runtime** so they
 /// stay out of the wasm binary (§6.6). The engine is handed the bytes.
@@ -80,6 +81,9 @@ pub fn LightingPanel() -> Element {
         (false, None)
     };
     let swatch = crate::cards::swatch_style(c.get());
+    let read = |dial: Dial| dial.read_from(p, scale, hdr);
+    let headroom_shown =
+        stark_ui::lighting::dials(hdr, hdr_capable, display_headroom).contains(&Dial::Headroom);
     // Lit while its pop-out is open — the well is a column away from what it opened,
     // and nothing else says which press put that surface there.
     let color_open = use_popout(state, PopoutId::SubstrateColor);
@@ -87,19 +91,15 @@ pub fn LightingPanel() -> Element {
     let swatch_class = if color_open { "swatch open" } else { "swatch" };
     let environment = ENVIRONMENTS.iter().position(|(id, _)| *id == env);
     rsx! {
-        // Each track's ends, its mark and its caption come off the dial rather than
-        // being spelled here: the gloss ceiling in particular was a literal on this
-        // side and a named constant on the native one whose doc said it was copying
-        // this slider (§11.2).
-        Slider { label: Dial::Impasto.label(), glyph: Dial::Impasto.glyph(),
-            min: Dial::Impasto.range().0, max: Dial::Impasto.range().1, value: p.height_strength,
-            oninput: move |v| update_media(state, move |m| m.height_strength = v) }
-        Slider { label: Dial::Texture.label(), glyph: Dial::Texture.glyph(),
-            min: Dial::Texture.range().0, max: Dial::Texture.range().1, value: p.substrate_strength,
-            oninput: move |v| update_media(state, move |m| m.substrate_strength = v) }
-        Slider { label: Dial::Gloss.label(), glyph: Dial::Gloss.glyph(),
-            min: Dial::Gloss.range().0, max: Dial::Gloss.range().1, value: p.specular,
-            oninput: move |v| update_media(state, move |m| m.specular = v) }
+        // Every track here is a row of `stark_ui::lighting::Dial` — its ends, step,
+        // mark, words, readout and what a value asks for — so the gloss ceiling, the
+        // scale's lattice and the headroom's range are the native shelf's too (§11.2).
+        for dial in [Dial::Impasto, Dial::Texture, Dial::Gloss] {
+            Slider { key: "{dial:?}", label: dial.label(), glyph: dial.glyph(),
+                title: dial.tip(), min: dial.range().0, max: dial.range().1,
+                step: dial.step(), value: read(dial), readout: dial.readout(read(dial)),
+                oninput: move |v| turn(state, dial, v) }
+        }
         // The canvas colour, and the surface it is laid on: the two choices in this
         // panel that are made by *looking*, and so the two that want more room than a
         // 300px column has. Both fly out beside the panel now
@@ -127,20 +127,21 @@ pub fn LightingPanel() -> Element {
         // How large the substrate is laid (§6.4). The percentage is the readout
         // because "the same as last time" is judged by the figure.
         PreviewSlider {
-            label: "Scale",
-            glyph: stark_ui::icons::SUBSTRATE_SCALE,
-            min: f32::from(SubstrateScale::MIN),
-            max: f32::from(SubstrateScale::MAX),
+            label: Dial::Scale.label(),
+            glyph: Dial::Scale.glyph(),
+            title: Dial::Scale.tip(),
+            min: Dial::Scale.range().0,
+            max: Dial::Scale.range().1,
             // The track steps on the value's own ladder, so it cannot offer a position
             // `SubstrateScale::new` would move the handle off.
-            step: f32::from(SubstrateScale::STEP),
-            value: f32::from(scale.percent()),
-            readout: "{scale.percent()}%",
+            step: Dial::Scale.step(),
+            value: read(Dial::Scale),
+            readout: Dial::Scale.readout(read(Dial::Scale)),
             // Inert on a flat surface, whose height is a constant: there is nothing to size.
             disabled: surf == SubstrateId::Flat,
             preview: preview::SUBSTRATE_SCALE,
             pending: laying,
-            map: |v: f32| Some(SubstrateScale::new(v.round() as u16)),
+            map: |v: f32| Some(stark_ui::lighting::scale_at(v)),
         }
         div { class: "slider-row marked",
             div { class: "slider-label", {icon(stark_ui::icons::LIGHT)} {label("Light")} }
@@ -164,11 +165,15 @@ pub fn LightingPanel() -> Element {
             }
             // The slider stands in for a headroom the platform will not report
             // (`Renderer::display_headroom`); a figure the screen states is used as is.
-            if hdr.on && display_headroom.is_none() {
+            // Whether it is mounted is the crate's rule (`lighting::dials`), the native
+            // shelf's too.
+            if headroom_shown {
                 Slider { label: Dial::Headroom.label(), glyph: Dial::Headroom.glyph(),
+                    title: Dial::Headroom.tip(),
                     min: Dial::Headroom.range().0, max: Dial::Headroom.range().1,
-                    value: hdr.clamped_headroom(),
-                    oninput: move |v| crate::prefs::set_unsaved(state, move |p| p.hdr.headroom = v),
+                    step: Dial::Headroom.step(), value: read(Dial::Headroom),
+                    readout: Dial::Headroom.readout(read(Dial::Headroom)),
+                    oninput: move |v| turn(state, Dial::Headroom, v),
                     onsettle: move |_| crate::prefs::save(state) }
             }
         }
@@ -220,18 +225,22 @@ pub fn SubstrateColorPicker() -> Element {
     }
 }
 
-/// Read the current media params off the observable projection, mutate a copy, and
-/// push it back — the same read-modify-commit shape as `update_brush`, and like it
-/// a handler's, so `peek`.
-fn update_media(state: AppState, f: impl FnOnce(&mut MediaParams)) {
-    let mut p = state
-        .obs
-        .peek()
-        .as_ref()
-        .map(|o| o.media)
-        .unwrap_or_default();
-    f(&mut p);
-    dispatch(state, ViewCommand::SetMediaParams(p));
+/// Move one of the panel's live tracks: what the value asks for is the dial's
+/// (`lighting::Dial::write`, against the projection in hand — a handler's read, so
+/// `peek`), and which door that kind of state goes through is this panel's.
+fn turn(state: AppState, dial: Dial, v: f32) {
+    let setting = dial.write(state.obs.peek().as_ref(), v);
+    match setting {
+        Setting::Media(media) => dispatch(state, ViewCommand::SetMediaParams(media)),
+        // Shown but not kept: written down when the hand comes off it (`onsettle`), so
+        // one drag is one write rather than one a frame.
+        Setting::Headroom(headroom) => {
+            crate::prefs::set_unsaved(state, move |p| p.hdr.headroom = headroom);
+        }
+        // The scale is document state and previews through its own track
+        // (`preview::SUBSTRATE_SCALE`), which never calls this.
+        Setting::Scale(_) => {}
+    }
 }
 
 /// The bundled HDR behind an image-backed environment (`None` for the procedural

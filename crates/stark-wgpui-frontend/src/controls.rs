@@ -28,9 +28,10 @@ use crate::brush::Brush;
 use crate::brush_editor::Shape;
 use crate::canvas::Canvas;
 use crate::panel::KNOBS;
+use stark_ui::dial::Dial;
 use stark_ui::guides as gd;
 use stark_ui::lighting as light;
-use stark_ui::selection::Dial;
+use stark_ui::selection::Dial as SelectDial;
 
 /// The states, and the subscriptions that make them heard.
 pub struct Controls {
@@ -38,7 +39,7 @@ pub struct Controls {
     pub knobs: [Entity<SliderState>; KNOBS.len()],
     /// The Select section's, in `stark_ui::selection::Dial`'s own order, one whether
     /// or not this frame shows it — see [`Controls::dial`].
-    dials: [Entity<SliderState>; <Dial as strum::EnumCount>::COUNT],
+    dials: [Entity<SliderState>; <SelectDial as strum::EnumCount>::COUNT],
     /// The selected layer's opacity.
     pub opacity: Entity<SliderState>,
     /// The selected layer's blend mode, over [`BlendMode::ALL`]'s labels.
@@ -95,22 +96,7 @@ impl Controls {
                 },
             )
         });
-        let dials = std::array::from_fn(|i| {
-            let dial = <Dial as strum::VariantArray>::VARIANTS[i];
-            let (lo, hi) = dial.range();
-            track(
-                cx,
-                &mut subs,
-                (lo, hi),
-                dial.step(),
-                move |this, event, cx| match event {
-                    SliderEvent::Change(v) => this.turn_dial(dial, fraction(v.start(), lo, hi), cx),
-                    SliderEvent::Release(v) => {
-                        this.settle_dial(dial, fraction(v.start(), lo, hi), cx)
-                    }
-                },
-            )
-        });
+        let dials = dial_tracks(cx, &mut subs, Canvas::turn_dial, Canvas::settle_dial);
         let opacity = track(
             cx,
             &mut subs,
@@ -140,34 +126,10 @@ impl Controls {
         // The Lighting shelf's tracks. Three are a view setting, one is document
         // state and one is this client's own preference — a split the view answers
         // (`Canvas::turn_light`) rather than the track, which knows only its range.
-        let lights = std::array::from_fn(|i| {
-            let dial = <light::Dial as strum::VariantArray>::VARIANTS[i];
-            track(
-                cx,
-                &mut subs,
-                dial.range(),
-                dial.step(),
-                move |this, event, cx| match event {
-                    SliderEvent::Change(v) => this.turn_light(dial, v.start(), cx),
-                    // The scale is laid down and the headroom written down once
-                    // (`Canvas::settle_light`).
-                    SliderEvent::Release(v) => this.settle_light(dial, v.start(), cx),
-                },
-            )
-        });
-        let guide_dials = std::array::from_fn(|i| {
-            let dial = <gd::Dial as strum::VariantArray>::VARIANTS[i];
-            track(
-                cx,
-                &mut subs,
-                dial.range(),
-                dial.step(),
-                move |this, event, cx| match event {
-                    SliderEvent::Change(v) => this.turn_guide(dial, v.start(), cx),
-                    SliderEvent::Release(v) => this.settle_guide(dial, v.start(), cx),
-                },
-            )
-        });
+        // The scale is laid down and the headroom written down once, on release
+        // (`Canvas::settle_light`).
+        let lights = dial_tracks(cx, &mut subs, Canvas::turn_light, Canvas::settle_light);
+        let guide_dials = dial_tracks(cx, &mut subs, Canvas::turn_guide, Canvas::settle_guide);
         let lights_labels: Vec<SharedString> = light::ENVIRONMENTS
             .iter()
             .map(|(_, name)| SharedString::from(*name))
@@ -273,8 +235,9 @@ impl Controls {
 
     /// The state behind one of the Lighting shelf's tracks.
     pub fn light(&self, dial: light::Dial) -> &Entity<SliderState> {
-        // Seated rather than searched: the index is exhaustive, so a sixth dial
-        // is a compile error where the old `expect` was a panic on opening.
+        // Seated rather than searched: a dial's index is its place in the roster
+        // the tracks were built from (`stark_ui::dial`), so the seat exists by
+        // construction where the old `expect` was a panic on opening.
         &self.lights[dial.index()]
     }
 
@@ -305,7 +268,7 @@ impl Controls {
     }
 
     /// The state behind one of the Select section's dials.
-    pub fn dial(&self, dial: Dial) -> &Entity<SliderState> {
+    pub fn dial(&self, dial: SelectDial) -> &Entity<SliderState> {
         &self.dials[dial.index()]
     }
 
@@ -329,7 +292,7 @@ impl Controls {
             settle(state, fraction(knob.read(brush), lo, hi), window, cx);
         }
         if let Some(o) = obs {
-            for (dial, state) in <Dial as strum::VariantArray>::VARIANTS
+            for (dial, state) in <SelectDial as strum::VariantArray>::VARIANTS
                 .iter()
                 .zip(&self.dials)
             {
@@ -444,6 +407,33 @@ fn track(
         }),
     );
     state
+}
+
+/// What a dial's track calls on the view: on every change, and once on release.
+type DialHandler<D> = fn(&mut Canvas, D, f32, &mut Context<'_, Canvas>);
+
+/// One track per dial of `D`, seated in `D`'s own order so `Dial::index` finds each —
+/// the one way every panel's dials are built, with what a change and a release *do*
+/// left to the view.
+fn dial_tracks<D: Dial, const N: usize>(
+    cx: &mut Context<'_, Canvas>,
+    subs: &mut Vec<Subscription>,
+    turn: DialHandler<D>,
+    settle: DialHandler<D>,
+) -> [Entity<SliderState>; N] {
+    std::array::from_fn(|i| {
+        let dial = D::VARIANTS[i];
+        track(
+            cx,
+            subs,
+            dial.range(),
+            dial.step(),
+            move |this, event, cx| match event {
+                SliderEvent::Change(v) => turn(this, dial, v.start(), cx),
+                SliderEvent::Release(v) => settle(this, dial, v.start(), cx),
+            },
+        )
+    })
 }
 
 /// [`track`] for a slider whose release lays down nothing its last change did not.

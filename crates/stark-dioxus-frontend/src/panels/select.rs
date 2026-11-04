@@ -16,6 +16,7 @@ use crate::widgets::{
 use stark_engine::command::{DocCommand, Edit, ViewCommand};
 use stark_model::document::{FillOp, ShapeAction};
 use stark_ui::commands::Command;
+use stark_ui::dial::Dial as _;
 use stark_ui::selection::Dial;
 
 /// Shape tools (§6.8): rect / ellipse / lasso, what the next gesture does with the region
@@ -91,7 +92,9 @@ pub fn SelectPanel() -> Element {
         // Under Fill the tool stays armed (§18.0.4), so the feather stays with it.
         if armed {
             Slider { label: Dial::Feather.label(), glyph: Dial::Feather.glyph(),
+                title: Dial::Feather.tip(), step: Dial::Feather.step(),
                 min: Dial::Feather.range().0, max: Dial::Feather.range().1, value: feather,
+                readout: Dial::Feather.readout(feather),
                 oninput: move |v| dispatch(state, ViewCommand::SetSelectionFeather(v)) }
         }
         Segmented {
@@ -104,7 +107,10 @@ pub fn SelectPanel() -> Element {
         // paint. For the selecting actions the same question is the mask's opacity, set after the
         // region is drawn, so it lives on the selection bar (§6.8).
         if filling {
-            Slider { label: "Opacity", glyph: stark_ui::icons::OPACITY, min: 0.0, max: 1.0, value: fill_opacity,
+            Slider { label: Dial::FillOpacity.label(), glyph: Dial::FillOpacity.glyph(),
+                title: Dial::FillOpacity.tip(), step: Dial::FillOpacity.step(),
+                min: Dial::FillOpacity.range().0, max: Dial::FillOpacity.range().1,
+                value: fill_opacity, readout: Dial::FillOpacity.readout(fill_opacity),
                 oninput: move |v| dispatch(state, ViewCommand::SetShapeOpacity(v)) }
         }
     }
@@ -154,13 +160,14 @@ pub fn SelectionBar() -> Element {
                 // (`Selection::opacity`). A deselect resets it to 1 (`Selection::plan`).
                 PreviewSlider {
                     shape: SliderShape::Bar,
-                    label: "Opacity",
-                    glyph: stark_ui::icons::OPACITY,
-                    min: 0.0,
-                    max: 1.0,
+                    label: Dial::MaskOpacity.label(),
+                    glyph: Dial::MaskOpacity.glyph(),
+                    min: Dial::MaskOpacity.range().0,
+                    max: Dial::MaskOpacity.range().1,
+                    step: Dial::MaskOpacity.step(),
                     value: opacity,
-                    title: "How strongly the selection takes paint \u{2014} a half-dimmed \
-                            selection is a half-opacity brush, fill and eraser inside it",
+                    readout: Dial::MaskOpacity.readout(opacity),
+                    title: Dial::MaskOpacity.tip(),
                     preview: preview::SELECTION_OPACITY,
                     pending: dimming,
                     map: Some::<f32>,
