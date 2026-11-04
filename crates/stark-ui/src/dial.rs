@@ -14,7 +14,7 @@
 //!   per dial indexes into an array built from `VARIANTS` and the two cannot disagree.
 //!   The three enums each numbered their own seats by hand, and a test had to check
 //!   each table of numbers against its own roster.
-//! - **The checks are written once** ([`tests::check`]): the label leads the tip, so a
+//! - **The checks are written once** (`tests::check`): the label leads the tip, so a
 //!   knob is not called two things; every track is one a hand can move; every dial
 //!   sits in its seat. They were three copies of the same three tests.
 //! - **A frontend can build every panel's tracks one way** — the native app's widget
