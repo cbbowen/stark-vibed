@@ -892,12 +892,12 @@ mod tests {
             let name = format!("var(--axis-{})", ["x", "y", "z"][i]);
             assert_eq!(AXIS_CSS[i], name, "the bar points at nothing");
 
-            let got = stark_model::color::oklab_to_srgb([lab[0], lab[1], lab[2], 1.0]);
+            let got = stark_model::color::oklab_to_srgb(*lab);
             for c in 0..3 {
                 assert!(
                     (got[c] - want[c]).abs() < 1.0 / 255.0,
                     "axis {i}: {name} is {:?}, but the shader draws {want:?}",
-                    &got[..3]
+                    got
                 );
             }
         }

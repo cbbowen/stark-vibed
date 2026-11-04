@@ -215,7 +215,8 @@ impl ColorDynamics {
 /// is [`BrushEffect::Wet`], a different tool rather than this one at other rates.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
 pub struct PaintEffect {
-    /// The pigment: straight **sRGB**, components in [0, 1], converted to the Oklab
+    /// The pigment: straight **sRGB**, extended past the cube to
+    /// [`Srgb::EXTENT`](crate::Srgb::EXTENT) (§6.5), converted to the Oklab
     /// working space at stamp time (§6.5). **No fourth component**: the paint a brush
     /// lays is per-unit opaque, and how much of it shows is [`opacity`](Self::opacity),
     /// a ceiling on the finished stroke rather than a property of the material (§6.2).
@@ -261,8 +262,8 @@ impl Default for PaintEffect {
     fn default() -> Self {
         Self {
             color: [0.0, 0.0, 0.0],
-            opacity: 1.0,
-            flow: Self::default_flow(),
+            opacity: Self::DEFAULT_OPACITY,
+            flow: Self::DEFAULT_FLOW,
             color_dynamics: ColorDynamics::default(),
             modulation: PaintModulations::default(),
         }
@@ -279,19 +280,41 @@ impl PaintEffect {
         }
     }
 
-    /// The opacity a brush gets when it does not say
-    /// ([`opacity`](Self::opacity)): a full stroke — for
-    /// `#[serde(default = "…")]`, which takes a path to call and cannot name a
+    /// The opacity a brush gets when it does not say ([`opacity`](Self::opacity)): a
+    /// full stroke. Shared with [`WetEffect`], whose ceiling is the same law.
+    pub const DEFAULT_OPACITY: f32 = 1.0;
+
+    /// [`DEFAULT_OPACITY`](Self::DEFAULT_OPACITY) as a function, for
+    /// `#[serde(default = "…")]` — which takes a path to call and cannot name a
     /// constant.
     fn default_opacity() -> f32 {
-        1.0
+        Self::DEFAULT_OPACITY
     }
 
-    /// The flow a brush gets when it does not say ([`flow`](Self::flow)) —
-    /// shared with [`WetEffect::default`], so the two effects' everyday
-    /// brushes lay the same paint.
+    /// The flow a brush gets when it does not say ([`flow`](Self::flow)) — shared
+    /// with [`WetEffect`], so the two effects' everyday brushes lay the same paint.
+    pub const DEFAULT_FLOW: f32 = 0.6;
+
+    /// [`DEFAULT_FLOW`](Self::DEFAULT_FLOW) as a function, for
+    /// `#[serde(default = "…")]`.
     fn default_flow() -> f32 {
-        0.6
+        Self::DEFAULT_FLOW
+    }
+
+    /// Every number a number and every quoted range held — this effect's share of
+    /// [`BrushParams::sanitized`](super::BrushParams::sanitized).
+    pub fn sanitized(self) -> Self {
+        let d = Self::default();
+        Self {
+            color: crate::Srgb::new(self.color).get(),
+            // In `[0, 1]` by the field's own doc, for the erase twin's reason: a
+            // ceiling on the fraction laid, meaningless past 1.
+            opacity: unit_or(self.opacity, d.opacity),
+            // A rate: floored, not capped — its ceiling is a slider's.
+            flow: at_least_zero(self.flow, d.flow),
+            color_dynamics: self.color_dynamics.sanitized(),
+            modulation: self.modulation.sanitized(),
+        }
     }
 }
 
@@ -351,11 +374,27 @@ impl Default for WetEffect {
     fn default() -> Self {
         Self {
             color: [0.0, 0.0, 0.0],
-            opacity: 1.0,
-            flow: PaintEffect::default_flow(),
+            opacity: PaintEffect::DEFAULT_OPACITY,
+            flow: PaintEffect::DEFAULT_FLOW,
             dynamics: BrushDynamics::default(),
             color_dynamics: ColorDynamics::default(),
             modulation: WetModulations::default(),
+        }
+    }
+}
+
+impl WetEffect {
+    /// [`PaintEffect::sanitized`]'s twin, with the fluxes held by
+    /// [`BrushDynamics::sanitized`].
+    pub fn sanitized(self) -> Self {
+        let d = Self::default();
+        Self {
+            color: crate::Srgb::new(self.color).get(),
+            opacity: unit_or(self.opacity, d.opacity),
+            flow: at_least_zero(self.flow, d.flow),
+            dynamics: self.dynamics.sanitized(),
+            color_dynamics: self.color_dynamics.sanitized(),
+            modulation: self.modulation.sanitized(),
         }
     }
 }
@@ -378,9 +417,11 @@ pub struct EraseEffect {
     /// **ceiling, not a rate**. `w` saturates at 1 however long a stroke works one
     /// spot, so a stroke removes at most this fraction of what it finds; scrubbing
     /// walks the stroke's soft edge toward the cap rather than eating past it.
+    #[serde(default = "EraseEffect::default_opacity")]
     pub opacity: f32,
     /// The rate: how fast a pass builds `w` — the knob an airbrush-style eraser
     /// turns down. One knob per effect: [`BrushEffect::flow`].
+    #[serde(default = "EraseEffect::default_flow")]
     pub flow: f32,
     /// The pen mappings onto this effect's own rate and ceiling
     /// ([`EraseModulations`]).
@@ -393,9 +434,44 @@ impl Default for EraseEffect {
     /// the rate one clean pass saturates.
     fn default() -> Self {
         Self {
-            opacity: 1.0,
-            flow: 1.0,
+            opacity: Self::DEFAULT_OPACITY,
+            flow: Self::DEFAULT_FLOW,
             modulation: EraseModulations::default(),
+        }
+    }
+}
+
+impl EraseEffect {
+    /// The ceiling an eraser gets when it does not say ([`opacity`](Self::opacity)):
+    /// everything the stroke covers, removed.
+    pub const DEFAULT_OPACITY: f32 = 1.0;
+
+    /// [`DEFAULT_OPACITY`](Self::DEFAULT_OPACITY) as a function, for
+    /// `#[serde(default = "…")]`.
+    fn default_opacity() -> f32 {
+        Self::DEFAULT_OPACITY
+    }
+
+    /// The rate an eraser gets when it does not say ([`flow`](Self::flow)): one clean
+    /// pass saturates.
+    pub const DEFAULT_FLOW: f32 = 1.0;
+
+    /// [`DEFAULT_FLOW`](Self::DEFAULT_FLOW) as a function, for
+    /// `#[serde(default = "…")]`.
+    fn default_flow() -> f32 {
+        Self::DEFAULT_FLOW
+    }
+
+    /// Every number a number and every quoted range held — this effect's share of
+    /// [`BrushParams::sanitized`](super::BrushParams::sanitized).
+    pub fn sanitized(self) -> Self {
+        let d = Self::default();
+        Self {
+            // In `[0, 1]` by the field's own doc: the removal `opacity` is a fraction
+            // of the visible opacity, and past 1 it would ask for less than none.
+            opacity: unit_or(self.opacity, d.opacity),
+            flow: at_least_zero(self.flow, d.flow),
+            modulation: self.modulation.sanitized(),
         }
     }
 }
@@ -455,8 +531,8 @@ impl Default for LiquifyEffect {
     /// every step a contraction.
     fn default() -> Self {
         Self {
-            strength: Self::default_strength(),
-            quality: Self::default_quality(),
+            strength: Self::DEFAULT_STRENGTH,
+            quality: Self::DEFAULT_QUALITY,
             modulation: LiquifyModulations::default(),
         }
     }
@@ -476,18 +552,43 @@ impl LiquifyEffect {
     pub const REACH_PX: f32 = 640.0;
 
     /// The follow fraction a brush gets when it does not say
-    /// ([`strength`](Self::strength)): the full drag — for
-    /// `#[serde(default = "…")]`, which takes a path to call and cannot name a
+    /// ([`strength`](Self::strength)): the full drag — and where a `NaN` lands, the
+    /// setting that cannot make a stroke do nothing.
+    pub const DEFAULT_STRENGTH: f32 = 1.0;
+
+    /// [`DEFAULT_STRENGTH`](Self::DEFAULT_STRENGTH) as a function, for
+    /// `#[serde(default = "…")]` — which takes a path to call and cannot name a
     /// constant.
     fn default_strength() -> f32 {
-        1.0
+        Self::DEFAULT_STRENGTH
     }
 
-    /// The stepping a brush gets when it does not say
-    /// ([`quality`](Self::quality)): every step a contraction — for
-    /// `#[serde(default = "…")]`, like the strength's.
+    /// The stepping a brush gets when it does not say ([`quality`](Self::quality)):
+    /// every step a contraction — and where a `NaN` lands, the setting that cannot
+    /// make a stroke tear.
+    pub const DEFAULT_QUALITY: f32 = 1.0;
+
+    /// [`DEFAULT_QUALITY`](Self::DEFAULT_QUALITY) as a function, for
+    /// `#[serde(default = "…")]`.
     fn default_quality() -> f32 {
-        1.0
+        Self::DEFAULT_QUALITY
+    }
+
+    /// Every number a number and both fractions in `[0, 1]` — this effect's share of
+    /// [`BrushParams::sanitized`](super::BrushParams::sanitized).
+    pub fn sanitized(self) -> Self {
+        let d = Self::default();
+        Self {
+            // In `[0, 1]` by the field's own doc, and here a *renderer* invariant: the
+            // gather's snapshot margin is sized by the segment's travel, so a follow
+            // past 1 would read outside it (§6.13). Capped, unlike the flows, because
+            // this crate owns that bound.
+            strength: unit_or(self.strength, d.strength),
+            // In `[0, 1]` by its own doc: a fraction of the step budget, meaningless
+            // past 1.
+            quality: unit_or(self.quality, d.quality),
+            modulation: self.modulation.sanitized(),
+        }
     }
 }
 
@@ -569,7 +670,7 @@ impl BrushEffect {
             Self::Paint(p) => p.flow = flow,
             Self::Wet(w) => w.flow = flow,
             Self::Erase(e) => e.flow = flow,
-            Self::Liquify(l) => l.strength = unit_or(flow, 1.0),
+            Self::Liquify(l) => l.strength = unit_or(flow, LiquifyEffect::DEFAULT_STRENGTH),
         }
     }
 
@@ -591,11 +692,15 @@ impl BrushEffect {
     /// Write the effect's opacity — [`opacity`](Self::opacity)'s other half. A no-op on
     /// [`Liquify`](Self::Liquify), which has no such knob; stated as an arm rather than
     /// left to a wildcard so a new effect has to answer for itself.
+    ///
+    /// Held to `[0, 1]` here, unlike the flows [`set_flow`](Self::set_flow) writes: an
+    /// opacity is a ceiling on a fraction, a range this crate owns, so the door holds
+    /// it as [`sanitized`](Self::sanitized) would — a `NaN` landing on a full stroke.
     pub fn set_opacity(&mut self, opacity: f32) {
         match self {
-            Self::Paint(p) => p.opacity = opacity,
-            Self::Wet(w) => w.opacity = opacity,
-            Self::Erase(e) => e.opacity = opacity,
+            Self::Paint(p) => p.opacity = unit_or(opacity, PaintEffect::DEFAULT_OPACITY),
+            Self::Wet(w) => w.opacity = unit_or(opacity, PaintEffect::DEFAULT_OPACITY),
+            Self::Erase(e) => e.opacity = unit_or(opacity, EraseEffect::DEFAULT_OPACITY),
             Self::Liquify(_) => {}
         }
     }
@@ -631,43 +736,10 @@ impl BrushEffect {
     /// slider's ([`WetEffect::flow`]).
     pub fn sanitized(self) -> Self {
         match self {
-            Self::Paint(p) => Self::Paint(PaintEffect {
-                color: crate::Srgb::new(p.color).get(),
-                // In `[0, 1]` by the field's own doc, for the erase twin's
-                // reason: a ceiling on the fraction laid, meaningless past 1.
-                opacity: unit_or(p.opacity, 1.0),
-                flow: at_least_zero(p.flow, PaintEffect::default_flow()),
-                color_dynamics: p.color_dynamics.sanitized(),
-                modulation: p.modulation.sanitized(),
-            }),
-            Self::Wet(w) => Self::Wet(WetEffect {
-                color: crate::Srgb::new(w.color).get(),
-                opacity: unit_or(w.opacity, 1.0),
-                flow: at_least_zero(w.flow, PaintEffect::default_flow()),
-                dynamics: w.dynamics.sanitized(),
-                color_dynamics: w.color_dynamics.sanitized(),
-                modulation: w.modulation.sanitized(),
-            }),
-            Self::Erase(e) => Self::Erase(EraseEffect {
-                // In `[0, 1]` by the field's own doc: the removal `opacity` is
-                // a fraction of the visible opacity, and past 1 it would ask for
-                // less than none.
-                opacity: unit_or(e.opacity, 1.0),
-                flow: at_least_zero(e.flow, 1.0),
-                modulation: e.modulation.sanitized(),
-            }),
-            Self::Liquify(l) => Self::Liquify(LiquifyEffect {
-                // In `[0, 1]` by the field's own doc, and here a *renderer* invariant:
-                // the gather's snapshot margin is sized by the segment's travel, so a
-                // follow past 1 would read outside it (§6.13). Capped, unlike the
-                // flows, because this crate owns that bound.
-                strength: unit_or(l.strength, 1.0),
-                // In `[0, 1]` by its own doc: a fraction of the step budget,
-                // meaningless past 1 — and a NaN lands on the full budget, the
-                // setting that cannot make a stroke tear.
-                quality: unit_or(l.quality, 1.0),
-                modulation: l.modulation.sanitized(),
-            }),
+            Self::Paint(p) => Self::Paint(p.sanitized()),
+            Self::Wet(w) => Self::Wet(w.sanitized()),
+            Self::Erase(e) => Self::Erase(e.sanitized()),
+            Self::Liquify(l) => Self::Liquify(l.sanitized()),
         }
     }
 }

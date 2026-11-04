@@ -120,8 +120,8 @@ impl Gradient {
         if f >= 1.0 {
             return b.color;
         }
-        let la = to_lab(a.color.get());
-        let lb = to_lab(b.color.get());
+        let la = srgb_to_oklab(a.color.get());
+        let lb = srgb_to_oklab(b.color.get());
         from_lab([
             la[0] + (lb[0] - la[0]) * f,
             la[1] + (lb[1] - la[1]) * f,
@@ -213,17 +213,11 @@ fn thin(stops: &mut Vec<GradientStop>) {
         .collect();
 }
 
-fn to_lab(srgb: [f32; 3]) -> [f32; 3] {
-    let l = srgb_to_oklab([srgb[0], srgb[1], srgb[2], 1.0]);
-    [l[0], l[1], l[2]]
-}
-
+/// An Oklab color back as an [`Srgb`]. A lerp between two stops can leave the sRGB
+/// cube (Oklab is wider), and that is **kept**: extended sRGB is what a color is
+/// (§6.5), so the excursion is a wide color rather than an error.
 fn from_lab(lab: [f32; 3]) -> Srgb {
-    let s = oklab_to_srgb([lab[0], lab[1], lab[2], 1.0]);
-    // A lerp between two stops can leave the sRGB cube (Oklab is wider), and that is
-    // **kept**: extended sRGB is what a color is (§6.5), so the excursion is a wide
-    // color rather than an error.
-    Srgb::new([s[0], s[1], s[2]])
+    Srgb::new(oklab_to_srgb(lab))
 }
 
 /// How far apart, in canvas px, the capture samples a traced path (§22.2).
@@ -303,7 +297,7 @@ pub fn fit(samples: &[(f32, [f32; 3])]) -> Option<Gradient> {
         return None;
     }
     let n = samples.len();
-    let lab: Vec<[f32; 3]> = samples.iter().map(|(_, c)| to_lab(*c)).collect();
+    let lab: Vec<[f32; 3]> = samples.iter().map(|(_, c)| srgb_to_oklab(*c)).collect();
 
     // Median-of-3, endpoints kept verbatim: the ends are the colors the artist
     // deliberately started and finished on, not noise to vote away.
@@ -408,13 +402,12 @@ mod tests {
         assert_eq!(g.sample(2.0), Srgb::new(b));
 
         // Midpoint = the Oklab midpoint, not the sRGB one.
-        let la = srgb_to_oklab([a[0], a[1], a[2], 1.0]);
-        let lb = srgb_to_oklab([b[0], b[1], b[2], 1.0]);
+        let la = srgb_to_oklab(a);
+        let lb = srgb_to_oklab(b);
         let mid = oklab_to_srgb([
             (la[0] + lb[0]) / 2.0,
             (la[1] + lb[1]) / 2.0,
             (la[2] + lb[2]) / 2.0,
-            1.0,
         ]);
         let got = g.sample(0.5);
         for ch in 0..3 {
@@ -678,8 +671,8 @@ mod tests {
 
     #[test]
     fn fit_of_a_clean_ramp_is_two_stops() {
-        let a = to_lab([0.9, 0.1, 0.1]);
-        let b = to_lab([0.1, 0.2, 0.9]);
+        let a = srgb_to_oklab([0.9, 0.1, 0.1]);
+        let b = srgb_to_oklab([0.1, 0.2, 0.9]);
         let samples: Vec<(f32, [f32; 3])> = (0..64)
             .map(|i| {
                 let t = i as f32 / 63.0;
@@ -706,9 +699,9 @@ mod tests {
         let red = [0.5, 0.05, 0.05];
         let yellow = [0.95, 0.85, 0.1];
         let white = [1.0, 1.0, 1.0];
-        let ra = to_lab(red);
-        let ya = to_lab(yellow);
-        let wa = to_lab(white);
+        let ra = srgb_to_oklab(red);
+        let ya = srgb_to_oklab(yellow);
+        let wa = srgb_to_oklab(white);
         let samples: Vec<(f32, [f32; 3])> = (0..65)
             .map(|i| {
                 let t = i as f32 / 64.0;
@@ -743,8 +736,8 @@ mod tests {
         }
         // And the fitted ramp reproduces the trace everywhere, not just at stops.
         for (t, c) in &samples {
-            let got = to_lab(g.sample(*t).get());
-            let want = to_lab(*c);
+            let got = srgb_to_oklab(g.sample(*t).get());
+            let want = srgb_to_oklab(*c);
             let d = ((got[0] - want[0]).powi(2)
                 + (got[1] - want[1]).powi(2)
                 + (got[2] - want[2]).powi(2))

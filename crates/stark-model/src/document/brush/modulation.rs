@@ -245,7 +245,13 @@ pub(super) trait Modulations<const N: usize>: Copy + Sized {
 /// [`effect`](super::BrushParams::effect) (§6.2): the targets that shape the **tip** —
 /// its size, its elongation, and how far it settles into the substrate's tooth. An
 /// effect's own rates are mapped *with* the effect ([`PaintModulations`],
-/// [`EraseModulations`]), so a mapping cannot name a knob its brush does not have.
+/// [`WetModulations`], [`EraseModulations`], [`LiquifyModulations`]), so a mapping
+/// cannot name a knob its brush does not have.
+///
+/// This struct and the four beside it are `#[serde(default)]` **whole**, rather than
+/// field by field: an absent target means "unmapped" — `None`, each one's `Default` —
+/// for every target there is or will be, so a target added later cannot be the one
+/// that forgot to say so and empties a stored preset (§25.6) instead of costing itself.
 ///
 /// Exactly the parameters that already vary **per swept segment**, and no others: a
 /// segment carries one size, one set of rates and one orientation (§6.6). `hardness`
@@ -255,6 +261,7 @@ pub(super) trait Modulations<const N: usize>: Copy + Sized {
 /// `None` on a target is not "a modulation with no effect" — it is skipped entirely, so
 /// the parameter reaches the renderer as the exact float the slider holds.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default, carbonite::Schema)]
+#[serde(default)]
 pub struct BrushModulations {
     /// Scales [`BrushParams::size`](super::BrushParams::size).
     pub size: Option<Modulation>,
@@ -331,6 +338,7 @@ impl Modulations<3> for BrushModulations {
 /// one more accumulator lane per touched tile (§6.2). A brush that leaves it unmapped
 /// never pays for it.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default, carbonite::Schema)]
+#[serde(default)]
 pub struct PaintModulations {
     /// Scales [`PaintEffect::flow`](super::PaintEffect::flow) — the brush's own paint,
     /// "Flow" in the UI.
@@ -339,7 +347,6 @@ pub struct PaintModulations {
     /// stroke this stretch of it is. Where a stroke covers a spot twice the spot shows
     /// the **larger** of the two ceilings (§6.2), so a light pass back over a heavy mark
     /// leaves it, and a heavy pass over a light one fills it in.
-    #[serde(default)]
     pub opacity: Option<Modulation>,
 }
 
@@ -369,6 +376,7 @@ impl Modulations<2> for PaintModulations {
 /// ([`WetEffect::modulation`](super::WetEffect::modulation)), for
 /// [`PaintModulations`]' reason.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default, carbonite::Schema)]
+#[serde(default)]
 pub struct WetModulations {
     /// Scales [`WetEffect::flow`](super::WetEffect::flow) — the whole of what the tool
     /// does, "Flow" in the UI: mapped to pressure, a light touch lays less *and* smears
@@ -377,7 +385,6 @@ pub struct WetModulations {
     /// Scales [`WetEffect::opacity`](super::WetEffect::opacity) — the ceiling on what
     /// the brush **mints** (§6.2). The `charge` glob is scaled by the dial alone, being
     /// minted once before the pen has moved; moved paint is under no ceiling at all.
-    #[serde(default)]
     pub opacity: Option<Modulation>,
     /// Scales [`BrushDynamics::add`](super::BrushDynamics::add) — the brush's own paint
     /// alone, for a brush that lays more under the pen without working the canvas
@@ -441,6 +448,7 @@ impl Modulations<6> for WetModulations {
 /// eraser's rate and its ceiling, [`PaintModulations`]' pair on the removing
 /// side, carried the same way (the erase sweep's ceiling lane).
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default, carbonite::Schema)]
+#[serde(default)]
 pub struct EraseModulations {
     /// Scales [`EraseEffect::flow`](super::EraseEffect::flow) — how fast a light touch
     /// feathers the bite in.
@@ -448,7 +456,6 @@ pub struct EraseModulations {
     /// Scales [`EraseEffect::opacity`](super::EraseEffect::opacity) — how much of what
     /// it finds this stretch of the stroke may remove. Mapped to pressure, a light
     /// touch thins and a heavy one clears.
-    #[serde(default)]
     pub opacity: Option<Modulation>,
 }
 
@@ -476,6 +483,7 @@ impl Modulations<2> for EraseModulations {
 /// rate a [`LiquifyEffect`](super::LiquifyEffect) has. With the effect it modulates for
 /// [`PaintModulations`]' reason: a mapping cannot name a knob its brush does not have.
 #[derive(Copy, Clone, Debug, PartialEq, Serialize, Deserialize, Default, carbonite::Schema)]
+#[serde(default)]
 pub struct LiquifyModulations {
     /// Scales [`LiquifyEffect::strength`](super::LiquifyEffect::strength) — how hard
     /// the paint follows the tip. Mapped to pressure this is the natural finger: barely

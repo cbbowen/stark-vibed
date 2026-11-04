@@ -103,8 +103,7 @@ fn is_grey(c: [u8; 4]) -> bool {
 /// move — the space the claim is made in, so the assertion is about the adjustment
 /// rather than about how sRGB happens to encode it.
 fn chroma_ab(c: [u8; 4]) -> [f32; 2] {
-    let lin = |i: usize| stark_model::color::srgb_to_linear(c[i] as f32 / 255.0);
-    let lab = stark_model::color::linear_srgb_to_oklab([lin(0), lin(1), lin(2)]);
+    let lab = stark_model::color::srgb_to_oklab([0, 1, 2].map(|i| c[i] as f32 / 255.0));
     [lab[1], lab[2]]
 }
 
@@ -180,10 +179,8 @@ fn desaturating_keeps_the_lightness_it_found() {
     );
     let after = center(&engine.render_to_image());
 
-    let lightness = |c: [u8; 4]| {
-        let lin = |i: usize| stark_model::color::srgb_to_linear(c[i] as f32 / 255.0);
-        stark_model::color::linear_srgb_to_oklab([lin(0), lin(1), lin(2)])[0]
-    };
+    let lightness =
+        |c: [u8; 4]| stark_model::color::srgb_to_oklab([0, 1, 2].map(|i| c[i] as f32 / 255.0))[0];
     let (was, now) = (lightness(before), lightness(after));
     // Loose, because the trip out to light and back through the media pass's tonemap
     // is not an identity. What it rules out is the ~0.1 slide in `L` a

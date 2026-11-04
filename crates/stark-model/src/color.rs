@@ -218,26 +218,20 @@ pub fn oklab_to_linear_srgb(lab: [f32; 3]) -> [f32; 3] {
     ]
 }
 
-/// Straight sRGB RGBA in `[0,1]` → Oklab `[L,a,b]` + unchanged alpha.
-pub fn srgb_to_oklab(rgba: [f32; 4]) -> [f32; 4] {
-    let lin = [
-        srgb_to_linear(rgba[0]),
-        srgb_to_linear(rgba[1]),
-        srgb_to_linear(rgba[2]),
-    ];
-    let lab = linear_srgb_to_oklab(lin);
-    [lab[0], lab[1], lab[2], rgba[3]]
+/// Encoded (extended) sRGB `[r,g,b]` → Oklab `[L,a,b]`.
+///
+/// Three lanes and no alpha: a color here is per-unit opaque paint or a ramp stop,
+/// and nothing that converts one has an alpha to carry through (§6.1, §6.2). The
+/// transfer is the extended one (§6.5), so a channel outside `[0, 1]` is a wide
+/// color, converted rather than clipped.
+pub fn srgb_to_oklab(rgb: [f32; 3]) -> [f32; 3] {
+    linear_srgb_to_oklab(rgb.map(srgb_to_linear))
 }
 
-/// Oklab `[L,a,b]` + alpha → straight sRGB RGBA in `[0,1]`.
-pub fn oklab_to_srgb(laba: [f32; 4]) -> [f32; 4] {
-    let lin = oklab_to_linear_srgb([laba[0], laba[1], laba[2]]);
-    [
-        linear_to_srgb(lin[0]),
-        linear_to_srgb(lin[1]),
-        linear_to_srgb(lin[2]),
-        laba[3],
-    ]
+/// Oklab `[L,a,b]` → encoded (extended) sRGB `[r,g,b]` — [`srgb_to_oklab`]'s inverse.
+/// A color outside the sRGB cube comes back outside it rather than clipped (§6.5).
+pub fn oklab_to_srgb(lab: [f32; 3]) -> [f32; 3] {
+    oklab_to_linear_srgb(lab).map(linear_to_srgb)
 }
 
 /// Linear sRGB → XYZ normalized to D65 white — the space light is combined and
@@ -327,7 +321,7 @@ mod tests {
         assert_eq!(PICKED.get(), [Srgb::EXTENT, 0.5, -3.0]);
     }
 
-    fn close(a: [f32; 4], b: [f32; 4], eps: f32) -> bool {
+    fn close(a: [f32; 3], b: [f32; 3], eps: f32) -> bool {
         a.iter().zip(b).all(|(x, y)| (x - y).abs() <= eps)
     }
 
@@ -421,10 +415,12 @@ mod tests {
     #[test]
     fn srgb_oklab_roundtrip() {
         for c in [
-            [0.0, 0.0, 0.0, 1.0],
-            [1.0, 1.0, 1.0, 1.0],
-            [1.0, 0.0, 0.0, 1.0],
-            [0.2, 0.5, 0.8, 0.5],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+            [1.0, 0.0, 0.0],
+            [0.2, 0.5, 0.8],
+            // Past the cube, which the extended transfer converts rather than clips.
+            [1.4, -0.2, 0.5],
         ] {
             let back = oklab_to_srgb(srgb_to_oklab(c));
             assert!(close(c, back, 1e-3), "roundtrip {c:?} -> {back:?}");
@@ -433,7 +429,7 @@ mod tests {
 
     #[test]
     fn gray_has_no_chroma() {
-        let lab = srgb_to_oklab([0.5, 0.5, 0.5, 1.0]);
+        let lab = srgb_to_oklab([0.5, 0.5, 0.5]);
         assert!(
             lab[1].abs() < 1e-3 && lab[2].abs() < 1e-3,
             "gray a,b ~ 0: {lab:?}"

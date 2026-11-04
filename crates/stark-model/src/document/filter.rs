@@ -19,6 +19,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::sanitize::finite_in;
 
+/// A whole turn either way, in radians — the range every angle a filter states is
+/// held to, so every rotation is reachable and none is reachable twice by more than a
+/// lap. One constant behind [`ColorAdjust::HUE`], [`ChromaticAberration::ANGLE`] and
+/// [`Aperture::ANGLE`], which each keep their own name for the knob they bound.
+pub const FULL_TURN: (f32, f32) = (-std::f32::consts::PI, std::f32::consts::PI);
+
 /// What a filter layer does to the stack beneath it (§21.2), and the seam the rest of
 /// §21.7 lands on.
 ///
@@ -187,9 +193,8 @@ impl ColorAdjust {
     pub const EXPOSURE: (f32, f32) = (-4.0, 4.0);
     pub const CONTRAST: (f32, f32) = (0.0, 2.0);
     pub const SATURATION: (f32, f32) = (0.0, 2.0);
-    /// A full turn either way, so every rotation is reachable and none is reachable
-    /// twice by more than a lap.
-    pub const HUE: (f32, f32) = (-std::f32::consts::PI, std::f32::consts::PI);
+    /// A full turn either way ([`FULL_TURN`]).
+    pub const HUE: (f32, f32) = FULL_TURN;
     /// Per component, on each axis of the `(a, b)` plane. `0.16` is about as far from
     /// the achromatic axis as the sRGB gamut itself reaches at mid-grey; past it every
     /// texel is out of gamut on the same side and the pass returns a flat wash.
@@ -200,16 +205,17 @@ impl ColorAdjust {
     /// about which end of the range was meant.
     #[must_use]
     pub fn sanitized(self) -> Self {
+        let n = Self::NEUTRAL;
         Self {
-            exposure: finite_in(self.exposure, 0.0, Self::EXPOSURE),
-            contrast: finite_in(self.contrast, 1.0, Self::CONTRAST),
-            saturation: finite_in(self.saturation, 1.0, Self::SATURATION),
-            hue: finite_in(self.hue, 0.0, Self::HUE),
+            exposure: finite_in(self.exposure, n.exposure, Self::EXPOSURE),
+            contrast: finite_in(self.contrast, n.contrast, Self::CONTRAST),
+            saturation: finite_in(self.saturation, n.saturation, Self::SATURATION),
+            hue: finite_in(self.hue, n.hue, Self::HUE),
             // Per component, so one unusable axis of a cast does not throw away the
             // other.
             tint: [
-                finite_in(self.tint[0], 0.0, Self::TINT),
-                finite_in(self.tint[1], 0.0, Self::TINT),
+                finite_in(self.tint[0], n.tint[0], Self::TINT),
+                finite_in(self.tint[1], n.tint[1], Self::TINT),
             ],
         }
     }
@@ -251,17 +257,17 @@ impl ChromaticAberration {
     /// ceiling is also a promise to the renderer: it is what keeps the pass's capped
     /// tap budget out of reach at working zooms (§21.10).
     pub const SPREAD: (f32, f32) = (0.0, 128.0);
-    /// A full turn either way, so every axis is reachable and none is reachable
-    /// twice by more than a lap.
-    pub const ANGLE: (f32, f32) = (-std::f32::consts::PI, std::f32::consts::PI);
+    /// A full turn either way ([`FULL_TURN`]).
+    pub const ANGLE: (f32, f32) = FULL_TURN;
 
     /// Every knob finite and in range — see [`Filter::sanitized`]. A non-finite value
     /// falls back to that knob's **neutral**, for [`ColorAdjust::sanitized`]'s reason.
     #[must_use]
     pub fn sanitized(self) -> Self {
+        let n = Self::NEUTRAL;
         Self {
-            spread: finite_in(self.spread, 0.0, Self::SPREAD),
-            angle: finite_in(self.angle, 0.0, Self::ANGLE),
+            spread: finite_in(self.spread, n.spread, Self::SPREAD),
+            angle: finite_in(self.angle, n.angle, Self::ANGLE),
         }
     }
 }
@@ -337,8 +343,13 @@ impl Aperture {
     /// radius the blur can be dialled to.
     pub const BLADES: (u32, u32) = (3, 12);
 
-    /// How far a shape that has a direction may be turned: a whole turn.
-    pub const ANGLE: (f32, f32) = (-std::f32::consts::PI, std::f32::consts::PI);
+    /// How far a shape that has a direction may be turned: a whole turn
+    /// ([`FULL_TURN`]).
+    pub const ANGLE: (f32, f32) = FULL_TURN;
+
+    /// The unobstructed disc: the plain lens, the first shape the bar offers, and what
+    /// a file written before the aperture existed means by saying nothing.
+    pub const NEUTRAL: Self = Aperture::Disc { obstruction: 0.0 };
 
     /// The central obstruction's range — see [`Aperture::Disc`].
     pub const OBSTRUCTION: (f32, f32) = (0.0, 0.9);
@@ -354,7 +365,7 @@ impl Aperture {
     /// fudge constants — the plain lens, the commonest six-bladed iris, the 2×
     /// anamorphic squeeze.
     pub const ALL: [Aperture; 3] = [
-        Aperture::Disc { obstruction: 0.0 },
+        Self::NEUTRAL,
         Aperture::Blades {
             count: 6,
             angle: 0.0,
@@ -411,7 +422,7 @@ impl Default for Aperture {
     /// The unobstructed disc — what a file written before the aperture existed means
     /// by saying nothing (see [`FocalBlur::aperture`]).
     fn default() -> Self {
-        Aperture::Disc { obstruction: 0.0 }
+        Self::NEUTRAL
     }
 }
 
@@ -440,7 +451,7 @@ impl FocalBlur {
     /// The identity: nothing spreads.
     pub const NEUTRAL: Self = Self {
         radius: 0.0,
-        aperture: Aperture::Disc { obstruction: 0.0 },
+        aperture: Aperture::NEUTRAL,
     };
 
     /// The widest the radius may be dialled — the range a frontend's slider spans and
@@ -454,7 +465,7 @@ impl FocalBlur {
     #[must_use]
     pub fn sanitized(self) -> Self {
         Self {
-            radius: finite_in(self.radius, 0.0, Self::RADIUS),
+            radius: finite_in(self.radius, Self::NEUTRAL.radius, Self::RADIUS),
             aperture: self.aperture.sanitized(),
         }
     }

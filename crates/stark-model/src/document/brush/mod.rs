@@ -21,7 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::sanitize::{at_least_zero, clamp01, finite_in, finite_or, unit_or};
+use crate::sanitize::{at_least_zero, finite_in, finite_or, unit_or};
 
 mod effect;
 mod modulation;
@@ -49,7 +49,7 @@ pub enum BrushShape {
     /// schema-less store as well as in the log (§25.6), so a second knob added
     /// beside this one must not drop every preset that predates it.
     Round {
-        #[serde(default = "round_hardness")]
+        #[serde(default = "BrushShape::default_hardness")]
         hardness: f32,
     },
     /// A sampled coverage mask, referenced by content id (an imported image).
@@ -64,12 +64,6 @@ impl Default for BrushShape {
     }
 }
 
-/// [`BrushShape::DEFAULT_HARDNESS`] as a path, which is the only spelling
-/// `#[serde(default = …)]` takes.
-fn round_hardness() -> f32 {
-    BrushShape::DEFAULT_HARDNESS
-}
-
 impl BrushShape {
     /// The round tip's hardness fallback: used both as [`Default`] and when a
     /// `Stamp` asset fails to resolve and rendering falls back to the round tip
@@ -77,12 +71,22 @@ impl BrushShape {
     /// back on.
     pub const DEFAULT_HARDNESS: f32 = 0.5;
 
+    /// [`DEFAULT_HARDNESS`](Self::DEFAULT_HARDNESS) as a function, for
+    /// `#[serde(default = "…")]` — which takes a path to call and cannot name a
+    /// constant.
+    fn default_hardness() -> f32 {
+        Self::DEFAULT_HARDNESS
+    }
+
     /// The same tip with its hardness inside the `[0, 1]` it is quoted in — see
     /// [`BrushParams::sanitized`]. A `Stamp` carries no number to hold.
+    ///
+    /// A `NaN` hardness lands on the default rather than on 0, the softest edge:
+    /// `NaN` says nothing about which end was meant (`sanitize`'s policy).
     pub fn sanitized(self) -> Self {
         match self {
             Self::Round { hardness } => Self::Round {
-                hardness: clamp01(hardness),
+                hardness: unit_or(hardness, Self::DEFAULT_HARDNESS),
             },
             Self::Stamp(id) => Self::Stamp(id),
         }
@@ -284,7 +288,8 @@ pub struct BrushParams {
     /// [`BrushModulations::PRESSURE_SIZE`] by default: the pressure → radius scaling,
     /// held as data so a preset can drop it or aim it elsewhere. An effect's own rates
     /// are mapped where they live ([`PaintEffect::modulation`],
-    /// [`EraseEffect::modulation`]).
+    /// [`WetEffect::modulation`], [`EraseEffect::modulation`],
+    /// [`LiquifyEffect::modulation`]).
     ///
     /// `#[serde(default = "…")]` and not a bare `#[serde(default)]`, for
     /// [`ToothParams::give`]'s reason (§8): [`BrushModulations`]'s own `Default` is
@@ -724,6 +729,15 @@ mod tests {
             b.effect = BrushEffect::Wet(WetEffect::default());
             b.wet_mut().expect("just made wet")
         }
+        /// The brush turned liquify and its effect handed back — what a poke at a
+        /// liquify-only knob reaches through.
+        fn liquify(b: &mut BrushParams) -> &mut LiquifyEffect {
+            b.effect = BrushEffect::Liquify(LiquifyEffect::default());
+            let BrushEffect::Liquify(l) = &mut b.effect else {
+                unreachable!("just made liquify")
+            };
+            l
+        }
         /// A pen mapping with `f` in one of its two knobs — what a poke at a
         /// [`Modulation`] reaches through. The other knob is left at a value the
         /// funnel would not move, so a failure names the knob it is about.
@@ -735,7 +749,7 @@ mod tests {
             })
         }
         type Poke = (&'static str, fn(&mut BrushParams, f32));
-        let pokes: [Poke; 26] = [
+        let pokes: [Poke; 32] = [
             ("radius", |b, f| b.size = f),
             ("drain", |b, f| b.drain = f),
             ("erase.opacity", |b, f| {
@@ -774,8 +788,20 @@ mod tests {
             ("jitter.amplitude.2", |b, f| {
                 paint(b).color_dynamics.amplitude[2] = f
             }),
-            ("jitter.frequency", |b, f| {
+            ("jitter.frequency.0", |b, f| {
                 paint(b).color_dynamics.frequency[0] = f
+            }),
+            ("jitter.frequency.1", |b, f| {
+                paint(b).color_dynamics.frequency[1] = f
+            }),
+            ("wet.color.g", |b, f| wet(b).color[1] = f),
+            ("wet.jitter.amplitude", |b, f| {
+                wet(b).color_dynamics.amplitude[0] = f
+            }),
+            ("liquify.strength", |b, f| liquify(b).strength = f),
+            ("liquify.quality", |b, f| liquify(b).quality = f),
+            ("liquify.mod", |b, f| {
+                liquify(b).modulation.strength = response(f, f)
             }),
             ("hardness", |b, f| {
                 b.shape = BrushShape::Round { hardness: f }
@@ -812,10 +838,17 @@ mod tests {
                     w.dynamics.bleed,
                 ]);
             }
+            // The strength is `effect.flow()` above; the quality is the liquify's own.
+            if let Some(l) = b.liquify() {
+                v.push(l.quality);
+            }
             v
         };
         let unit = |b: &BrushParams| {
             let mut v = vec![b.tooth.give, b.effect.opacity()];
+            if let Some(l) = b.liquify() {
+                v.extend([l.strength, l.quality]);
+            }
             if let Some(w) = b.wet() {
                 v.extend([
                     w.dynamics.add,

@@ -25,7 +25,7 @@ use serde::{Deserialize, Serialize};
 use super::paint::{GradientParcel, Parcel};
 use super::selection::{SelectionMode, SelectionShape};
 use crate::Srgb;
-use crate::geom::{TILE_APRON, Vec2};
+use crate::geom::Vec2;
 use crate::sanitize::{at_least_zero, clamp01};
 
 /// Largest number of paint tiles one fill may write — the same stance as
@@ -181,19 +181,25 @@ impl FillOp {
     /// How far past the shape's own boundary its coverage can reach, in canvas px.
     ///
     /// The rasterizer's ramp is `clamp(0.5 − sd/w, 0, 1)` with `w = max(feather, 1)`
-    /// (`selection.wesl`), so coverage is exactly zero beyond `w/2`, and the apron
-    /// carries a tile's write one band further. Deliberately tighter than
-    /// `stark-engine`'s `Selection::plan` padding, which is sized so the *outline*
-    /// pass can find a boundary by differencing: reusing it here would ring every fill
-    /// with all-zero paint tiles that pollute `bounds` and hold pool memory.
+    /// (`selection.wesl`), so coverage is exactly zero beyond `w/2`; one more px of
+    /// slack keeps a texel whose centre the ramp still reaches inside the box. The
+    /// **apron is not here**: which tiles a box touches, aprons included, is
+    /// [`tile_box`](crate::geom::tile_box)'s to say, and saying it twice rang every
+    /// fill with a band of tiles it wrote nothing into.
+    ///
+    /// Deliberately tighter than `stark-engine`'s `Selection::plan` padding, which is
+    /// sized so the *outline* pass can find a boundary by differencing: reusing it here
+    /// would ring every fill with all-zero paint tiles that pollute `bounds` and hold
+    /// pool memory.
     fn reach(&self) -> f32 {
-        self.feather.max(1.0) * 0.5 + TILE_APRON as f32 + 1.0
+        self.feather.max(1.0) * 0.5 + 1.0
     }
 }
 
-/// The canvas-space box a fill can write: its shape's own box, grown by the coverage
-/// ramp (`FillOp`'s reach) and then by the apron band, since a box reaching into that
-/// band still touches the neighbour.
+/// The canvas-space box a fill's coverage can reach: its shape's own box, grown by the
+/// coverage ramp (`FillOp`'s reach). Which *tiles* that box touches — the apron band
+/// included — is [`tile_box`](crate::geom::tile_box)'s answer, and both quantizers
+/// below ask it.
 ///
 /// `None` when the fill is bounded only by the selection — [`SelectionShape::All`], or
 /// a lasso with no vertices — which `stark-engine`'s `gpu::fill::plan` then bounds
@@ -210,7 +216,7 @@ impl FillOp {
 /// differently, which is why it is derived here.
 pub fn fill_bounds(op: &FillOp) -> Option<(Vec2, Vec2)> {
     let (lo, hi) = op.shape.bounds()?;
-    let pad = Vec2::splat(op.reach() + TILE_APRON as f32);
+    let pad = Vec2::splat(op.reach());
     Some((lo - pad, hi + pad))
 }
 

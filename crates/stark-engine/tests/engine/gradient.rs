@@ -134,10 +134,7 @@ fn a_gap_in_the_paint_does_not_join_the_ramp() {
     // "Mixture" means: on or near the Oklab segment joining the two paints —
     // which an interpolated ramp is by construction, and which the paper (or a
     // None mis-mapped to black) sits far off.
-    let lab = |c: [f32; 3]| {
-        let l = stark_model::color::srgb_to_oklab([c[0], c[1], c[2], 1.0]);
-        [l[0], l[1], l[2]]
-    };
+    let lab = stark_model::color::srgb_to_oklab;
     let a = lab((g.sample(0.0)).get());
     let b = lab((g.sample(1.0)).get());
     for i in 0..=32 {

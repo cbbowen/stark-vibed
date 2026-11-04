@@ -16,7 +16,7 @@
 //! every sub-cell is exactly its own source rect, and the GPU takes the exact
 //! inverse-affine path. That is what lets §16.4's identity invariant extend to the warp.
 
-use glam::Vec2;
+use crate::geom::{Bounds, Vec2};
 use serde::{Deserialize, Serialize};
 
 /// Most control points per axis an action may carry. Small on purpose: the log
@@ -222,15 +222,10 @@ impl Lattice {
 
     /// The bounding box of every lattice image — a conservative bound on where
     /// the warp can carry paint (each bilinear cell stays inside its corners'
-    /// hull).
-    pub fn aabb(&self) -> (Vec2, Vec2) {
-        let mut lo = self.pts[0];
-        let mut hi = self.pts[0];
-        for p in &self.pts {
-            lo = lo.min(*p);
-            hi = hi.max(*p);
-        }
-        (lo, hi)
+    /// hull). `None` when a lattice point is not finite ([`Bounds`]): the control
+    /// points are, but the subdivision through them can still overflow.
+    pub fn aabb(&self) -> Option<(Vec2, Vec2)> {
+        Bounds::of(self.pts.iter().copied()).finite()
     }
 }
 
@@ -403,9 +398,14 @@ impl WarpMap {
 
     /// A conservative bound on where the warp can carry paint (the fine
     /// lattice's bounding box — every bilinear cell stays inside its corners'
-    /// hull). `None` when the map is unusable.
+    /// hull). `None` when the map is malformed or its lattice cannot be measured.
+    ///
+    /// **Not** `None` for every unusable map: a *folded* mesh still has a box. Testing
+    /// for a fold is the per-cell Jacobian walk [`usable`](Self::usable) does, and a
+    /// footprint asks for this box once per action; a claim over a mesh `apply` then
+    /// refuses only over-covers, the direction §12.6 permits.
     pub fn image_aabb(&self) -> Option<(Vec2, Vec2)> {
-        self.lattice().map(|lat| lat.aabb())
+        self.lattice().and_then(|lat| lat.aabb())
     }
 }
 

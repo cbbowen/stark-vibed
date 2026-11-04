@@ -196,7 +196,7 @@ fn rim_at(rim: &[f32], hue: f32) -> f32 {
 /// once, so a triple cannot say which one the artist was on, and the direction they
 /// last chose is the only answer that does not spin the marker for them.
 pub fn on_wheel(gamut: Gamut, rgb: [f32; 3], keep: f32) -> (f32, f32, f32) {
-    let [l, a, b, _] = srgb_to_oklab([rgb[0], rgb[1], rgb[2], 1.0]);
+    let [l, a, b] = srgb_to_oklab(rgb);
     let c = (a * a + b * b).sqrt();
     if c <= ACHROMATIC {
         return (l, keep, 0.0);
@@ -486,8 +486,7 @@ fn wheel_texel(rim: &[f32], l: f32, x: usize, y: usize) -> [f32; 3] {
         (1.0, 0.0)
     };
     let c = rim_at(rim, dy.atan2(dx)) * r.min(1.0);
-    let rgba = oklab_to_srgb([l, c * ux, c * uy, 1.0]);
-    [rgba[0], rgba[1], rgba[2]]
+    oklab_to_srgb([l, c * ux, c * uy])
 }
 
 /// The `L` slider's track, [`RAMP_N`] wide and one tall: this hue at this fraction of
@@ -521,11 +520,11 @@ pub fn ab_field_rgb(l: f32, ab: f32) -> Vec<u8> {
         for x in 0..FIELD_N {
             let aa = ab * (2.0 * x as f32 / last - 1.0);
             let bb = ab * (1.0 - 2.0 * y as f32 / last);
-            let rgba = oklab_to_srgb([l, aa, bb, 1.0]);
+            let rgb = oklab_to_srgb([l, aa, bb]);
             // sRGB whatever the display's gamut: this is the *filter dial's*
             // background, a flat map of the `(a, b)` plane the handle is placed
             // against (§21.5), not a picture of which colors exist.
-            out.extend_from_slice(&quantize(Gamut::Srgb, [rgba[0], rgba[1], rgba[2]]));
+            out.extend_from_slice(&quantize(Gamut::Srgb, rgb));
         }
     }
     out
@@ -554,8 +553,7 @@ mod tests {
                         // In the *gamut's* encoded channels, which is where the
                         // bridge is spent: extended sRGB exaggerates it, since the
                         // curve is steep near zero and a wide color sits there.
-                        let r = oklab_to_srgb([l, c * cos, c * sin, 1.0]);
-                        let raw = quantize(gamut, [r[0], r[1], r[2]]);
+                        let raw = quantize(gamut, oklab_to_srgb([l, c * cos, c * sin]));
                         let fitted = quantize(gamut, wheel_color(gamut, l, hue, sat));
                         for i in 0..3 {
                             worst = worst.max(raw[i].abs_diff(fitted[i]));

@@ -18,7 +18,7 @@
 use super::action::{Action, ActionKind, ActorId, StrokeRecord};
 use super::brush::BrushParams;
 use super::layer::LayerId;
-use crate::geom::{TileRect, Vec2};
+use crate::geom::{Bounds, TileRect, Vec2, tile_box};
 
 /// The tiles a pass may touch within the canvas box `[lo, hi]`, grown by `ring`
 /// tiles.
@@ -301,26 +301,19 @@ pub fn liquify_reads(rec: &StrokeRecord) -> TileRect {
 /// The tiles within `pad` of every point of `rec`'s path — what [`stroke_rect`] and
 /// [`liquify_reads`] each are, at their own pad.
 fn path_rect(rec: &StrokeRecord, pad: f32) -> TileRect {
-    let mut min = Vec2::splat(f32::INFINITY);
-    let mut max = Vec2::splat(f32::NEG_INFINITY);
-    for p in &rec.path {
-        // Tested rather than folded in: `f32::min`/`max` return the *non*-NaN
-        // operand, so a non-finite point would step straight over the bbox and leave
-        // it looking tight. Records arrive from files and peers.
-        if !p.pos.is_finite() {
-            return TileRect::ALL;
-        }
-        min = min.min(p.pos);
-        max = max.max(p.pos);
-    }
-    if min.x > max.x {
+    match Bounds::of(rec.path.iter().map(|p| p.pos)) {
         // An empty path touches nothing.
-        return TileRect::EMPTY;
+        Bounds::Empty => TileRect::EMPTY,
+        // Records arrive from files and peers, and a point that is not a place
+        // claims everything — the safe direction.
+        Bounds::NonFinite => TileRect::ALL,
+        // A non-finite radius makes `pad` non-finite and the box unquantizable, which
+        // `covering` answers with `ALL` — the safe direction too.
+        Bounds::Finite(min, max) => {
+            let pad = Vec2::splat(pad);
+            claim(min - pad, max + pad, 0)
+        }
     }
-    // A non-finite radius makes `pad` non-finite and the box unquantizable, which
-    // `covering` answers with `ALL` — the safe direction.
-    let pad = Vec2::splat(pad);
-    claim(min - pad, max + pad, 0)
 }
 
 /// The conservative footprint of an action, mirroring exactly what its arm of the
@@ -574,10 +567,11 @@ fn gated_rect(rect: (Vec2, Vec2), image: Option<(Vec2, Vec2)>) -> TileRect {
 /// The tile-aligned reach of a fill: everything its pass may read or write.
 /// Shared with the live-preview fold for the same reason as [`stroke_rect`].
 pub fn fill_rect(op: &super::fill::FillOp) -> TileRect {
-    let Some((lo, hi)) = super::fill::fill_bounds(op) else {
-        return TileRect::ALL;
-    };
-    claim(lo, hi, 0)
+    // Through `tile_box`, as the plan's quantization is, so the two count the apron
+    // band the same way — once.
+    super::fill::fill_bounds(op)
+        .and_then(|(lo, hi)| tile_box(lo, hi, 0))
+        .unwrap_or(TileRect::ALL)
 }
 
 /// What **every action that mints a layer** claims.

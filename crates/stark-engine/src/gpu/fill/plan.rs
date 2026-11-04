@@ -5,7 +5,7 @@
 //! that executes the plan](super) is the other half.
 
 use stark_model::document::{FillOp, MAX_FILL_TILES, SelectionShape, fill_bounds};
-use stark_model::geom::{TileCoord, TileRect, tiles_of};
+use stark_model::geom::{TileCoord, tile_box, tiles_of};
 
 use crate::document::selection::Selection;
 
@@ -28,10 +28,10 @@ pub(crate) fn plan(op: &FillOp, gate: &Selection) -> Option<Vec<TileCoord>> {
         // masks out entirely — which is what keeps a fill inside a small selection
         // from rewriting the whole rectangle it was dragged over.
         //
-        // Quantized from `fill_bounds` by the same `TileRect::covering` the footprint
-        // uses, so the tiles written and the tiles declared cannot differ (§12.6).
+        // Quantized from `fill_bounds` by the same `tile_box` the footprint uses, so
+        // the tiles written and the tiles declared cannot differ (§12.6).
         Some((lo, hi)) => {
-            let reach = TileRect::covering(lo, hi, 0)?;
+            let reach = tile_box(lo, hi, 0)?;
             if bounded {
                 // Walk the **gate**, not the shape's box: both intersect to the same
                 // set, but only the gate is bounded in advance (by

@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::warp::WarpMap;
-use crate::geom::{Affine2, Mat2, Vec2};
+use crate::geom::{Affine2, Bounds, Mat2, Vec2};
 
 /// Largest number of paint tiles one transform may rewrite (~650 MB of transient
 /// tile allocation at the worst). A transform that would exceed it is rejected
@@ -147,17 +147,11 @@ impl PerspectiveMap {
     }
 
     /// A conservative bound on where the map carries paint: the target quad's own
-    /// bounding box (a homography maps the rect *onto* the quad). `None` when the quad
-    /// cannot be measured, for
-    /// [`WarpMap::image_aabb`](super::warp::WarpMap::image_aabb)'s reason — the fold
-    /// is `min`/`max`, which return the *non*-NaN operand, so a non-finite corner would
-    /// otherwise leave the box looking tight.
+    /// bounding box (a homography maps the rect *onto* the quad). `None` when a corner
+    /// is not finite ([`Bounds`]). A non-convex quad still has a box — `apply` refuses
+    /// it on [`usable`](Self::usable), and a claim over it only over-covers.
     pub fn image_aabb(&self) -> Option<(Vec2, Vec2)> {
-        self.corners.iter().all(|c| c.is_finite()).then(|| {
-            let lo = self.corners.iter().fold(self.corners[0], |a, p| a.min(*p));
-            let hi = self.corners.iter().fold(self.corners[0], |a, p| a.max(*p));
-            (lo, hi)
-        })
+        Bounds::of(self.corners).finite()
     }
 
     /// [`resolve`](Self::resolve)'s solve half — **private**, because on its own it

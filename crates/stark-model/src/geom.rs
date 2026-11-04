@@ -267,6 +267,93 @@ pub(crate) fn pick_index(i: usize, span: usize, out_of: usize) -> usize {
     (i as u64 * span as u64 / out_of as u64) as usize
 }
 
+// —— tile cover: the geometry every masked pass shares ————————————————————————
+//
+// A selection, a fill and a transform have to answer "which tiles does this canvas box
+// touch, and is that more than I will walk" *identically*, because a fill's written
+// tiles and its footprint are required to be the same tiles (§12.6). It is a fact about
+// the grid rather than about any of the three, so it lives here.
+
+/// The tiles whose *texture* (interior + apron) overlaps the canvas box
+/// `[lo, hi]`, grown by `ring` tiles — [`TileRect::covering`] with this module's
+/// apron padding, since a box that reaches into the apron band still touches the
+/// neighbour.
+///
+/// `None` — a refusal, not a clamp — for a box that is not finite or not addressable:
+/// a clamp would rasterize a *different* region, and these coordinates arrive from
+/// files and peers, where the only tolerable disagreement is none (§6.8).
+pub fn tile_box(lo: Vec2, hi: Vec2, ring: i32) -> Option<TileRect> {
+    let apron = Vec2::splat(TILE_APRON as f32);
+    TileRect::covering(lo - apron, hi + apron, ring)
+}
+
+/// Tiles whose *texture* (interior + apron) overlaps the canvas box `[lo, hi]`,
+/// expanded by `ring` tiles on every side — `None` when there would be more than
+/// `budget` of them.
+///
+/// **Counted before it is walked**, so an absurd box is a clean refusal rather than a
+/// hang: the box is quadratic in the drag, so a marquee at far zoom-out — or an op
+/// arriving from a file or a peer — can name more tiles than there is memory to list.
+pub fn tiles_covering(lo: Vec2, hi: Vec2, ring: i32, budget: usize) -> Option<Vec<TileCoord>> {
+    tiles_of(tile_box(lo, hi, ring)?, budget)
+}
+
+/// The coordinates of an **already-quantized** rect, `None` when there would be
+/// more than `budget` of them — [`tiles_covering`]'s second half, for the caller
+/// that has its own reason to hold the `TileRect`.
+///
+/// The fill is that caller: its written tile set and its footprint have to be the
+/// same tiles (§12.6), so the rect is derived and quantized once and only *then*
+/// walked.
+pub fn tiles_of(rect: TileRect, budget: usize) -> Option<Vec<TileCoord>> {
+    let count = rect.count();
+    if count > budget as u64 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(count as usize);
+    out.extend(rect.coords());
+    Some(out)
+}
+
+// —— bounds: the box around a point set ————————————————————————————————————————
+
+/// The bounding box of a point set, with the two ways there may be no box kept apart.
+///
+/// `f32::min`/`max` return the *non*-NaN operand, so a fold over a set holding a
+/// non-finite point swallows it and comes back finite and tight-looking — the one
+/// answer a footprint may never give (§12.6) and a mask may never rasterize (§6.8).
+/// Every point is tested here, so no caller has to remember to.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum Bounds {
+    /// No points: there is nothing to bound.
+    Empty,
+    /// Every point finite, and the box `[lo, hi]` that holds them all.
+    Finite(Vec2, Vec2),
+    /// Some point is not finite, so no box holds the set.
+    NonFinite,
+}
+
+impl Bounds {
+    /// The bounds of `points`.
+    pub fn of(points: impl IntoIterator<Item = Vec2>) -> Self {
+        points.into_iter().fold(Self::Empty, |acc, p| match acc {
+            _ if !p.is_finite() => Self::NonFinite,
+            Self::NonFinite => Self::NonFinite,
+            Self::Empty => Self::Finite(p, p),
+            Self::Finite(lo, hi) => Self::Finite(lo.min(p), hi.max(p)),
+        })
+    }
+
+    /// The box, or `None` — for a caller to whom an empty set and an unmeasurable one
+    /// are the same refusal.
+    pub fn finite(self) -> Option<(Vec2, Vec2)> {
+        match self {
+            Self::Finite(lo, hi) => Some((lo, hi)),
+            Self::Empty | Self::NonFinite => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -443,59 +530,6 @@ mod tests {
             prev = at;
         }
     }
-}
-
-// —— tile cover: the geometry every masked pass shares ————————————————————————
-//
-// A selection, a fill and a transform have to answer "which tiles does this canvas box
-// touch, and is that more than I will walk" *identically*, because a fill's written
-// tiles and its footprint are required to be the same tiles (§12.6). It is a fact about
-// the grid rather than about any of the three, so it lives here.
-
-/// The tiles whose *texture* (interior + apron) overlaps the canvas box
-/// `[lo, hi]`, grown by `ring` tiles — [`TileRect::covering`] with this module's
-/// apron padding, since a box that reaches into the apron band still touches the
-/// neighbour.
-///
-/// `None` — a refusal, not a clamp — for a box that is not finite or not addressable:
-/// a clamp would rasterize a *different* region, and these coordinates arrive from
-/// files and peers, where the only tolerable disagreement is none (§6.8).
-pub fn tile_box(lo: Vec2, hi: Vec2, ring: i32) -> Option<TileRect> {
-    let apron = Vec2::splat(TILE_APRON as f32);
-    TileRect::covering(lo - apron, hi + apron, ring)
-}
-
-/// Tiles whose *texture* (interior + apron) overlaps the canvas box `[lo, hi]`,
-/// expanded by `ring` tiles on every side — `None` when there would be more than
-/// `budget` of them.
-///
-/// **Counted before it is walked**, so an absurd box is a clean refusal rather than a
-/// hang: the box is quadratic in the drag, so a marquee at far zoom-out — or an op
-/// arriving from a file or a peer — can name more tiles than there is memory to list.
-pub fn tiles_covering(lo: Vec2, hi: Vec2, ring: i32, budget: usize) -> Option<Vec<TileCoord>> {
-    tiles_of(tile_box(lo, hi, ring)?, budget)
-}
-
-/// The coordinates of an **already-quantized** rect, `None` when there would be
-/// more than `budget` of them — [`tiles_covering`]'s second half, for the caller
-/// that has its own reason to hold the `TileRect`.
-///
-/// The fill is that caller: its written tile set and its footprint have to be the
-/// same tiles (§12.6), so the rect is derived and quantized once and only *then*
-/// walked.
-pub fn tiles_of(rect: TileRect, budget: usize) -> Option<Vec<TileCoord>> {
-    let count = rect.count();
-    if count > budget as u64 {
-        return None;
-    }
-    let mut out = Vec::with_capacity(count as usize);
-    out.extend(rect.coords());
-    Some(out)
-}
-
-#[cfg(test)]
-mod cover_tests {
-    use super::*;
 
     /// Coordinates arrive from files and peers. A non-finite bound, or one past
     /// what the `i32` tile grid can address, is refused — never wrapped into a tile
@@ -538,5 +572,27 @@ mod cover_tests {
         let n = |v: Vec2, b: usize| tiles_covering(Vec2::splat(2.0), v, 0, b).map(|t| t.len());
         assert_eq!(n(span(32.0), 32 * 32), Some(32 * 32));
         assert_eq!(n(span(32.0), 32 * 32 - 1), None);
+    }
+
+    /// A bound is a box only when every point is finite — the one answer each of its
+    /// callers would otherwise have to remember that `min`/`max` cannot give.
+    #[test]
+    fn a_box_needs_every_point_finite() {
+        let a = Vec2::new(1.0, 5.0);
+        let b = Vec2::new(-2.0, 3.0);
+        assert_eq!(
+            Bounds::of([a, b]),
+            Bounds::Finite(Vec2::new(-2.0, 3.0), Vec2::new(1.0, 5.0))
+        );
+        assert_eq!(Bounds::of([]), Bounds::Empty);
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            // First, last and middle: a seed the fold skips is a point nothing tests.
+            for at in 0..3 {
+                let mut pts = [a, b, a];
+                pts[at].x = bad;
+                assert_eq!(Bounds::of(pts), Bounds::NonFinite, "{bad} at {at}");
+                assert_eq!(Bounds::of(pts).finite(), None);
+            }
+        }
     }
 }

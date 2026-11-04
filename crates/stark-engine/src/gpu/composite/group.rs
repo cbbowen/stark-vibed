@@ -208,12 +208,7 @@ impl FilterDraw {
                 let mut stops = Box::new([[0.0f32; 4]; MAX_MAP_STOPS]);
                 let count = g.as_ref().map_or(0, |g| {
                     for (lane, stop) in stops.iter_mut().zip(g.stops()) {
-                        let lab = stark_model::color::srgb_to_oklab([
-                            stop.color[0],
-                            stop.color[1],
-                            stop.color[2],
-                            1.0,
-                        ]);
+                        let lab = stark_model::color::srgb_to_oklab(stop.color.get());
                         *lane = [lab[0], lab[1], lab[2], stop.t];
                     }
                     g.stops().len()

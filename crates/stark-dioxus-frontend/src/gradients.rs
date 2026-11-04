@@ -290,7 +290,7 @@ pub fn css_strip(g: &Gradient) -> String {
         .stops()
         .iter()
         .map(|s| {
-            let lab = srgb_to_oklab([s.color[0], s.color[1], s.color[2], 1.0]);
+            let lab = srgb_to_oklab(s.color.get());
             format!(
                 "oklab({:.4} {:.4} {:.4}) {:.2}%",
                 lab[0],

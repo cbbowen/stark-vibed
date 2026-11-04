@@ -338,7 +338,7 @@ pub(crate) fn gated_geometry(map: &TransformMap) -> Option<((Vec2, Vec2), GatedM
             Some((
                 (w.min, w.max),
                 GatedMap {
-                    image_aabb: lat.aabb(),
+                    image_aabb: lat.aabb()?,
                     kind: GatedKind::Warp { lat },
                 },
             ))
