@@ -383,7 +383,7 @@ impl PerspectiveGuide {
             lens: self.lens,
             rings: self.rings(),
             lattice: self.corner(),
-            opacity: self.opacity.clamp(0.0, 1.0),
+            opacity: crate::sanitize::clamp01(self.opacity),
             dirs,
             // Both derived here rather than in the shader, which is the pass's
             // standing bargain (§20.4): the CPU hands it numbers, not rules.

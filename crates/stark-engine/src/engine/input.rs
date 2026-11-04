@@ -13,31 +13,22 @@ use crate::fold::Step;
 use crate::gesture::LiveGesture;
 use stark_model::document::{ActionId, ActionKind, GuideId, LayerId, TransformMap};
 
-/// Longest name that will be recorded, in `char`s — the wire's bound, reached for
-/// rather than restated.
-///
-/// A name travels, so it is bounded, and nothing about a text field stops a paste
-/// from being a megabyte. Stated where the *wire* can also reach it
-/// ([`stark_model::MAX_NAME`]), since a presence frame's name is capped by the same
-/// number and the model cannot depend on this crate (§2).
-use stark_model::MAX_NAME;
-
 /// The name to record, given what a frontend collected: surrounding whitespace
-/// trimmed, length capped at `MAX_NAME`, and anything that comes out empty treated as
-/// *no name* rather than as a name that happens to be blank.
+/// trimmed, then the model's funnel for every travelling name
+/// ([`stark_model::sanitize::name`]) — capped at [`stark_model::MAX_NAME`], and
+/// anything that comes out empty treated as *no name* rather than as a name that
+/// happens to be blank.
 ///
 /// One funnel for every source — the panel's field, a script, a peer's command — and
 /// for both layers and drawing guides, so what a name *is* is not a property of which
-/// command carried it. The logged action carries the result, so replay reproduces it
-/// without re-running these rules.
+/// command carried it. The trim is this door's alone: it is what a text field owes
+/// the person typing, where the cap is a bound the log holds a file and a peer to as
+/// well (`ActionKind::sanitized`).
 ///
 /// Generic at both ends because the callers hold their names differently: a logged
-/// action a `String`, a guide an `Arc<str>`. `String: From<String>` is the identity,
-/// so the logged path still moves its bytes rather than copying them.
+/// action a `String`, a guide an `Arc<str>`.
 fn normalize_name<T: From<String>>(name: Option<impl AsRef<str>>) -> Option<T> {
-    let trimmed = name?;
-    let capped: String = trimmed.as_ref().trim().chars().take(MAX_NAME).collect();
-    (!capped.is_empty()).then(|| T::from(capped))
+    stark_model::sanitize::name(name.map(|n| n.as_ref().trim().to_owned())).map(T::from)
 }
 
 impl Engine {
@@ -65,13 +56,9 @@ impl Engine {
         layer: LayerId,
         to: stark_model::geom::IVec2,
     ) -> Vec<(LayerId, stark_model::geom::IVec2)> {
-        use stark_model::document::FRAME_LIMIT;
         // Clamped before the subtraction below, which is otherwise the first thing an
         // unbounded `to` reaches: the commit's own clamp comes too late for it.
-        let to = to.clamp(
-            stark_model::geom::IVec2::splat(-FRAME_LIMIT),
-            stark_model::geom::IVec2::splat(FRAME_LIMIT),
-        );
+        let to = stark_model::document::clamp_frame(to);
         let doc = self.timeline.current();
         let delta = to - self.frame_of(layer);
         doc.subtree_ids(layer)

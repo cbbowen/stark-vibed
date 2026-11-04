@@ -13,12 +13,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::MAX_NAME;
-use crate::document::action::clamp_frame;
+use crate::document::clamp_frame;
 use crate::document::{BrushParams, FillOp, LayerId, SelectionOp};
 use crate::geom::{IVec2, Vec2};
 use crate::path::ControlPoint;
-use crate::sanitize::at_least_zero;
+use crate::sanitize::{self, at_least_zero};
 
 /// How long a peer may go unheard-from before it leaves the roster, in seconds.
 /// Peers publish at least every [`HEARTBEAT`] even when idle, so this is several
@@ -220,21 +219,11 @@ impl PeerFrame {
         Self {
             boot: self.boot,
             seq: self.seq,
-            name: self
-                .name
-                .map(|mut name| {
-                    // In place and by `char`: the cut cannot land inside one, and a
-                    // name that was already short keeps the buffer it arrived in.
-                    if let Some((cut, _)) = name.char_indices().nth(MAX_NAME) {
-                        name.truncate(cut);
-                    }
-                    name
-                })
-                // An empty name is *no* name, which is what `None` already means on
-                // this field. `Peer::apply` overwrites the id-derived `default_name`
-                // unconditionally, so a `Some("")` would blank that peer's row for the
-                // rest of the session.
-                .filter(|name| !name.is_empty()),
+            // The funnel every travelling name shares. Its empty-is-`None` rule
+            // matters most here: `Peer::apply` overwrites the id-derived
+            // `default_name` unconditionally, so a `Some("")` would blank that peer's
+            // row for the rest of the session.
+            name: sanitize::name(self.name),
             active_layer: self.active_layer,
             // The sender filters this too, and says why (`PresenceTx::set_cursor`) —
             // but the sender is not the end facing the wire.
@@ -248,6 +237,7 @@ impl PeerFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MAX_NAME;
     use crate::document::{BrushDynamics, BrushEffect, BrushParams, FRAME_LIMIT, LayerId};
     use crate::path::ControlPoint;
 

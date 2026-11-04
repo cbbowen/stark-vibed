@@ -1,12 +1,13 @@
-//! Planning for the transforms of selected paint (§16): the whole-plane affine,
-//! and the rect-scoped perspective (§16.8) and warp (§16.9).
+//! The maps the transforms of selected paint are stated in (§16): the whole-plane
+//! affine, and the rect-scoped perspective (§16.8) and warp (§16.9) — the facts a
+//! `Transform*` action carries, the gates that decide whether one is usable, and the
+//! homography solve the perspective map stands on.
 //!
-//! Pure tile-level geometry — which tiles are cut, which are rewritten, which source
-//! quads land on each — mirroring `stark-engine`'s `Selection::plan` split: the CPU
-//! decides *what*, `stark-engine`'s `gpu::transform::TransformRenderer` does the GPU
-//! work. Everything here is a deterministic function of the tile-coordinate sets, the
-//! selection's shape and the map's few floats, so peers and replays always agree —
-//! including about rejection.
+//! The tile planning — which tiles are cut, which are rewritten, which source quads
+//! land on each — is `stark-engine`'s `gpu::transform::plan`, and the GPU work its
+//! `gpu::transform::TransformRenderer`. Everything here is a deterministic function of
+//! the map's few floats, so peers and replays always agree — including about
+//! rejection.
 
 use serde::{Deserialize, Serialize};
 
@@ -66,11 +67,7 @@ impl TransformMap {
             TransformMap::Affine(a) => TransformMap::Affine(
                 Affine2::from_translation(-f) * *a * Affine2::from_translation(f),
             ),
-            TransformMap::Perspective(p) => TransformMap::Perspective(PerspectiveMap {
-                min: p.min - f,
-                max: p.max - f,
-                corners: p.corners.map(|c| c - f),
-            }),
+            TransformMap::Perspective(p) => TransformMap::Perspective(p.translated(-f)),
             TransformMap::Warp(w) => TransformMap::Warp(w.translated(-f)),
         }
     }
@@ -101,15 +98,32 @@ pub fn rect_corners(min: Vec2, max: Vec2) -> [Vec2; 4] {
     [min, Vec2::new(max.x, min.y), Vec2::new(min.x, max.y), max]
 }
 
+/// Whether `[min, max]` is a rect a rect-scoped transform may be stated over: finite,
+/// and strictly wider and taller than nothing.
+///
+/// The one gate the perspective and the warp share, so the two families cannot come to
+/// disagree about which source rects are real — the footprint already holds them to one
+/// body for the same reason (`footprint::mapped_write`).
+pub(crate) fn proper_rect(min: Vec2, max: Vec2) -> bool {
+    min.is_finite() && max.is_finite() && max.x > min.x && max.y > min.y
+}
+
 impl PerspectiveMap {
+    /// The same map moved by `d` on the canvas — source rect and target quad alike;
+    /// [`WarpMap::translated`](super::warp::WarpMap::translated)'s twin.
+    pub fn translated(&self, d: Vec2) -> Self {
+        Self {
+            min: self.min + d,
+            max: self.max + d,
+            corners: self.corners.map(|c| c + d),
+        }
+    }
+
     /// The forward and inverse maps of a **usable** perspective — the whole gate and
     /// the solve, once. `None` for anything `apply` would refuse, and everything below
     /// is defined in terms of this.
     pub fn resolve(&self) -> Option<(Homography, Homography)> {
-        let gated = self.min.is_finite()
-            && self.max.is_finite()
-            && self.max.x > self.min.x
-            && self.max.y > self.min.y
+        let gated = proper_rect(self.min, self.max)
             && self.corners.iter().all(|c| c.is_finite())
             && convex_positive(&self.corners);
         gated.then(|| self.homographies()).flatten()

@@ -653,12 +653,7 @@ mod tests {
     }
 
     fn stroke(actor: u64, layer: LayerId, from: Vec2, to: Vec2, radius: f32) -> Action {
-        let point = |pos| ControlPoint {
-            pos,
-            pressure: 1.0,
-            tilt: Vec2::ZERO,
-            time: 0.0,
-        };
+        let point = ControlPoint::at;
         act(
             actor,
             ActionKind::CommitStroke(StrokeRecord {
@@ -1145,12 +1140,7 @@ mod tests {
         // And the claim actually widens on the log, rather than the pad growing inside
         // a box that was already tile-aligned to the same rect.
         let rect = |stretch: f32| {
-            let point = |pos| ControlPoint {
-                pos,
-                pressure: 1.0,
-                tilt: Vec2::ZERO,
-                time: 0.0,
-            };
+            let point = ControlPoint::at;
             stroke_rect(&StrokeRecord {
                 layer: LayerId::ROOT,
                 brush: BrushParams {

@@ -21,7 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::sanitize::{at_least_zero, clamp01, finite_or, unit_or};
+use crate::sanitize::{at_least_zero, clamp01, finite_in, finite_or, unit_or};
 
 mod effect;
 mod modulation;
@@ -521,13 +521,14 @@ impl BrushParams {
     /// filter (§21.5).
     ///
     /// **It clamps only where this crate already states a range**: the wet axes, the
-    /// tooth's *give*, either effect's *opacity*, the hardness, the color and the
-    /// deposit [`jitter`](Self::jitter) are quoted in `[0, 1]`, and the stretch
-    /// saturates at [`MAX_STRETCH`](Self::MAX_STRETCH). Everything else — the radius,
-    /// the flows, the drain, the charge, the tapers, the color dynamics, the tooth's
-    /// *softness* — is only required to be finite and non-negative, because the
-    /// ceilings those have are a *frontend's* slider ends rather than facts about the
-    /// quantity.
+    /// tooth's *give*, every effect's *opacity*, a liquify's *strength* and *quality*,
+    /// the hardness and the deposit [`jitter`](Self::jitter) are quoted in `[0, 1]`;
+    /// the color, and the color dynamics' amplitude, are held within
+    /// [`Srgb::EXTENT`](crate::Srgb::EXTENT) (§6.5); and the stretch saturates at
+    /// [`MAX_STRETCH`](Self::MAX_STRETCH). Everything else — the radius, the flows,
+    /// the drain, the charge, the tapers, the tooth's *softness* — is only required to
+    /// be finite and non-negative, because the ceilings those have are a *frontend's*
+    /// slider ends rather than facts about the quantity.
     ///
     /// Not the only door: `taper_px`, `drain_px`, `elongation` and `stroke_rect` still
     /// defend themselves, for a record built by hand in a test or arriving down a path
@@ -540,7 +541,7 @@ impl BrushParams {
             // Bounded at the knob's own saturation point rather than at 1: past
             // `MAX_STRETCH` the reciprocal is already pinned, so a larger value stored
             // cannot mean what it says.
-            stretch: finite_or(self.stretch, d.stretch).clamp(0.0, Self::MAX_STRETCH),
+            stretch: finite_in(self.stretch, d.stretch, (0.0, Self::MAX_STRETCH)),
             start_taper_length: at_least_zero(self.start_taper_length, d.start_taper_length),
             end_taper_length: at_least_zero(self.end_taper_length, d.end_taper_length),
             drain: at_least_zero(self.drain, d.drain),

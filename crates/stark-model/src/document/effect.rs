@@ -48,10 +48,7 @@ pub fn undone_ids(log: &[Action]) -> HashSet<ActionId> {
 /// work that happened while it was undone. The key is a pure function of the
 /// shared log, so peers converge on the same order.
 fn revival_keys(log: &[Action], undone: &HashSet<ActionId>) -> HashMap<ActionId, ActionId> {
-    let by_id = |id: ActionId| {
-        let pos = log.partition_point(|a| a.id < id);
-        log.get(pos).filter(|a| a.id == id)
-    };
+    let by_id = |id| action_by_id(log, id);
     let mut keys: HashMap<ActionId, ActionId> = HashMap::new();
     for action in log {
         // An effective redo: an `Undo` of an `Undo` of an ordinary action.

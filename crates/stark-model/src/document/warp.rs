@@ -290,10 +290,7 @@ impl WarpMap {
     /// the right number of points. Cheap; [`usable`](Self::usable) adds the
     /// geometric (fold) check.
     fn shape_ok(&self) -> bool {
-        self.min.is_finite()
-            && self.max.is_finite()
-            && self.max.x > self.min.x
-            && self.max.y > self.min.y
+        super::transform::proper_rect(self.min, self.max)
             && (2..=MAX_WARP_GRID).contains(&self.cols)
             && (2..=MAX_WARP_GRID).contains(&self.rows)
             && self.points.len() == (self.cols * self.rows) as usize

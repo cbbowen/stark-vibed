@@ -165,13 +165,18 @@ use iroh::EndpointId;
 /// texels, and an exact quarter turn where radians could not hold one. A peer on 29
 /// computes different pixels from the same actions, and that two peers do not is the
 /// whole of what §12.1 promises.
-pub(crate) const ALPN: &[u8] = b"stark/collab/30";
+/// 31: every name the log carries — a layer's, a guide's, a placed picture's — is held
+/// to `MAX_NAME` by `ActionKind::sanitized`, where only the local command door held
+/// it before and a `PlaceImage`'s was held nowhere. No shape moved, so a file reads
+/// either way; a peer on 30 would keep a long name that this build cuts, which is two
+/// documents that disagree about a label.
+pub(crate) const ALPN: &[u8] = b"stark/collab/31";
 
 /// The number [`ALPN`] ends with, as a number, for a ticket to carry — see
 /// `ticket`'s `TicketBody::proto` for why a link names it. Kept in step with
 /// [`ALPN`] by a test rather than by building the byte-string from it: two
 /// tokens side by side are not worth the compile-time ceremony.
-pub(crate) const PROTO: u32 = 30;
+pub(crate) const PROTO: u32 = 31;
 
 /// Upper bound on an encoded request, over any transport.
 ///

@@ -182,19 +182,7 @@ impl DocumentFile {
     /// The carbonite frame carries its own magic and its own schema, so the eight
     /// bytes prepended here are the whole of Stark's framing.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        let body = carbonite::to_vec_static(self).map_err(DocError::Serialize)?;
-
-        // `default` (level 6) rather than `best` (9). Saving is latency the artist
-        // waits through, and level 9 spends a large multiple of 6's time for a
-        // fraction of a percent on data that is already this compressible.
-        //
-        // **The magic goes in the sink, not on the front afterwards.** The encoder
-        // appends to whatever `Vec` it is given and never rewinds it, so eight bytes
-        // put there first come out ahead of the deflate stream uncompressed — which is
-        // what the container wants — and the whole compressed body is spared a copy.
-        let mut encoder = DeflateEncoder::new(Vec::from(&MAGIC[..]), Compression::default());
-        encoder.write_all(&body).map_err(DocError::Deflate)?;
-        encoder.finish().map_err(DocError::Deflate)
+        seal(&carbonite::to_vec_static(self).map_err(DocError::Serialize)?)
     }
 
     /// Decode a container produced by [`DocumentFile::to_bytes`] that **this user
@@ -247,6 +235,25 @@ impl DocumentFile {
         file.fold_legacy_bags();
         Ok(file)
     }
+}
+
+/// Frame an encoded body as a container: `MAGIC | deflate(body)` — the whole of
+/// Stark's framing, since the carbonite frame inside carries its own magic and schema.
+///
+/// Separate from [`DocumentFile::to_bytes`] so a test can frame a body written against
+/// an *older* shape of the types exactly as a save frames today's.
+fn seal(body: &[u8]) -> Result<Vec<u8>> {
+    // `default` (level 6) rather than `best` (9). Saving is latency the artist waits
+    // through, and level 9 spends a large multiple of 6's time for a fraction of a
+    // percent on data that is already this compressible.
+    //
+    // **The magic goes in the sink, not on the front afterwards.** The encoder appends
+    // to whatever `Vec` it is given and never rewinds it, so eight bytes put there
+    // first come out ahead of the deflate stream uncompressed — which is what the
+    // container wants — and the whole compressed body is spared a copy.
+    let mut encoder = DeflateEncoder::new(Vec::from(&MAGIC[..]), Compression::default());
+    encoder.write_all(body).map_err(DocError::Deflate)?;
+    encoder.finish().map_err(DocError::Deflate)
 }
 
 /// Recognize the pre-carbonite container header — `MAGIC` followed by a schema
@@ -540,9 +547,7 @@ mod tests {
         };
 
         let body = carbonite::to_vec_static(&old).expect("encode the old shape");
-        let mut encoder = DeflateEncoder::new(Vec::from(&MAGIC[..]), Compression::default());
-        encoder.write_all(&body).expect("deflate");
-        let bytes = encoder.finish().expect("deflate");
+        let bytes = seal(&body).expect("deflate");
 
         let back = DocumentFile::from_bytes(&bytes).expect("a pre-newtype document still loads");
         let colors: Vec<[f32; 3]> = back
@@ -613,13 +618,10 @@ mod tests {
             pictures: vec![(AssetId([3; 32]), vec![1, 2, 3])],
         };
 
-        // Framed exactly as `to_bytes` frames one, since it is the container that
+        // Framed by the same `seal` as `to_bytes`, since it is the container that
         // used to carry the version this test proves is unnecessary.
         let body = carbonite::to_vec_static(&old).expect("encode the old shape");
-        let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
-        encoder.write_all(&body).expect("deflate");
-        let mut bytes = Vec::from(&MAGIC[..]);
-        bytes.extend_from_slice(&encoder.finish().expect("deflate"));
+        let bytes = seal(&body).expect("deflate");
 
         let back = DocumentFile::from_bytes(&bytes).expect("an older shape still loads");
         assert_eq!(back.canvas.color_space, ColorSpaceId::Oklab);

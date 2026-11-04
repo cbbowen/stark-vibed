@@ -7,7 +7,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::sanitize::{clamp01, finite_or};
+use crate::sanitize::{clamp01, finite_in};
 
 /// What a [`Modulation`] reads off the pen (§6.2). Both are already carried per point
 /// of the fitted curve ([`ControlPoint`](crate::path::ControlPoint)) and interpolated
@@ -154,7 +154,9 @@ impl Modulation {
     /// `curve = 0` lands on `k = 0.5` and so on `m = 0`, every step of which is exact in
     /// binary — which makes the linear case unconditional rather than lucky.
     fn k(&self) -> f32 {
-        (0.5 * (self.curve.clamp(-1.0, 1.0) + 1.0)).clamp(MIN_BIAS, 1.0 - MIN_BIAS)
+        // `finite_in` rather than `clamp`, which passes a `NaN` curve through to every
+        // reading of it — so this agrees with `sanitized` on a mapping that was not.
+        (0.5 * (finite_in(self.curve, 0.0, (-1.0, 1.0)) + 1.0)).clamp(MIN_BIAS, 1.0 - MIN_BIAS)
     }
 
     /// `m` in [`shape`](Self::shape), from [`k`](Self::k).
@@ -171,9 +173,8 @@ impl Modulation {
         Self {
             source: self.source,
             floor: clamp01(self.floor),
-            // `finite_or` first: `clamp` returns the NaN, and 0 is this knob's own
-            // neutral (a linear response).
-            curve: finite_or(self.curve, 0.0).clamp(-1.0, 1.0),
+            // 0 is this knob's own neutral (a linear response).
+            curve: finite_in(self.curve, 0.0, (-1.0, 1.0)),
         }
     }
 
@@ -508,7 +509,22 @@ mod tests {
     fn shapes() -> Vec<Modulation> {
         let mut out = Vec::new();
         for source in [ModSource::Pressure, ModSource::Tilt] {
-            for curve in [-1.5, -1.0, -0.6, -0.2, 0.0, 0.2, 0.6, 1.0, 1.5] {
+            // The non-finite curves too: `factor` and `max_slope` read the knob
+            // through `k`, which a mapping built by hand reaches unsanitized.
+            for curve in [
+                -1.5,
+                -1.0,
+                -0.6,
+                -0.2,
+                0.0,
+                0.2,
+                0.6,
+                1.0,
+                1.5,
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ] {
                 for floor in [0.0, 0.15, 0.5, 0.9, 1.0] {
                     out.push(Modulation {
                         source,
@@ -602,7 +618,7 @@ mod tests {
     }
 
     /// [`Modulation::max_slope`] is what the flattener buys segments against
-    /// (`gpu::stroke::flatten_tolerance`), so it has to be a true bound rather than a
+    /// (`gpu::stroke::budget::flatten_tolerance`), so it has to be a true bound rather than a
     /// typical value — an under-estimate draws a ramp as a staircase.
     #[test]
     fn max_slope_bounds_the_response() {

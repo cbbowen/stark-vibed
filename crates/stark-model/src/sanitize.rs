@@ -5,9 +5,9 @@
 //! `f32::max`/`min` return the non-NaN operand where `clamp` returns the NaN — so
 //! clippy's suggestion in [`clamp01`] is the wrong one.
 //!
-//! The two gates a **session** setter wants are `pub`: a number arriving from outside
-//! is held to the same range on its way into session state as it would be on its way
-//! into the log, and one rule spelled twice is two rules one edit apart.
+//! The gates a **session** setter wants are `pub`: a number or a name arriving from
+//! outside is held to the same range on its way into session state as it would be on
+//! its way into the log, and one rule spelled twice is two rules one edit apart.
 
 /// `x` into `[0, 1]`, with NaN landing on 0 — the module's rule at its simplest.
 pub const fn clamp01(x: f32) -> f32 {
@@ -51,4 +51,25 @@ pub(crate) fn finite_in(x: f32, neutral: f32, (lo, hi): (f32, f32)) -> f32 {
     } else {
         neutral
     }
+}
+
+/// A name that travels, held to [`MAX_NAME`](crate::MAX_NAME) `char`s, with an empty
+/// one made *no* name — the one funnel for every name the log or the presence wire
+/// carries: a layer's, a guide's, a placed picture's and a peer's display name.
+///
+/// Cut in place and by `char`, so the cut cannot land inside one and a name that was
+/// already short keeps the buffer it arrived in. Empty is `None` because `None` is
+/// what each of those fields already spells for "unnamed", and a `Some("")` would be a
+/// second spelling of it that a reader has to know to treat alike.
+///
+/// Idempotent, like everything here. Surrounding whitespace is left alone: trimming is
+/// what a *frontend's* text field owes its user, not a bound a stranger is held to.
+pub fn name(name: Option<String>) -> Option<String> {
+    name.map(|mut name| {
+        if let Some((cut, _)) = name.char_indices().nth(crate::MAX_NAME) {
+            name.truncate(cut);
+        }
+        name
+    })
+    .filter(|name| !name.is_empty())
 }

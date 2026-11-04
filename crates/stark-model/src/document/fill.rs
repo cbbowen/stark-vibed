@@ -9,7 +9,7 @@
 //! - **The selection bounds the fill.** §6.8 makes the mask the gate every tool acts
 //!   through, so a fill is gated identically to a brush stroke. A fill with *neither*
 //!   a bounded shape nor a bounded selection is refused (`stark-engine`'s
-//!   `document::fill::plan` returns `None`), deterministically, so peers and replays
+//!   `gpu::fill::plan` returns `None`), deterministically, so peers and replays
 //!   agree.
 //! - **A fill deposits paint, not color.** The parcel it lands is fully opaque paint
 //!   of a real thickness — enough of it to *be* the coverage asked for
@@ -17,7 +17,7 @@
 //!   and a lift brush can scrape it back. It stacks by the shared parcel law
 //!   (`paint_common.wesl`), the law a stroke deposits through.
 //!
-//! Pure CPU geometry: `stark-engine`'s `document::fill::plan` decides *which* tiles,
+//! Pure CPU geometry: `stark-engine`'s `gpu::fill::plan` decides *which* tiles,
 //! and its `gpu::fill::FillRenderer` does the GPU work.
 
 use serde::{Deserialize, Serialize};
@@ -122,7 +122,7 @@ impl FillOp {
     }
 
     /// Fill whatever is selected — the selection bar's button. Bounded by the mask
-    /// alone, so `stark-engine`'s `document::fill::plan` refuses it when there is no mask.
+    /// alone, so `stark-engine`'s `gpu::fill::plan` refuses it when there is no mask.
     ///
     /// **At full opacity by construction**, which is why it takes no opacity
     /// parameter: this fill's region *is* the selection, so how strongly it lands is
@@ -196,11 +196,11 @@ impl FillOp {
 /// band still touches the neighbour.
 ///
 /// `None` when the fill is bounded only by the selection — [`SelectionShape::All`], or
-/// a lasso with no vertices — which `stark-engine`'s `document::fill::plan` then bounds
+/// a lasso with no vertices — which `stark-engine`'s `gpu::fill::plan` then bounds
 /// by the mask and the footprint has to claim as the whole layer.
 ///
 /// **One box, quantized twice**, which is the whole point of this function.
-/// `stark-engine`'s `document::fill::plan` turns it into the tiles a fill writes and
+/// `stark-engine`'s `gpu::fill::plan` turns it into the tiles a fill writes and
 /// [`fill_rect`](super::footprint::fill_rect) into the tiles the action declares, and
 /// those must be the same tiles: a footprint naming fewer than the plan writes is the
 /// §12.6 under-claim, and it also leaves tiles behind on undo, since the undo diff is

@@ -7,7 +7,7 @@
 //! [`DocumentFile::content`](crate::io::DocumentFile) or over the wire as a blob, and
 //! `crate::content` is what says a document naming one has to have it.
 
-use crate::geom::{IVec2, TILE_APRON, TILE_SIZE, TileCoord, Vec2, tile_box, tiles_of};
+use crate::geom::{IVec2, TILE_APRON, TILE_SIZE, TileCoord, Vec2, tiles_covering};
 use stark_assetid::{MAX_PICTURE_DIM, Picture};
 
 /// The most tiles one placed picture can write — **derived, not chosen**.
@@ -70,7 +70,7 @@ fn extent(at: IVec2, picture: &Picture) -> Option<(Vec2, Vec2)> {
 /// promise about landing texels on pixels one for one.
 pub fn image_tiles(at: IVec2, picture: &Picture) -> Option<Vec<TileCoord>> {
     let (lo, hi) = extent(at, picture)?;
-    let mut tiles = tiles_of(tile_box(lo, hi, 0)?, MAX_IMAGE_TILES)?;
+    let mut tiles = tiles_covering(lo, hi, 0, MAX_IMAGE_TILES)?;
     tiles.retain(|c| {
         let (tex_lo, tex_hi) = c.texture_box();
         tex_lo.x < hi.x && tex_lo.y < hi.y && tex_hi.x > lo.x && tex_hi.y > lo.y

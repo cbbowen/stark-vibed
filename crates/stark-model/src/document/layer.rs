@@ -237,8 +237,6 @@ pub enum BlendMode {
 
 /// The bend a [`BlendMode::Drago`] layer **starts at**, in units of display white —
 /// what the picker hands out and what the panel's Bend slider rests on. Large `k`
-/// The bend a [`BlendMode::Drago`] layer **starts at**, in units of display white —
-/// what the picker hands out and what the panel's Bend slider rests on. Large `k`
 /// tends to plain addition, small `k` tends to `max`.
 ///
 /// A **default** rather than the value, since the curve is per layer — but it is the
