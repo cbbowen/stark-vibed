@@ -47,6 +47,40 @@ pub const WHEEL_STEP: f32 = 1.15;
 /// puts the two within reach of one another.
 pub const WHEEL_PIXELS_PER_NOTCH: f32 = 40.0;
 
+/// One wheel report's vertical travel, in the unit the platform reported it in, signed
+/// **positive away from the hand** — the sign [`wheel`] takes. Which way a platform
+/// counts is the frontend's one translation here: a browser reports downward-positive,
+/// like a document scrolling, and winit upward-positive.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum WheelDelta {
+    /// Lines, or a native toolkit's whole notches — what a mouse wheel reports. A
+    /// browser's page mode is read as this too: a page is a notch at most either way.
+    Lines(f32),
+    /// Pixels — a trackpad's stream, or a browser that scrolls a mouse notch by a span.
+    Pixels(f32),
+}
+
+/// How many notches of zoom one wheel report is worth: pixels brought to a notch's
+/// scale by [`WHEEL_PIXELS_PER_NOTCH`], and **any one report capped at one notch**.
+///
+/// The cap is what makes one rule serve both apps and every device. The web app used
+/// to spend a whole notch on every report whatever its size — so a trackpad's stream
+/// of small pixel deltas zoomed many times faster than a mouse — and the native app
+/// scaled pixels but not lines. A browser reports one mouse click as three lines in
+/// one engine and a hundred pixels in another; capped, both are the one notch the hand
+/// turned, while a trackpad's few pixels stay the fraction of one they are.
+pub fn notches(delta: WheelDelta) -> f32 {
+    let n = match delta {
+        WheelDelta::Lines(n) => n,
+        WheelDelta::Pixels(px) => px / WHEEL_PIXELS_PER_NOTCH,
+    };
+    if n.is_finite() {
+        n.clamp(-1.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
 /// Which mouse button a press came from — the two navigation cares about.
 ///
 /// A vocabulary of its own rather than either toolkit's, which is what lets this
@@ -807,6 +841,25 @@ mod tests {
             Some(ViewCommand::Pan { delta }) => assert_eq!(delta, Vec2::new(5.0, -6.0)),
             other => panic!("expected a pan, got {other:?}"),
         }
+    }
+
+    /// A mouse click is one notch however the platform spells it, and a trackpad's
+    /// small deltas are the fraction of one they are.
+    #[test]
+    fn one_report_is_at_most_one_notch() {
+        assert_eq!(notches(WheelDelta::Lines(1.0)), 1.0);
+        assert_eq!(
+            notches(WheelDelta::Lines(3.0)),
+            1.0,
+            "a browser's three lines"
+        );
+        assert_eq!(
+            notches(WheelDelta::Pixels(-100.0)),
+            -1.0,
+            "a browser's 100 px"
+        );
+        assert_eq!(notches(WheelDelta::Pixels(4.0)), 0.1);
+        assert_eq!(notches(WheelDelta::Pixels(f32::NAN)), 0.0);
     }
 
     /// Wheel notches compound, and away from the hand zooms in.

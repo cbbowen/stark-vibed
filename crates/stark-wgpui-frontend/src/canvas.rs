@@ -2536,14 +2536,15 @@ impl Canvas {
         if self.over_chrome(window, ev.position) {
             return;
         }
-        let notches = match ev.delta {
-            // A mouse reports whole notches; a trackpad reports pixels, which are
-            // brought to the same scale rather than measured (`stark_ui::nav`).
-            ScrollDelta::Lines(d) => d.y,
-            ScrollDelta::Pixels(d) => f32::from(d.y) / nav::WHEEL_PIXELS_PER_NOTCH,
+        // A mouse reports whole notches and a trackpad pixels; how many notches of zoom
+        // either is worth is the crate's rule (`nav::notches`), so the two apps zoom
+        // alike. winit is upward-positive already, the sign the rule takes.
+        let delta = match ev.delta {
+            ScrollDelta::Lines(d) => nav::WheelDelta::Lines(d.y),
+            ScrollDelta::Pixels(d) => nav::WheelDelta::Pixels(f32::from(d.y)),
         };
         let anchor = screen_at(ev.position, self.origin(), window.scale_factor());
-        if let Some(command) = nav::wheel(anchor, notches) {
+        if let Some(command) = nav::wheel(anchor, nav::notches(delta)) {
             self.send(command, cx);
         }
     }

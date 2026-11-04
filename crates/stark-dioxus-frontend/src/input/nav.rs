@@ -11,6 +11,7 @@
 //! the state lives in.
 
 use super::*;
+use dioxus::html::geometry::WheelDelta;
 use stark_ui::nav::{self, Lift, Mode, Moved, Touch};
 use stark_ui::route::{Gesture, Holder, Opens};
 
@@ -256,12 +257,16 @@ impl Nav {
         e.prevent_default();
         e.stop_propagation();
         // A browser reports the wheel downward-positive, like a document being
-        // scrolled; `nav::wheel` takes notches the way a hand turns them, so the sign
+        // scrolled; `nav::WheelDelta` is signed the way a hand turns it, so the sign
         // is flipped at this edge rather than in the shared rule.
-        let dy = e.delta().strip_units().y;
+        let delta = match e.delta() {
+            WheelDelta::Pixels(d) => nav::WheelDelta::Pixels(-d.y as f32),
+            WheelDelta::Lines(d) => nav::WheelDelta::Lines(-d.y as f32),
+            WheelDelta::Pages(d) => nav::WheelDelta::Lines(-d.y as f32),
+        };
         let p = e.page_coordinates();
         let anchor = Vec2::new(p.x as f32, p.y as f32);
-        if let Some(command) = nav::wheel(anchor, -dy.signum() as f32) {
+        if let Some(command) = nav::wheel(anchor, nav::notches(delta)) {
             dispatch(self.state, command);
         }
     }
