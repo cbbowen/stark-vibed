@@ -240,15 +240,11 @@ pub fn import_file<K: Shelf>(
                 return;
             }
         };
-        let name = stark_ui::library::display_name(&file_name, K::FALLBACK_NAME);
-        let entry = Entry {
-            name: name.clone(),
-            png: canonical,
-            id,
-        };
-        let admitted = admit::<K>(library, entry).await;
+        let entry = assets::imported::<K>(&file_name, id, canonical);
+        let name = entry.name.clone();
+        let admitted = assets::admit::<K>(&mut { library }, entry).await;
         then(state, id);
-        notice.set(said(&name, &admitted, note));
+        notice.set(admitted.notice(&name, note));
     });
 }
 
@@ -262,60 +258,16 @@ fn canonicalize<K: Kind>(
     Ok((id, engine.held(id).unwrap_or(png)))
 }
 
-/// What adding an import to its library came to.
-#[derive(Debug, PartialEq)]
-enum Admitted {
-    /// Its id was in the library already.
-    Known,
-    Added,
-    /// The store would not take its bytes, for this reason, so no row names them: it is
-    /// in this document and not in the library.
-    Unsaved(String),
-}
+/// The library's two signals, as `stark_ui::assets::admit` adds to them: read with
+/// `peek`, since an import is an act and not a render.
+impl assets::Library for LibraryState {
+    fn holds(&self, id: AssetId) -> bool {
+        self.entries.peek().iter().any(|e| e.id == id)
+    }
 
-/// Add an imported entry to the library — its bytes stored before the row that names
-/// them, and no row when they did not land (`assets::store_bytes`) — unless its id is
-/// there already.
-///
-/// Asked again once the bytes are down: a second drop of the same file can land while
-/// this one's are being written, and a library holding one id twice draws two cards for
-/// one thing.
-async fn admit<K: Kind>(library: LibraryState, entry: Entry) -> Admitted {
-    let id = entry.id;
-    let holds = |entries: &[Entry]| entries.iter().any(|e| e.id == id);
-    let LibraryState {
-        mut entries,
-        unread,
-        ..
-    } = library;
-    if holds(&entries.peek()) {
-        return Admitted::Known;
-    }
-    let stored = assets::store_bytes::<K>(id, &entry.png).await;
-    if holds(&entries.peek()) {
-        return Admitted::Known;
-    }
-    if let Err(why) = stored {
-        return Admitted::Unsaved(why);
-    }
-    entries.write().push(entry);
-    assets::persist::<K>(&entries.peek(), &unread.peek());
-    Admitted::Added
-}
-
-/// What an import says under the gallery: that the file was there already, that the
-/// library could not keep it, what the import did to it, or nothing.
-fn said(name: &str, admitted: &Admitted, note: Option<&str>) -> Option<String> {
-    match (admitted, note) {
-        (Admitted::Known, _) => Some(format!(
-            "“{name}” is already in your library — selected it."
-        )),
-        (Admitted::Unsaved(why), note) => Some(format!(
-            "“{name}” is in this document only: your library couldn't store it ({why}).{}",
-            note.map(|note| format!(" It {note}")).unwrap_or_default()
-        )),
-        (Admitted::Added, Some(note)) => Some(format!("“{name}” {note}")),
-        (Admitted::Added, None) => None,
+    fn push(&mut self, entry: Entry, persist: impl FnOnce(&[Entry], &[Unread])) {
+        self.entries.write().push(entry);
+        persist(&self.entries.peek(), &self.unread.peek());
     }
 }
 
@@ -523,11 +475,7 @@ pub fn remove<K: Shelf>(state: AppState, id: AssetId) {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-    use std::sync::Once;
-
     use dioxus::dioxus_core::{ScopeId, VirtualDom};
-    use stark_ui::storage::{Backend, BlobRead, Stored, at_once};
 
     use super::*;
 
@@ -584,14 +532,6 @@ mod tests {
         }
     }
 
-    fn pencil(n: u8) -> Entry {
-        Entry {
-            name: "Pencil".to_string(),
-            png: vec![n; 4],
-            id: AssetId([n; 32]),
-        }
-    }
-
     /// **The heal path.** A row whose id predates a canonicalization change is imported,
     /// lands on another id, and the row moves onto it — so the caller paints with the id
     /// the engine will serve, and the next ask finds the bytes held rather than importing
@@ -627,147 +567,6 @@ mod tests {
                 "so the next ask finds it held rather than importing it again"
             );
             assert_eq!(engine.imports, 1);
-        });
-    }
-
-    /// What this test thread asked the store to write — the process's store, but each
-    /// thread's own tape — and why the store refuses blob writes while it does.
-    ///
-    /// Installed rather than handed in, because `storage::install` is the only way in and
-    /// keeps the first backend it is given — which is why the tests using it show the
-    /// tape is live before relying on it saying nothing.
-    struct Tape;
-
-    thread_local! {
-        static TAPE: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-        static FULL: RefCell<Option<String>> = const { RefCell::new(None) };
-    }
-
-    fn record(what: &str, key: &str) {
-        TAPE.with_borrow_mut(|tape| tape.push(format!("{what} {key}")));
-    }
-
-    /// The tape since this was last asked, oldest first.
-    fn tape() -> Vec<String> {
-        TAPE.take()
-    }
-
-    fn install_tape() {
-        static INSTALL: Once = Once::new();
-        INSTALL.call_once(|| stark_ui::storage::install(Tape));
-        TAPE.take();
-        FULL.set(None);
-    }
-
-    impl Backend for Tape {
-        fn get(&self, _: &str) -> Option<String> {
-            None
-        }
-
-        fn set(&self, key: &str, _: &str) -> bool {
-            record("set", key);
-            true
-        }
-
-        fn remove(&self, _: &str) {}
-
-        fn blob_get_many<'a>(
-            &'a self,
-            keys: &'a [String],
-        ) -> Stored<'a, Result<Vec<BlobRead>, String>> {
-            Box::pin(std::future::ready(Ok(vec![Ok(None); keys.len()])))
-        }
-
-        fn blob_put<'a>(&'a self, key: &'a str, _: &'a [u8]) -> Stored<'a, Result<(), String>> {
-            if let Some(why) = FULL.with_borrow(Clone::clone) {
-                return Box::pin(std::future::ready(Err(why)));
-            }
-            record("put", key);
-            Box::pin(std::future::ready(Ok(())))
-        }
-
-        fn blob_delete<'a>(&'a self, key: &'a str) -> Stored<'a, ()> {
-            record("delete", key);
-            Box::pin(std::future::ready(()))
-        }
-    }
-
-    /// **A file the library already holds stores nothing twice** — no second write of its
-    /// bytes or of the rows, and no second card — and the gallery is told it was picked
-    /// rather than imported.
-    #[test]
-    fn an_import_the_library_already_holds_stores_nothing_twice() {
-        install_tape();
-        in_app(|| {
-            let id = AssetId([3; 32]);
-            let mut engine = Fake::landing_on(id);
-            let library = shelf(Vec::new());
-            let take = |engine: &mut Fake| {
-                let (id, canonical) =
-                    canonicalize::<Shapes>(engine, vec![5; 4]).expect("the fake takes anything");
-                let entry = Entry {
-                    name: "Pencil".to_string(),
-                    png: canonical,
-                    id,
-                };
-                at_once(admit::<Shapes>(library, entry))
-            };
-
-            assert_eq!(
-                take(&mut engine),
-                Admitted::Added,
-                "the first import is new"
-            );
-            assert!(!tape().is_empty(), "and its bytes and row were stored");
-
-            assert_eq!(
-                take(&mut engine),
-                Admitted::Known,
-                "the second is content the library holds"
-            );
-            assert_eq!(tape(), Vec::<String>::new(), "so nothing is stored again");
-            assert_eq!(
-                library.entries.peek().len(),
-                1,
-                "and no second card is drawn"
-            );
-            assert_eq!(
-                said("Pencil", &Admitted::Known, Some("was inverted")).as_deref(),
-                Some("“Pencil” is already in your library — selected it."),
-            );
-        });
-    }
-
-    /// **An import whose bytes the store refuses is not added and writes no row** — a row
-    /// naming bytes that never landed is dropped by the next load, and the import with
-    /// it. The gallery is told it is in this document only, and why.
-    #[test]
-    fn an_import_the_store_refuses_adds_no_row_and_writes_nothing() {
-        install_tape();
-        in_app(|| {
-            let library = shelf(Vec::new());
-            assert_eq!(
-                at_once(admit::<Shapes>(library, pencil(1))),
-                Admitted::Added
-            );
-            assert!(!tape().is_empty(), "the tape is live");
-
-            FULL.set(Some("QuotaExceededError".to_string()));
-            let refused = at_once(admit::<Shapes>(library, pencil(2)));
-            assert_eq!(refused, Admitted::Unsaved("QuotaExceededError".to_string()));
-            assert_eq!(tape(), Vec::<String>::new(), "no row is written");
-            assert_eq!(
-                library.entries.peek().len(),
-                1,
-                "and no card is drawn for it"
-            );
-            assert_eq!(
-                said("Pencil", &refused, None).as_deref(),
-                Some(
-                    "“Pencil” is in this document only: your library couldn't store it \
-                     (QuotaExceededError)."
-                ),
-            );
         });
     }
 

@@ -2991,18 +2991,11 @@ impl Canvas {
                 // names *those*, and a library holding anything else would be a
                 // library whose rows do not match its blobs.
                 let canonical = engine.content_bytes(AssetNeed::Brush(id)).unwrap_or(png);
-                let kept = self.keep::<assets::Shapes>(&file_name, id, canonical);
+                let note = "read as dark ink on light paper, so it was inverted \u{2014} \
+                            white now paints.";
+                self.keep::<assets::Shapes>(&file_name, id, canonical, inverted.then_some(note));
                 self.offer(<assets::Shapes as assets::Kind>::need(id));
                 self.wear_shape(BrushShape::Stamp(id), cx);
-                if let Err(unkept) = kept {
-                    self.report(unkept);
-                } else if inverted {
-                    self.report(
-                        "that image read as dark ink on light paper, so it was inverted — \
-                         white now paints"
-                            .to_string(),
-                    );
-                }
                 self.repaint(cx);
             }
             gallery::Which::Substrates => {
@@ -3023,43 +3016,31 @@ impl Canvas {
                     .as_ref()
                     .and_then(|r| r.desk.engine().content_bytes(AssetNeed::Substrate(content)))
                     .unwrap_or(png);
-                let kept = self.keep::<assets::Substrates>(&file_name, content, canonical);
+                self.keep::<assets::Substrates>(&file_name, content, canonical, None);
                 self.wear_substrate(id, cx);
-                if let Err(unkept) = kept {
-                    self.report(unkept);
-                    self.repaint(cx);
-                }
+                self.repaint(cx);
             }
         }
     }
 
-    /// Put an entry in its library and on disk, named after the file it came from —
-    /// **bytes before the row that names them**, which is `stark_ui::assets`' order and
-    /// its reason.
-    ///
-    /// A repeat import is free and silent: content addressing means the id is already
-    /// there, so the entry is not added twice. Bytes the store refuses add no entry,
-    /// since a row naming them would be dropped by the next load, and the `Err` is what
-    /// to tell the person: the asset is in this document only.
+    /// Put an import in its library and on disk, named after the file it came from
+    /// (`stark_ui::assets::admit`, which both frontends add through), and say what that
+    /// came to — with `note`, what the import did to the file, said alongside.
     fn keep<K: assets::Kind>(
         &mut self,
         file_name: &str,
         id: AssetId,
         png: Vec<u8>,
-    ) -> Result<(), String> {
-        let (entries, unread) = self.library_of::<K>();
-        if entries.iter().any(|e| e.id == id) {
-            return Ok(());
+        note: Option<&str>,
+    ) {
+        let entry = assets::imported::<K>(file_name, id, png);
+        let name = entry.name.clone();
+        let admitted = pollster::block_on(assets::admit::<K>(&mut self.library_of::<K>(), entry));
+        match (&admitted, admitted.notice(&name, note)) {
+            (assets::Admitted::Unsaved(_), Some(said)) => self.report(said),
+            (_, Some(said)) => self.say(said),
+            (_, None) => {}
         }
-        pollster::block_on(assets::store_bytes::<K>(id, &png)).map_err(|why| {
-            format!(
-                "“{file_name}” is in this document only: the library could not store it ({why})"
-            )
-        })?;
-        let name = stark_ui::library::display_name(file_name, K::FALLBACK_NAME);
-        entries.push(assets::Entry { name, png, id });
-        assets::persist::<K>(entries, unread);
-        Ok(())
     }
 
     /// Drop an entry from a library. **The row first, then the bytes** — the same rule

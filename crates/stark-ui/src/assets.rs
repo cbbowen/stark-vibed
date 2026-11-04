@@ -673,6 +673,96 @@ pub async fn store_bytes<K: Kind>(id: AssetId, png: &[u8]) -> Result<(), String>
     storage::blob_save::<Row<K>>(id, png).await
 }
 
+/// A library as a frontend holds it, for [`admit`]: its rows and the rows whose bytes
+/// would not read, wherever the frontend keeps them — two signals on the web, two
+/// fields natively.
+pub trait Library {
+    /// Whether a row names `id`. Asked without subscribing: an import is an act, not
+    /// a render.
+    fn holds(&self, id: AssetId) -> bool;
+    /// Add `entry`, then hand both lists to `persist` — which [`admit`] supplies, so the
+    /// write that follows an add is not each frontend's to remember.
+    fn push(&mut self, entry: Entry, persist: impl FnOnce(&[Entry], &[Unread]));
+}
+
+impl Library for (&mut Vec<Entry>, &mut Vec<Unread>) {
+    fn holds(&self, id: AssetId) -> bool {
+        self.0.iter().any(|e| e.id == id)
+    }
+
+    fn push(&mut self, entry: Entry, persist: impl FnOnce(&[Entry], &[Unread])) {
+        self.0.push(entry);
+        persist(self.0, self.1);
+    }
+}
+
+/// What adding an import to its library came to.
+#[derive(Debug, PartialEq)]
+pub enum Admitted {
+    /// Its id was in the library already: content addressing makes a repeat import
+    /// the same entry, so nothing is added and nothing is stored again.
+    Known,
+    Added,
+    /// The store would not take its bytes, for this reason, so no row names them: it is
+    /// in this document and not in the library.
+    Unsaved(String),
+}
+
+impl Admitted {
+    /// What an import of `name` says under the gallery: that the file was there
+    /// already, that the library could not keep it, what the import did to it
+    /// (`note`, a predicate: "was inverted"), or nothing.
+    pub fn notice(&self, name: &str, note: Option<&str>) -> Option<String> {
+        match (self, note) {
+            (Admitted::Known, _) => Some(format!(
+                "\u{201c}{name}\u{201d} is already in your library \u{2014} selected it."
+            )),
+            (Admitted::Unsaved(why), note) => Some(format!(
+                "\u{201c}{name}\u{201d} is in this document only: your library couldn't \
+                 store it ({why}).{}",
+                note.map(|note| format!(" It {note}")).unwrap_or_default()
+            )),
+            (Admitted::Added, Some(note)) => Some(format!("\u{201c}{name}\u{201d} {note}")),
+            (Admitted::Added, None) => None,
+        }
+    }
+}
+
+/// The entry an import of `file_name` makes: the canonical bytes the engine holds
+/// under `id`, named after the file (`library::display_name`, with `K`'s fallback).
+pub fn imported<K: Kind>(file_name: &str, id: AssetId, png: Vec<u8>) -> Entry {
+    Entry {
+        name: crate::library::display_name(file_name, K::FALLBACK_NAME),
+        png,
+        id,
+    }
+}
+
+/// Add an imported entry to `library` — **its bytes stored before the row that names
+/// them**, and no row when they did not land ([`store_bytes`]) — unless its id is
+/// there already.
+///
+/// Asked again once the bytes are down: a second drop of the same file can land while
+/// this one's are being written, and a library holding one id twice draws two cards for
+/// one thing. Both frontends add through here — the native one blocks on it, the web
+/// one awaits it — so a repeat import, a refused write and the order of the two writes
+/// are one policy.
+pub async fn admit<K: Kind>(library: &mut impl Library, entry: Entry) -> Admitted {
+    let id = entry.id;
+    if library.holds(id) {
+        return Admitted::Known;
+    }
+    let stored = store_bytes::<K>(id, &entry.png).await;
+    if library.holds(id) {
+        return Admitted::Known;
+    }
+    if let Err(why) = stored {
+        return Admitted::Unsaved(why);
+    }
+    library.push(entry, persist::<K>);
+    Admitted::Added
+}
+
 /// Forget one entry's bytes. **After the row that named them**, which is the same rule
 /// read the other way: a crash between the two strands some bytes, which costs space,
 /// where the other order strands the row, which costs an asset that cannot be used.
@@ -794,6 +884,69 @@ mod tests {
     /// Where the fake keeps `id`'s bytes under `K`.
     fn blob<K: Kind>(id: AssetId) -> String {
         format!("{}/{}", K::STORE.named().0, id.to_hex())
+    }
+
+    /// **A file the library already holds stores nothing twice** — no second write of its
+    /// bytes or of the rows, and no second card — and the gallery is told it was picked
+    /// rather than imported.
+    #[test]
+    fn an_import_the_library_already_holds_stores_nothing_twice() {
+        let store = stocked::<Shapes>(&[]);
+        let (mut entries, mut unread) = (Vec::new(), Vec::new());
+        let mut library = (&mut entries, &mut unread);
+        let take = |library: &mut (&mut Vec<Entry>, &mut Vec<Unread>)| {
+            at_once(admit::<Shapes>(library, entry("Pencil", 3)))
+        };
+        assert_eq!(take(&mut library), Admitted::Added, "the first is new");
+        assert!(
+            !store.take_writes().is_empty(),
+            "and its bytes and row were stored"
+        );
+        assert_eq!(take(&mut library), Admitted::Known, "the second is held");
+        assert_eq!(
+            store.take_writes(),
+            Vec::<String>::new(),
+            "so nothing is stored again"
+        );
+        assert_eq!(entries.len(), 1, "and no second card is drawn");
+        assert_eq!(
+            Admitted::Known
+                .notice("Pencil", Some("was inverted"))
+                .as_deref(),
+            Some("\u{201c}Pencil\u{201d} is already in your library \u{2014} selected it."),
+        );
+    }
+
+    /// **An import whose bytes the store refuses is not added and writes no row** — a row
+    /// naming bytes that never landed is dropped by the next load, and the import with
+    /// it. The gallery is told it is in this document only, and why.
+    #[test]
+    fn an_import_the_store_refuses_adds_no_row_and_writes_nothing() {
+        let store = stocked::<Shapes>(&[]);
+        let (mut entries, mut unread) = (Vec::new(), Vec::new());
+        let mut library = (&mut entries, &mut unread);
+        assert_eq!(
+            at_once(admit::<Shapes>(&mut library, entry("Pencil", 1))),
+            Admitted::Added
+        );
+        assert!(!store.take_writes().is_empty(), "the store is live");
+
+        store.fill("QuotaExceededError");
+        let refused = at_once(admit::<Shapes>(&mut library, entry("Pencil", 2)));
+        assert_eq!(refused, Admitted::Unsaved("QuotaExceededError".to_string()));
+        assert_eq!(
+            store.take_writes(),
+            Vec::<String>::new(),
+            "no row is written"
+        );
+        assert_eq!(entries.len(), 1, "and no card is drawn for it");
+        assert_eq!(
+            refused.notice("Pencil", None).as_deref(),
+            Some(
+                "\u{201c}Pencil\u{201d} is in this document only: your library couldn't \
+                 store it (QuotaExceededError)."
+            ),
+        );
     }
 
     /// A fresh store holding `entries`, bytes and rows, with nothing on its tape.
