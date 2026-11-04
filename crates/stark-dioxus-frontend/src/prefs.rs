@@ -12,7 +12,6 @@
 use dioxus::prelude::*;
 
 use crate::state::{AppState, dispatch};
-use stark_engine::command::ViewCommand;
 use stark_ui::prefs::Prefs;
 use stark_ui::storage;
 
@@ -43,25 +42,21 @@ pub fn save(state: AppState) {
 /// Push the preferences the engine owns into the engine, once the renderer is up.
 pub fn load_engine(state: AppState) {
     let prefs = *state.prefs.peek();
-    dispatch(
-        state,
-        ViewCommand::SetShowPeerSelections(prefs.show_peer_selections),
-    );
-    dispatch(state, ViewCommand::SetHistoryBudget(prefs.history_budget));
-    dispatch(state, ViewCommand::SetFastCommit(prefs.fast_commit));
+    for command in prefs.engine_commands(None) {
+        dispatch(state, command);
+    }
     // The HDR choice met with the surface, which only exists now (§6.5).
     crate::panels::lighting::apply_output(state);
 }
 
 /// The signal, with the engine-owned fields read back from the engine once there is one.
 fn current(state: AppState) -> Prefs {
-    let mut prefs = *state.prefs.peek();
-    if let Some(o) = state.obs.peek().as_ref() {
-        prefs.show_peer_selections = o.show_peer_selections;
-        prefs.history_budget = o.history_budget;
-        prefs.fast_commit = o.fast_commit;
-    }
-    prefs
+    let prefs = *state.prefs.peek();
+    state
+        .obs
+        .peek()
+        .as_ref()
+        .map_or(prefs, |o| prefs.with_engine(o))
 }
 
 /// Apply `change` and do what each moved field needs; `true` if anything moved.
@@ -72,32 +67,24 @@ fn apply(state: AppState, change: impl FnOnce(&mut Prefs)) -> bool {
     if now == was {
         return false;
     }
-    // Every field by name, so a new `Prefs` field must say what moving it does.
+    // Every field by name, so a new `Prefs` field must say what moving it does. The
+    // engine's own fields say it in `Prefs::engine_commands`.
     let Prefs {
         assist: _,
         minimal: _,
         chrome_hiding,
-        show_peer_selections,
+        show_peer_selections: _,
         tips,
-        history_budget,
-        fast_commit,
+        history_budget: _,
+        fast_commit: _,
         hdr,
     } = now;
     // With no engine, `load_engine` pushes these later. Skipped rather than dispatched,
     // since any dispatch takes the renderer for writing and wakes its readers.
     let engine_up = state.obs.peek().is_some();
     if engine_up {
-        if show_peer_selections != was.show_peer_selections {
-            dispatch(
-                state,
-                ViewCommand::SetShowPeerSelections(show_peer_selections),
-            );
-        }
-        if history_budget != was.history_budget {
-            dispatch(state, ViewCommand::SetHistoryBudget(history_budget));
-        }
-        if fast_commit != was.fast_commit {
-            dispatch(state, ViewCommand::SetFastCommit(fast_commit));
+        for command in now.engine_commands(Some(&was)) {
+            dispatch(state, command);
         }
     }
     write_if_moved(state.prefs, now);

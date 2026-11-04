@@ -23,6 +23,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::storage::{Record, Store};
+use stark_engine::command::ViewCommand;
 
 /// What the floating chrome does while the canvas is in hand — this browser's own
 /// choice ([`Prefs::chrome_hiding`], the ⚙ dialog's APPEARANCE section).
@@ -217,6 +218,68 @@ impl Record for Prefs {
     const STORE: Store = Store::Prefs;
 }
 
+/// The three preferences the **engine** owns — the peer-outline switch, the history
+/// budget and fast commit. Each is the engine's own value once there is an engine,
+/// so the dialog shows what the engine believes rather than a copy (§4), and moving
+/// one is a command rather than a write.
+///
+/// Both halves destructure the whole record, so a new field fails to compile here
+/// until it says whether it is the engine's — which is the one place that decides it,
+/// where a frontend used to list the three in its loader, its read-back, its writer
+/// and its dialog, and only the writer was checked.
+impl Prefs {
+    /// This record with the engine-owned fields read back from `o`.
+    pub fn with_engine(self, o: &stark_engine::ObservableState) -> Prefs {
+        let Prefs {
+            assist,
+            minimal,
+            chrome_hiding,
+            tips,
+            hdr,
+            show_peer_selections: _,
+            history_budget: _,
+            fast_commit: _,
+        } = self;
+        Prefs {
+            assist,
+            minimal,
+            chrome_hiding,
+            tips,
+            hdr,
+            show_peer_selections: o.show_peer_selections,
+            history_budget: o.history_budget,
+            fast_commit: o.fast_commit,
+        }
+    }
+
+    /// What an engine has to be told for the fields it owns: every one when `was` is
+    /// `None` — an engine just came up, and these are its first word on them — and
+    /// otherwise only those that moved from `was`.
+    pub fn engine_commands(&self, was: Option<&Prefs>) -> Vec<ViewCommand> {
+        let Prefs {
+            show_peer_selections,
+            history_budget,
+            fast_commit,
+            assist: _,
+            minimal: _,
+            chrome_hiding: _,
+            tips: _,
+            hdr: _,
+        } = *self;
+        let mut out = Vec::new();
+        if was.is_none_or(|w| w.show_peer_selections != show_peer_selections) {
+            out.push(ViewCommand::SetShowPeerSelections(show_peer_selections));
+        }
+        if was.is_none_or(|w| w.history_budget != history_budget) {
+            out.push(ViewCommand::SetHistoryBudget(history_budget));
+        }
+        if was.is_none_or(|w| w.fast_commit != fast_commit) {
+            out.push(ViewCommand::SetFastCommit(fast_commit));
+        }
+        out
+    }
+}
+
 impl Default for Prefs {
     /// The app's defaults, and the authority on them: a frontend seeds its preferences
     /// from the stored record, and from these where nothing readable is stored — so a
@@ -300,6 +363,23 @@ pub fn step_at(steps: &[(u64, &str)], value: u64) -> usize {
 mod tests {
     use super::*;
     use strum::VariantArray;
+
+    /// An engine coming up is told all three; a change tells it only what moved, and a
+    /// change to a field it does not own tells it nothing.
+    #[test]
+    fn the_engine_hears_every_owned_field_once_and_then_only_what_moved() {
+        let was = Prefs::default();
+        assert_eq!(was.engine_commands(None).len(), 3);
+        assert!(was.engine_commands(Some(&was)).is_empty());
+        let mut now = was;
+        now.fast_commit = !was.fast_commit;
+        now.tips = !was.tips;
+        let told = now.engine_commands(Some(&was));
+        assert!(
+            matches!(told.as_slice(), [ViewCommand::SetFastCommit(f)] if *f == now.fast_commit),
+            "only the engine-owned field that moved"
+        );
+    }
 
     /// **The engine's default must land on a notch**, or the slider opens showing a value
     /// the app is not using and moving it one step is a jump rather than a nudge. The

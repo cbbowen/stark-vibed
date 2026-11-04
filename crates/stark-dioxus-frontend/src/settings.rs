@@ -33,7 +33,7 @@
 use dioxus::prelude::*;
 
 use crate::prefs;
-use crate::state::{AppState, use_obs};
+use crate::state::{AppState, use_obs_opt};
 use crate::widgets::{Choice, Face, Modal, ModalDone, Segmented, SliderTrack};
 use stark_ui::collab::Phase;
 use stark_ui::prefs::{BUDGET_STEPS, ChromeHiding, step_at};
@@ -44,23 +44,23 @@ use strum::VariantArray;
 #[component]
 pub fn SettingsModal(on_close: EventHandler<()>) -> Element {
     let state = use_context::<AppState>();
-    // Every engine-owned row of the dialog in **one** memo, which is what
-    // `state::use_obs` asks for where the fields are read together: read straight,
-    // as these were, the dialog re-rendered on every engine write for as long as
-    // it stood open. The three are the peer-outline switch, the history budget and
-    // the fast-commit switch below; each is the engine's own value rather than a
-    // copy here, so none can disagree with what the engine believes (§4).
-    let engine_owned = use_obs(state, |o| {
-        (o.show_peer_selections, o.history_budget, o.fast_commit)
+    // The whole record in **one** memo, which is what `state::use_obs` asks for where
+    // the fields are read together: read straight off the projection, the dialog
+    // re-rendered on every engine write for as long as it stood open. The fields the
+    // engine owns are the engine's own values rather than a copy here, so none can
+    // disagree with what the engine believes (`Prefs::with_engine`, §4). Before the
+    // renderer is up there is no engine to ask, and what it will be told is what was
+    // stored (`prefs::load_engine`).
+    let shown = use_obs_opt(state, move |o| {
+        let stored = *state.prefs.read();
+        o.map_or(stored, |o| stored.with_engine(o))
     });
-    let view = (state.prefs)();
-    // Before the renderer is up there is no engine to ask, and what it will be told
-    // is what was stored (`prefs::load_engine`).
-    let (show_peers, budget, fast_commit) = engine_owned().unwrap_or((
+    let view = shown();
+    let (show_peers, budget, fast_commit) = (
         view.show_peer_selections,
         view.history_budget,
         view.fast_commit,
-    ));
+    );
     // Keyed on the *session*, not on whether anyone is currently here, so the note
     // under the peer-outline row does not flicker as collaborators come and go.
     let shared = (state.collab.phase)() == Phase::Shared;
