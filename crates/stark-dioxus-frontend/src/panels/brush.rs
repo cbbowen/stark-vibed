@@ -8,7 +8,7 @@ use crate::presets;
 use crate::state::{AppState, update_brush};
 use crate::widgets::{CommandButton, Modal, RemoveButton, Slider, focus_selected};
 use stark_model::document::{BrushShape, OrientationSource};
-use stark_ui::brush_config::{MAX_RADIUS, MIN_RADIUS};
+use stark_ui::brush_editor::SHELF;
 use stark_ui::commands::Command;
 
 /// The floating Brush panel: the everyday quick controls (size, amount).
@@ -19,8 +19,8 @@ pub fn BrushPanel() -> Element {
     let state = use_context::<AppState>();
     // The signals are the frontend's own (`state::AppState::{brush, transient}`),
     // so the sliders wake for brush edits and nothing else — the engine's
-    // projection never carries a brush back. The config is read only for the
-    // Flow slider's range, which is the in-force effect's.
+    // projection never carries a brush back. The config is read for the Flow
+    // row's word and range, which are the in-force effect's.
     let brush = (state.brush)();
     let tune = (state.transient)();
 
@@ -33,15 +33,20 @@ pub fn BrushPanel() -> Element {
         // number's (§18.1.8) — the panel needs no line of code that knows about
         // slots, and the rack draws itself over the canvas while the key is down
         // (`slots::SlotOverlay`) rather than keeping a row of chips here.
-        Slider { label: "Size", glyph: stark_ui::icons::SIZE, min: MIN_RADIUS, max: MAX_RADIUS, value: tune.size,
-            oninput: move |v| update_brush(state, move |_, t| t.size = v) }
-        // "Flow" is the overall rate of whichever effect is in force — how much
-        // a pass lays and how hard a wet pass works the canvas (§6.2), how
-        // fast an eraser's bite builds (§6.12), how hard a liquify brush's
-        // paint follows (§6.13) — one knob, over that effect's own range
-        // (`BrushConfig::max_flow`).
-        Slider { label: "Flow", glyph: stark_ui::icons::FLOW, min: 0.0, max: brush.max_flow(), value: tune.flow,
-            oninput: move |v| update_brush(state, move |_, t| t.flow = v) }
+        //
+        // Rows of the editor's own table (`stark_ui::brush_editor::SHELF`), so the panel
+        // and the dialog cannot call one knob two things. "Flow" is the overall rate of
+        // whichever effect is in force — how much a pass lays and how hard a wet pass
+        // works the canvas (§6.2), how fast an eraser's bite builds (§6.12), how hard a
+        // liquify brush's paint follows (§6.13), where the row says "Strength" — one
+        // knob, over that effect's own range (`BrushConfig::max_flow`).
+        for row in SHELF {
+            Slider { key: "{row:?}", label: row.label(&brush), glyph: row.glyph(),
+                title: row.tip(&brush), min: row.range(&brush, tune).0,
+                max: row.range(&brush, tune).1, step: row.step(),
+                value: row.get(&brush, tune), readout: row.readout(row.get(&brush, tune)),
+                oninput: move |v| update_brush(state, move |b, t| row.set(b, t, v)) }
+        }
         // The panel's one door: the dialog where the brush is adjusted — and kept.
         // Saving a preset is the editor's act (its "Overwrite preset" and "Save new
         // preset"), because the brush worth keeping is the one that has just been

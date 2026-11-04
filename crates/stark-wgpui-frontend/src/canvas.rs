@@ -59,7 +59,7 @@ use crate::lighting;
 use crate::menu;
 use crate::navigator;
 use crate::palette;
-use crate::panel::{self, Knob, Region, Regions, Side};
+use crate::panel::{self, Region, Regions, Side};
 use crate::pick;
 use crate::render::{Preview, Renderer};
 use crate::select;
@@ -3400,8 +3400,9 @@ impl Canvas {
         }
     }
 
-    /// Move one of the editor's modulatable rows, `fraction` along whatever range it
-    /// has *this* frame (`crate::controls`).
+    /// Move one of the editor's modulatable rows — or one of the Brush shelf's, which
+    /// are rows of the same table (`brush_editor::SHELF`) — `fraction` along whatever
+    /// range it has *this* frame (`crate::controls`).
     pub(crate) fn turn_mod_row(
         &mut self,
         row: stark_ui::brush_editor::ModRow,
@@ -3522,12 +3523,6 @@ impl Canvas {
     /// Step the brush's size by a factor, clamped to the range the panel offers.
     fn step_size(&mut self, factor: f32, cx: &mut Context<'_, Self>) {
         self.brush.tune.size = step_size(self.brush.tune.size, factor);
-        self.send_brush(cx);
-    }
-
-    /// Move a knob and put the changed brush in the engine's hand.
-    pub(crate) fn turn(&mut self, knob: Knob, fraction: f32, cx: &mut Context<'_, Self>) {
-        panel::drag_knob(&mut self.brush, knob, fraction);
         self.send_brush(cx);
     }
 

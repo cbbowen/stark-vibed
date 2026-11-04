@@ -224,6 +224,49 @@ impl ModRow {
         }
     }
 
+    /// What the hover says the row does — its [`label`](Self::label) and then the
+    /// sentence a one-word caption cannot carry. Takes the brush for the label's
+    /// reason: the Flow row is the in-force effect's rate, and says which.
+    pub fn tip(self, b: &BrushConfig) -> &'static str {
+        match self {
+            Self::Size => "Size \u{2014} how far the tip reaches, in canvas px",
+            Self::Opacity => "Opacity \u{2014} the most one stroke can lay, however it is worked",
+            Self::Flow => match b.effect {
+                BrushEffectType::Paint | BrushEffectType::Wet => {
+                    "Flow \u{2014} how much a pass lays, and how hard a wet one works the canvas"
+                }
+                BrushEffectType::Erase => "Flow \u{2014} how fast the eraser's bite builds",
+                BrushEffectType::Liquify => "Strength \u{2014} how hard the paint follows the drag",
+            },
+            Self::Stretch => "Stretch \u{2014} how far the tip is drawn out along the stroke",
+            Self::ToothGive => {
+                "Tooth give \u{2014} how far the tip sinks past the canvas grain; at full, \
+                 the grain gates nothing"
+            }
+            Self::Add => "Add \u{2014} how much fresh paint a wet pass lays",
+            Self::Lift => "Lift \u{2014} how much of the canvas paint the tip picks up",
+            Self::Deposit => "Deposit \u{2014} how much of what the tip carries it lays back down",
+            Self::Bleed => "Bleed \u{2014} how far a pass blurs the paint under it",
+        }
+    }
+
+    /// The step a track moves in: a whole px for the size, a hundredth for the rest.
+    pub fn step(self) -> f32 {
+        match self {
+            Self::Size => 1.0,
+            _ => 0.01,
+        }
+    }
+
+    /// How the number beside the track prints: whole px for the size, two places for
+    /// the rest.
+    pub fn readout(self, v: f32) -> String {
+        match self {
+            Self::Size => format!("{v:.0}"),
+            _ => format!("{v:.2}"),
+        }
+    }
+
     /// Whether moving this row changes what the tool *is*, rather than how hard the
     /// hand is working it (§18.1.8).
     ///
@@ -474,6 +517,16 @@ impl Shape {
         format!("{v:.2}")
     }
 }
+
+/// The rows the **Brush panel** keeps beside the canvas (§18.1.8): exactly the ones
+/// that are not [`durable`](ModRow::durable) — the size and the flow a hand moves all
+/// day without the tool becoming another tool. Everything that says what the tool *is*
+/// lives in the editor, beside a stroke that shows its work.
+///
+/// Rows of the editor's own table rather than a second one, so the panel and the
+/// editor cannot call one knob two things: the Flow row reads "Strength" on a liquify
+/// brush in both, and runs to that effect's own top in both.
+pub const SHELF: [ModRow; 2] = [ModRow::Size, ModRow::Flow];
 
 /// How many points [`curve_points`] samples the response at.
 pub const CURVE_N: usize = 25;
@@ -1760,6 +1813,43 @@ mod tests {
         for s in SOURCES {
             assert_eq!(source(s), s);
         }
+    }
+
+    /// The shelf is exactly the rows that are the hand's rather than the tool's, and
+    /// each says what it does on hover — what a column with no labels stands on.
+    #[test]
+    fn the_shelf_is_the_transient_rows() {
+        let transient: Vec<ModRow> = MOD_ROWS.into_iter().filter(|r| !r.durable()).collect();
+        assert_eq!(transient, SHELF);
+        let b = BrushConfig::default();
+        for row in MOD_ROWS {
+            assert!(row.tip(&b).starts_with(row.label(&b)), "{row:?}");
+        }
+        for row in SHELF {
+            assert!(
+                row.glyph().is_some(),
+                "{row:?} has no mark for a column to wear"
+            );
+        }
+    }
+
+    /// **The Flow track ends where the effect does.** A liquify brush's strength is
+    /// clamped to its quoted 1 at the projection (§6.13), so a track running to
+    /// `MAX_FLOW` would have two thirds of its travel do nothing — and the knob is
+    /// reachable three ways (the panel, the editor's row, the tuning drag), which is
+    /// what `BrushConfig::max_flow` exists to keep to one answer.
+    #[test]
+    fn a_liquify_brush_gets_the_flow_track_its_effect_has() {
+        let mut b = BrushConfig::default();
+        let t = Transient::default();
+        assert_eq!(
+            ModRow::Flow.range(&b, t),
+            (0.0, crate::brush_config::MAX_FLOW)
+        );
+        b.effect = BrushEffectType::Liquify;
+        assert_eq!(ModRow::Flow.range(&b, t), (0.0, 1.0));
+        assert_eq!(ModRow::Flow.label(&b), "Strength");
+        assert!(ModRow::Flow.tip(&b).starts_with("Strength"));
     }
 
     /// Every knob sits in the seat its index names, so a frontend indexing its

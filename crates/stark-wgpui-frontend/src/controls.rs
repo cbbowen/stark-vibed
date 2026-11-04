@@ -22,11 +22,11 @@ use wgpui_component::input::{InputEvent, InputState};
 use wgpui_component::select::{SelectEvent, SelectState};
 use wgpui_component::slider::{SliderEvent, SliderState};
 
+use stark_ui::brush_config::{BrushConfig, Transient};
 use stark_ui::brush_editor::{self, Knob, ModRow, Shown};
 
 use crate::brush::Brush;
 use crate::canvas::Canvas;
-use crate::panel::KNOBS;
 use stark_ui::dial::Dial;
 use stark_ui::guides as gd;
 use stark_ui::lighting as light;
@@ -34,8 +34,8 @@ use stark_ui::selection::Dial as SelectDial;
 
 /// The states, and the subscriptions that make them heard.
 pub struct Controls {
-    /// The brush panel's four, in [`KNOBS`]' order.
-    pub knobs: [Entity<SliderState>; KNOBS.len()],
+    /// The Brush shelf's, in `brush_editor::SHELF`'s order.
+    pub knobs: [Entity<SliderState>; brush_editor::SHELF.len()],
     /// The Select section's, in `stark_ui::selection::Dial`'s own order, one whether
     /// or not this frame shows it — see [`Controls::dial`].
     dials: [Entity<SliderState>; <SelectDial as strum::EnumCount>::COUNT],
@@ -80,17 +80,21 @@ const EDITOR_STEP: f32 = 0.005;
 impl Controls {
     pub fn new(window: &mut Window, cx: &mut Context<'_, Canvas>) -> Self {
         let mut subs = Vec::new();
-        // Fractions, like the editor's tracks below and for the same reason: the Flow
-        // knob's top is the in-force effect's (`panel::Knob::range`) and a
-        // `SliderState`'s bounds are fixed when it is built.
-        let knobs = KNOBS.map(|knob| {
+        // The Brush shelf's tracks are rows of the editor's own table
+        // (`brush_editor::SHELF`), and move through the same handler as the editor's
+        // (`Canvas::turn_mod_row`). Fractions, like the editor's tracks and for the same
+        // reason: the Flow row's top is the in-force effect's, and a `SliderState`'s
+        // bounds are fixed when it is built. The step is a row's own quantum over its
+        // widest track — the default brush's, whose flow runs to `MAX_FLOW`.
+        let knobs = brush_editor::SHELF.map(|row| {
+            let (lo, hi) = row.range(&BrushConfig::default(), Transient::default());
             turns(
                 cx,
                 &mut subs,
                 (0.0, 1.0),
-                knob.step(),
+                row.step() / (hi - lo),
                 move |this, v, cx| {
-                    this.turn(knob, v, cx);
+                    this.turn_mod_row(row, v, cx);
                 },
             )
         });
@@ -292,9 +296,14 @@ impl Controls {
             editor,
             mapping,
         } = what;
-        for (knob, state) in KNOBS.iter().zip(&self.knobs) {
-            let (lo, hi) = knob.range(brush);
-            settle(state, fraction(knob.read(brush), lo, hi), window, cx);
+        for (row, state) in brush_editor::SHELF.iter().zip(&self.knobs) {
+            let (lo, hi) = row.range(&brush.config, brush.tune);
+            settle(
+                state,
+                fraction(row.get(&brush.config, brush.tune), lo, hi),
+                window,
+                cx,
+            );
         }
         if let Some(o) = obs {
             for (dial, state) in <SelectDial as strum::VariantArray>::VARIANTS

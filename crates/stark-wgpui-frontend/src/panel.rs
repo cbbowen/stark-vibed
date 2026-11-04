@@ -23,7 +23,7 @@
 
 use std::collections::HashSet;
 
-use stark_ui::brush_config::{MAX_FLOW, MAX_RADIUS, MIN_RADIUS};
+use stark_ui::brush_editor::{ModRow, SHELF};
 use stark_ui::commands::{Command, VisibilityToggle};
 use stark_ui::icons::Icon;
 use wgpui::{
@@ -86,98 +86,6 @@ impl Side {
     }
 }
 
-/// The knobs the Brush shelf offers, in the order it draws them.
-///
-/// **Two, and they are the transient's** (§18.1.8). The shelf is where a brush is
-/// *worked* — the size and the flow are what a hand moves all day without the tool
-/// becoming a different tool — and everything that says what the tool *is* moved into
-/// the brush editor, which has a live stroke to show its work on
-/// (`crate::brush_editor`). Hardness and the opacity ceiling were here until it
-/// existed, which is the same reason the web app's Brush panel carries the same two.
-pub const KNOBS: [Knob; 2] = [Knob::Size, Knob::Flow];
-
-/// One of the brush's two shelf dials — what a track stands for, and how its value is
-/// read off the brush and written back.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Knob {
-    Size,
-    Flow,
-}
-
-impl Knob {
-    /// The mark the track wears, from the shared catalog — which is where the
-    /// argument for each of them is (`stark_ui::icons::SIZE`).
-    pub fn glyph(self) -> Icon {
-        match self {
-            Knob::Size => stark_ui::icons::SIZE,
-            Knob::Flow => stark_ui::icons::FLOW,
-        }
-    }
-
-    /// What the hover says the mark means — the sentence that used to be a label,
-    /// with room now to say what the knob actually does.
-    fn tip(self) -> &'static str {
-        match self {
-            Knob::Size => "Size \u{2014} how far the tip reaches, in canvas px",
-            Knob::Flow => {
-                "Flow \u{2014} how much a pass lays, and how hard a wet one works the canvas"
-            }
-        }
-    }
-
-    /// The knob's range **for this brush**.
-    ///
-    /// The size's is the app's own bound — the one a tuning drag clamps against too,
-    /// which is why it lives beside the brush rather than on a panel
-    /// (`stark_ui::brush_config`). The flow's is the *in-force effect's*
-    /// (`BrushConfig::max_flow`): the liquify strength stops at its quoted,
-    /// load-bearing 1 (§6.13) where every other rate stops at the slider's own top.
-    ///
-    /// Taking the brush is the whole of why the tracks are fractions. A
-    /// `SliderState`'s bounds are fixed when it is built and the flow's top moves with
-    /// the effect chips, so the trough is a fraction and the view maps it — the shape
-    /// the editor's own rows already had (`crate::controls`). Held to `MAX_FLOW`
-    /// instead, this slider ran to 3 on a liquify brush while the projection clamped
-    /// at 1, and the top two-thirds of it did nothing.
-    pub fn range(self, brush: &Brush) -> (f32, f32) {
-        match self {
-            Knob::Size => (MIN_RADIUS, MAX_RADIUS),
-            Knob::Flow => (0.0, brush.config.max_flow()),
-        }
-    }
-
-    /// The step a track moves in, **as a fraction of its own range** — the trough is
-    /// one (see [`range`](Self::range)), so the quantum has to be too: a whole px of
-    /// the size's span, a hundredth of the widest flow.
-    pub fn step(self) -> f32 {
-        match self {
-            Knob::Size => 1.0 / (MAX_RADIUS - MIN_RADIUS),
-            Knob::Flow => 0.01 / MAX_FLOW,
-        }
-    }
-
-    /// Where the knob currently stands.
-    pub fn read(self, brush: &Brush) -> f32 {
-        match self {
-            Knob::Size => brush.tune.size,
-            Knob::Flow => brush.tune.flow,
-        }
-    }
-
-    /// Move the knob.
-    ///
-    /// Neither of the two takes a preset's name off the brush, which is the whole of
-    /// why they are the two that stayed: the durable/transient split says working a
-    /// brush at another size is the same tool (§18.1.8). Everything that does take the
-    /// name off is the editor's now (`crate::brush_editor`).
-    fn write(self, brush: &mut Brush, v: f32) {
-        match self {
-            Knob::Size => brush.tune.size = v,
-            Knob::Flow => brush.tune.flow = v,
-        }
-    }
-}
-
 /// One track: its mark, the track itself, and the figure it stands at.
 ///
 /// One line rather than the two the labelled version took, which is where a marked
@@ -187,7 +95,9 @@ impl Knob {
 pub struct Slider {
     /// What the row is for, as the hover says it.
     tip: SharedString,
-    glyph: Icon,
+    /// Every shelf row wears one (`brush_editor::tests::the_shelf_is_the_transient_rows`);
+    /// optional because the editor's table is what it comes from.
+    glyph: Option<Icon>,
     /// The value as the panel prints it. A `SharedString` so the component can be
     /// built once per frame without a copy.
     readout: SharedString,
@@ -196,12 +106,14 @@ pub struct Slider {
 }
 
 impl Slider {
-    /// A track for one of the brush's knobs.
-    pub fn knob(knob: Knob, brush: &Brush, state: Entity<SliderState>) -> Self {
+    /// A track for one of the shelf's rows (`stark_ui::brush_editor::SHELF`) — the
+    /// editor's own table, so the column and the dialog say the same word and run to
+    /// the same top for the brush in hand.
+    pub fn row(row: ModRow, brush: &Brush, state: Entity<SliderState>) -> Self {
         Self {
-            tip: knob.tip().into(),
-            glyph: knob.glyph(),
-            readout: readout(knob, knob.read(brush)).into(),
+            tip: row.tip(&brush.config).into(),
+            glyph: row.glyph(),
+            readout: row.readout(row.get(&brush.config, brush.tune)).into(),
             state,
         }
     }
@@ -216,7 +128,7 @@ impl Slider {
     ) -> Self {
         Self {
             tip: tip.into(),
-            glyph,
+            glyph: Some(glyph),
             readout: readout.into(),
             state: state.clone(),
         }
@@ -231,7 +143,7 @@ impl RenderOnce for Slider {
             .items_center()
             .gap_2()
             .py_0p5()
-            .child(crate::icons::icon(self.glyph, style::INK_MARK))
+            .children(self.glyph.map(|g| crate::icons::icon(g, style::INK_MARK)))
             .child(
                 div()
                     .flex_1()
@@ -284,14 +196,6 @@ impl RenderOnce for PresetRow {
     }
 }
 
-/// How the panel prints a knob's value: enough digits to see a change, no more.
-fn readout(knob: Knob, v: f32) -> String {
-    match knob {
-        Knob::Size => format!("{v:.0}"),
-        _ => format!("{v:.2}"),
-    }
-}
-
 /// The Brush shelf's body: the two dials a hand works, the way into the editor, and
 /// the preset library.
 ///
@@ -310,10 +214,10 @@ pub fn brush_body(brush: &Brush, controls: &Controls, regions: &Regions) -> impl
         .flex_col()
         .gap_1()
         .children(
-            KNOBS
+            SHELF
                 .iter()
                 .zip(&controls.knobs)
-                .map(|(knob, state)| Slider::knob(*knob, brush, state.clone())),
+                .map(|(row, state)| Slider::row(*row, brush, state.clone())),
         )
         // The way to everything the two tracks above no longer carry. A full-width
         // button rather than a chip: what it opens is a *surface*, which is the
@@ -471,19 +375,6 @@ pub fn within(at: Point<Pixels>, left: f32, right: f32, window: f32) -> bool {
     (left > 0.0 && x <= left) || (right > 0.0 && x >= window - right)
 }
 
-/// The value a fraction along `knob`'s track means, for the brush the track is
-/// showing — see [`Knob::range`] for why that is not a constant.
-pub fn value_at(knob: Knob, brush: &Brush, fraction: f32) -> f32 {
-    let (lo, hi) = knob.range(brush);
-    lo + fraction.clamp(0.0, 1.0) * (hi - lo)
-}
-
-/// Move `knob` to `fraction` of its range.
-pub fn drag_knob(brush: &mut Brush, knob: Knob, fraction: f32) {
-    let value = value_at(knob, brush, fraction);
-    knob.write(brush, value);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,68 +485,5 @@ mod tests {
             None,
             "the gap belongs to nobody"
         );
-    }
-
-    /// Every knob the shelf offers is the *hand's* rather than the tool's (§18.1.8) —
-    /// which is what makes the two of them the ones that did not move into the editor,
-    /// and what lets a drag on either keep the preset's name on the brush.
-    #[test]
-    fn the_shelf_keeps_only_the_transient_knobs() {
-        let mut brush = Brush::new(Default::default());
-        let tool = brush.config;
-        for knob in KNOBS {
-            drag_knob(&mut brush, knob, 0.5);
-        }
-        assert_eq!(brush.config, tool, "a shelf dial changed what the tool is");
-    }
-
-    /// A knob reads back what a drag wrote, through the range it declares — the round
-    /// trip the panel relies on to draw a fill where the hand left it.
-    #[test]
-    fn a_knob_reads_back_what_a_drag_wrote() {
-        let mut brush = Brush::new(Default::default());
-        for knob in KNOBS {
-            drag_knob(&mut brush, knob, 0.25);
-            let (lo, hi) = knob.range(&brush);
-            let want = lo + 0.25 * (hi - lo);
-            assert!(
-                (knob.read(&brush) - want).abs() < 1e-3,
-                "{knob:?} read back {} rather than {want}",
-                knob.read(&brush),
-            );
-        }
-    }
-
-    /// **The Flow track ends where the effect does.** A liquify brush's strength is
-    /// clamped to its quoted 1 at the projection (§6.13), so a track running to
-    /// `MAX_FLOW` would have had two thirds of its travel do nothing — and the knob is
-    /// reachable three ways (this dial, the editor's row, the tuning drag), which is
-    /// what `BrushConfig::max_flow` exists to keep to one answer.
-    #[test]
-    fn a_liquify_brush_gets_the_flow_track_its_effect_has() {
-        let mut brush = Brush::new(Default::default());
-        assert_eq!(Knob::Flow.range(&brush), (0.0, MAX_FLOW));
-        brush.config.effect = stark_ui::brush_config::BrushEffectType::Liquify;
-        assert_eq!(Knob::Flow.range(&brush), (0.0, 1.0));
-        // The full track is the full strength, rather than a third of it.
-        drag_knob(&mut brush, Knob::Flow, 1.0);
-        assert_eq!(brush.tune.flow, 1.0);
-        assert_eq!(
-            brush.config.params(brush.tune).effect.flow(),
-            1.0,
-            "and the projection has nothing left to clamp away",
-        );
-    }
-
-    /// Every knob and every effect says something on hover, which is the whole of
-    /// what a column with no labels stands on.
-    ///
-    /// A glyph is the type's own guarantee now (`stark_ui::icons::Icon::svg`), so
-    /// what is left to check is the word behind the hover.
-    #[test]
-    fn every_control_that_lost_its_word_says_what_it_does() {
-        for knob in KNOBS {
-            assert!(!knob.tip().is_empty(), "{knob:?} says nothing on hover");
-        }
     }
 }
