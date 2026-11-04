@@ -190,7 +190,7 @@ fn PhaseRow(phase: Phase, window: Duration) -> Element {
     let share = window
         .as_secs_f64()
         .gt(&0.0)
-        .then(|| phase.total.as_secs_f64() / window.as_secs_f64() * 100.0);
+        .then_some(phase.total.as_secs_f64() / window.as_secs_f64() * 100.0);
 
     rsx! {
         div { class: "timing-row",

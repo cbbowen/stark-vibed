@@ -492,13 +492,19 @@ fn gated_geometry_is_refused_rather_than_repaired() {
                 center: v,
                 radii: Vec2::splat(4.0),
             },
-            SelectionShape::Lasso(Lasso::new(vec![Vec2::ZERO, Vec2::splat(9.0), v]).expect("a lasso")),
+            SelectionShape::Lasso(
+                Lasso::new(vec![Vec2::ZERO, Vec2::splat(9.0), v]).expect("a lasso"),
+            ),
             // …including one whose bad vertex is not the extreme in either axis,
             // which is exactly what a `min`/`max` fold steps over.
-            SelectionShape::Lasso(Lasso::new(vec![Vec2::ZERO, v, Vec2::splat(9.0)]).expect("a lasso")),
+            SelectionShape::Lasso(
+                Lasso::new(vec![Vec2::ZERO, v, Vec2::splat(9.0)]).expect("a lasso"),
+            ),
             // …and one at index 0, the position a fold *seeded* from the first
             // vertex tests nowhere else.
-            SelectionShape::Lasso(Lasso::new(vec![v, Vec2::ZERO, Vec2::splat(9.0)]).expect("a lasso")),
+            SelectionShape::Lasso(
+                Lasso::new(vec![v, Vec2::ZERO, Vec2::splat(9.0)]).expect("a lasso"),
+            ),
         ];
         for shape in shapes {
             assert!(

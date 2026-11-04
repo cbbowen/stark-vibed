@@ -208,7 +208,10 @@ impl Engine {
         // Saturating, as a layer number does (§14.6): the id is a peer's or a file's
         // to state, and `u64::MAX + 1` would panic a debug build and wrap a release
         // one onto 0 — ordering every later local action before the one just seen.
-        self.authoring.clock = self.authoring.clock.max(action.id.lamport.saturating_add(1));
+        self.authoring.clock = self
+            .authoring
+            .clock
+            .max(action.id.lamport.saturating_add(1));
         let author = action.id.actor;
         let merged = self.change_committed(Drag::Keep, |timeline, ctx| timeline.merge(action, ctx));
         if merged {
@@ -411,6 +414,9 @@ mod tests {
 
         let clock = peer.authoring.clock;
         assert!(!peer.merge_remote(second), "a failed device merges nothing");
-        assert_eq!(peer.authoring.clock, clock, "nor does it take the action's clock");
+        assert_eq!(
+            peer.authoring.clock, clock,
+            "nor does it take the action's clock"
+        );
     }
 }

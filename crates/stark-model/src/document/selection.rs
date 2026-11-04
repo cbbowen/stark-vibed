@@ -172,7 +172,9 @@ impl From<RawSelectionShape> for SelectionShape {
             RawSelectionShape::Ellipse { center, radii } => Self::Ellipse { center, radii },
             // Clamped on the way in rather than refused, as `RawFillOp` is: one
             // unreadable op would refuse the whole log (§8).
-            RawSelectionShape::Lasso(points) => Lasso::new(points).map_or(Self::Nothing, Self::Lasso),
+            RawSelectionShape::Lasso(points) => {
+                Lasso::new(points).map_or(Self::Nothing, Self::Lasso)
+            }
         }
     }
 }
@@ -588,11 +590,19 @@ mod tests {
         let wire = |shape: &RawSelectionShape| carbonite::to_vec_static(shape).expect("encodes");
         for n in 0..MIN_LASSO_POINTS {
             let points: Vec<Vec2> = (0..n).map(|i| Vec2::splat(i as f32 * 40.0)).collect();
-            assert!(Lasso::new(points.clone()).is_none(), "{n} vertices make no lasso");
-            let landed =
-                carbonite::from_slice_static::<SelectionShape>(&wire(&RawSelectionShape::Lasso(points)))
-                    .expect("a short lasso still decodes");
-            assert_eq!(landed, SelectionShape::Nothing, "{n} vertices name no region");
+            assert!(
+                Lasso::new(points.clone()).is_none(),
+                "{n} vertices make no lasso"
+            );
+            let landed = carbonite::from_slice_static::<SelectionShape>(&wire(
+                &RawSelectionShape::Lasso(points),
+            ))
+            .expect("a short lasso still decodes");
+            assert_eq!(
+                landed,
+                SelectionShape::Nothing,
+                "{n} vertices name no region"
+            );
         }
         // No box, which every reader answers without a tile: a selection op declined,
         // a fill that lays nothing.

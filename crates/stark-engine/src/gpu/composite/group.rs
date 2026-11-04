@@ -9,8 +9,7 @@ use crate::colorspace::ColorSpace;
 use crate::device::tile::TilePairHandle;
 use crate::document::CompositeParams;
 use stark_model::document::{
-    ChromaticAberration, ColorAdjust, Filter, FocalBlur, GradientParcel, MatteRegion,
-    Parcel,
+    ChromaticAberration, ColorAdjust, Filter, FocalBlur, GradientParcel, MatteRegion, Parcel,
 };
 use stark_model::geom::Vec2;
 use stark_shaders::mirror::matte::{REGION_EVERYTHING, REGION_OUTSIDE};

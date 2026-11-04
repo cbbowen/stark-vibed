@@ -13,7 +13,6 @@ use super::commit::Drag;
 use super::{Authoring, Engine, ROOT_LAYER};
 use crate::Result;
 use crate::colorspace::ColorSpace;
-use std::sync::Arc;
 use crate::document::Substrate;
 use crate::fold::{LinearTimeline, Timeline};
 use crate::gpu::environment::EnvironmentId;
@@ -23,6 +22,7 @@ use stark_model::ColorSpaceId;
 use stark_model::DocumentFile;
 use stark_model::SubstrateId;
 use stark_model::document::{Action, effective_actions};
+use std::sync::Arc;
 
 /// A [`DocumentFile`] whose color space **this build can honour** (§6.7) — the one
 /// question every adoption path has to settle before it touches the open document.

@@ -384,7 +384,14 @@ mod tests {
             } else {
                 Session::start_stroke
             };
-            open(&mut s, first, 7, TOLERANCE, 0.0, stark_model::geom::IVec2::ZERO);
+            open(
+                &mut s,
+                first,
+                7,
+                TOLERANCE,
+                0.0,
+                stark_model::geom::IVec2::ZERO,
+            );
             s.gesture_to(InputSample::at(Vec2::new(60.0, 10.0)));
             assert!(!s.hover_held(), "either way the hover is retired");
             (s.preview_record().expect("in flight"), s.tool())

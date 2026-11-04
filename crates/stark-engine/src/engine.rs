@@ -294,7 +294,6 @@ impl Engine {
         Scaffold::of(self.session.shown_guides(doc).map(|g| &g.camera))
     }
 
-
     /// The current committed document state.
     pub(crate) fn document(&self) -> &DocState {
         self.timeline.current()

@@ -266,9 +266,7 @@ pub(crate) fn ramp_lanes(
     let stops = gradient.stops();
     let (axis_kind, axis) = match axis {
         GradientAxis::Linear { from, to } => (AXIS_LINEAR, [from.x, from.y, to.x, to.y]),
-        GradientAxis::Radial { center, radius } => {
-            (AXIS_RADIAL, [center.x, center.y, radius, 0.0])
-        }
+        GradientAxis::Radial { center, radius } => (AXIS_RADIAL, [center.x, center.y, radius, 0.0]),
     };
     let mut lanes = RampLanes {
         stops: stops.len() as f32,

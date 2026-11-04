@@ -173,9 +173,7 @@ impl MergeRenderer {
     /// unusable and no cap to exceed, because the result spans the union of two tile
     /// sets that the document already holds.
     pub(crate) fn apply(&self, pool: &TilePool, scene: MergeScene<'_>) -> TileMap {
-        let MergeScene {
-            lower, upper, ..
-        } = scene;
+        let MergeScene { lower, upper, .. } = scene;
 
         let mut scope = self.scratch.scope(&self.ctx, "stark merge");
         let mut tiles = lower.tiles.clone();

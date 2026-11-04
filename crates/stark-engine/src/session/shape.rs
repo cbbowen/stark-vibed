@@ -6,8 +6,7 @@ use crate::command::Tool;
 use crate::gesture::LiveGesture;
 use stark_model::Srgb;
 use stark_model::document::{
-    Lasso,
-    FillOp, LayerId, SelectionMode, SelectionOp, SelectionShape, ShapeAction,
+    FillOp, Lasso, LayerId, SelectionMode, SelectionOp, SelectionShape, ShapeAction,
 };
 use stark_model::geom::Vec2;
 
