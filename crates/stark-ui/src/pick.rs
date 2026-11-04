@@ -1,5 +1,5 @@
-//! The eyedropper as a frontend holds it (§18.0.2): what a sample is taken with,
-//! how far its reach resolves, and whether a press right now would take one.
+//! The eyedropper as a frontend holds it (§18.0.2): what a sample is taken with, and
+//! how far its reach resolves.
 //!
 //! [`Engine::pick_color`](stark_engine::Engine::pick_color) is a **request** and
 //! these are its arguments (§4) — nothing in the engine reads them between calls, so
@@ -9,21 +9,17 @@
 //! sample, against whichever layer is selected then, so a bar cannot be left holding
 //! the id of a layer that has since been deleted.
 //!
-//! The arming half is here for [`input`](crate::input)'s reason. The eyedropper is
-//! not a tool you switch to — the chord over the brush *is* the binding — so "is it
-//! armed" is a question the drag table answers plus a handful of stand-downs only the
-//! chrome knows about, and two frontends asking it two ways would promise the sample
-//! in one and take it in the other.
+//! Whether a press right now would take a sample is not here: the eyedropper is not a
+//! tool you switch to — the chord over the brush *is* the binding — so "is it armed"
+//! is a question the drag table answers ([`Hand::armed`](crate::drags::Hand::armed)),
+//! and asking it in one place is what keeps two frontends from promising the sample
+//! in one and taking it in the other.
 
 use stark_engine::{PickOptions, PickSource};
 use stark_model::document::LayerId;
 
 use crate::commands::PickScope;
 
-/// The patches the bars offer, as **radii** — the half-width of the averaged square,
-/// which is what [`PickOptions::radius`] takes. `2r + 1` is the square each describes
-/// ([`patch_word`]), so the words a bar wears are derived rather than written beside
-/// the numbers they have to agree with.
 /// What the group fence means, in the one sentence both bars explain it with (§18.0.2).
 ///
 /// The fence is one idea, and two apps explaining it differently would be two apps —
@@ -34,6 +30,10 @@ pub const GROUP_TIP: &str = "Only the selected layer's group answers \u{2014} it
                              canvas color, so bare canvas and thin paint answer with what the eye \
                              sees";
 
+/// The patches the bars offer, as **radii** — the half-width of the averaged square,
+/// which is what [`PickOptions::radius`] takes. `2r + 1` is the square each describes
+/// ([`patch_word`]), so the words a bar wears are derived rather than written beside
+/// the numbers they have to agree with.
 pub const PATCHES: [u32; 4] = [0, 1, 2, 5];
 
 /// How a patch is spelled on a bar: the prior art's point sample, or the `N×N` square

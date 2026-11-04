@@ -43,8 +43,8 @@ pub enum PanelId {
 impl PanelId {
     /// The mark the panel's title bar wears, and the one its menu entry does.
     ///
-    /// A stack of panels is read down its left edge, and a column of seven words is
-    /// read one word at a time; a column of seven marks is read at once. That is the
+    /// A stack of panels is read down its left edge, and a column of words is read
+    /// one word at a time; a column of marks is read at once. That is the
     /// whole argument — the glyph is not decoration on the title, it is what makes the
     /// stack scannable at the glance a title bar is actually given.
     ///
@@ -74,7 +74,6 @@ impl PanelId {
         }
     }
 
-    ///
     /// The height a panel opens at, in px — and, by being `Some`, that it is
     /// **vertically resizable**.
     ///

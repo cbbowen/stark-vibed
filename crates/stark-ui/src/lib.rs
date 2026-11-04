@@ -70,9 +70,9 @@
 //!   the ticket read back out of one, where a session stands, and a collaborator as a
 //!   chrome draws them (§17.4). The whole of what both frontends say about sharing
 //!   that is not the network.
-//! - [`pick`] — the eyedropper's options and its arming (§18.0.2): what a sample is
-//!   taken with, how a reach resolves against the layer selected *now*, and whether
-//!   a press would sample rather than paint.
+//! - [`pick`] — the eyedropper's options (§18.0.2): what a sample is taken with, and
+//!   how a reach resolves against the layer selected *now*. Whether a press would
+//!   sample rather than paint is the drag table's question ([`drags`]).
 //! - [`commands`] — the command registry (§11, §25): every simple act the chrome can
 //!   ask for, with its name, mark, hint and greying on the variant, and the chord
 //!   table a rebinding writes over.

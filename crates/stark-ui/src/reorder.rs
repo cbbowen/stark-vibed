@@ -4,17 +4,19 @@
 //! Two panels are rosters of a stack the artist arranges: the layer tree and the
 //! guide list. They already share their rows' shape down to the glyphs
 //! (`panels::guides`), and this is the rest of that: the same press, the same lift,
-//! the same slot opening under the hand, the same release. What differs is only what
-//! a landing *means* — a layer's is a place in a tree (§14.8), a guide's is an index
-//! — and that stays in the panels, which is the whole of the boundary here.
+//! the same slot opening under the hand, the same release. The web app's floating
+//! panel stack is a third list moved the same way (its `layout`). What differs is
+//! only what a landing *means* — a layer's is a place in a tree (§14.8), a guide's
+//! and a panel's an index — and that stays with each caller, which is the whole of
+//! the boundary here.
 //!
 //! Three pieces, in the order a gesture meets them:
 //!
 //! - [`Grab`](crate::reorder::Grab) is the pointer bookkeeping: what was pressed, where the hand started
 //!   and is now, and every row's box **as it stood at the press**. Nothing derived
 //!   is kept, so a row that has slid out of the way cannot feed back into the
-//!   decision that moved it — the same bargain the panel-stack drag makes
-//!   (`stark-dioxus-frontend`'s `layout::ThumbGrab`).
+//!   decision that moved it — the same bargain the web app's scroll-rail thumb
+//!   makes (its `layout::ThumbGrab`).
 //! - [`Slide`](crate::reorder::Slide) is the column arithmetic: given the block of rows that travels and
 //!   how far the hand has taken it, which rows yield and by how much.
 //! - [`Motion`](crate::reorder::Motion) is what one row does about it: where the row

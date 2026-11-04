@@ -83,11 +83,6 @@ impl Desk {
         &mut self.engine
     }
 
-    /// How the surface reads the engine's texels (§6.5).
-    pub fn transfer(&self) -> Transfer {
-        self.transfer
-    }
-
     /// Whether the surface can show anything above white (§6.5). A wide gamut is not
     /// range, so a `display-p3` surface answers no.
     pub fn hdr_capable(&self) -> bool {

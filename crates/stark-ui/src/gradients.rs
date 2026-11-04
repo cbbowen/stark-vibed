@@ -104,10 +104,7 @@ pub fn rename<'a>(
 /// The first free "Gradient N" name — a capture is named by the machinery, so the artist
 /// traces twice without a dialog between.
 pub fn next_name(entries: &[GradientEntry]) -> String {
-    (1..)
-        .map(|i| format!("Gradient {i}"))
-        .find(|n| !entries.iter().any(|e| &e.name == n))
-        .expect("an unbounded count always reaches a free name")
+    crate::library::free_name("Gradient", |n| entries.iter().any(|e| e.name == n))
 }
 
 #[cfg(test)]

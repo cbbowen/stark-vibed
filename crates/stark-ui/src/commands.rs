@@ -16,15 +16,16 @@
 //! both frontends render *the same* registry rather than restating it — which is the
 //! bargain §25 already made between a menu row and the keyboard, one crate up.
 //!
-//! Three things stay with each frontend, and each for its own reason:
+//! Two things stay with each frontend, and each for its own reason:
 //!
 //! - **what a command *does*** — `run` dispatches, opens dialogs and writes signals,
 //!   once [`admit`] has read the act's [`Gate`] against the app's own [`Gates`];
 //! - **the facts a lit control stands on** — which panel is up, which tool is armed
 //!   — are a frontend's own state, so it answers [`Lit`] and [`active`] says which
-//!   commands those facts light;
-//! - **its mark** — the web app's icons are inline SVG, which is a DOM idiom; a
-//!   native chrome draws a glyph another way entirely.
+//!   commands those facts light.
+//!
+//! A command's *mark* is not on that list any more: [`Command::icon`] names the glyph
+//! from the shared catalog ([`crate::icons`]), and only drawing it is each frontend's.
 //!
 //! The keyboard is one column of the registry, and it is the user's. The shipped
 //! chords are `(Chord, Command)` rows in [`defaults`]; a client's rebindings lie over
@@ -85,7 +86,7 @@ pub struct Chord {
     pub shift: bool,
     /// Alt, or Option on a Mac. Last of the three and defaulted for the store's
     /// sake; the same triple the drag table names its presses by
-    /// (`drags::Mods`), so the two tables read one keystroke the same way.
+    /// ([`Mods`]), so the two tables read one keystroke the same way.
     #[serde(default)]
     pub alt: bool,
     pub key: ChordKey,
@@ -103,16 +104,39 @@ pub struct Chord {
 ///
 /// A capture makes the same choice ([`capture`]): a key that types a character
 /// is taken as the character, and a key that types nothing — an F-key, an
-/// arrow — has only its position to be named by. **A key held through Alt is
-/// in that second family**, whatever it would type unmodified: Option+G types
-/// `©` on a Mac, so the character on offer is not the key's own and the
-/// position is all that is left to mean.
+/// arrow — has only its position to be named by. A key a shipped row already
+/// answers is taken as that row, whichever name it uses, so a rebinding of `[`
+/// and the shipped `[` are one chord rather than two spellings of it. **A key
+/// held through Alt is in that second family**, whatever it would type
+/// unmodified: Option+G types `©` on a Mac, so the character on offer is not the
+/// key's own and the position is all that is left to mean.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum ChordKey {
     /// The character the key types, caseless (stored lowercase).
     Char(char),
     /// The physical position, by W3C `code` value.
     Code(String),
+}
+
+impl Chord {
+    /// The three modifiers as one value. Not a field: a stored chord's `ctrl` and
+    /// `shift` must stay required where [`Mods`] defaults every one of its own — a row
+    /// that read back without its `ctrl` would not be a damaged shortcut but a working
+    /// one on another key.
+    fn mods(&self) -> Mods {
+        Mods {
+            ctrl: self.ctrl,
+            shift: self.shift,
+            alt: self.alt,
+        }
+    }
+
+    /// Whether a keystroke is this chord: all three modifiers exactly — Alt included,
+    /// which the shipped table holds a column of (§18.0.2) and any rebinding may reach
+    /// for — and the key by whichever name the chord gives it.
+    fn hit(&self, stroke: &Keystroke<'_>) -> bool {
+        self.mods() == stroke.mods && self.key.hit(stroke)
+    }
 }
 
 impl ChordKey {
@@ -322,7 +346,7 @@ pub enum Command {
     /// Add a perspective guide where the artist is looking and pick it up
     /// (§20.5): adding *is* asking to shape it.
     AddPerspective,
-    /// Put down what is up — one rung per press (MODAL_DESIGN.md): the open
+    /// Put down what is up — one rung per press (Escape's ladder, §25.7): the open
     /// dialog, else the composing mode (committing nothing, `crate::modes`),
     /// else the frame or filter selected for composing, else Timeline. Esc's
     /// home, and the ✕ chip every mode bar wears.
@@ -604,38 +628,13 @@ impl Bindings {
     /// its first default row still standing. `None` is a command the keyboard
     /// cannot reach — never bound, or rebound away.
     pub fn of(&self, command: Command) -> Option<Chord> {
-        if let Some(chord) = self.overrides.get(command) {
-            return chord.clone();
-        }
-        defaults()
-            .into_iter()
-            .find(|(chord, c)| *c == command && !self.overrides.taken(chord))
-            .map(|(chord, _)| chord)
+        self.overrides.advertised(command, defaults())
     }
 
-    /// The command a keystroke asks for, if any. Overrides answer first —
-    /// though they can never disagree with each other ([`rebind`](Self::rebind)
-    /// steals a colliding chord) — and a default row answers only while its
-    /// command is untouched and its chord unclaimed.
+    /// The command a keystroke asks for, if any (`Overrides::resolve`).
     pub fn lookup(&self, stroke: &Keystroke<'_>) -> Option<Command> {
-        // All three modifiers, exactly — Alt included, which the shipped table
-        // holds a column of (§18.0.2) and any rebinding may reach for
-        // ([`Chord`]).
-        let hit = |chord: &Chord| {
-            chord.ctrl == stroke.mods.ctrl
-                && chord.shift == stroke.mods.shift
-                && chord.alt == stroke.mods.alt
-                && chord.key.hit(stroke)
-        };
-        if let Some(command) = self.overrides.claimant(hit) {
-            return Some(command);
-        }
-        defaults()
-            .into_iter()
-            .find(|(chord, command)| {
-                !self.overrides.overridden(*command) && !self.overrides.taken(chord) && hit(chord)
-            })
-            .map(|(_, command)| command)
+        self.overrides
+            .resolve(defaults(), |chord| chord.hit(stroke))
     }
 
     /// Give `command` the chord as its whole binding, stealing it from any other
@@ -746,6 +745,16 @@ pub fn capture(stroke: &Keystroke<'_>) -> Capture {
     // The rack's own claim on the digit row, asked rather than restated.
     if slots::claims(stroke).is_some() {
         return Capture::Pending;
+    }
+    // **A keystroke a shipped row answers is captured as that row**, spelling and all.
+    // The table names `[` by position and a US keyboard reports it as a character, so
+    // taking the character would store `Char('[')` beside the shipped
+    // `Code("BracketLeft")`: two spellings of one key that no override compares equal
+    // ([`Overrides::taken`] is by value). The rebound command would win the key while
+    // the shipped one went on advertising it, and the row could never be captured back
+    // onto its own key. Asking the shipped rows first makes "the same key" one value.
+    if let Some((chord, _)) = defaults().into_iter().find(|(chord, _)| chord.hit(stroke)) {
+        return Capture::Chord(chord);
     }
     // **Under Alt a key does not type its own character**, so there is no mnemonic to
     // name it by and only the position is left — the same sentence [`ChordKey`]
@@ -957,6 +966,14 @@ impl VisibilityToggle {
         VisibilityToggle::QuickBrushes,
         VisibilityToggle::Timeline,
     ];
+
+    /// The panel this entry is, or `None` for the three that are not panels.
+    pub fn panel(self) -> Option<PanelId> {
+        match self {
+            VisibilityToggle::Panel(id) => Some(id),
+            _ => None,
+        }
+    }
 
     /// The word the entry wears where its surroundings have already said what the
     /// list is: a shelf's title bar in the docked frontend (`panel::title`), a row
@@ -1347,10 +1364,7 @@ impl Command {
     /// The `title` a control rendering this command carries: the hint, plus the
     /// advertised shortcut for the commands the keyboard can reach.
     pub fn tooltip(self, bindings: &Bindings) -> String {
-        match self.shortcut(bindings) {
-            Some(chord) => format!("{} ({chord})", self.hint()),
-            None => self.hint().to_string(),
-        }
+        advertised(self.hint(), self, bindings)
     }
 
     /// The shortcut the chrome prints beside this command's name — its
@@ -1359,7 +1373,7 @@ impl Command {
     ///
     /// One command's advertisement is written by hand instead: Import's Ctrl+V
     /// is a paste, not a binding of ours — the browser delivers the clipboard
-    /// *with* the event (`crate::images`) — so there is no row for it, and yet
+    /// *with* the event (§23) — so there is no row for it, and yet
     /// the shortcut is true and worth saying wherever the command is shown.
     pub fn shortcut(self, bindings: &Bindings) -> Option<String> {
         match self {
@@ -1464,23 +1478,13 @@ pub fn advertised(hint: &str, command: Command, bindings: &Bindings) -> String {
 
 /// A chord spelled out for the chrome. Private: the chrome asks
 /// [`Command::shortcut`], which is this over [`Bindings::of`], plus the one
-/// advertisement that has no chord.
-/// "Ctrl" names the accelerator on every platform for now, as the menu always
-/// has — a ⌘ on the one platform that draws it is a presentation question, not
-/// a binding one.
+/// advertisement that has no chord. The modifiers are [`Mods::names`], in the order
+/// `drags::chord_label` spells its own presses in.
 fn chord_label(chord: &Chord) -> String {
-    // Ctrl, Shift, Alt — the order `drags::chord_label` spells its own presses
-    // in, so one keystroke does not read two ways in one app depending on
-    // which table is describing it.
     let mut s = String::new();
-    for (held, name) in [
-        (chord.ctrl, "Ctrl+"),
-        (chord.shift, "Shift+"),
-        (chord.alt, "Alt+"),
-    ] {
-        if held {
-            s.push_str(name);
-        }
+    for name in chord.mods().names() {
+        s.push_str(name);
+        s.push('+');
     }
     match &chord.key {
         ChordKey::Char(c) => s.push(c.to_ascii_uppercase()),
@@ -1573,7 +1577,7 @@ mod tests {
 
     #[test]
     fn escape_and_enter_are_rows() {
-        // The two bare-key rows (MODAL_DESIGN.md). Spatial (`code`), so a
+        // The two bare-key rows (Escape's ladder, §25.7). Spatial (`code`), so a
         // layout that types something exotic on them changes nothing.
         assert_eq!(
             stock().lookup(&bare("Escape").with(mods(false, false, false))),
@@ -2274,10 +2278,7 @@ mod tests {
         // claim that the list reads as a picture of the stack.
         let panels: Vec<PanelId> = VisibilityToggle::ALL
             .into_iter()
-            .filter_map(|entry| match entry {
-                VisibilityToggle::Panel(id) => Some(id),
-                _ => None,
-            })
+            .filter_map(VisibilityToggle::panel)
             .collect();
         assert_eq!(
             panels,
@@ -2499,7 +2500,7 @@ mod tests {
     /// A keystroke carries **both** names, always: a key that types a character has a
     /// position too, and a position that types one does not stop doing so because a
     /// row named it spatially. Getting that wrong is what
-    /// [`every_shipped_chord_but_three_can_be_captured_back`] is about, so the
+    /// [`every_shipped_chord_but_escape_can_be_captured_back`] is about, so the
     /// synthesis has to be as complete as the event.
     ///
     /// A closure rather than a return, because a [`Keystroke`] borrows its code.
@@ -2542,8 +2543,7 @@ mod tests {
     }
 
     /// What a US layout types at `code`, where it types anything — the fact
-    /// [`capture`] prefers over the position, and so the whole of why three shipped
-    /// rows are one-way.
+    /// [`capture`] prefers over the position wherever no shipped row names the key.
     fn us_char(code: &str) -> Option<char> {
         match code {
             "BracketLeft" => Some('['),
@@ -2556,35 +2556,24 @@ mod tests {
         }
     }
 
-    /// Every shipped chord can be **captured back** — except three, named here so the
-    /// set is pinned at three.
+    /// Every shipped chord can be **captured back** — except Escape, named here so the
+    /// set is pinned at one.
     ///
-    /// [`capture`] names a key by its *character* wherever the platform reports one
-    /// and Alt is not held, so a row shipped as a position comes back as a character
-    /// and the two do not compare equal. What that costs is a user who rebinds such a
-    /// row away and cannot put it back on the same key — a one-way door, and the
-    /// bracket pair's is the more surprising of the two because both print `[` and `]`
-    /// in the shortcut column with nothing saying they are not the letters.
+    /// A capture used to name a key by its *character* wherever the platform reported
+    /// one, so the bracket pair — shipped as positions — came back as characters that
+    /// did not compare equal: a user who rebound one away could not put it back on the
+    /// same key, and a command rebound onto `[` left the brush step still advertising
+    /// it. [`capture`] now asks the shipped rows first, and this is what holds it.
     ///
-    /// The point is the *list*: a fourth entry is then a regression rather than a
+    /// The point is the *list*: a second entry is then a regression rather than a
     /// discovery.
     #[test]
-    fn every_shipped_chord_but_three_can_be_captured_back() {
+    fn every_shipped_chord_but_escape_can_be_captured_back() {
         for (chord, command) in defaults() {
-            let one_way = match &chord.key {
-                // Escape is spent on calling the capture off, which is documented on
-                // its own row in [`defaults`] — an escape key a capture could take
-                // would be an escape key that could not end one.
-                ChordKey::Code(code) if code == "Escape" => true,
-                // The brush's two steps are `Code` for the spatial reason §25.2 gives
-                // — `[` and `]` step down and up because they are side by side — and a
-                // US keyboard types `[` on that key, so a capture names it `Char('[')`.
-                // Deliberate on both sides and unreconcilable: the shipped row wants
-                // the position, and a *captured* row can only honestly claim the
-                // character the platform just reported.
-                ChordKey::Code(code) if code == "BracketLeft" || code == "BracketRight" => true,
-                _ => false,
-            };
+            // Escape is spent on calling the capture off, which is documented on its
+            // own row in [`defaults`] — an escape key a capture could take would be an
+            // escape key that could not end one.
+            let one_way = matches!(&chord.key, ChordKey::Code(code) if code == "Escape");
             let taken = with_keystroke(&chord, capture);
             let recaptured = taken == Capture::Chord(chord);
             assert_eq!(
@@ -2592,6 +2581,26 @@ mod tests {
                 "{command:?} disagrees with the one-way list \u{2014} a capture made {taken:?}",
             );
         }
+    }
+
+    /// A command rebound onto a key a shipped row names by position takes that row's
+    /// key **away from it**, so the chord is advertised by exactly the command the
+    /// keyboard answers with.
+    #[test]
+    fn rebinding_onto_a_shipped_position_steals_it() {
+        let stroke = Keystroke::new(Some('['), "BracketLeft");
+        let Capture::Chord(chord) = capture(&stroke) else {
+            panic!("`[` is a bindable key");
+        };
+        let mut b = Bindings::default();
+        b.rebind(Command::Settings, chord);
+        assert_eq!(b.lookup(&stroke), Some(Command::Settings));
+        assert_eq!(
+            b.of(Command::BrushSmaller),
+            None,
+            "the stolen row still advertises"
+        );
+        assert!(b.of(Command::Settings).is_some());
     }
 
     /// Every command a **selection** gates is a document edit.

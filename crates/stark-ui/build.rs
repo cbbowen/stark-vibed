@@ -1,4 +1,5 @@
-//! The content ids of the assets the app ships, computed at build time.
+//! The content ids of the assets the app ships, computed at build time — and the icon
+//! catalog's file table (`icon_files.rs`, which `crate::icons` includes).
 //!
 //! An id is only knowable once the bytes have arrived, because the id *is* a hash of
 //! the decoded image (§19). That circularity is why brush presets are seeded after

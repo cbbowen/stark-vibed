@@ -10,8 +10,9 @@
 //!
 //! - **[`ModRow`]** — a parameter the pen can drive, with the mapping slot that
 //!   belongs to it. Adding a target to any of the model's modulation tables and not
-//!   here fails to compile at [`ModRow::slot`], which is why the addressing is a
-//!   `match` returning a slot rather than a field name written twice.
+//!   here fails to compile — in `tests::every_modulation_target_has_a_row`, which
+//!   names every table's every field — and the addressing is a `match` returning a
+//!   slot ([`ModRow::slot`]) rather than a field name written twice.
 //! - **[`Knob`]** — every other track: a word, a range, and where the value lives.
 //!   The ranges are the interesting half — each is either the model's own bound or a
 //!   ceiling the *slider* owns, and the note on each says which.
@@ -63,10 +64,9 @@ const MAX_FLUX: f32 = 0.95;
 ///
 /// It carries everything about a row that differs: its word, its range, where its
 /// base value lives on the brush, and which mapping slot belongs to it. That is what
-/// lets a frontend's row take a `ModRow` and nothing else, and it is why the rows
-/// cannot drift out of step with the engine's set — adding a target to any of the
-/// modulation tables (`BrushModulations`, `PaintModulations`, `EraseModulations`)
-/// and not here fails to compile at [`Self::slot`].
+/// lets a frontend's row take a `ModRow` and nothing else. The rows cannot drift out
+/// of step with the engine's set: adding a target to any of the five modulation
+/// tables and not here fails to compile in `tests::every_modulation_target_has_a_row`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, strum::VariantArray, strum::EnumCount)]
 pub enum ModRow {
     Size,
@@ -738,15 +738,7 @@ pub enum Section {
 
 /// The groups in the order the dialog stacks them: the declaration order, derived as
 /// [`MOD_ROWS`] is, so a new group has one order to be put in.
-pub const SECTIONS: [Section; Section::COUNT] = {
-    let mut sections = [Section::Tip; Section::COUNT];
-    let mut i = 0;
-    while i < Section::COUNT {
-        sections[i] = Section::VARIANTS[i];
-        i += 1;
-    }
-    sections
-};
+pub const SECTIONS: [Section; Section::COUNT] = variants();
 
 /// The runtime facts a section's rows depend on that the brush does not carry.
 ///
@@ -774,12 +766,7 @@ impl Section {
     pub fn title(self, b: &BrushConfig) -> &'static str {
         match self {
             Self::Tip => "Tip",
-            Self::Effect => match b.effect {
-                BrushEffectType::Paint => "Paint",
-                BrushEffectType::Wet => "Wet",
-                BrushEffectType::Erase => "Erase",
-                BrushEffectType::Liquify => "Liquify",
-            },
+            Self::Effect => effect_label(b.effect),
             Self::Color => "Color dynamics",
             Self::Wet => "Wet",
         }
@@ -1586,6 +1573,83 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    /// Every field of every modulation table, destructured **without `..`** — so a
+    /// target added to one stops this compiling until it says which row edits it — and
+    /// every row named by at least one field, so a row cannot outlive its target.
+    ///
+    /// The tables are the model's, and nothing about them is derivable here; this is
+    /// the one place a new pen target is forced to meet the editor.
+    #[test]
+    fn every_modulation_target_has_a_row() {
+        use stark_model::document::{
+            BrushModulations, EraseModulations, LiquifyModulations, PaintModulations,
+            WetModulations,
+        };
+        let BrushModulations {
+            size: _,
+            tooth_give: _,
+            stretch: _,
+        } = BrushModulations::default();
+        let tip = [ModRow::Size, ModRow::ToothGive, ModRow::Stretch];
+        let PaintModulations {
+            flow: _,
+            opacity: _,
+        } = PaintModulations::default();
+        let paint = [ModRow::Flow, ModRow::Opacity];
+        let WetModulations {
+            flow: _,
+            opacity: _,
+            add: _,
+            lift: _,
+            deposit: _,
+            bleed: _,
+        } = WetModulations::default();
+        let wet = [
+            ModRow::Flow,
+            ModRow::Opacity,
+            ModRow::Add,
+            ModRow::Lift,
+            ModRow::Deposit,
+            ModRow::Bleed,
+        ];
+        let EraseModulations {
+            flow: _,
+            opacity: _,
+        } = EraseModulations::default();
+        let erase = [ModRow::Flow, ModRow::Opacity];
+        // Liquify's strength is the Flow row's under another word (`ModRow::label`).
+        let LiquifyModulations { strength: _ } = LiquifyModulations::default();
+        let liquify = [ModRow::Flow];
+
+        let named: Vec<ModRow> = [&tip[..], &paint, &wet, &erase, &liquify].concat();
+        for row in MOD_ROWS {
+            assert!(named.contains(&row), "{row:?} edits no table's field");
+        }
+    }
+
+    /// `NoiseKind` and `ModSource` are the model's too, so they get
+    /// [`every_orientation_source_has_a_chip`]'s exhaustive match: a new variant stops
+    /// this compiling until its chip list says where it sits.
+    #[test]
+    fn every_noise_kind_and_pen_axis_has_a_chip() {
+        let noise = |kind| match kind {
+            NoiseKind::Simplex => NOISE_KINDS[0],
+            NoiseKind::White => NOISE_KINDS[1],
+            NoiseKind::Voronoi => NOISE_KINDS[2],
+            NoiseKind::Mosaic => NOISE_KINDS[3],
+        };
+        for kind in NOISE_KINDS {
+            assert_eq!(noise(kind), kind);
+        }
+        let source = |s| match s {
+            ModSource::Pressure => SOURCES[0],
+            ModSource::Tilt => SOURCES[1],
+        };
+        for s in SOURCES {
+            assert_eq!(source(s), s);
         }
     }
 

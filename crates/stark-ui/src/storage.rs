@@ -160,13 +160,13 @@ pub enum Store {
     /// miniature is up, whether the quick-brush rack is pinned, whether Timeline mode
     /// is on (§11, `crate::visibility`).
     Visible,
-    /// What the guided tour has counted and given (§24, `crate::tutor`).
+    /// What the guided tour has counted and given (§24, the web frontend's `tutor`).
     Tutor,
-    /// The custom brush-shape library (§6.6, `crate::shapes`).
+    /// The custom brush-shape library (§6.6, `crate::assets`).
     Shapes,
-    /// The custom canvas-substrate library (§6.4, `crate::substrates`) — [`Shapes`]'s
+    /// The custom canvas-substrate library (§6.4, `crate::assets`) — [`Shapes`]'s
     /// sibling in every respect, rows here and height maps in the blob store beside
-    /// them (`stark_ui::library`).
+    /// them.
     ///
     /// **Its key is still `stark.grounds`.** A key is browser-local data, not
     /// vocabulary: renaming one silently orphans every library already saved under
@@ -634,7 +634,35 @@ fn set(store: Store, value: &str) {
     }
 }
 
-/// The keys the six old formats were kept under, dropped once at start.
+/// The keys the old formats were kept under, dropped once at start by
+/// [`drop_retired`].
+///
+/// A list rather than a literal inside the loop so the one test that can rule out
+/// harm — `tests::no_retired_key_is_a_live_one` — reads every entry, rather than a
+/// copy of some of them.
+const RETIRED: &[&str] = &[
+    "stark.prefs.v1",
+    "stark.bindings.v1",
+    "stark.panels.v1",
+    "stark.navigator.v1",
+    "stark.tutor.v1",
+    "stark.shapes.v1",
+    "stark.presets.v1",
+    "stark.slots.v1",
+    "stark.gradients.v1",
+    "stark.identity.secret",
+    "stark.identity.boot",
+    // The two records `Store::Visible` replaced. What is on screen used to be
+    // kept in two, which is how the quick-brush rack and Timeline mode came to
+    // be kept in none (`crate::visibility`).
+    "stark.panels",
+    "stark.navigator",
+    // The rack as brush snapshots, before a slot became a binding to a preset
+    // — see `Store::Slots` for why the key moved rather than the rows.
+    "stark.slots",
+];
+
+/// Drop every `RETIRED` key.
 ///
 /// Not a migration — nothing is read out of them. It is the **quota**:
 /// `stark.shapes.v1` holds a base64 PNG per imported shape, and megabytes stranded
@@ -642,33 +670,12 @@ fn set(store: Store, value: &str) {
 /// library has to fit in. The symptom would be shape imports that silently stop
 /// persisting, which is the hardest kind of storage bug to attribute.
 ///
-/// **Delete this, and `platform::local_remove` with it, once no browser plausibly
+/// **Delete this, and [`Backend::remove`] with it, once no browser plausibly
 /// carries the old keys.** It is dead weight the day that is true.
 pub fn drop_retired() {
-    for key in [
-        "stark.prefs.v1",
-        "stark.bindings.v1",
-        "stark.panels.v1",
-        "stark.navigator.v1",
-        "stark.tutor.v1",
-        "stark.shapes.v1",
-        "stark.presets.v1",
-        "stark.slots.v1",
-        "stark.gradients.v1",
-        "stark.identity.secret",
-        "stark.identity.boot",
-        // The two records `Store::Visible` replaced. What is on screen used to be
-        // kept in two, which is how the quick-brush rack and Timeline mode came to
-        // be kept in none (`crate::visibility`).
-        "stark.panels",
-        "stark.navigator",
-        // The rack as brush snapshots, before a slot became a binding to a preset
-        // — see `Store::Slots` for why the key moved rather than the rows.
-        "stark.slots",
-    ] {
-        if let Some(b) = backend() {
-            b.remove(key);
-        }
+    let Some(b) = backend() else { return };
+    for key in RETIRED {
+        b.remove(key);
     }
 }
 
@@ -756,9 +763,9 @@ pub mod finite {
 /// A third trait rather than a fourth pair of functions taking a [`Store`], for the
 /// reason [`Record`] and [`Entry`] are traits: the type declares which record its
 /// bytes belong to, so the key is not a second choice a call site could get wrong.
-/// It is implemented *alongside* one of the other two — `ShapeEntry` is an [`Entry`]
-/// for its row and a [`Blob`] for its PNG, which is what says the two halves are one
-/// record and not two.
+/// It is implemented *alongside* one of the other two — an asset library's
+/// [`Row`](crate::assets::Row) is an [`Entry`] for its row and a [`Blob`] for its PNG,
+/// which is what says the two halves are one record and not two.
 pub trait Blob {
     /// Which record these bytes belong to.
     const STORE: Store;
@@ -1015,15 +1022,8 @@ mod tests {
     #[test]
     fn no_retired_key_is_a_live_one() {
         let live: HashSet<&str> = ALL.iter().map(|s| s.named().0).collect();
-        for key in [
-            "stark.prefs.v1",
-            "stark.shapes.v1",
-            "stark.identity.secret",
-            "stark.panels",
-            "stark.navigator",
-            "stark.slots",
-        ] {
-            assert!(!live.contains(key));
+        for key in RETIRED {
+            assert!(!live.contains(key), "{key} is retired and live");
         }
         assert!(ALL.iter().all(|s| !s.named().0.ends_with(".v1")));
     }

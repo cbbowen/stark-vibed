@@ -70,10 +70,7 @@ fn stored_open() -> Option<HashSet<PanelId>> {
     Some(
         stored_screen()?
             .into_iter()
-            .filter_map(|what| match what {
-                VisibilityToggle::Panel(id) => Some(id),
-                _ => None,
-            })
+            .filter_map(VisibilityToggle::panel)
             .collect(),
     )
 }
@@ -93,7 +90,11 @@ pub fn stored_screen() -> Option<HashSet<VisibilityToggle>> {
 /// The panels this browser did **not** leave open, as `PanelLayout::hidden` — every
 /// panel, for a browser that has never been here or whose record will not read.
 pub fn stored_hidden() -> HashSet<PanelId> {
-    let open = stored_open().unwrap_or_default();
+    hidden_of(&stored_open().unwrap_or_default())
+}
+
+/// Every panel not in `open` — [`stored_hidden`]'s reading, without the store.
+fn hidden_of(open: &HashSet<PanelId>) -> HashSet<PanelId> {
     PanelId::VARIANTS
         .iter()
         .copied()
@@ -123,10 +124,7 @@ pub fn stored_folded() -> HashSet<VisibilityToggle> {
 pub fn stored_collapsed() -> HashSet<PanelId> {
     stored_folded()
         .into_iter()
-        .filter_map(|what| match what {
-            VisibilityToggle::Panel(id) => Some(id),
-            _ => None,
-        })
+        .filter_map(VisibilityToggle::panel)
         .collect()
 }
 
@@ -272,19 +270,14 @@ mod tests {
         );
     }
 
-    /// [`stored_hidden`]'s reading, without the store — the half worth testing.
+    /// [`stored_hidden`]'s reading of `rows`, through the same [`hidden_of`] it uses
+    /// — the half worth testing, without the store.
     fn stored_hidden_from(rows: Vec<StoredVisible>) -> HashSet<PanelId> {
-        let open: HashSet<PanelId> = rows
-            .into_iter()
-            .filter_map(|row| match row.what {
-                VisibilityToggle::Panel(id) => Some(id),
-                _ => None,
-            })
-            .collect();
-        PanelId::VARIANTS
-            .iter()
-            .copied()
-            .filter(|id| !open.contains(id))
-            .collect()
+        hidden_of(
+            &rows
+                .into_iter()
+                .filter_map(|row| row.what.panel())
+                .collect(),
+        )
     }
 }

@@ -450,7 +450,7 @@ fn quantize(gamut: Gamut, rgb: [f32; 3]) -> [u8; 3] {
 
 /// The picker's wheel at lightness `l`, [`FIELD_N`] square: hue by direction, chroma
 /// by distance as a fraction of [`max_chroma`] in that direction, so the unit circle
-/// is the sRGB boundary and every pixel inside it is a color the display can show.
+/// is the gamut's boundary and every pixel inside it is a color the display can show.
 ///
 /// Square, and the corners past the rim carry the rim's own color: the control is
 /// clipped to a circle, so those texels are never seen — but they are what a scaler

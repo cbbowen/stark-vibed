@@ -506,18 +506,6 @@ icons! {
     // things. Composed here, like `fisheye-bold`: the set has neither a dashed circle
     // nor anything else that says *edge* about a disc.
     HARDNESS => "brush-hardness-bold",
-    // The four brush effects, as the chips that arm them wear them (§6.2, §6.12,
-    // §6.13). Three are marks this catalog already holds, and the sharing is the
-    // claim in each case: painting is what [`BRUSH`] draws, a wet pass is the
-    // canvas paint [`WET`] lifts and moves, and the erase effect *is* the
-    // [`ERASER`] the rack's tenth slot ships with — there is no eraser tool
-    // beside it to be confused with (§6.2).
-    //
-    // Only the fourth had no picture. A spiral, because that is what a liquify pass
-    // leaves behind: paint pushed round on itself rather than added, removed or
-    // mixed. Deliberately not [`WARP`]'s control points — that gesture bends a
-    // surface by its handles, and this one is a brush.
-    LIQUIFY => "swirl-bold",
     // The Lighting panel, whose every row is marked (§6.3, §6.4) — the three media
     // sliders and, because they are the same column and fold on the same rule, the
     // four hand-rolled rows under them. The panel's own [`LIGHTING`] sphere is the
@@ -654,6 +642,10 @@ mod tests {
         "shield-slash-bold",
         "subtract-bold",
         "swap-bold",
+        // Liquify's mark-in-waiting: a spiral, because that is what a liquify pass
+        // leaves behind (§6.13). Staged until an effect chip wears a glyph at all —
+        // today both editors write the effect as a word.
+        "swirl-bold",
         "unite-bold",
         "waveform-bold",
     ];

@@ -6,8 +6,9 @@
 //! `stretched`, `corner_dragged`, `surface_dragged` — and every one of them takes
 //! the gesture's *start* rather than its previous step, so a long drag is one
 //! accumulated map instead of a chain of them and rounding cannot walk over the
-//! length of it. The chrome that drives them is `panels::transform`; what holds
-//! them between events is `state::AppState::transform`.
+//! length of it. The chrome that drives them is each frontend's (the web app's
+//! `panels::transform`); what holds them between events is the composing mode
+//! ([`modes::Composing`](crate::modes::Composing)'s `Transform`).
 //!
 //! That is why it is a file of its own. It lived in the web frontend's `state`, which is about
 //! the app's signals and the one door to the engine, and this is the part of that
@@ -500,8 +501,9 @@ pub struct Entry {
 
 /// What entering transform mode should act on, or `None` when nothing can be.
 ///
-/// The layer is the active one, or the topmost paintable layer when a matte is
-/// selected — a matte refuses transforms the same way it refuses strokes (§15.2).
+/// The layer is [`layer_tree::paint_target`](crate::layer_tree::paint_target)'s: the
+/// active one, or the topmost paintable layer when a matte is selected — a matte
+/// refuses transforms the same way it refuses strokes (§15.2).
 ///
 /// The rectangle is a ladder, because the widget must always exist: the selection's
 /// analytic hull; failing that (select-all, an inversion — an *unbounded* selection,
@@ -805,10 +807,17 @@ pub fn switch(ui: TransformUi, to: Family, bands: Bands) -> Switch {
         return Switch::Nothing;
     }
     let layer = ui.layer();
+    // First, because an untouched Free gesture is *also* an orientation-preserving
+    // affine (the identity's determinant is 1): asked second, it carried, and a
+    // carry owes a preview — the resample of the selected paint that `Fresh` exists
+    // to spare.
+    if ui.is_identity() {
+        return Switch::Fresh(mount(layer, to, ui.rect(), bands));
+    }
     if let TransformUi::Affine { rect, ts } = ui
-        && ts.affine().matrix2.determinant() > 0.0
+        && let affine = ts.affine()
+        && affine.matrix2.determinant() > 0.0
     {
-        let affine = ts.affine();
         let inflated = crate::bounds::inflate(rect, bands.min_rect);
         let carried = match to {
             Family::Free => unreachable!("the same family returned above"),
@@ -829,9 +838,6 @@ pub fn switch(ui: TransformUi, to: Family, bands: Bands) -> Switch {
             return Switch::Carried(carried);
         }
     }
-    if ui.is_identity() {
-        return Switch::Fresh(mount(layer, to, ui.rect(), bands));
-    }
     Switch::Commit {
         map: ui.map(),
         then: mount(layer, to, ui.image_rect(), bands),
@@ -848,9 +854,10 @@ pub enum QuadRegion {
     /// On an edge (named by its two corner indices): dragging shifts the whole
     /// edge — the foreshortening gesture.
     Edge(usize, usize),
-    /// Inside the quad, or anywhere else: dragging translates all four
-    /// corners together.
+    /// Inside the quad: dragging translates all four corners together.
     Inside,
+    /// Anywhere else. Every reader treats it as [`Inside`](Self::Inside) — the same
+    /// cursor, and a drag that translates the quad either way.
     Outside,
 }
 
@@ -896,14 +903,7 @@ impl PerspectiveUi {
     /// Classify a canvas-space pointer: corner handles win, then edges, then
     /// the quad's inside. `grab` and `band` are canvas-px radii ([`Bands`]).
     pub fn region(&self, p: Vec2, grab: f32, band: f32) -> QuadRegion {
-        let mut best: Option<(usize, f32)> = None;
-        for (i, c) in self.corners.iter().enumerate() {
-            let d = p.distance(*c);
-            if d <= grab && best.is_none_or(|(_, bd)| d < bd) {
-                best = Some((i, d));
-            }
-        }
-        if let Some((i, _)) = best {
+        if let Some(i) = nearest_within(&self.corners, p, grab) {
             return QuadRegion::Corner(i);
         }
         for (a, b) in EDGES {
@@ -948,6 +948,19 @@ impl PerspectiveUi {
             }
         })
     }
+}
+
+/// The index of the handle in `handles` nearest `p`, if any is within `grab` — a tie
+/// goes to the first. What a press on either rect-scoped family takes hold of first.
+fn nearest_within(handles: &[Vec2], p: Vec2, grab: f32) -> Option<usize> {
+    let mut best: Option<(usize, f32)> = None;
+    for (i, c) in handles.iter().enumerate() {
+        let d = p.distance(*c);
+        if d <= grab && best.is_none_or(|(_, bd)| d < bd) {
+            best = Some((i, d));
+        }
+    }
+    best.map(|(i, _)| i)
 }
 
 /// The quad's edges as corner-index pairs, walking the boundary
@@ -1054,8 +1067,8 @@ impl WarpUi {
     }
 
     pub fn is_identity(&self) -> bool {
-        // Against the points `begin` laid, which are the model's own — the same
-        // comparison, without a second mesh built to make it.
+        // Against the points `begin` lays, which are the model's own identity —
+        // exact, where a solve through the map would only be close.
         self.points == Self::begin(self.layer, self.rect).points
     }
 
@@ -1063,14 +1076,7 @@ impl WarpUi {
     /// `grab` wins; otherwise inside the mesh's boundary polygon is a surface
     /// grab; otherwise a whole-mesh translate.
     pub fn region(&self, p: Vec2, grab: f32) -> MeshRegion {
-        let mut best: Option<(usize, f32)> = None;
-        for (i, c) in self.points.iter().enumerate() {
-            let d = p.distance(*c);
-            if d <= grab && best.is_none_or(|(_, bd)| d < bd) {
-                best = Some((i, d));
-            }
-        }
-        if let Some((i, _)) = best {
+        if let Some(i) = nearest_within(&self.points, p, grab) {
             return MeshRegion::Point(i);
         }
         if point_in_polygon(&self.boundary(), p) {
@@ -1890,6 +1896,8 @@ mod overlay_tests {
 
 #[cfg(test)]
 mod switch_tests {
+    use strum::VariantArray;
+
     use super::*;
 
     fn rect() -> (Vec2, Vec2) {
@@ -1985,13 +1993,19 @@ mod switch_tests {
     /// what happened.
     #[test]
     fn an_untouched_gesture_switches_free() {
-        let fresh = mount(LayerId::ROOT, Family::Perspective, rect(), bands());
-        assert!(fresh.is_identity());
-        let Switch::Fresh(next) = switch(fresh, Family::Warp, bands()) else {
-            panic!("an identity should never spend an undo step");
-        };
-        assert_eq!(next.family(), Family::Warp);
-        assert!(next.is_identity());
+        // Every pair, Free included: an untouched Free gesture is an identity *and* an
+        // orientation-preserving affine, and only the first of those is free.
+        for &from in Family::VARIANTS {
+            for &to in Family::VARIANTS.iter().filter(|&&to| to != from) {
+                let fresh = mount(LayerId::ROOT, from, rect(), bands());
+                assert!(fresh.is_identity());
+                let Switch::Fresh(next) = switch(fresh, to, bands()) else {
+                    panic!("{from:?} -> {to:?}: an identity should switch free");
+                };
+                assert_eq!(next.family(), to);
+                assert!(next.is_identity());
+            }
+        }
     }
 
     /// **The four transitions that rested on a fall-through.** A homography is not

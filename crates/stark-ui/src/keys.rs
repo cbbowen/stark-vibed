@@ -41,6 +41,22 @@ pub struct Mods {
 }
 
 impl Mods {
+    /// The held modifiers' names, in the one order both tables spell a chord in —
+    /// Ctrl, Shift, Alt — so one keystroke does not read two ways in one app depending
+    /// on which table is describing it.
+    ///
+    /// "Ctrl" names the accelerator on every platform, as the menu always has: a ⌘ on
+    /// the one platform that draws it is a presentation question, not a binding one.
+    pub fn names(self) -> impl Iterator<Item = &'static str> {
+        [
+            (self.ctrl, "Ctrl"),
+            (self.shift, "Shift"),
+            (self.alt, "Alt"),
+        ]
+        .into_iter()
+        .filter_map(|(held, name)| held.then_some(name))
+    }
+
     /// Whether nothing is held.
     ///
     /// A press with no modifier on the primary button is never a chord the drag
@@ -214,6 +230,48 @@ impl<A: Copy + PartialEq, C: PartialEq> Overrides<A, C> {
             .iter()
             .find(|(_, c)| c.as_ref().is_some_and(&hit))
             .map(|(a, _)| *a)
+    }
+
+    /// The chord the chrome should advertise for `action`, over the shipped rows
+    /// `defaults`: its override, or its first default row still standing. `None` is an
+    /// act nothing can reach — never bound, or rebound away.
+    ///
+    /// The other half of [`resolve`](Self::resolve), and the two must agree: whatever
+    /// this advertises for an action, resolving that chord answers with the action.
+    pub(crate) fn advertised(
+        &self,
+        action: A,
+        defaults: impl IntoIterator<Item = (C, A)>,
+    ) -> Option<C>
+    where
+        C: Clone,
+    {
+        if let Some(chord) = self.get(action) {
+            return chord.clone();
+        }
+        defaults
+            .into_iter()
+            .find(|(chord, a)| *a == action && !self.taken(chord))
+            .map(|(chord, _)| chord)
+    }
+
+    /// The action an input asks for, over the shipped rows `defaults`, where `hit` is
+    /// whether a chord matches that input. Overrides answer first — they can never
+    /// disagree with each other ([`rebind`](Self::rebind) steals a colliding chord) —
+    /// and a default row answers only while its action is untouched and its chord
+    /// unclaimed.
+    pub(crate) fn resolve(
+        &self,
+        defaults: impl IntoIterator<Item = (C, A)>,
+        hit: impl Fn(&C) -> bool,
+    ) -> Option<A> {
+        if let Some(action) = self.claimant(&hit) {
+            return Some(action);
+        }
+        defaults
+            .into_iter()
+            .find(|(chord, action)| !self.overridden(*action) && !self.taken(chord) && hit(chord))
+            .map(|(_, action)| action)
     }
 
     /// Give `action` the chord as its whole binding. If another override held that

@@ -190,7 +190,7 @@ pub struct Prefs {
     pub minimal: bool,
     /// Whether the chrome gets out of the way while you paint, and for how long
     /// (§11). Not a `bool`, and the one preference here that is not: the two
-    /// mechanisms behind it are three states, not four (`layout::ChromeHiding`).
+    /// mechanisms behind it are three states, not four ([`ChromeHiding`]).
     pub chrome_hiding: ChromeHiding,
     /// Whether collaborators' selections are outlined alongside your own (§17.3).
     pub show_peer_selections: bool,
@@ -198,7 +198,7 @@ pub struct Prefs {
     ///
     /// The switch alone lives here. What the tour has *learned* about this browser —
     /// the tally of deeds, the lessons already given — is a table of its own
-    /// (`crate::tutor`), because it is a record of what happened rather than a
+    /// (the web frontend's `tutor`, §24), because it is a record of what happened rather than a
     /// choice anybody made, and because turning the tour off and on again must not
     /// be a way to lose it.
     pub tips: bool,

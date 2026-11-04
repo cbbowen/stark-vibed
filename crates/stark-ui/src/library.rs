@@ -1,9 +1,9 @@
 //! What a **browser-held asset library** is made of — the parts both of them share.
 //!
-//! There are two, and both are a frontend's (`library` in the web one):
+//! There are two, both declared in [`crate::assets`]:
 //! the brush stamps a user brought in (§6.6) and the canvas substrates (§6.4). They are the same object twice over. An
 //! entry is a canonical image keyed by its content id, the id is the whole of the
-//! reference, the rows go to `localStorage` and the bytes to the blob store beside
+//! reference, the rows go to the client's store and the bytes to the blob store beside
 //! them (§25.6), and each is shown as a card the size of a fingernail.
 //!
 //! What differs is what the card is a **picture of**, and that is the one thing left
@@ -33,8 +33,8 @@ pub const THUMB_DIM: u32 = 128;
 /// An id *names* a field (§19), so a thumbnail is a pure function of the id and of
 /// which library is drawing it: there is no invalidation to get wrong and nothing to
 /// evict. Scanned by `PartialEq` over a `Vec` rather than hashed, like
-/// `Renderer::builtins` and the frontend's `thumbs::lookup` — the list is as long as the user
-/// has entries.
+/// [`desk::Loaded`](crate::desk::Loaded) and the web frontend's `thumbs::lookup` — the
+/// list is as long as the user has entries.
 ///
 /// **One per library, never shared.** See the module note: two readings of one PNG
 /// land on one id and two different pictures.
@@ -102,6 +102,12 @@ impl<T: Clone> Default for Thumbs<T> {
 /// Box-average a single-channel field down by the smallest integer factor that brings
 /// both edges within [`THUMB_DIM`]; `factor == 1` returns it unchanged.
 ///
+/// **An edge never reduces to nothing.** A sliver — a 4×1024 stamp is a legal one —
+/// has a short edge under the factor its long edge asks for, and a plain `w / factor`
+/// would make it a card zero texels wide: one frontend's encoder refuses that and the
+/// other uploads an empty texture. So each edge keeps at least one texel, and a box
+/// that runs off the field averages only the texels it covers.
+///
 /// The same reduction `stark_assetid` applies at the identity cap, written again here
 /// rather than reached for: that one is part of what an id *means* (§19) and is frozen
 /// at its own limit, and this one is a picture for a 52-px card. Sharing the function
@@ -112,18 +118,19 @@ pub fn reduce(field: stark_assetid::Canonical) -> stark_assetid::Canonical {
     if factor == 1 {
         return field;
     }
-    let (nw, nh) = (w / factor, h / factor);
-    let area = factor * factor;
+    let (nw, nh) = ((w / factor).max(1), (h / factor).max(1));
     let mut texels = vec![0u8; (nw * nh) as usize];
     for y in 0..nh {
+        let ys = y * factor..((y + 1) * factor).min(h);
         for x in 0..nw {
+            let xs = x * factor..((x + 1) * factor).min(w);
             let mut sum = 0u32;
-            for dy in 0..factor {
-                for dx in 0..factor {
-                    let i = ((y * factor + dy) * w + (x * factor + dx)) as usize;
-                    sum += field.texels[i] as u32;
+            for sy in ys.clone() {
+                for sx in xs.clone() {
+                    sum += field.texels[(sy * w + sx) as usize] as u32;
                 }
             }
+            let area = ys.len() as u32 * xs.len() as u32;
             texels[(y * nw + x) as usize] = (sum / area) as u8;
         }
     }
@@ -150,9 +157,28 @@ pub fn display_name(file_name: &str, fallback: &str) -> String {
     }
 }
 
+/// The first `"{noun} N"`, counting from 1, that `taken` does not answer yes to — the
+/// name a library row gets when nobody typed one. One rule for every named library
+/// (presets, gradients), so a second library cannot come to count from 0 or spell the
+/// number differently.
+pub fn free_name(noun: &str, taken: impl Fn(&str) -> bool) -> String {
+    (1..)
+        .map(|i| format!("{noun} {i}"))
+        .find(|n| !taken(n))
+        .expect("an unbounded count always reaches a free name")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The count starts at 1 and skips exactly the names already taken.
+    #[test]
+    fn a_free_name_skips_the_taken_ones() {
+        assert_eq!(free_name("Preset", |_| false), "Preset 1");
+        let taken = ["Gradient 1", "Gradient 3"];
+        assert_eq!(free_name("Gradient", |n| taken.contains(&n)), "Gradient 2");
+    }
 
     /// A field arrives capped at the identity contract's own limit and leaves here at
     /// a card's size — the reduction is what keeps a data URL out of the DOM at a
@@ -169,6 +195,24 @@ mod tests {
         assert!(
             small.texels.iter().all(|&t| t == 128),
             "a flat field stays flat"
+        );
+    }
+
+    /// A sliver keeps a texel on its short edge rather than reducing to a card with
+    /// no width, and that texel is the average of what the sliver actually holds.
+    #[test]
+    fn a_sliver_keeps_its_short_edge() {
+        let sliver = stark_assetid::Canonical {
+            width: 4,
+            height: 1024,
+            texels: vec![200; 4 * 1024],
+        };
+        let small = reduce(sliver);
+        assert_eq!((small.width, small.height), (1, 128));
+        assert!(
+            small.texels.iter().all(|&t| t == 200),
+            "{:?}",
+            &small.texels[..4]
         );
     }
 

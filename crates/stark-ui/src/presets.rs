@@ -52,7 +52,7 @@ pub struct PresetEntry {
     /// Whether this is one of the app's own presets rather than the user's.
     ///
     /// Never stored: it is *provenance*, set where the entry is made — true in
-    /// a frontend's `default_presets`, false where a [`StoredPreset`] becomes one — so it cannot
+    /// [`shipped`], false where a [`StoredPreset`] becomes one — so it cannot
     /// disagree with where the entry actually came from. What it decides is the row's
     /// last control (a lock, not a trash) and whether storage ever sees the entry.
     pub builtin: bool,
@@ -421,10 +421,7 @@ pub fn is_builtin(entries: &[PresetEntry], name: &str) -> bool {
 /// The first free "Preset N" name — the default for a save with the name field
 /// left empty.
 pub fn next_name(entries: &[PresetEntry]) -> String {
-    (1..)
-        .map(|i| format!("Preset {i}"))
-        .find(|n| !entries.iter().any(|e| &e.name == n))
-        .unwrap()
+    crate::library::free_name("Preset", |n| find(entries, n).is_some())
 }
 
 /// The library's entry called `name`, if it still has one.
@@ -605,7 +602,7 @@ pub fn remove(entries: &mut Vec<PresetEntry>, name: &str) -> bool {
 // are written and which two fields are not:
 //
 // The app's own presets are filtered out on the way in and out, which is what makes
-// them updatable at all — there is one copy of a built-in, in `default_presets`, so
+// them updatable at all — there is one copy of a built-in, in `shipped`, so
 // there is nothing stale for a new version to disagree with. Neither of their two
 // extra fields is stored: `slot` belongs to the definition and `builtin` is
 // provenance, and a stored copy of either would be a second opinion about a question

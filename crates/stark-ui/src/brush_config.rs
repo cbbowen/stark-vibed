@@ -70,7 +70,7 @@ use stark_model::document::{
 
 // --- What the sliders offer, and what a drag clamps against ---
 //
-// These three sat in the web frontend's Brush *panel* until the second frontend
+// These sat in the web frontend's Brush *panel* until the second frontend
 // arrived, which is the wrong place for a reason that only shows with two: a
 // markup module cannot be a shared authority, and the drag that reads them
 // (§18.1.9) is not the slider that displays them. `BrushConfig::max_flow` below
@@ -109,8 +109,8 @@ pub fn step_size(size: f32, factor: f32) -> f32 {
 ///
 /// Named beside the radius bounds because the *drag* bindings clamp against the same
 /// three figures (a frontend's brush-tuning drag, §18.1.9): a knob reachable two ways must have one
-/// range, or the drag would quietly go somewhere the slider cannot show. Every
-/// reader now goes through [`BrushConfig::max_flow`], which is where the one
+/// range, or the drag would quietly go somewhere the slider cannot show. A reader that
+/// means *this brush's* ceiling asks [`BrushConfig::max_flow`], which is where the one
 /// effect whose rate has a ceiling of its own — the liquify strength (§6.13) —
 /// substitutes it.
 pub const MAX_FLOW: f32 = 3.0;

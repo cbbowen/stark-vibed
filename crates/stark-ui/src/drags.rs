@@ -13,8 +13,8 @@
 //! Chords are **exact** about their modifiers, exactly as the keyboard's are
 //! ([`Mods`]): Ctrl+Alt+drag is not the Ctrl row with a bystanding Alt, it is an
 //! unbound chord, and an unbound chord's press falls through to what an unmodified
-//! press does — painting. Unlike the keyboard table, **Alt is nameable here**: the
-//! chord table refuses it because AltGr arrives as Ctrl+Alt and a layout types
+//! press does — painting. **Alt is nameable here, Ctrl+Alt included**: the chord
+//! table ships no Ctrl+Alt row, because AltGr arrives as Ctrl+Alt and a layout types
 //! *through* it, but a drag types nothing, so the trap has nothing to spring on.
 
 use serde::{Deserialize, Serialize};
@@ -61,20 +61,12 @@ pub struct DragChord {
 /// A chord spelled out for the chrome — a settings row's chip, a preset card's
 /// line.
 ///
-/// "Ctrl" names the accelerator on every platform, as `commands::chord_label`
-/// does and for its reason: which glyph a Mac draws is a presentation question,
-/// not a binding one.
+/// The modifiers are [`Mods::names`], in the order the chord table spells its own.
 pub fn chord_label(chord: DragChord) -> String {
     let mut s = String::new();
-    for (held, name) in [
-        (chord.mods.ctrl, "Ctrl"),
-        (chord.mods.shift, "Shift"),
-        (chord.mods.alt, "Alt"),
-    ] {
-        if held {
-            s.push_str(name);
-            s.push_str(" + ");
-        }
+    for name in chord.mods.names() {
+        s.push_str(name);
+        s.push_str(" + ");
     }
     s.push_str(chord.button.word());
     s
@@ -147,30 +139,15 @@ impl DragBindings {
     /// default row if that row is still standing. `None` is an act no press can
     /// reach — never bound, or rebound away.
     pub fn of(&self, action: DragAction) -> Option<DragChord> {
-        if let Some(chord) = self.overrides.get(action) {
-            return *chord;
-        }
-        defaults()
-            .find(|(chord, a)| *a == action && !self.overrides.taken(chord))
-            .map(|(chord, _)| chord)
+        self.overrides.advertised(action, defaults())
     }
 
     /// The action a chord asks for, if any — the policy half, taken apart from
-    /// the DOM event the way `Bindings::lookup` is so a test can reach it.
-    ///
-    /// Overrides answer first, and can never disagree with each other
-    /// ([`rebind`](Self::rebind) steals a colliding chord); a default row
-    /// answers only while its action is untouched and its chord unclaimed.
+    /// the platform event the way `Bindings::lookup` is so a test can reach it
+    /// (`Overrides::resolve`).
     pub fn lookup(&self, mods: Mods, button: DragButton) -> Option<DragAction> {
         let chord = DragChord { mods, button };
-        if let Some(action) = self.overrides.claimant(|c| *c == chord) {
-            return Some(action);
-        }
-        defaults()
-            .find(|(c, action)| {
-                !self.overrides.overridden(*action) && !self.overrides.taken(c) && *c == chord
-            })
-            .map(|(_, action)| action)
+        self.overrides.resolve(defaults(), |c| *c == chord)
     }
 
     /// Give `action` the chord as its whole binding, stealing it from any other
@@ -448,7 +425,7 @@ impl DragAction {
     }
 
     /// The one sentence a settings row owes: what the drag does, in the terms
-    /// the hand has (`crate::settings`' rule for a row).
+    /// the hand has (the web frontend's `settings` rule for a row).
     pub fn hint(self) -> &'static str {
         match self {
             DragAction::TuneBrush => {
