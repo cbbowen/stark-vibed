@@ -280,10 +280,10 @@ fn knob_rows<F: Copy + 'static>(
                 min: knob.range.0,
                 max: knob.range.1,
                 step: knob.step,
-                value: (knob.get)(&current) / knob.scale,
+                value: knob.value(&current),
                 preview: preview::FILTER,
                 pending: tuning,
-                map: move |v: f32| Some((id, wrap((knob.set)(current, v * knob.scale)))),
+                map: move |v: f32| Some((id, wrap(knob.with(current, v)))),
             }
         }
     }

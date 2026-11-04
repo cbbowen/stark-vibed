@@ -41,6 +41,10 @@ pub struct FilterKnob<F: 'static> {
     /// Engine units per display unit: `1 / DEG` for an angle, whose track is in degrees
     /// while the engine holds radians (§21.5), and 1 for the rest. Translating here keeps
     /// how an angle is *presented* out of the log.
+    ///
+    /// Applied by [`value`](Self::value), [`with`](Self::with) and
+    /// [`readout`](Self::readout), which are what a bar reads and writes through; `get`
+    /// and `set` are in **engine** units and are the table's, not a caller's.
     pub scale: f32,
     pub get: fn(&F) -> f32,
     pub set: fn(F, f32) -> F,
@@ -50,9 +54,24 @@ pub struct FilterKnob<F: 'static> {
 }
 
 impl<F: 'static> FilterKnob<F> {
+    /// Where the track sits for `settings`, in display units — what [`range`](Self::range)
+    /// and [`step`](Self::step) are stated in.
+    pub fn value(&self, settings: &F) -> f32 {
+        (self.get)(settings) / self.scale
+    }
+
+    /// `settings` with this knob at `v`, a display-unit value off the track.
+    ///
+    /// The inverse of [`value`](Self::value), so a bar that writes back what it read
+    /// moves nothing — which is what keeps the unit conversion a fact about the knob
+    /// rather than a sum each frontend has to get right in both directions.
+    pub fn with(&self, settings: F, v: f32) -> F {
+        (self.set)(settings, v * self.scale)
+    }
+
     /// The number beside the track for `settings`.
     pub fn readout(&self, settings: &F) -> String {
-        (self.fmt)((self.get)(settings) / self.scale)
+        (self.fmt)(self.value(settings))
     }
 }
 
@@ -617,6 +636,46 @@ mod tests {
         assert!((next.angle - c.angle).abs() < 1e-4);
         let stepped = pad_drag(c, pad_xy(c), true);
         assert_eq!(stepped.spread, 20.0);
+    }
+
+    /// Every knob of every table writes and reads back the display-unit value it was
+    /// given, at both ends of its track and in between — so a track's unit, its range
+    /// and the parameter it moves are one fact.
+    #[test]
+    fn every_knob_reads_back_what_it_wrote() {
+        fn round_trip<F: Copy + 'static>(knobs: &[FilterKnob<F>], settings: F) {
+            for knob in knobs {
+                let (lo, hi) = knob.range;
+                for v in [lo, lo + (hi - lo) * 0.25, hi] {
+                    let v = knob.step.map_or(v, |s| lo + ((v - lo) / s).round() * s);
+                    let got = knob.value(&knob.with(settings, v));
+                    assert!(
+                        (got - v).abs() <= 1e-3 * (hi - lo).abs().max(1.0),
+                        "{}: wrote {v}, read back {got}",
+                        knob.name
+                    );
+                }
+            }
+        }
+        round_trip(COLOR_KNOBS, ColorAdjust::default());
+        for aperture in [
+            Aperture::Disc { obstruction: 0.0 },
+            Aperture::Blades {
+                count: 6,
+                angle: 0.0,
+            },
+            Aperture::Oval {
+                squeeze: 1.0,
+                angle: 0.0,
+            },
+        ] {
+            let blur = FocalBlur {
+                radius: 4.0,
+                aperture,
+            };
+            round_trip(BLUR_KNOBS, blur);
+            round_trip(aperture_knobs(&aperture), blur);
+        }
     }
 
     /// How close two px positions or two Oklab coordinates have to be to count as the
