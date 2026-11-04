@@ -6,7 +6,7 @@
 use crate::common::collab::{pair, snap, sync, sync_into};
 use crate::common::palette::{BLUE_VIVID, GREEN_SOFT, RED_VIVID};
 use crate::common::{
-    Probe, assert_images, assert_images_differ, engine_or_skip, paint, whole_render,
+    Probe, add_layer, assert_images, assert_images_differ, engine_or_skip, paint, whole_render,
 };
 use stark_engine::command::{DocCommand, PeerCommand};
 use stark_model::document::ActorId;
@@ -385,21 +385,13 @@ fn re_sharing_a_document_does_not_re_mint_a_layer_id() {
     };
 
     a.start_collaboration(ActorId(1));
-    a.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
-    let first = a.observe().active_layer;
+    let first = add_layer(&mut a);
 
     // The same browser sharing the same painting again: `leave` kept the canvas, and
     // the identity that comes back is the one that just left.
     a.end_collaboration();
     a.start_collaboration(ActorId(1));
-    a.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
-    let second = a.observe().active_layer;
+    let second = add_layer(&mut a);
 
     assert_ne!(
         first, second,
@@ -422,10 +414,7 @@ fn re_sharing_a_document_does_not_re_mint_a_layer_id() {
     };
     reopened.load_bytes(&bytes).expect("load it back");
     reopened.start_collaboration(ActorId(1));
-    reopened.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
+    add_layer(&mut reopened);
     assert!(
         !ids.contains(&reopened.observe().active_layer),
         "sharing a reopened file minted an id the file already holds"
@@ -453,11 +442,7 @@ fn a_remote_merge_down_does_not_strand_the_active_layer() {
         12.0,
         &[Vec2::new(40.0, 128.0), Vec2::new(216.0, 128.0)],
     );
-    a.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
-    let top = a.observe().active_layer;
+    let top = add_layer(&mut a);
     paint(
         &mut a,
         GREEN_SOFT,

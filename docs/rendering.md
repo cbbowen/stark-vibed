@@ -882,7 +882,7 @@ pub trait ColorSpace {
 A document has one color space (`CanvasMeta.color_space`), so its residual and
 shaders are fixed per document and chosen at engine construction. Pass A is
 generic; the tile formats and the blends a deposit lands by are every space's
-(`gpu::channels`), and only the residual and the shader builds are space-specific.
+(`device::channels`), and only the residual and the shader builds are space-specific.
 
 **`OkLabColorSpace`** — `color = Rgba16Float` holding premultiplied
 `(L, a, b, coverage)`, `aux = R16Float (height)`, premultiplied-"over" color

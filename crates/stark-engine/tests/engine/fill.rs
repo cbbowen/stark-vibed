@@ -21,22 +21,10 @@ use stark_model::document::{
 };
 use stark_model::geom::Vec2;
 
-/// Whether the pixel at a canvas point reads as red paint rather than bare paper.
-/// Whether two texels show the same paint. "The same" is within one code per
-/// channel: the display encode dithers each pixel's rounding independently
-/// (§6.5), so two screen pixels of identical paint may legitimately land one
-/// code apart.
-fn same_paint(a: [i32; 3], b: [i32; 3]) -> bool {
-    a.iter().zip(b).all(|(x, y)| (x - y).abs() <= 1)
-}
-
-fn is_red(img: &RgbaImage, canvas: Vec2) -> bool {
-    painted(img, canvas)
-}
-
-fn is_green(img: &RgbaImage, canvas: Vec2) -> bool {
-    leads(texel(img, canvas), Lead::Green, MARGIN_FLAT)
-}
+/// How far apart two texels of the same paint may read: one code per channel, since
+/// the display encode dithers each pixel's rounding independently (§6.5), so two
+/// screen pixels of identical paint may legitimately land one code apart.
+const SAME_PAINT: i32 = 1;
 
 /// Arm the Fill action with a red brush. A fill lays *the brush's color*, so
 /// that much still comes off the Color panel; how far it covers is the Select
@@ -71,13 +59,13 @@ fn a_fill_lays_paint_inside_its_region_and_nothing_outside() {
     );
     let after = engine.render_to_image();
 
-    assert!(is_red(&after, Vec2::ZERO), "the region should be filled");
+    assert!(painted(&after, Vec2::ZERO), "the region should be filled");
     assert!(
-        is_red(&after, Vec2::new(-35.0, 35.0)),
+        painted(&after, Vec2::new(-35.0, 35.0)),
         "and filled to its corners"
     );
     assert!(
-        !is_red(&after, Vec2::new(80.0, 80.0)),
+        !painted(&after, Vec2::new(80.0, 80.0)),
         "paint outside the region"
     );
     // Far outside, the image must be bit-for-bit what it was: the shader's
@@ -115,9 +103,9 @@ fn the_selection_bounds_the_fill() {
     );
     let img = engine.render_to_image();
 
-    assert!(is_red(&img, Vec2::ZERO), "inside the selection");
+    assert!(painted(&img, Vec2::ZERO), "inside the selection");
     assert!(
-        !is_red(&img, Vec2::new(60.0, 60.0)),
+        !painted(&img, Vec2::new(60.0, 60.0)),
         "the fill escaped the selection"
     );
 }
@@ -152,8 +140,8 @@ fn filling_the_selection_needs_one_and_is_otherwise_refused() {
         op: FillOp::of_selection(Srgb::new(RED)),
     }));
     let filled = engine.render_to_image();
-    assert!(is_red(&filled, Vec2::ZERO));
-    assert!(!is_red(&filled, Vec2::new(70.0, 70.0)));
+    assert!(painted(&filled, Vec2::ZERO));
+    assert!(!painted(&filled, Vec2::new(70.0, 70.0)));
 }
 
 #[test]
@@ -167,8 +155,8 @@ fn a_fill_stacks_over_resident_paint_rather_than_replacing_it() {
         20.0,
         &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
     );
-    let painted = engine.render_to_image();
-    assert!(is_green(&painted, Vec2::ZERO));
+    let under = engine.render_to_image();
+    assert!(painted_green(&under, Vec2::ZERO));
 
     // A wash at a twentieth: a glaze, which must tint rather than cover. The
     // parcel law is the brush's own (`paint_common.wesl`), so this is the same
@@ -184,13 +172,13 @@ fn a_fill_stacks_over_resident_paint_rather_than_replacing_it() {
     );
     let glazed = engine.render_to_image();
     let [gr, gg, _] = texel(&glazed, Vec2::ZERO);
-    let [pr, pg, _] = texel(&painted, Vec2::ZERO);
+    let [pr, pg, _] = texel(&under, Vec2::ZERO);
     assert!(
         gr > pr,
         "a thin red glaze should warm what is under it (was {pr},{pg} now {gr},{gg})"
     );
     assert!(
-        is_green(&glazed, Vec2::ZERO),
+        painted_green(&glazed, Vec2::ZERO),
         "a thin glaze covered the paint underneath it entirely \
          (was {pr},{pg} now {gr},{gg})"
     );
@@ -205,7 +193,7 @@ fn a_fill_stacks_over_resident_paint_rather_than_replacing_it() {
         1.0,
     );
     assert!(
-        is_red(&engine.render_to_image(), Vec2::ZERO),
+        painted(&engine.render_to_image(), Vec2::ZERO),
         "a thick fill should cover what is under it"
     );
 }
@@ -300,7 +288,7 @@ fn the_gesture_path_fills_and_leaves_the_tool_armed() {
     drag_fill(&mut engine, Vec2::new(-40.0, -40.0), Vec2::new(40.0, 40.0));
 
     assert!(
-        is_red(&engine.render_to_image(), Vec2::ZERO),
+        painted(&engine.render_to_image(), Vec2::ZERO),
         "the gesture laid no paint"
     );
     // The point of the test: unlike the four selecting actions, Fill does *not*
@@ -353,7 +341,7 @@ fn the_drag_previews_the_paint_it_will_commit() {
     // paint would go.
     let previewed = engine.render_to_image();
     assert!(
-        is_red(&previewed, Vec2::ZERO),
+        painted(&previewed, Vec2::ZERO),
         "the fill preview showed no paint"
     );
 
@@ -419,7 +407,7 @@ fn undo_restores_exactly_what_the_fill_covered() {
         0.0,
         1.0,
     );
-    assert!(is_red(&engine.render_to_image(), Vec2::ZERO));
+    assert!(painted(&engine.render_to_image(), Vec2::ZERO));
 
     engine.process(DocCommand::Undo);
     let after = engine.render_to_image();
@@ -445,7 +433,7 @@ fn a_filled_region_can_be_scraped_back_by_a_lift_brush() {
         0.6,
     );
     let filled = engine.render_to_image();
-    assert!(is_red(&filled, Vec2::ZERO));
+    assert!(painted(&filled, Vec2::ZERO));
 
     // The whole argument for a fill depositing *paint* rather than a flat color:
     // what it lays has an amount, so the wet-paint loop can pick it up again. A
@@ -473,7 +461,7 @@ fn a_filled_region_can_be_scraped_back_by_a_lift_brush() {
         &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
     );
     assert!(
-        !is_red(&engine.render_to_image(), Vec2::ZERO),
+        !painted(&engine.render_to_image(), Vec2::ZERO),
         "a lift brush could not scrape the fill back — it is not paint"
     );
 }
@@ -549,10 +537,6 @@ fn red_blue() -> Gradient {
     gradient(&[(0.0, RED), (1.0, BLUE_SOFT)])
 }
 
-fn is_blue(img: &RgbaImage, canvas: Vec2) -> bool {
-    leads(texel(img, canvas), Lead::Blue, MARGIN_FLAT)
-}
-
 /// Commit a gradient fill of the rect `min..max`, through the direct command path.
 fn gradient_fill_rect(
     engine: &mut stark_engine::Engine,
@@ -598,16 +582,16 @@ fn a_linear_gradient_fill_ramps_along_its_axis_and_clamps_past_it() {
     );
     let img = engine.render_to_image();
     assert!(
-        is_red(&img, Vec2::new(-50.0, 0.0)),
+        painted(&img, Vec2::new(-50.0, 0.0)),
         "the axis starts on red"
     );
-    assert!(is_blue(&img, Vec2::new(50.0, 0.0)), "and ends on blue");
+    assert!(painted_blue(&img, Vec2::new(50.0, 0.0)), "and ends on blue");
     assert!(
-        is_red(&img, Vec2::new(-80.0, 0.0)),
+        painted(&img, Vec2::new(-80.0, 0.0)),
         "before the axis the ramp holds its first stop"
     );
     assert!(
-        is_blue(&img, Vec2::new(80.0, 0.0)),
+        painted_blue(&img, Vec2::new(80.0, 0.0)),
         "past the axis it holds its last"
     );
     // Constant on perpendiculars: the ramp is a function of the axis alone.
@@ -616,7 +600,7 @@ fn a_linear_gradient_fill_ramps_along_its_axis_and_clamps_past_it() {
         texel(&img, Vec2::new(-50.0, 20.0)),
     );
     assert!(
-        same_paint(above, below),
+        apart(above, below) <= SAME_PAINT,
         "perpendicular offsets read the same ramp position: {above:?} vs {below:?}"
     );
     // And the middle is a mixture, not either end.
@@ -650,9 +634,9 @@ fn a_radial_gradient_fill_rings_outward() {
         0.7,
     );
     let img = engine.render_to_image();
-    assert!(is_red(&img, Vec2::ZERO), "the centre is the first stop");
+    assert!(painted(&img, Vec2::ZERO), "the centre is the first stop");
     assert!(
-        is_blue(&img, Vec2::new(70.0, 0.0)),
+        painted_blue(&img, Vec2::new(70.0, 0.0)),
         "past the radius the ramp holds its last stop"
     );
     let (east, south) = (
@@ -660,7 +644,7 @@ fn a_radial_gradient_fill_rings_outward() {
         texel(&img, Vec2::new(0.0, 30.0)),
     );
     assert!(
-        same_paint(east, south),
+        apart(east, south) <= SAME_PAINT,
         "the ramp is a function of distance alone: {east:?} vs {south:?}"
     );
 }

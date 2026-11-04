@@ -121,7 +121,7 @@ pub(crate) fn tile_bind_group<'a>(
     handle.composite_bg(|| {
         // The layout carries the residual slot exactly when the space has one (§6.7),
         // and every tile of such a document has one — the space decides once, at
-        // `acquire_tile`.
+        // `acquire_channels`.
         bgl.group(device, "stark composite tile bg", |i| {
             let v = match i {
                 cb::TILE_COLOR => handle.color_view(),
@@ -1247,7 +1247,7 @@ impl Compositor {
     /// Once, and not merely as an optimization: the streams write into one buffer
     /// apiece on this `Compositor`, and `write_buffer` is a queue operation, so N
     /// uploads before one submit would leave every patch drawing the last one's
-    /// records (`gpu::uniforms`).
+    /// records ([`device::uniforms`](crate::device::uniforms)).
     ///
     /// Every view must be the same size, and differ from the others in position alone
     /// (`pick::patch_view`): the only thing the draws read a view for is the chromatic

@@ -106,7 +106,7 @@ impl BlendPass {
             (blend.vs_main, blend.fs_main),
             &targets,
         );
-        let pigment = PigmentLut::of(ctx, blend.fs_main, bmd::PIGMENT_LUT);
+        let pigment = PigmentLut::of(ctx, &[stages], bmd::PIGMENT_LUT);
         Self {
             pipeline,
             bgls,

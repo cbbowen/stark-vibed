@@ -342,7 +342,7 @@ mod tests {
     ///
     /// The one lossy step between a file and a tile is the `f32 → f16` write, and the
     /// signed encoder is what carries an Oklab latent's `a` and `b` axes through it
-    /// (see `gpu::half`). A red that comes back green is that encoder gone wrong.
+    /// (see [`device::half`](crate::device::half)). A red that comes back green is that encoder gone wrong.
     #[test]
     fn a_color_survives_the_half_float_store() {
         let space = OkLabColorSpace;

@@ -13,14 +13,14 @@
 use crate::common::collab::{pair, snap, sync};
 use crate::common::palette::{GREEN_SOFT, RED};
 use crate::common::{
-    Gesture, Lead, MARGIN_FLAT, Probe, assert_images, assert_images_differ, engine_or_skip, leads,
-    paint, texel,
+    Gesture, Probe, add_layer, assert_images, assert_images_differ, engine_or_skip, paint, painted,
+    painted_green,
 };
+use stark_engine::Engine;
 use stark_engine::command::Tool;
 use stark_engine::command::{
     DocCommand, Edit, GestureCommand, InputSample, PeerCommand, ViewCommand,
 };
-use stark_engine::{Engine, RgbaImage};
 use stark_model::Srgb;
 use stark_model::document::{
     ActorId, BrushDynamics, BrushEffect, BrushParams, LayerId, ToothParams,
@@ -43,13 +43,6 @@ fn select_left(engine: &mut Engine) {
         SelectionShape::rect_from_corners(LEFT_MIN, LEFT_MAX),
         0.0,
     )));
-}
-
-/// Whether the pixel at a canvas point reads as this file's red paint rather than as
-/// bare paper — the mirror of [`is_green`], at the same margin, so a test that asks one
-/// about actor A's stroke and the other about actor B's is asking one question.
-fn is_painted(img: &RgbaImage, canvas: Vec2) -> bool {
-    leads(texel(img, canvas), Lead::Red, MARGIN_FLAT)
 }
 
 /// **The defect this design exists to fix.** One collaborator's selection must not
@@ -80,11 +73,11 @@ fn one_peers_selection_does_not_clip_anothers_stroke() {
     for (name, engine) in [("author", &mut b), ("peer", &mut a)] {
         let img = snap(engine);
         assert!(
-            is_painted(&img, Vec2::new(-60.0, 0.0)),
+            painted(&img, Vec2::new(-60.0, 0.0)),
             "{name}: inside A's selection"
         );
         assert!(
-            is_painted(&img, Vec2::new(60.0, 0.0)),
+            painted(&img, Vec2::new(60.0, 0.0)),
             "{name}: outside A's selection — B is unmasked, so this must be painted"
         );
     }
@@ -106,11 +99,11 @@ fn a_peers_stroke_is_reproduced_through_the_authors_own_mask() {
     for (name, engine) in [("author", &mut a), ("peer", &mut b)] {
         let img = snap(engine);
         assert!(
-            is_painted(&img, Vec2::new(-60.0, 0.0)),
+            painted(&img, Vec2::new(-60.0, 0.0)),
             "{name}: inside A's own selection"
         );
         assert!(
-            !is_painted(&img, Vec2::new(60.0, 0.0)),
+            !painted(&img, Vec2::new(60.0, 0.0)),
             "{name}: outside A's own selection — the author's mask must gate it"
         );
     }
@@ -120,14 +113,9 @@ fn a_peers_stroke_is_reproduced_through_the_authors_own_mask() {
 /// gated by their own. Convergence is unaffected: both render the same canvas.
 #[test]
 fn peers_hold_independent_selections_and_still_converge() {
-    let (Some(mut a), Some(mut b), Some(mut c)) =
-        (engine_or_skip(), engine_or_skip(), engine_or_skip())
-    else {
+    let (Some((mut a, mut b)), Some(mut c)) = (pair(), engine_or_skip()) else {
         return;
     };
-    a.start_collaboration(ActorId(1));
-    b.join_collaboration(&a.document_file(), ActorId(2))
-        .expect("join a session this build can render");
 
     // A takes the left half, B the right.
     select_left(&mut a);
@@ -149,11 +137,8 @@ fn peers_hold_independent_selections_and_still_converge() {
     sync(&mut a, &mut b);
 
     let masked = snap(&mut a);
-    assert!(is_painted(&masked, Vec2::new(-60.0, 0.0)), "A's kept half");
-    assert!(
-        !is_painted(&masked, Vec2::new(60.0, 0.0)),
-        "A's clipped half"
-    );
+    assert!(painted(&masked, Vec2::new(-60.0, 0.0)), "A's kept half");
+    assert!(!painted(&masked, Vec2::new(60.0, 0.0)), "A's clipped half");
 
     // Convergence is about the *artwork*, not the chrome: the marching ants are
     // drawn for whoever's selection is in force on this client, so a peer with a
@@ -217,8 +202,8 @@ fn a_solo_document_is_unaffected() {
     assert!(engine.observe().has_selection);
     paint(&mut engine, RED, 12.0, &CROSSING);
     let img = snap(&mut engine);
-    assert!(is_painted(&img, Vec2::new(-60.0, 0.0)));
-    assert!(!is_painted(&img, Vec2::new(60.0, 0.0)));
+    assert!(painted(&img, Vec2::new(-60.0, 0.0)));
+    assert!(!painted(&img, Vec2::new(60.0, 0.0)));
 }
 
 // --- layer ids (§17.9) --------------------------------------
@@ -234,16 +219,8 @@ fn concurrent_layer_adds_do_not_collide() {
         return;
     };
 
-    a.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
-    b.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
-    let id_a = a.observe().active_layer;
-    let id_b = b.observe().active_layer;
+    let id_a = add_layer(&mut a);
+    let id_b = add_layer(&mut b);
     assert_ne!(id_a, id_b, "concurrent adds minted the same layer id");
 
     sync(&mut a, &mut b);
@@ -267,16 +244,9 @@ fn solo_layer_ids_are_the_actions_that_minted_them() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let add = |e: &mut stark_engine::Engine| {
-        e.process(DocCommand::AddLayer {
-            carrier: None,
-            above: None,
-        });
-        e.observe().active_layer
-    };
     // A fresh document has committed nothing, so the first add is the first action.
-    assert_eq!(add(&mut engine), LayerId::solo(0));
-    assert_eq!(add(&mut engine), LayerId::solo(1));
+    assert_eq!(add_layer(&mut engine), LayerId::solo(0));
+    assert_eq!(add_layer(&mut engine), LayerId::solo(1));
     // The root predates every action and is the one id no action mints.
     assert_eq!(LayerId::ROOT.k, u32::MAX);
     assert_ne!(LayerId::ROOT, LayerId::solo(0));
@@ -291,12 +261,8 @@ fn a_remote_removal_repoints_the_active_layer() {
         return;
     };
 
-    a.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
+    let added = add_layer(&mut a);
     sync(&mut a, &mut b);
-    let added = a.observe().active_layer;
 
     // B selects the new layer; A deletes it out from under them.
     b.process(PeerCommand::SetActiveLayer(added));
@@ -313,7 +279,7 @@ fn a_remote_removal_repoints_the_active_layer() {
     );
     // And painting works again, rather than silently doing nothing.
     paint(&mut b, RED, 12.0, &CROSSING);
-    assert!(is_painted(&snap(&mut b), Vec2::new(0.0, 0.0)));
+    assert!(painted(&snap(&mut b), Vec2::new(0.0, 0.0)));
 }
 
 // --- presence (§17.4) ---------------------------------------
@@ -349,7 +315,7 @@ fn a_peers_live_stroke_previews_and_the_commit_matches_it() {
 
     let preview = snap(&mut b);
     assert!(
-        is_painted(&preview, Vec2::new(0.0, 0.0)),
+        painted(&preview, Vec2::new(0.0, 0.0)),
         "B should see A's stroke while it is being drawn"
     );
 
@@ -357,7 +323,7 @@ fn a_peers_live_stroke_previews_and_the_commit_matches_it() {
     a.process(GestureCommand::End);
     sync(&mut a, &mut b);
     let committed = snap(&mut b);
-    assert!(is_painted(&committed, Vec2::new(0.0, 0.0)));
+    assert!(painted(&committed, Vec2::new(0.0, 0.0)));
     assert_images(
         &committed,
         &snap(&mut a),
@@ -538,7 +504,7 @@ fn a_silent_peer_loses_its_gesture_then_its_place() {
     };
     assert!(engine.merge_presence(ActorId(2), frame, 0.0));
     assert!(
-        is_painted(&snap(&mut engine), Vec2::new(0.0, 0.0)),
+        painted(&snap(&mut engine), Vec2::new(0.0, 0.0)),
         "a peer's live stroke should be visible"
     );
 
@@ -549,7 +515,7 @@ fn a_silent_peer_loses_its_gesture_then_its_place() {
     assert!(tick.repaint, "expiring a gesture changes the canvas");
     assert_eq!(engine.peers().count(), 1, "still on the roster");
     assert!(
-        !is_painted(&snap(&mut engine), Vec2::new(0.0, 0.0)),
+        !painted(&snap(&mut engine), Vec2::new(0.0, 0.0)),
         "a stalled gesture must stop being drawn"
     );
     let tick = engine.take_presence(stark_model::peer::PEER_TIMEOUT + 0.1);
@@ -651,12 +617,6 @@ fn a_settled_head_does_not_outlive_its_gesture() {
 const LOWER: [Vec2; 2] = [Vec2::new(20.0, 40.0), Vec2::new(110.0, 40.0)];
 const UPPER: [Vec2; 2] = [Vec2::new(20.0, 80.0), Vec2::new(110.0, 80.0)];
 
-/// [`is_painted`] for the other actor's color — the green of [`stroking`]'s brush, and
-/// of the one [`start_live_stroke`] is handed for a live peer.
-fn is_green(img: &RgbaImage, canvas: Vec2) -> bool {
-    leads(texel(img, canvas), Lead::Green, MARGIN_FLAT)
-}
-
 /// Draw this client's live stroke along `points`, and leave the pointer down.
 fn start_live_stroke(engine: &mut Engine, color: [f32; 3], points: [Vec2; 2]) {
     engine.process(ViewCommand::set_brush(crate::common::brush(color, 12.0)));
@@ -698,12 +658,12 @@ fn two_live_strokes_sharing_a_tile_are_both_shown() {
         let img = snap(&mut engine);
         let mid = |line: [Vec2; 2]| (line[0] + line[1]) * 0.5;
         assert!(
-            is_painted(&img, mid(LOWER)),
+            painted(&img, mid(LOWER)),
             "local {local:?} / peer {peer:?}: this client's own live stroke \
              must survive the peer's overlay of the tile they share"
         );
         assert!(
-            is_green(&img, mid(UPPER)),
+            painted_green(&img, mid(UPPER)),
             "local {local:?} / peer {peer:?}: the peer's live stroke must survive \
              this client's overlay of the tile they share"
         );
@@ -860,8 +820,8 @@ const FADED_LINE: Vec2 = Vec2::new(0.0, -60.0);
 /// own and holds a drag fading that layer out — a slider held still, which sends
 /// nothing more until it moves or lets go (§21.6).
 fn holding_a_drag() -> Option<(Engine, Engine, LayerId)> {
-    let (mut a, mut b) = crate::common::collab::pair()?;
-    let faded = crate::common::add_layer(&mut a);
+    let (mut a, mut b) = pair()?;
+    let faded = add_layer(&mut a);
     paint(
         &mut a,
         RED,
@@ -869,9 +829,17 @@ fn holding_a_drag() -> Option<(Engine, Engine, LayerId)> {
         &[FADED_LINE - Vec2::X * 80.0, FADED_LINE + Vec2::X * 80.0],
     );
     sync(&mut a, &mut b);
+    // Every caller asks that this line is *not* painted under the drag, which bare
+    // canvas would answer as well — so first, that there is paint there to fade.
+    for (name, engine) in [("A", &mut a), ("B", &mut b)] {
+        assert!(
+            painted(&snap(engine), FADED_LINE),
+            "{name}: A's stroke should land on its layer before the drag fades it"
+        );
+    }
     a.process(ViewCommand::Preview(Some(Edit::LayerOpacity(faded, 0.0))));
     assert!(
-        !is_painted(&snap(&mut a), FADED_LINE),
+        !painted(&snap(&mut a), FADED_LINE),
         "the drag fades A's layer"
     );
     Some((a, b, faded))
@@ -895,17 +863,17 @@ fn a_held_drag_is_refolded_over_a_peers_edit() {
 
     // B paints on the layer both started with, then adds one of its own.
     paint(&mut b, GREEN_SOFT, 12.0, &CROSSING);
-    b.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
+    add_layer(&mut b);
     sync(&mut a, &mut b);
 
     assert_eq!(a.observe().layers.len(), 3, "B's layer is in A's roster");
     assert_eq!(opacity_of(&a, faded), Some(0.0), "under A's drag");
     let img = snap(&mut a);
-    assert!(is_green(&img, Vec2::ZERO), "B's stroke shows on A mid-drag");
-    assert!(!is_painted(&img, FADED_LINE), "under A's drag");
+    assert!(
+        painted_green(&img, Vec2::ZERO),
+        "B's stroke shows on A mid-drag"
+    );
+    assert!(!painted(&img, FADED_LINE), "under A's drag");
 
     // Letting go commits the drag onto the document as it now stands.
     a.process(DocCommand::Set(Edit::LayerOpacity(faded, 0.0)));
@@ -914,7 +882,7 @@ fn a_held_drag_is_refolded_over_a_peers_edit() {
     assert_eq!(opacity_of(&b, faded), Some(0.0), "the commit reached B");
     let img = snap(&mut a);
     assert_images(&img, &snap(&mut b), 0, "the peers converge");
-    assert!(is_green(&img, Vec2::ZERO));
+    assert!(painted_green(&img, Vec2::ZERO));
 }
 
 /// **A peer's stroke after their `SetSubstrate` folds over the document it is painted
@@ -960,14 +928,14 @@ fn a_peers_stroke_on_their_new_substrate_shows_under_a_held_drag() {
         }
     }
     let img = snap(&mut a);
-    assert!(is_green(&img, mid), "B's live stroke shows on A");
-    assert!(!is_painted(&img, FADED_LINE), "under A's drag");
+    assert!(painted_green(&img, mid), "B's live stroke shows on A");
+    assert!(!painted(&img, FADED_LINE), "under A's drag");
 
     // B lifts: the live copy comes down, and the committed one takes its place.
     b.process(GestureCommand::End);
     sync(&mut a, &mut b);
     assert!(
-        is_green(&snap(&mut a), mid),
+        painted_green(&snap(&mut a), mid),
         "B's stroke outlives B's pen-up"
     );
 

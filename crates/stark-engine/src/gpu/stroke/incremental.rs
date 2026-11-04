@@ -55,22 +55,24 @@ impl<'a> Resume<'a> {
     ) -> Self {
         Self {
             prior,
-            capture: spans.range.end < crate::path::span_count(rec.path.len()),
+            capture: !spans.reaches_end(rec),
         }
     }
 }
 
-/// The kinds of cross-piece stroke state, one per path that has any — the
-/// swept deposit at full opacity carries nothing at all.
+/// The kinds of cross-piece stroke state, one per path that has any — the swept
+/// deposit only where `render_swept`'s `carries` says so, which is where that condition
+/// is stated (§6.2).
 pub(super) enum Carried {
     /// The stamp loop's state (§6.2, §6.12's pattern where it has a
-    /// canvas-local half). Boxed for size alone: three pooled leases dwarf the
-    /// erase map's header, and a `ToolState` moves through `Option::or` on
+    /// canvas-local half). Boxed for size alone: three pooled leases dwarf a
+    /// parcel carry's header, and a `ToolState` moves through `Option::or` on
     /// every fold.
     Loop(Box<LoopCarry>),
     /// The parcel an effect accumulates across pieces (`accum`): the erase pass's
-    /// (§6.12), or the swept deposit's where its coverage is scaled (§6.2) — the
-    /// settings under which that path stops being stateless.
+    /// (§6.12), or the swept deposit's under a ceiling or supersampled (§6.2) — the
+    /// condition `render_swept`'s `carries` states, under which that path stops being
+    /// stateless.
     ///
     /// Tagged with the effect because a `ParcelCarry`'s lane count is the effect's —
     /// one transparency mass against the channel trio — so a carry crossing between
@@ -194,11 +196,12 @@ pub(crate) enum Progress {
     /// The range is finished — drawn, or empty of geometry, which is the ordinary
     /// empty return — and this is what it hands on.
     Finished {
-        /// The brush state to resume with, for a stroke that runs the stamp loop.
-        /// `None` means *nothing changed* — the swept path carries no state, a range
-        /// reaching the stroke's end has no successor, and a range with no geometry
-        /// leaves the brush as it found it — so a caller holding earlier state must
-        /// keep it rather than treat this as a reset.
+        /// The state to resume with ([`Carried`]): the stamp loop's, or the parcel the
+        /// erase and — where `render_swept`'s `carries` holds — the swept deposit
+        /// accumulate. `None` means *nothing changed* — a swept range that carries
+        /// nothing, a range reaching the stroke's end has no successor, and a range
+        /// with no geometry leaves the brush as it found it — so a caller holding
+        /// earlier state must keep it rather than treat this as a reset.
         tool: Option<ToolState>,
         /// The tiles this range rewrote: every coordinate the returned map holds a
         /// fresh handle at.
@@ -340,6 +343,13 @@ impl StrokeSpans {
 
     pub(crate) fn dist(&self) -> f32 {
         self.dist
+    }
+
+    /// Whether this range runs to the end of `rec`'s path: the one question both its
+    /// consequences read — the trailing taper is drawn here (`generate_segments_in`),
+    /// and no later piece will resume what this one carries ([`Resume::of`]).
+    pub(super) fn reaches_end(&self, rec: &StrokeRecord) -> bool {
+        self.range.end >= crate::path::span_count(rec.path.len())
     }
 }
 

@@ -22,7 +22,7 @@
 
 use crate::common::palette::{BLUE_SOFT, RED_WARM};
 use crate::common::*;
-use stark_engine::command::{DocCommand, Edit, PeerCommand};
+use stark_engine::command::{DocCommand, Edit};
 use stark_engine::{Engine, PickOptions, PickSource};
 use stark_model::Srgb;
 use stark_model::document::{BlendMode, ColorAdjust, Filter, LayerId, Place};
@@ -294,11 +294,7 @@ fn a_pick_over_a_blended_stack_still_answers() {
         return;
     };
     paint(&mut engine, RED_WARM, 24.0, BAR);
-    engine.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
-    let over = engine.observe().active_layer;
+    let over = add_layer(&mut engine);
     paint(&mut engine, BLUE_SOFT, 24.0, BAR);
     engine.process(DocCommand::Set(Edit::LayerBlend(over, BlendMode::Multiply)));
 
@@ -359,11 +355,7 @@ fn base_under_a_multiply(engine: &mut Engine) {
 
 /// A Multiply layer on top holding one dab at `x` on the base's axis.
 fn add_multiply(engine: &mut Engine, tint: [f32; 3], x: f32) {
-    engine.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
-    let layer = engine.observe().active_layer;
+    let layer = add_layer(engine);
     paint(engine, tint, 8.0, &[Vec2::new(x, -4.0), Vec2::new(x, 4.0)]);
     engine.process(DocCommand::Set(Edit::LayerBlend(
         layer,
@@ -508,13 +500,8 @@ fn hidden_layers_are_not_sampled() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
-    let under = engine.observe().active_layer;
     paint(&mut engine, RED_WARM, 24.0, BAR);
-    engine.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
-    let over = engine.observe().active_layer;
+    let over = add_layer(&mut engine);
     paint(&mut engine, BLUE_SOFT, 24.0, BAR);
 
     engine.process(DocCommand::SetLayerVisible(over, false));
@@ -524,7 +511,6 @@ fn hidden_layers_are_not_sampled() {
         0.05,
         "hiding the blue layer should uncover the red one",
     );
-    let _ = PeerCommand::SetActiveLayer(under);
 }
 
 /// The radius averages the patch, weighted by how much paint is in it. Two bars side
@@ -600,11 +586,7 @@ const BAR_200: &[Vec2] = &[Vec2::new(-40.0, 200.0), Vec2::new(40.0, 200.0)];
 fn scoped_doc(engine: &mut Engine) -> (LayerId, LayerId, LayerId, LayerId) {
     let l0 = engine.observe().active_layer;
     paint(engine, RED_WARM, 24.0, BAR);
-    engine.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
-    let l1 = engine.observe().active_layer;
+    let l1 = add_layer(engine);
     paint(engine, GREEN, 24.0, BAR_200);
     engine.process(DocCommand::AddLayer {
         carrier: Some(l1),
@@ -812,11 +794,7 @@ fn hit(engine: &mut Engine, at: Vec2) -> Option<LayerId> {
 /// Red across the root layer, blue up a layer above it. Returns the upper one.
 fn crossed(engine: &mut Engine) -> LayerId {
     paint(engine, RED_WARM, 24.0, BAR);
-    engine.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
-    let top = engine.observe().active_layer;
+    let top = add_layer(engine);
     paint(engine, BLUE_SOFT, 24.0, UP);
     top
 }

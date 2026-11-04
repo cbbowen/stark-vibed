@@ -114,7 +114,7 @@ pub(crate) struct LayerSite {
 /// the action log and nothing else (§1), and inside the crate the mutators have
 /// exactly three callers, each of them the log: `apply` (the fold), `patch` (its
 /// inverse), and the unlogged drag previews in `engine`, which fold the very action
-/// their release will commit (`document::apply::preview_of`).
+/// their release will commit ([`preview_of`](crate::fold::apply::preview_of)).
 ///
 /// # Refusals
 ///

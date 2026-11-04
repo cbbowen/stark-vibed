@@ -107,10 +107,11 @@ pub(super) fn begin_read(
 /// Strip the row padding a texture→buffer copy required, leaving one tightly-packed
 /// byte string per texture. Consumes the buffer: unmaps it, then **destroys** it.
 ///
-/// Destroyed rather than dropped, for `gpu::scratch`'s reason (§6.2): on the web a
-/// dropped buffer only releases its JS handle and waits for GC, and this is the largest
-/// single allocation in the subsystem — an 8192² export is 268 MB. Sound because the
-/// copy that filled it has already been submitted *and* waited on.
+/// Destroyed rather than dropped, for [`scratch`](crate::device::scratch)'s reason
+/// (§6.2): on the web a dropped buffer only releases its JS handle and waits for GC,
+/// and this is the largest single allocation in the subsystem — an 8192² export is
+/// 268 MB. Sound because the copy that filled it has already been submitted *and*
+/// waited on.
 pub(super) fn take_rows(buffer: wgpu::Buffer, rows: &Rows) -> Vec<Vec<u8>> {
     let data = buffer
         .slice(..)
@@ -205,7 +206,7 @@ pub(crate) async fn read_rgba8(
 
 /// Copy **one** texture back and block until its bytes are here, tightly packed.
 ///
-/// The whole of the blocking read: every caller below and in `gpu::tile` was this
+/// The whole of the blocking read: every caller below and in [`tile`](crate::device::tile) was this
 /// sequence written out, and the one that got it wrong would not fail — `take_rows`
 /// reads whatever the buffer holds.
 ///

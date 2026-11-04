@@ -17,14 +17,6 @@ fn dyn_brush(color: [f32; 3], radius: f32, dynamics: BrushDynamics) -> BrushPara
     brush(color, radius).wet(dynamics)
 }
 
-// Channel-dominance predicates — see tests/engine/stroke.rs for why dominance rather
-// than saturation, and [`MARGIN_LIT`] for why 60 where most of the suite asks 30.
-fn is_red(c: [u8; 4]) -> bool {
-    leads(rgb(c), Lead::Red, MARGIN_LIT)
-}
-fn is_green(c: [u8; 4]) -> bool {
-    leads(rgb(c), Lead::Green, MARGIN_LIT)
-}
 #[test]
 fn conservative_smear_preserves_uniform_field() {
     // With `add = 0` the tool only *moves* paint between canvas and reservoir.
@@ -35,8 +27,8 @@ fn conservative_smear_preserves_uniform_field() {
         return;
     };
     assert!(
-        !is_red(center(&engine.render_to_image())),
-        "lit bare paper reads as red — is_red can't discriminate paint here"
+        !lit_red(center(&engine.render_to_image())),
+        "lit bare paper reads as red — lit_red can't discriminate paint here"
     );
     paint(
         &mut engine,
@@ -64,7 +56,7 @@ fn conservative_smear_preserves_uniform_field() {
     let after = engine.render_to_image();
 
     assert!(
-        is_red(center(&after)),
+        lit_red(center(&after)),
         "paint must not be destroyed by a conservative smear of a uniform field"
     );
     let frac = frac_exceeding(&before, &after, 40);
@@ -216,17 +208,25 @@ fn a_wet_brush_at_flow_zero_is_the_identity() {
         },
     );
     b.effect.set_flow(0.0);
-    stroke_with(
-        &mut engine,
-        b,
-        &[Vec2::new(-60.0, 0.0), Vec2::new(60.0, 0.0)],
-    );
+    let path = [Vec2::new(-60.0, 0.0), Vec2::new(60.0, 0.0)];
+    stroke_with(&mut engine, b, &path);
     let after = engine.render_to_image();
     assert_images(
         &before,
         &after,
         0,
         "a wet stroke at flow 0 rewrote the picture",
+    );
+
+    // A stroke that never reached the field would be the identity too. The same one at
+    // full flow has to move it — by anything at all, since the claim it backs is exact.
+    b.effect.set_flow(1.0);
+    stroke_with(&mut engine, b, &path);
+    assert_images_differ(
+        &after,
+        &engine.render_to_image(),
+        0,
+        "the same wet stroke at full flow",
     );
 }
 
@@ -254,7 +254,14 @@ fn eraser_thins_without_retint() {
         &[Vec2::new(30.0, 0.0), Vec2::new(90.0, 0.0)],
     );
     let before = engine.render_to_image().pixel(green_x, y);
-    assert!(is_green(before), "the bar should start green: {before:?}");
+    assert!(lit_green(before), "the bar should start green: {before:?}");
+    let probe = Vec2::new(green_x as f32 - SIZE.width as f32 / 2.0, 0.0);
+    let height = |engine: &stark_engine::Engine| {
+        paint_at(engine, LayerId::ROOT, probe)
+            .expect("the green bar minted a tile")
+            .0
+    };
+    let thick = height(&engine);
 
     // Drag from inside the red patch across the green bar: the tool holds red
     // while it crosses green.
@@ -275,8 +282,15 @@ fn eraser_thins_without_retint() {
     );
     let after = engine.render_to_image().pixel(green_x, y);
 
+    // An eraser that never touched the bar would leave it un-tinted as well, so first:
+    // it thinned the paint there.
+    let thin = height(&engine);
     assert!(
-        !is_red(after),
+        thin < thick,
+        "the eraser crossed the green bar without thinning it: height {thick} -> {thin}"
+    );
+    assert!(
+        !lit_red(after),
         "erasing across the green bar must thin it, not re-tint it red: {before:?} -> {after:?}"
     );
 }
@@ -580,6 +594,30 @@ fn golden_self_smear() {
     assert_golden("self_smear", &img, 6);
 }
 
+/// How many times `profile` turns back on itself — each turn past the noise floor a
+/// band edge, against a ramp that should run one way.
+///
+/// A level either side is sampling noise rather than a band, so a turn counts only
+/// where one of its two steps is larger than that.
+fn reversals(profile: &[i32]) -> usize {
+    let d: Vec<i32> = profile.windows(2).map(|w| w[1] - w[0]).collect();
+    d.windows(2)
+        .filter(|w| w[0] * w[1] < 0 && (w[0].abs() > 1 || w[1].abs() > 1))
+        .count()
+}
+
+/// How far `profile` runs from its first sample to its last. A flat profile has no
+/// reversals either, so a [`reversals`] count says nothing until this has shown there
+/// was a ramp to band.
+fn travel(profile: &[i32]) -> i32 {
+    profile.last().expect("a profile") - profile[0]
+}
+
+/// How far a profile has to fall before its reversals are worth counting: ten levels,
+/// against the one a step may move and still count as noise. Both profiles below fall
+/// by more than twice this.
+const RAMP: i32 = 10;
+
 /// A dynamics stroke must read as one continuous mark, not a row of stamps.
 ///
 /// The loop's transfers compose only if each is a function of the segment's swept
@@ -621,17 +659,15 @@ fn dynamics_stroke_reads_as_one_continuous_mark() {
     // continuous stroke fades monotonically; each reversal is a band edge.
     let y = img.height / 2;
     let prof: Vec<i32> = (40..216).map(|x| img.pixel(x, y)[0] as i32).collect();
-    let mut reversals = 0;
-    for w in prof.windows(3) {
-        let (d0, d1) = (w[1] - w[0], w[2] - w[1]);
-        // Only count reversals big enough to be a band, not sampling noise.
-        if d0 * d1 < 0 && (d0.abs() > 1 || d1.abs() > 1) {
-            reversals += 1;
-        }
-    }
     assert!(
-        reversals <= 6,
-        "stroke profile reverses {reversals}× across its body — per-segment banding",
+        travel(&prof) <= -RAMP,
+        "the stroke fades by {} levels across its body — too flat a ramp to band",
+        -travel(&prof),
+    );
+    let turns = reversals(&prof);
+    assert!(
+        turns <= 6,
+        "stroke profile reverses {turns}× across its body — per-segment banding",
     );
 }
 
@@ -679,18 +715,19 @@ fn a_carrying_stroke_reads_as_one_continuous_mark() {
     );
     let img = engine.render_to_image();
 
-    // Green rises monotonically as the carried paint thins out; each reversal past
+    // Green falls monotonically as the carried paint thins out; each reversal past
     // the noise floor is a band edge.
     let y = img.height / 2;
     let prof: Vec<i32> = (100..230).map(|x| img.pixel(x, y)[1] as i32).collect();
-    let d: Vec<i32> = prof.windows(2).map(|w| w[1] - w[0]).collect();
-    let reversals = d
-        .windows(2)
-        .filter(|w| w[0] * w[1] < 0 && (w[0].abs() > 1 || w[1].abs() > 1))
-        .count();
     assert!(
-        reversals <= 4,
-        "carried-paint profile reverses {reversals}× — per-segment scalloping",
+        travel(&prof) <= -RAMP,
+        "the carried green thins by {} levels along the smear — too flat a ramp to band",
+        -travel(&prof),
+    );
+    let turns = reversals(&prof);
+    assert!(
+        turns <= 4,
+        "carried-paint profile reverses {turns}× — per-segment scalloping",
     );
 }
 
@@ -926,9 +963,7 @@ fn a_barely_lifting_brush_reads_as_one_that_does_not_lift() {
     let speckles = (0..barely.height)
         .flat_map(|y| (1..barely.width - 1).map(move |x| (x, y)))
         .filter(|&(x, y)| {
-            let far = |a: [u8; 4], b: [u8; 4]| {
-                (0..3).map(|i| (a[i] as i32 - b[i] as i32).abs()).max() > Some(100)
-            };
+            let far = |a: [u8; 4], b: [u8; 4]| apart(rgb(a), rgb(b)) > 100;
             let c = barely.pixel(x, y);
             far(c, barely.pixel(x - 1, y)) && far(c, barely.pixel(x + 1, y))
         })
@@ -1130,19 +1165,6 @@ fn cut_spread(imgs: &[stark_engine::RgbaImage]) -> (u8, f64) {
     (worst, (sq / (w * h) as f64).sqrt())
 }
 
-/// Mean darkness over the image: with a fixed palette this rises as paint thickens,
-/// so it stands in for "how much paint is on the canvas" without a height readback.
-fn total_ink(img: &stark_engine::RgbaImage) -> f64 {
-    let sum: u64 = img
-        .pixels
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .map(|p| (255 - p[1]) as u64 + (255 - p[2]) as u64)
-        .sum();
-    sum as f64 / (img.width * img.height) as f64
-}
-
 /// Flow for the glaze below. Low on purpose: `add` is the amount of paint the brush
 /// lays and the only thing that decides it (§6.1), so at full flow a renderer
 /// that honours it and one that ignores it both come out red and there is nothing
@@ -1230,12 +1252,7 @@ fn a_glaze_lands_the_same_whether_or_not_the_stamp_loop_runs() {
         return;
     };
     let (x, y) = (SIZE.width / 2, SIZE.height / 2);
-    let shift = |img: &stark_engine::RgbaImage| {
-        (0..3)
-            .map(|i| (img.pixel(x, y)[i] as i32 - bar.pixel(x, y)[i] as i32).abs())
-            .max()
-            .expect("three channels")
-    };
+    let shift = |img: &stark_engine::RgbaImage| apart(rgb(img.pixel(x, y)), rgb(bar.pixel(x, y)));
     let (thin, thick) = (shift(&swept), shift(&opaque));
     assert!(
         thin * 2 < thick,
@@ -1262,7 +1279,7 @@ fn bleed_alone_neither_lays_paint_nor_disturbs_a_uniform_field() {
         &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)],
     );
     let before = engine.render_to_image();
-    assert!(is_red(center(&before)), "the field never got painted");
+    assert!(lit_red(center(&before)), "the field never got painted");
 
     let b = dyn_brush(
         GREEN,
@@ -1288,7 +1305,7 @@ fn bleed_alone_neither_lays_paint_nor_disturbs_a_uniform_field() {
     let after = engine.render_to_image();
 
     assert!(
-        is_red(center(&after)),
+        lit_red(center(&after)),
         "a bleed-only brush re-tinted the field towards its own color: {:?}",
         center(&after)
     );
@@ -1396,9 +1413,8 @@ fn bleed_softens_a_color_boundary() {
     // 28 px tip.
     for y in [cy - 32, cy + 32] {
         let (b, a) = (before.pixel(cx, y), after.pixel(cx, y));
-        let moved = (0..3).map(|c| (a[c] as i32 - b[c] as i32).abs()).max();
         assert!(
-            moved <= Some(1),
+            apart(rgb(a), rgb(b)) <= 1,
             "a texel 32 px out, outside a 28 px tip, moved {b:?} -> {a:?}"
         );
     }
@@ -1727,9 +1743,11 @@ fn a_bleeding_stroke_previews_as_it_commits() {
 /// term of the model did nothing at all, and the premultiplied latent walking down with
 /// the height, so the mark read both thinner and darker than the field it crossed.
 ///
-/// The field is deliberately faint (`add = 0.02` under a broad tip): height only reaches
-/// the render while the paint is still short of opaque, so a thick coat would hide the
-/// very thing this is weighing.
+/// Measured on **height itself** (`common::total_height`), the channel §6.1 conserves,
+/// as the conservation tests above are. The figures above were read off image darkness,
+/// which only registers height while the paint is short of opaque — which is why the
+/// field is laid faint (`add = 0.02` under a broad tip), and still is, so the two
+/// readings can be compared.
 #[test]
 fn a_smear_that_transfers_nothing_leaves_the_canvas_alone() {
     for wiggle in [0.0f32, 5.0] {
@@ -1742,7 +1760,7 @@ fn a_smear_that_transfers_nothing_leaves_the_canvas_alone() {
             field,
             &[Vec2::new(-260.0, 0.0), Vec2::new(260.0, 0.0)],
         );
-        let before = engine.render_to_image();
+        let before = total_height(&engine, LayerId::ROOT);
 
         // Rates far below anything the eye could resolve, but *nonzero* — so the
         // deposit's rewrite guard does not fire and every segment stores every texel
@@ -1764,14 +1782,13 @@ fn a_smear_that_transfers_nothing_leaves_the_canvas_alone() {
             })
             .collect();
         stroke_with(&mut engine, smear, &path);
-        let after = engine.render_to_image();
+        let after = total_height(&engine, LayerId::ROOT);
 
-        let (b, a) = (total_ink(&before), total_ink(&after));
-        let drift = (a / b - 1.0) * 100.0;
+        let drift = (after / before - 1.0) * 100.0;
         assert!(
             drift.abs() < 0.2,
             "a smear at rates of 1e-4 (wiggle {wiggle}) moved {drift:+.2}% of the \
-             field's ink — the loop is re-encoding f16 state it did not change",
+             field's height — the loop is re-encoding f16 state it did not change",
         );
     }
 }

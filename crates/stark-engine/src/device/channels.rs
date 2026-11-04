@@ -8,6 +8,10 @@
 //! document**, which is a validation error rather than a wrong pixel, and which the
 //! Oklab-only half of the suite cannot see. [`ChannelFormats`] decides it once from the
 //! color space and carries it, so a trio cannot be built half-residual.
+//!
+//! **A borrowed trio says which way it may be used.** [`Targets`] can be attached and
+//! [`Sources`] can only be bound, and a committed tile hands out the second alone — so
+//! a pass that would write a tile undo history shares (§5.2) does not type-check.
 
 use crate::colorspace::ColorSpace;
 use crate::device::context::GpuContext;
@@ -139,7 +143,8 @@ impl Channels {
     /// The pairing is the whole point. Nothing in a recorded encoder has run, so a
     /// scratch trio released before its submit is handed straight back out — to a pass
     /// in the very same encoder, which overwrites it before the earlier pass ever reads
-    /// it (`gpu::scratch`). Acquiring and holding here cannot come apart.
+    /// it ([`scratch`](crate::device::scratch)). Acquiring and holding here cannot come
+    /// apart.
     ///
     /// Distinct from [`Self::acquire`], which is what a **destination** takes: that trio
     /// is returned to the caller and becomes a tile of the document, so its life is the
@@ -155,7 +160,7 @@ impl Channels {
         trio
     }
 
-    /// The views a pass binds or attaches.
+    /// The views a pass attaches — or binds, through [`Sources::from`].
     pub(crate) fn targets(&self) -> Targets<'_> {
         Targets {
             color: self.color.view(),
@@ -164,19 +169,62 @@ impl Channels {
         }
     }
 
-    /// Hand the trio to the document as one tile (§5.2).
+    /// The views a pass binds, where nothing will write them.
+    pub(crate) fn sources(&self) -> Sources<'_> {
+        self.targets().into()
+    }
+
+    /// Encode the write-back's slice of this trio out of region-sized channel textures
+    /// (§6.2): one `TILE_TEX` block from each at `origin` — the color, the narrowed
+    /// aux, and the residual where the color space has one. Copies, so the tile is
+    /// bit-identical to the region block it was cut from, and every rewritten tile's
+    /// apron to its neighbour's interior (§6.4).
+    ///
+    /// On the trio rather than on [`TilePairHandle`]: a copy destination is written,
+    /// and a tile is written only before it is one (§5.2).
+    pub(crate) fn copy_from_region(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        color: &wgpu::Texture,
+        aux: &wgpu::Texture,
+        resid: Option<&wgpu::Texture>,
+        origin: wgpu::Origin3d,
+    ) {
+        // The pairing is the color space's, decided once for tile and region alike
+        // (§6.7) — a mismatch here means the two were built against different spaces.
+        debug_assert_eq!(
+            self.resid.is_some(),
+            resid.is_some(),
+            "trio and region were built against different color spaces"
+        );
+        self.color.copy_into(encoder, color, origin);
+        self.aux.copy_into(encoder, aux, origin);
+        if let (Some(t), Some(src)) = (&self.resid, resid) {
+            t.copy_into(encoder, src, origin);
+        }
+    }
+
+    /// Hand the trio to the document as one tile (§5.2) — the last write to it there
+    /// will ever be, since a tile hands out only [`Sources`].
     pub(crate) fn into_tile(self) -> TilePairHandle {
         TilePairHandle::new(self.color, self.aux, self.resid)
     }
 }
 
 impl TilePairHandle {
-    /// This tile's channels as a pass reads or writes them.
+    /// This tile's channels as a pass **reads** them — the only view of a tile there
+    /// is, so writing one does not type-check (§5.2).
+    ///
+    /// A committed tile is shared: undo history, the timeline's patch capture and a
+    /// sibling engine all hold the same allocation, and [`Self::same`] reads identity
+    /// as "unchanged". A pass that attached one, or copied into it, would rewrite every
+    /// one of those at once. A writer takes a fresh [`Channels`] instead and hands it
+    /// over with [`Channels::into_tile`].
     ///
     /// Here rather than in `tile.rs` so the trio's shape stays in one file: a tile *is*
     /// one of these.
-    pub(crate) fn targets(&self) -> Targets<'_> {
-        Targets {
+    pub(crate) fn sources(&self) -> Sources<'_> {
+        Sources {
             color: self.color_view(),
             aux: self.aux_view(),
             resid: self.resid_view(),
@@ -184,9 +232,12 @@ impl TilePairHandle {
     }
 }
 
-/// The channel trio **borrowed** — what a pass actually reads or writes, whether it
-/// came from a [`Channels`], a viewport-sized offscreen set, or a tile the document
-/// already holds.
+/// The channel trio **borrowed to be written** — the attachments of a pass, from a
+/// [`Channels`] a writer owns or a viewport-sized offscreen set.
+///
+/// Never from a committed tile, which hands out [`Sources`] alone (§5.2). That is the
+/// whole difference between the two types: this one converts into
+/// [`desc::Attachments`], and into [`Sources`] for a pass that reads it back.
 #[derive(Copy, Clone)]
 pub(crate) struct Targets<'a> {
     pub(crate) color: &'a wgpu::TextureView,
@@ -213,6 +264,27 @@ impl<'a> From<Targets<'a>> for desc::Attachments<'a> {
     }
 }
 
+/// The channel trio **borrowed to be read** — what a bind group takes, whether from a
+/// tile the document holds, the 1×1 [`Zeroes`], or [`Targets`] a pass wrote earlier.
+///
+/// No conversion into [`desc::Attachments`], which is the point: this is the only
+/// view a [`TilePairHandle`] hands out, so "never write a shared tile" (§5.2) is a
+/// type error rather than a convention every renderer keeps.
+#[derive(Copy, Clone)]
+pub(crate) struct Sources<'a> {
+    pub(crate) color: &'a wgpu::TextureView,
+    pub(crate) aux: &'a wgpu::TextureView,
+    pub(crate) resid: Option<&'a wgpu::TextureView>,
+}
+
+/// What was written can be read.
+impl<'a> From<Targets<'a>> for Sources<'a> {
+    fn from(t: Targets<'a>) -> Self {
+        let Targets { color, aux, resid } = t;
+        Self { color, aux, resid }
+    }
+}
+
 /// The 1×1 stand-ins a pass binds where a tile does not exist — one per persistent
 /// tile channel.
 ///
@@ -232,22 +304,25 @@ pub(crate) struct Zeroes {
 }
 
 impl Zeroes {
-    /// The stand-ins as a trio a pass binds.
-    pub(crate) fn targets(&self) -> Targets<'_> {
-        Targets {
+    /// The stand-ins as a trio a pass binds — and only binds: they are shared by every
+    /// renderer, so they are [`Sources`] like a tile.
+    pub(crate) fn sources(&self) -> Sources<'_> {
+        Sources {
             color: &self.color,
             aux: &self.aux,
             resid: self.resid.as_ref(),
         }
     }
 
-    /// `targets`, or these stand-ins where there are none — **the one answer to "a
-    /// tile, or the 1×1 zeroes"** (§6.8's pattern).
+    /// `trio`, or these stand-ins where there is none — **the one answer to "a tile,
+    /// or the 1×1 zeroes"** (§6.8's pattern).
     ///
     /// Whether a trio exists is one question, so it has one answer, and the residual's
     /// presence rides along with the other two rather than being decided again (§6.7).
-    pub(crate) fn or<'a>(&'a self, targets: Option<Targets<'a>>) -> Targets<'a> {
-        targets.unwrap_or_else(|| self.targets())
+    /// Takes a tile's [`Sources`] or a scratch trio's [`Targets`] alike, and answers
+    /// with what a bind group reads.
+    pub(crate) fn or<'a>(&'a self, trio: Option<impl Into<Sources<'a>>>) -> Sources<'a> {
+        trio.map_or_else(|| self.sources(), Into::into)
     }
 
     pub(crate) fn new(ctx: &GpuContext, formats: ChannelFormats) -> Self {

@@ -201,9 +201,10 @@ impl FillOp {
 /// included — is [`tile_box`](crate::geom::tile_box)'s answer, and both quantizers
 /// below ask it.
 ///
-/// `None` when the fill is bounded only by the selection — [`SelectionShape::All`], or
-/// a lasso with no vertices — which `stark-engine`'s `gpu::fill::plan` then bounds
-/// by the mask and the footprint has to claim as the whole layer.
+/// `None` when the fill is bounded only by the selection — [`SelectionShape::All`] —
+/// which `stark-engine`'s `gpu::fill::plan` then bounds by the mask and the
+/// footprint has to claim as the whole layer; or when the shape's box is not
+/// measurable, for which the plan writes nothing.
 ///
 /// **One box, quantized twice**, which is the whole point of this function.
 /// `stark-engine`'s `gpu::fill::plan` turns it into the tiles a fill writes and

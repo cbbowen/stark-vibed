@@ -171,9 +171,8 @@ impl SlotCommon<'_> {
         Stamp {
             brush_lat: self.k.channels,
             // The other half of the same color (§6.7) — filled wherever `brush_lat` is,
-            // and zero in a space whose three channels already say everything. The
-            // shader declares three where `k` keeps four, its `.w` being unused.
-            brush_res: [self.k.resid[0], self.k.resid[1], self.k.resid[2]],
+            // and zero in a space whose three channels already say everything.
+            brush_res: self.k.resid,
             // The paint effect's ceiling (§6.2), off `k` like the color: one
             // resolution for every slot kind and for the swept path's integrate.
             // Only a painting segment's mint reads it; a bleed or settle slot
@@ -236,12 +235,11 @@ impl SlotCommon<'_> {
     /// slots, so between firings the canvas takes the no-bleed path bit-for-bit
     /// (§6.2).
     fn painting(&self, sw: &Sweep, rect: &Rect, bearing: f32) -> Stamp {
-        let (nfreq, namp) = (self.k.nfreq, self.k.namp);
         Stamp {
-            // Three lanes of a four-lane lookup on either side: the shader folds
-            // 1/NOISE_TILE_PX into `.z` and has no use for a fourth.
-            noise_freq: [nfreq[0], nfreq[1], nfreq[2]],
-            noise_amp: [namp[0], namp[1], namp[2]],
+            // The swept path's lookup exactly (`StrokeConstants::nfreq`), 1/NOISE_TILE_PX
+            // folded into the frequency's `.z`.
+            noise_freq: self.k.nfreq,
+            noise_amp: self.k.namp,
             tooth_bearing: bearing,
             ..self.swept(sw, rect)
         }

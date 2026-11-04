@@ -8,7 +8,7 @@
 //! So these check the two halves of that separately — that the screen really does
 //! turn, and that nothing else moved with it.
 
-use crate::common::palette::{BLACK, BLUE_SOFT, GREEN, RED, WARM};
+use crate::common::palette::{BLUE_SOFT, GREEN, RED, WARM};
 use crate::common::*;
 use stark_engine::command::Tool;
 use stark_engine::command::{
@@ -20,24 +20,18 @@ use stark_model::Srgb;
 use stark_model::SubstrateScale;
 use stark_model::document::{
     BlendMode, ColorAdjust, FillOp, Filter, GuideId, LayerId, MatteRegion, Parcel,
-    PerspectiveGuide, Place, SelectionMode, SelectionOp, SelectionShape, TransformMap,
+    PerspectiveGuide, SelectionMode, SelectionOp, SelectionShape, TransformMap,
 };
 use stark_model::geom::{Affine2, IVec2, Vec2};
-
-/// Channel dominance, with the margin `stroke.rs` justifies: over the blue substrate,
-/// this cleanly separates lit paint from lit substrate.
-fn is_red(c: [u8; 4]) -> bool {
-    leads(rgb(c), Lead::Red, MARGIN_LIT)
-}
 
 /// The four probes around the centre of a `SIZE`-square render, at `d` px out.
 fn probes(img: &RgbaImage, d: u32) -> (bool, bool, bool, bool) {
     let (cx, cy) = (img.width / 2, img.height / 2);
     (
-        is_red(img.pixel(cx - d, cy)),
-        is_red(img.pixel(cx + d, cy)),
-        is_red(img.pixel(cx, cy - d)),
-        is_red(img.pixel(cx, cy + d)),
+        lit_red(img.pixel(cx - d, cy)),
+        lit_red(img.pixel(cx + d, cy)),
+        lit_red(img.pixel(cx, cy - d)),
+        lit_red(img.pixel(cx, cy + d)),
     )
 }
 
@@ -117,16 +111,11 @@ fn the_view_never_reaches_the_document() {
         return;
     };
     bar(&mut engine, -90.0, 40.0);
-    let frame = added(
+    let frame = add_matte(
         &mut engine,
-        stark_engine::command::DocCommand::AddMatte {
-            carrier: None,
-            at: Place::Top,
-            region: MatteRegion::OutsideRect {
-                min: Vec2::new(-100.0, -60.0),
-                max: Vec2::new(100.0, 60.0),
-            },
-            paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
+        MatteRegion::OutsideRect {
+            min: Vec2::new(-100.0, -60.0),
+            max: Vec2::new(100.0, 60.0),
         },
     );
     let shot = |engine: &mut Engine| {
@@ -202,15 +191,13 @@ impl Seed {
             .find(|l| l.filter.is_some())
             .expect("the filter layer just added")
             .id;
-        engine.process(DocCommand::AddMatte {
-            carrier: None,
-            at: Place::Top,
-            region: MatteRegion::OutsideRect {
+        add_matte(
+            engine,
+            MatteRegion::OutsideRect {
                 min: Vec2::new(-50.0, -50.0),
                 max: Vec2::new(50.0, 50.0),
             },
-            paint: Parcel::Solid(Srgb::new(BLACK)),
-        });
+        );
         let matte = engine.observe().layers.last().expect("matte").id;
         engine.process(DocCommand::AddGuide {
             guide: PerspectiveGuide::default(),
@@ -438,11 +425,11 @@ fn a_stroke_lands_under_the_pen_on_a_turned_canvas() {
     let img = engine.render_to_image();
     for x in [70, 128, 186] {
         let c = img.pixel(x, 128);
-        assert!(is_red(c), "no paint at screen ({x}, 128): {c:?}");
+        assert!(lit_red(c), "no paint at screen ({x}, 128): {c:?}");
     }
     for y in [70, 186] {
         let c = img.pixel(128, y);
-        assert!(!is_red(c), "paint away from the line at (128, {y}): {c:?}");
+        assert!(!lit_red(c), "paint away from the line at (128, {y}): {c:?}");
     }
 }
 
@@ -488,8 +475,6 @@ fn panning_follows_the_pointer_on_a_turned_canvas() {
 /// *sampled*, which is exactly the thing under test.
 #[test]
 fn mirroring_reflects_every_pixel_of_the_screen_path() {
-    use stark_engine::command::DocCommand;
-
     let Some(mut engine) = engine_or_skip_blue() else {
         return;
     };
@@ -505,15 +490,13 @@ fn mirroring_reflects_every_pixel_of_the_screen_path() {
     // Paint off to one side, so the reflection has something asymmetric to move…
     bar(&mut engine, -90.0, 20.0);
     // …and a frame, so the matte's own inverse of the view is in the picture too.
-    engine.process(DocCommand::AddMatte {
-        carrier: None,
-        at: Place::Top,
-        region: MatteRegion::OutsideRect {
+    add_matte(
+        &mut engine,
+        MatteRegion::OutsideRect {
             min: Vec2::new(-70.0, -50.0),
             max: Vec2::new(90.0, 40.0),
         },
-        paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
-    });
+    );
 
     // At two orientations, because the mirror is *screen*-relative: it has to swap the
     // left of the screen with the right whatever angle the canvas is at, and a
@@ -524,17 +507,8 @@ fn mirroring_reflects_every_pixel_of_the_screen_path() {
         engine.process(ViewCommand::MirrorH);
         let mirrored = engine.render_to_image();
 
-        let (w, h) = (before.width, before.height);
-        let mut worst = 0i32;
-        for y in 0..h {
-            for x in 0..w {
-                let a = mirrored.pixel(x, y);
-                let b = before.pixel(w - 1 - x, y);
-                for c in 0..4 {
-                    worst = worst.max((a[c] as i32 - b[c] as i32).abs());
-                }
-            }
-        }
+        let w = before.width;
+        let worst = moved_delta(&mirrored, &before, |x, y| Some((w - 1 - x, y)));
         assert!(
             worst <= 2,
             "turned {turn}: the mirrored screen is not the reflection of it (worst {worst})"

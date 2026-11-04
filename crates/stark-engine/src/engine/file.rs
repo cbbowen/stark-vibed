@@ -12,6 +12,8 @@ use stark_model::DocError;
 use super::commit::Drag;
 use super::{Authoring, Engine, ROOT_LAYER};
 use crate::Result;
+use crate::colorspace::ColorSpace;
+use std::sync::Arc;
 use crate::document::Substrate;
 use crate::fold::{LinearTimeline, Timeline};
 use crate::gpu::environment::EnvironmentId;
@@ -31,20 +33,21 @@ use stark_model::document::{Action, effective_actions};
 /// offer "this document needs a Mixbox build" instead of "this file is corrupt".
 ///
 /// A type rather than a check each caller remembers: [`Engine::adopt`] empties the
-/// document before it resolves the space, so the question has to be settled first, and
-/// holding one of these is what makes that resolution infallible.
-#[derive(Clone, Copy)]
-pub(super) struct ValidatedFile<'a>(&'a DocumentFile);
+/// document before it needs the space, so the question has to be settled first — and
+/// one of these **holds the answer**, the space resolved, so there is nothing left for
+/// `adopt` to resolve a second time and nothing to `expect` when it does.
+pub(super) struct ValidatedFile<'a> {
+    file: &'a DocumentFile,
+    space: Arc<dyn ColorSpace>,
+}
 
 impl<'a> ValidatedFile<'a> {
     /// Settle the space, or refuse with [`DocError::UnsupportedColorSpace`] — leaving
     /// whatever is open alone, since nothing has been touched yet.
     pub(super) fn new(file: &'a DocumentFile) -> Result<Self> {
-        if crate::colorspace::available(file.canvas.color_space) {
-            Ok(Self(file))
-        } else {
-            Err(DocError::UnsupportedColorSpace(file.canvas.color_space).into())
-        }
+        let id = file.canvas.color_space;
+        let space = crate::colorspace::make(id).ok_or(DocError::UnsupportedColorSpace(id))?;
+        Ok(Self { file, space })
     }
 }
 
@@ -52,7 +55,7 @@ impl std::ops::Deref for ValidatedFile<'_> {
     type Target = DocumentFile;
 
     fn deref(&self) -> &DocumentFile {
-        self.0
+        self.file
     }
 }
 
@@ -140,18 +143,11 @@ impl Engine {
     ///
     /// A substrate or a shape that fails to install is logged and skipped rather than
     /// fatal: the document still opens, degraded.
-    pub(super) fn adopt(&mut self, file: ValidatedFile<'_>) {
+    pub(super) fn adopt(&mut self, file: &ValidatedFile<'_>) {
         self.initial = Substrate::new(file.canvas.substrate);
         self.reset_document(&file.required_content());
-        if file.canvas.color_space != self.shared.color_space.id() {
-            // Infallible because of the argument's *type*: a [`ValidatedFile`] is one
-            // whose space this build resolves, and there is no other way to spell one —
-            // which is what makes this sound where an `expect` resting on a list of
-            // callers would not (see [`ValidatedFile`]).
-            let cs = crate::colorspace::make(file.canvas.color_space)
-                .expect("a ValidatedFile's color space resolves, by construction");
-            self.rebuild_gpu_for(cs);
-        }
+        // Resolved already, by the argument's *type* (see [`ValidatedFile`]).
+        self.ensure_color_space(Arc::clone(&file.space));
         // Each entry to the store its need names, and checked against the id it was
         // filed under, which is the whole reason the bundle is keyed by a need
         // ([`Engine::install`], §8).
@@ -172,9 +168,6 @@ impl Engine {
                  holds anything that depends on it"
             );
         }
-        // The empty document is on the log's initial substrate, so bind it — a timelapse
-        // renders its first frame before any action has moved it.
-        self.apply_document_substrate();
     }
 
     /// Replace the document by replaying a loaded file's action log. The full
@@ -196,7 +189,7 @@ impl Engine {
     fn replay_file(&mut self, file: &DocumentFile, mut each: impl FnMut(&mut Self)) -> Result<()> {
         let file = ValidatedFile::new(file)?;
         self.require_content(&file)?;
-        self.adopt(file);
+        self.adopt(&file);
         // Replay only the *effective* sequence: a file saved from a shared
         // session is the full log, including `Undo` actions and the actions
         // they suppress (§12.3). A solo load flattens those away.
@@ -205,8 +198,6 @@ impl Engine {
             each(self);
         }
         self.resync_counters(&file.actions);
-        // Whatever the replayed log left the document on.
-        self.apply_document_substrate();
         // The document *is* this file, unedited — so the baseline is where the replay
         // ended, not where `reset_document` set it before the replay began.
         self.doc_origin = self.doc_revision;
@@ -245,14 +236,11 @@ impl Engine {
         file: &DocumentFile,
         mut on_frame: impl FnMut(crate::image::RgbaImage),
     ) -> Result<()> {
-        self.replay_file(file, |engine| {
-            // Per action, not once at the end: a replayed `SetSubstrate` moves the
-            // substrate the *media pass* samples as well as the one the deposit reads, so
-            // a timelapse across a mid-document switch would otherwise go on lighting
-            // every later frame through the substrate the piece started on.
-            engine.apply_document_substrate();
-            on_frame(engine.render_to_image());
-        })
+        // A replayed `SetSubstrate` moves the substrate the *media pass* samples as well
+        // as the one the deposit reads, per action — `change_committed` rebinds it on
+        // every replayed step, so a timelapse across a mid-document switch lights each
+        // frame through the substrate that frame stands on.
+        self.replay_file(file, |engine| on_frame(engine.render_to_image()))
     }
 
     /// Every imported brush asset (id + canonical PNG bytes) — used to seed a
@@ -384,12 +372,7 @@ impl Engine {
             .ok_or(DocError::UnsupportedColorSpace(color_space))?;
         self.initial = Substrate::new(substrate);
         self.reset_document(&[]);
-        // The pipelines are the color space's, not the document's: the same space
-        // keeps them (§6.7).
-        if cs.id() != self.shared.color_space.id() {
-            self.rebuild_gpu_for(cs);
-        }
-        self.apply_document_substrate();
+        self.ensure_color_space(cs);
         Ok(())
     }
 
@@ -511,6 +494,16 @@ impl Engine {
             self.apply_substrate();
         }
         Ok(actual)
+    }
+
+    /// Put the GPU on `cs`, a document having just been emptied onto it — the step a
+    /// new document and an adopted file share. **The pipelines are the color space's,
+    /// not the document's** (§6.7): the same space keeps them, so only a different one
+    /// rebuilds, and a rebuild needs the empty document both callers have just made.
+    fn ensure_color_space(&mut self, cs: Arc<dyn ColorSpace>) {
+        if cs.id() != self.shared.color_space.id() {
+            self.rebuild_gpu_for(cs);
+        }
     }
 
     /// Bring the GPU-side substrate in line with the document's, rebuilding it if the
@@ -690,6 +683,7 @@ impl Engine {
     /// (`LayerId`), so resuming the action clock resumes the layer ids too (§17.9).
     pub(super) fn resync_counters(&mut self, actions: &[Action]) {
         let max_lamport = actions.iter().map(|a| a.id.lamport).max();
-        self.authoring.clock = max_lamport.map_or(0, |m| m + 1);
+        // Saturating for `merge_remote`'s reason: the file states the ids.
+        self.authoring.clock = max_lamport.map_or(0, |m| m.saturating_add(1));
     }
 }

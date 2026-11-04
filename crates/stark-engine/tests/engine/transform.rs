@@ -140,22 +140,10 @@ fn integer_translation_is_exact() {
     // frames cover. The substrate is uniform and the lighting is a local function
     // of the canvas, so the whole frame — paint, relief, everything — must shift.
     let (w, h) = (before.width as i32, before.height as i32);
-    let mut worst = 0u8;
-    for y in 0..h {
-        for x in 0..w {
-            let (sx, sy) = (x - dx, y - dy);
-            if sx < 0 || sy < 0 || sx >= w || sy >= h {
-                continue;
-            }
-            let ia = ((y * w + x) * 4) as usize;
-            let ib = ((sy * w + sx) * 4) as usize;
-            for c in 0..4 {
-                let d = (after.pixels[ia + c] as i32 - before.pixels[ib + c] as i32).unsigned_abs()
-                    as u8;
-                worst = worst.max(d);
-            }
-        }
-    }
+    let worst = moved_delta(&after, &before, |x, y| {
+        let (sx, sy) = (x as i32 - dx, y as i32 - dy);
+        ((0..w).contains(&sx) && (0..h).contains(&sy)).then_some((sx as u32, sy as u32))
+    });
     assert!(
         worst == 0,
         "integer translation must be exact (worst channel delta {worst})"

@@ -656,8 +656,8 @@ fn render_span_range(
     // of the tooth.
     //
     // The registry's *in-use* substrate, not a lookup by `base.substrate()`: this is a
-    // `&self` path and cannot bake one on demand. `apply_document_substrate` holds
-    // `current()` level with the committed document's substrate, and `base` is that
+    // `&self` path and cannot bake one on demand. `change_committed` holds `current()`
+    // level with the committed document's substrate — ahead of the refold — and `base` is that
     // document or a held drag folded over it — folded again whenever the committed
     // document moves (`Drag::Keep`), and no edit previews the id. A merge that moved
     // the substrate also bumped the epoch, so no head frozen on the old one survives.

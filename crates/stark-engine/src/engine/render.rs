@@ -421,7 +421,7 @@ impl Engine {
     }
 
     /// [`Probe::render_to_image`](crate::testing::Probe::render_to_image): the
-    /// export path, read back blocking. WebGPU has no blocking poll (`gpu::readback`).
+    /// export path, read back blocking. WebGPU has no blocking poll ([`device::readback`](crate::device::readback)).
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn render_to_image(&mut self) -> RgbaImage {
         // 8-bit whatever the screen is (§15.6): the compositor renders an 8-bit target

@@ -6,7 +6,7 @@
 //! and the pool reclaims what falls out of reach.
 //!
 //! The arithmetic is `merge.wesl`'s and the rule is
-//! [`document::merge`](crate::fold::merge)'s; what is left here is the tile
+//! [`fold::merge`](crate::fold::merge)'s; what is left here is the tile
 //! bookkeeping, and the one part of it worth stating is **what this does not draw**.
 //! A merge is normally lopsided — a few tiles of stroke onto a background that spans
 //! the canvas — so a tile only one side has, and which that side's opacity leaves
@@ -22,7 +22,7 @@ use std::sync::Arc;
 
 use crate::colorspace::ColorSpace;
 use crate::device::channels::Zeroes;
-use crate::device::channels::{ChannelFormats, Channels, Targets};
+use crate::device::channels::{ChannelFormats, Channels, Sources};
 use crate::device::context::GpuContext;
 use crate::device::desc::{self, view};
 use crate::device::scratch::{LeasedSlots, ScratchPool, SubmitScope};
@@ -174,7 +174,7 @@ impl MergeRenderer {
     /// sets that the document already holds.
     pub(crate) fn apply(&self, pool: &TilePool, scene: MergeScene<'_>) -> TileMap {
         let MergeScene {
-            lower, upper, clip, ..
+            lower, upper, ..
         } = scene;
 
         let mut scope = self.scratch.scope(&self.ctx, "stark merge");
@@ -201,11 +201,9 @@ impl MergeRenderer {
             }
         }
 
-        // A layer over an empty backdrop is that layer whatever its mode — the
-        // identity `tests/engine/blend.rs` pins to the byte — so at full opacity the source's
-        // own handle *is* the answer for a tile the destination lacks. Clipping is the
-        // exception: with no backdrop nothing of it survives, so the tile is dropped.
-        if !clip && upper.opacity >= 1.0 {
+        // The source's tiles the destination lacks, where `upper_only` hands them
+        // across by handle; it is `rewritten`'s complement by construction.
+        if upper_only(&scene) == UpperOnly::ByHandle {
             for (coord, handle) in upper.tiles.iter() {
                 if lower.tiles.get(coord).is_none() {
                     tiles = tiles.insert(*coord, handle.clone());
@@ -283,7 +281,7 @@ impl MergeRenderer {
         // reads.
         let bg = self
             .filter
-            .bind_group(&self.ctx.device, uniform.window(), tile.targets(), None);
+            .bind_group(&self.ctx.device, uniform.window(), tile.sources(), None);
         scope.fullscreen_pass(
             "stark merge filter",
             out.targets(),
@@ -363,7 +361,7 @@ impl MergeRenderer {
         // (`Zeroes::or`): a layer that has no tile at this coord reads the stand-in,
         // which is what lets `merge.wesl` be one shader whatever exists (§6.8).
         let (lower, upper) = (self.views_of(dst), self.views_of(src));
-        fn resid<'a>(t: Targets<'a>) -> &'a wgpu::TextureView {
+        fn resid<'a>(t: Sources<'a>) -> &'a wgpu::TextureView {
             t.resid
                 .expect("a residual is asked for only in a space that has one")
         }
@@ -411,7 +409,7 @@ impl MergeRenderer {
         self.encode_slab(scope, &self.expand, &u.expand.0, self.views_of(dst), &lower);
         self.encode_slab(scope, &self.expand, &u.expand.1, self.views_of(src), &upper);
         self.encode_blend(scope, &u.blend, &lower, &upper, &blended);
-        self.encode_slab(scope, &self.store, &u.store, blended.targets(), out);
+        self.encode_slab(scope, &self.store, &u.store, blended.sources(), out);
     }
 
     /// One direction of the slab law over one tile (`slab.wesl`).
@@ -420,7 +418,7 @@ impl MergeRenderer {
         scope: &mut SubmitScope,
         pipeline: &wgpu::RenderPipeline,
         uniform: &LeasedSlots<SlabUniform>,
-        input: Targets<'_>,
+        input: Sources<'_>,
         out: &Channels,
     ) {
         let bg = self
@@ -472,8 +470,8 @@ impl MergeRenderer {
     }
 
     /// A tile's three channel textures, or the 1×1 zeroes where the layer has none.
-    fn views_of<'a>(&'a self, tile: Option<&'a TilePairHandle>) -> Targets<'a> {
-        self.zeroes.or(tile.map(TilePairHandle::targets))
+    fn views_of<'a>(&'a self, tile: Option<&'a TilePairHandle>) -> Sources<'a> {
+        self.zeroes.or(tile.map(TilePairHandle::sources))
     }
 
     fn acquire(&self, pool: &TilePool, source: AllocSource) -> Channels {
@@ -487,11 +485,12 @@ impl MergeRenderer {
     }
 
     /// The coordinates a pass has to be encoded for: everything both sides touch,
-    /// less the tiles that pass through by handle.
+    /// less the tiles that keep a handle — the destination's where nothing changes
+    /// them, and the source's where [`upper_only`] passes them across.
     ///
-    /// One list rather than conditions inside the loop, because "which tiles change"
-    /// is also what the caller's footprint and the history's tile diff are about
-    /// (§12.6): a tile that keeps its handle is one the undo has nothing to restore.
+    /// One list rather than conditions inside the loop, so the encoding walks exactly
+    /// the tiles a pass writes; the ones handed across change the map too, and
+    /// [`apply`](Self::apply) inserts them from the same [`upper_only`] answer.
     fn rewritten(&self, scene: &MergeScene<'_>) -> Vec<stark_model::geom::TileCoord> {
         let MergeScene { lower, upper, .. } = *scene;
         let mut out: Vec<_> = lower
@@ -506,10 +505,9 @@ impl MergeRenderer {
             })
             .copied()
             .collect();
-        // …and the source's, where the destination has none. An unclipped merge at
-        // full opacity hands the handle across instead (see `apply`); a clipped one
-        // deletes them.
-        if !scene.clip && upper.opacity < 1.0 {
+        // …and the source's, where the destination has none — when `upper_only` says
+        // they are rewritten, rather than handed across or dropped.
+        if upper_only(scene) == UpperOnly::Rewritten {
             out.extend(
                 upper
                     .tiles
@@ -524,6 +522,31 @@ impl MergeRenderer {
         // (§12.1).
         out.sort_unstable_by_key(|c| (c.y, c.x));
         out
+    }
+}
+
+/// What a merge does with a tile **only the source holds** — the one decision
+/// [`MergeRenderer::apply`]'s passthrough and [`MergeRenderer::rewritten`]'s list both
+/// read, so the two cannot stop being complements.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum UpperOnly {
+    /// Clipped: with no backdrop nothing of a clipped layer survives (§14.11).
+    Dropped,
+    /// A layer over an empty backdrop is that layer whatever its mode — the identity
+    /// `tests/engine/blend.rs` pins to the byte — so at full opacity the source's own
+    /// handle *is* the answer.
+    ByHandle,
+    /// Below full opacity the tile is that layer *dimmed*, which takes a pass.
+    Rewritten,
+}
+
+fn upper_only(scene: &MergeScene<'_>) -> UpperOnly {
+    if scene.clip {
+        UpperOnly::Dropped
+    } else if scene.upper.opacity >= 1.0 {
+        UpperOnly::ByHandle
+    } else {
+        UpperOnly::Rewritten
     }
 }
 

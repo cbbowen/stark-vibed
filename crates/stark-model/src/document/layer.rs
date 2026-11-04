@@ -168,7 +168,7 @@ impl From<Option<LayerId>> for Place {
 /// **A mode may carry its own parameters**, and [`Drago`](Self::Drago) does. They live
 /// on the variant, which is the one shape in which a parameter cannot be stated for a
 /// mode that has none — and it keeps the merge's "the two layers agree about how they
-/// meet the backdrop" (`document::merge`) meaning something once a mode is a family of
+/// meet the backdrop" (`stark-engine`'s `fold::merge`) meaning something once a mode is a family of
 /// curves: two `Drago`s with different `k` are two different functions, and `!=` says
 /// so.
 ///

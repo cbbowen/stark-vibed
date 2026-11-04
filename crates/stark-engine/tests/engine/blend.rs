@@ -41,10 +41,7 @@ fn luma(c: [u8; 4]) -> f64 {
 
 /// Add a layer above the current one and paint `color` along `points` on it.
 fn layer_with(engine: &mut Engine, color: [f32; 3], points: &[Vec2]) {
-    engine.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
+    add_layer(engine);
     paint(engine, color, 44.0, points);
 }
 
@@ -137,10 +134,7 @@ fn empty_blend_layer_contributes_nothing() {
     paint(&mut engine, WARM, 44.0, H_STROKE);
     let before = engine.render_to_image();
 
-    engine.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
+    add_layer(&mut engine);
     engine.process(DocCommand::Set(Edit::LayerBlend(
         top(&engine),
         BlendMode::Reinhard,
@@ -277,10 +271,7 @@ fn a_blend_layer_leaves_the_backdrop_where_it_has_no_paint() {
                 return;
             };
             paint(&mut engine, WARM, 44.0, H_STROKE);
-            engine.process(DocCommand::AddLayer {
-                carrier: None,
-                above: None,
-            });
+            add_layer(&mut engine);
             // Clear of the horizontal stroke's 44 px reach by 36 px.
             paint(
                 &mut engine,
@@ -345,10 +336,7 @@ fn stacking_is_order_independent(mode: BlendMode) {
         let mut engine = engine_or_skip_blue()?;
         for (n, &i) in order.iter().enumerate() {
             if n > 0 {
-                engine.process(DocCommand::AddLayer {
-                    carrier: None,
-                    above: None,
-                });
+                add_layer(&mut engine);
             }
             let mut opaque = BrushParams {
                 shape: BrushShape::Round { hardness: 0.99 },
@@ -416,10 +404,7 @@ fn a_combining_layer_weighs_its_coverage_in_light() {
     )));
     let glow = center(&engine.render_to_image());
 
-    let worst = (0..3)
-        .map(|i| (normal[i] as i32 - glow[i] as i32).unsigned_abs())
-        .max()
-        .unwrap_or(0);
+    let worst = texel_delta(normal, glow);
     assert!(
         worst > 0,
         "the two coverage laws must actually differ here, or this test says nothing \
@@ -489,22 +474,16 @@ fn black_is_the_identity_through_the_round_trip() {
             // A wide black substrate with the color laid over the middle of it, thick
             // enough to reach full coverage — see the note above.
             paint(&mut engine, [0.0, 0.0, 0.0], 70.0, H_STROKE);
-            engine.process(DocCommand::AddLayer {
-                carrier: None,
-                above: None,
-            });
+            add_layer(&mut engine);
             stroke_with(&mut engine, opaque(color), V_STROKE);
             let over_black = center(&engine.render_to_image());
 
             engine.process(DocCommand::Set(Edit::LayerBlend(top(&engine), mode)));
             let blended = center(&engine.render_to_image());
 
-            let worst = (0..3)
-                .map(|i| (over_black[i] as i32 - blended[i] as i32).unsigned_abs())
-                .max()
-                .unwrap_or(0);
+            let worst = texel_delta(over_black, blended);
             assert!(
-                worst <= tol as u32,
+                worst <= tol,
                 "{space:?}/{mode:?} on {color:?}: light over black must be the light \
                  itself, but {blended:?} differs from {over_black:?} by {worst}"
             );
@@ -548,10 +527,7 @@ fn white_is_the_identity_through_the_round_trip() {
         // A wide white substrate with the color laid over the middle of it, thick
         // enough to reach full coverage — see the note on the black case.
         paint(&mut engine, [1.0, 1.0, 1.0], 70.0, H_STROKE);
-        engine.process(DocCommand::AddLayer {
-            carrier: None,
-            above: None,
-        });
+        add_layer(&mut engine);
         stroke_with(&mut engine, opaque(color), V_STROKE);
         let over_white = center(&engine.render_to_image());
 
@@ -561,12 +537,9 @@ fn white_is_the_identity_through_the_round_trip() {
         )));
         let blended = center(&engine.render_to_image());
 
-        let worst = (0..3)
-            .map(|i| (over_white[i] as i32 - blended[i] as i32).unsigned_abs())
-            .max()
-            .unwrap_or(0);
+        let worst = texel_delta(over_white, blended);
         assert!(
-            worst <= tol as u32,
+            worst <= tol,
             "{space:?} on {color:?}: a glaze over white must be the glaze itself, \
              but {blended:?} differs from {over_white:?} by {worst}"
         );
@@ -593,10 +566,7 @@ fn multiply_over_black_is_black() {
         // nothing under the glaze, so the glaze shows — correctly, and not what this
         // test is about.
         stroke_with(&mut engine, opaque([0.0, 0.0, 0.0]), H_STROKE);
-        engine.process(DocCommand::AddLayer {
-            carrier: None,
-            above: None,
-        });
+        add_layer(&mut engine);
         stroke_with(&mut engine, opaque(color), V_STROKE);
         let normal = center(&engine.render_to_image());
         engine.process(DocCommand::Set(Edit::LayerBlend(
@@ -618,10 +588,7 @@ fn multiply_over_black_is_black() {
              carries a quarter of the {normal:?} it covers with under Normal"
         );
     }
-    let worst = (0..3)
-        .map(|i| (warm[i] as i32 - cool[i] as i32).unsigned_abs())
-        .max()
-        .unwrap_or(0);
+    let worst = texel_delta(warm, cool);
     assert!(
         worst <= 3,
         "black annihilates whatever it multiplies, so these must agree: \
@@ -641,10 +608,7 @@ fn glow_leaves_headroom_where_radiance_does_not() {
         let mut engine = engine_or_skip()?;
         for n in 0..5 {
             if n > 0 {
-                engine.process(DocCommand::AddLayer {
-                    carrier: None,
-                    above: None,
-                });
+                add_layer(&mut engine);
             }
             paint(&mut engine, bright, 50.0, H_STROKE);
             let id = engine.observe().active_layer;
@@ -832,12 +796,7 @@ fn black_is_black_in_the_pigment_space() {
         ("a black substrate", ok_substrate, mix_substrate),
         ("black paint", ok_paint, mix_paint),
     ] {
-        let worst = ok
-            .iter()
-            .zip(&mix)
-            .map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs())
-            .max()
-            .unwrap_or(0);
+        let worst = texel_delta(ok, mix);
         assert!(
             worst <= 2,
             "{what}: Oklab renders {ok:?} and Mixbox {mix:?} — off by {worst}",
@@ -920,12 +879,7 @@ fn a_carried_black_stays_black_in_the_pigment_space() {
         return;
     };
     // Two levels, the same bound the fast-path case holds to.
-    let worst = ok
-        .iter()
-        .zip(&mix)
-        .map(|(a, b)| (*a as i32 - *b as i32).unsigned_abs())
-        .max()
-        .unwrap_or(0);
+    let worst = texel_delta(ok, mix);
     assert!(
         worst <= 2,
         "carried black: Oklab renders {ok:?} and Mixbox {mix:?} — off by {worst}",

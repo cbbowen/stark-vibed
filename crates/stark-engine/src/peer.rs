@@ -86,6 +86,19 @@ impl Peer {
         self.rx.is_drawing()
     }
 
+    /// Whether this peer has been silent past [`PEER_TIMEOUT`] at `now` — stated once,
+    /// for the expiry ([`Peers::tick`]) and the cheap test of it
+    /// ([`Peers::expiry_due`]), which must not disagree.
+    fn expired(&self, now: f64) -> bool {
+        now - self.last_seen >= PEER_TIMEOUT
+    }
+
+    /// Whether this peer's gesture has stalled past [`GESTURE_TIMEOUT`] at `now` — the
+    /// other half of what [`Peers::tick`] expires.
+    fn gesture_stalled(&self, now: f64) -> bool {
+        self.is_gesturing() && now - self.gesture_seen >= GESTURE_TIMEOUT
+    }
+
     /// The live stroke this peer is drawing, if any — what the preview fold renders.
     pub fn live_stroke(&self) -> Option<&StrokeRecord> {
         self.rx.live_stroke()
@@ -214,8 +227,16 @@ impl Peers {
     /// against* ([`tick`](Self::tick), [`expiry_due`](Self::expiry_due)), and nothing
     /// else reads it.
     pub(crate) fn advance(&mut self, now: f64) -> f64 {
-        self.now = now.max(self.now);
+        self.now = self.clock_at(now);
         self.now
+    }
+
+    /// What [`advance`](Self::advance) would answer for `now`, without taking it —
+    /// for the `&self` tests (`Engine::presence_due`) that have to judge the instant
+    /// the mutating call will act at, or they can say "nothing due" to a tick that
+    /// then expires someone.
+    pub(crate) fn clock_at(&self, now: f64) -> f64 {
+        now.max(self.now)
     }
 
     /// Integrate a frame published by `actor`, reporting what it moved.
@@ -237,6 +258,23 @@ impl Peers {
         // `PeerFrame::sanitized`. Here rather than in `Peer::apply` because this is
         // where a frame *arrives*, so every arm below reads the filtered value.
         let frame = frame.sanitized();
+        // Stale or duplicate: presence is a snapshot, so an overtaken frame carries
+        // nothing a newer one has not already said. Ordered on `(boot, seq)`, because
+        // `seq` alone cannot tell a client that restarted from one whose frames
+        // arrived late.
+        //
+        // **Ahead of the farewell**, which is a frame like any other: one from a
+        // peer's previous run, arriving after that peer has reloaded and its new run
+        // is already sending, would otherwise remove the live peer. A farewell takes
+        // a `seq` of its own (`PresenceTx::publish_leaving`), so a current one is
+        // never overtaken by the frame before it.
+        if self
+            .map
+            .get(&actor)
+            .is_some_and(|peer| (frame.boot, frame.seq) <= (peer.boot, peer.seq))
+        {
+            return PresenceChange::None;
+        }
         if frame.leaving {
             // A departure takes the peer's gesture — and its selection outline — off
             // the canvas with it.
@@ -246,11 +284,6 @@ impl Peers {
             };
         }
         match self.map.get_mut(&actor) {
-            // Stale or duplicate: presence is a snapshot, so an overtaken frame
-            // carries nothing a newer one has not already said. Ordered on
-            // `(boot, seq)`, because `seq` alone cannot tell a client that restarted
-            // from one whose frames arrived late.
-            Some(peer) if (frame.boot, frame.seq) <= (peer.boot, peer.seq) => PresenceChange::None,
             Some(peer) if frame.boot > peer.boot => {
                 // A new run of a client we already know — it reloaded. Its `seq` and
                 // its gesture ordinals both restart at zero, so nothing from the
@@ -283,14 +316,14 @@ impl Peers {
     pub(crate) fn tick(&mut self, now: f64) -> PresenceChange {
         let mut change = PresenceChange::None;
         self.map.retain(|_, p| {
-            let live = now - p.last_seen < PEER_TIMEOUT;
+            let live = !p.expired(now);
             if !live {
                 change = PresenceChange::Canvas;
             }
             live
         });
         for peer in self.map.values_mut() {
-            if peer.is_gesturing() && now - peer.gesture_seen >= GESTURE_TIMEOUT {
+            if peer.gesture_stalled(now) {
                 peer.end_gesture();
                 change = PresenceChange::Canvas;
             }
@@ -303,10 +336,9 @@ impl Peers {
     /// pump can skip the work on an idle session rather than take a mutable borrow
     /// to discover there was none.
     pub(crate) fn expiry_due(&self, now: f64) -> bool {
-        self.map.values().any(|p| {
-            now - p.last_seen >= PEER_TIMEOUT
-                || (p.is_gesturing() && now - p.gesture_seen >= GESTURE_TIMEOUT)
-        })
+        self.map
+            .values()
+            .any(|p| p.expired(now) || p.gesture_stalled(now))
     }
 
     /// A gesture is a thing that becomes an action, so an action from its author is
@@ -566,6 +598,11 @@ mod tests {
         assert_eq!(peers.advance(1.5), 1.5);
         assert_eq!(peers.advance(0.25), 1.5, "a backward step is ignored");
         assert_eq!(peers.advance(2.0), 2.0);
+        // The `&self` reading answers what `advance` would, and takes nothing: a due
+        // test judged on a backward `now` would miss an expiry the tick then makes.
+        assert_eq!(peers.clock_at(0.5), 2.0);
+        assert_eq!(peers.clock_at(3.0), 3.0);
+        assert_eq!(peers.advance(2.5), 2.5, "`clock_at` did not move the clock");
     }
 
     #[test]
@@ -1061,6 +1098,23 @@ mod tests {
         bye.leaving = true;
         assert!(peers.merge(a, bye, 0.1).roster());
         assert!(peers.is_empty());
+    }
+
+    /// A farewell is a frame like any other, so one that has been overtaken is
+    /// dropped: a goodbye from a peer's previous run, arriving after the peer reloaded
+    /// and its new run has spoken, leaves the live peer where it is.
+    #[test]
+    fn a_farewell_from_a_previous_run_does_not_remove_the_live_peer() {
+        let mut peers = Peers::new();
+        let a = ActorId(1);
+        let mut reloaded = frame(1, None);
+        reloaded.boot = 2;
+        peers.merge(a, reloaded, 0.0);
+        let mut late_bye = frame(9, None);
+        late_bye.boot = 1;
+        late_bye.leaving = true;
+        assert_eq!(peers.merge(a, late_bye, 0.1), PresenceChange::None);
+        assert!(peers.get(a).is_some(), "the new run is still here");
     }
 
     #[test]

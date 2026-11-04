@@ -143,6 +143,40 @@ pub fn painted(img: &RgbaImage, canvas: Vec2) -> bool {
     leads(texel(img, canvas), Lead::Red, MARGIN_FLAT)
 }
 
+/// [`painted`] for the suite's green — the second actor's, the second fill's — at
+/// the same margin, so a test asking one of each about two strokes is asking one
+/// question.
+pub fn painted_green(img: &RgbaImage, canvas: Vec2) -> bool {
+    leads(texel(img, canvas), Lead::Green, MARGIN_FLAT)
+}
+
+/// [`painted`] for the suite's blue: a gradient's far stop, or the [`BG`] substrate
+/// read as positively as paint is.
+pub fn painted_blue(img: &RgbaImage, canvas: Vec2) -> bool {
+    leads(texel(img, canvas), Lead::Blue, MARGIN_FLAT)
+}
+
+/// Whether a pixel of **lit** paint reads as the suite's red, at [`MARGIN_LIT`].
+///
+/// Dominance rather than near-saturation, because lit paint is never a pure primary:
+/// the media pass legitimately shades and desaturates it (§6.3). Under the reference
+/// light [`PAPER`] carries no dominance at all while the suite's red leads by ~210 and
+/// [`BG`] by ~180, so the margin is conservative rather than merely sufficient.
+pub fn lit_red(c: [u8; 4]) -> bool {
+    leads(rgb(c), Lead::Red, MARGIN_LIT)
+}
+
+/// [`lit_red`] for green.
+pub fn lit_green(c: [u8; 4]) -> bool {
+    leads(rgb(c), Lead::Green, MARGIN_LIT)
+}
+
+/// [`lit_red`] for blue — over the [`BG`] substrate, bare canvas read as positively
+/// as [`lit_red`] reads paint.
+pub fn lit_blue(c: [u8; 4]) -> bool {
+    leads(rgb(c), Lead::Blue, MARGIN_LIT)
+}
+
 /// The worst per-channel difference between two texels.
 pub fn texel_delta(a: [u8; 4], b: [u8; 4]) -> u8 {
     a.iter()
@@ -225,6 +259,27 @@ fn differing_sites(a: &RgbaImage, b: &RgbaImage, tol: u8) -> Vec<String> {
             )
         })
         .collect()
+}
+
+/// The worst [`texel_delta`] between each texel of `a` and the texel of `b` that `from`
+/// says it came from — `None` for one with no counterpart in `b`, which is skipped.
+///
+/// [`texel_deltas`] for a claim that one render is the other *moved*: shifted by a
+/// translation, reflected by a mirror. The two used to be the same nested loop with
+/// the index arithmetic written out twice.
+pub fn moved_delta(
+    a: &RgbaImage,
+    b: &RgbaImage,
+    from: impl Fn(u32, u32) -> Option<(u32, u32)>,
+) -> u8 {
+    (0..a.height)
+        .flat_map(|y| (0..a.width).map(move |x| (x, y)))
+        .filter_map(|(x, y)| {
+            let (bx, by) = from(x, y)?;
+            Some(texel_delta(a.pixel(x, y), b.pixel(bx, by)))
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// Assert every texel of `a` and `b` is within `tol` per channel. `tol` of 0 is

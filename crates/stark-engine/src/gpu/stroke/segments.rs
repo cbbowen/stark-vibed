@@ -489,13 +489,11 @@ impl<'a> SegmentBuilder<'a> {
     }
 
     /// The tip in force for one pen reading `dist` px along the stroke, in canvas px.
-    /// The floor keeps a tapered tip a hairline at its very point rather than a
-    /// degenerate zero-width sweep — which would divide by zero in the dynamics loop's
-    /// reservoir cadence, and would let a segment's ramp reach the `|ramp| = 2` its
-    /// positivity rests on.
+    /// Floored ([`tip_radius`](super::tips::tip_radius)) so a tapered tip stays a
+    /// hairline at its very point rather than a degenerate zero-width sweep.
     fn tip(&self, pen: PenState, dist: f32) -> f32 {
         let b = self.b;
-        (b.size * b.modulation.size(pen) * self.taper.factor(dist)).max(0.5)
+        super::tips::tip_radius(b.size * b.modulation.size(pen) * self.taper.factor(dist))
     }
 
     /// One segment: the pen sampled at its midpoint `at`, the arc it travels, and what
@@ -628,7 +626,7 @@ pub(super) fn generate_segments_in(
     spans: StrokeSpans,
 ) -> (Vec<Segment>, f32) {
     let dist0 = spans.dist;
-    let reaches_end = spans.range.end >= crate::path::span_count(rec.path.len());
+    let reaches_end = spans.reaches_end(rec);
     let pts = crate::path::flatten_spans_from(&rec.path, rec.start, spans.range, dist0, tol);
     let end_dist = pts.last().map_or(dist0, |p| p.dist);
     // One segment per flattened edge at least; the taper only ever cuts an edge into
@@ -709,7 +707,7 @@ pub(super) fn generate_segments_in(
 /// - [`OrientationSource::Pen`]: the shape is pinned to the pen's azimuth (the tilt
 ///   direction) in canvas space, so relative to the travel direction it is `α − φ` — as
 ///   the stroke curves the extent angle stays fixed in the world, like a nib.
-pub(super) fn orientation_turns(source: OrientationSource, dir: Vec2, tilt: Vec2) -> f32 {
+fn orientation_turns(source: OrientationSource, dir: Vec2, tilt: Vec2) -> f32 {
     match source {
         OrientationSource::FollowStroke => 0.0,
         OrientationSource::Pen => {

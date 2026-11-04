@@ -52,8 +52,10 @@ use stark_shaders::{EntryPoint, Stages};
 mod pack;
 pub(crate) mod plan;
 
+#[cfg(doc)]
+use plan::plan_float;
 use plan::{
-    gated_geometry, plan_float, plan_gated_mask, plan_gated_paint, plan_mask, plan_paint,
+    FloatPlan, gated_geometry, plan_gated_mask, plan_gated_paint, plan_mask, plan_paint,
     shifted_mask_cover, shifted_mask_sources,
 };
 
@@ -519,16 +521,21 @@ impl TransformRenderer {
     /// half (§16.12): `(what remains, what lifted)`. The two stack back to the
     /// picture that was there, §14.11.1's law run backwards: the cut is §16.2's
     /// lift, fully-covered tiles cross **by handle**, and only the boundary
-    /// tiles pay a parcel and two combines. `None` rejects the action — nothing
-    /// selected over the layer, or past the cap — deterministically.
+    /// tiles pay a parcel and two combines.
+    ///
+    /// Takes the caller's `plan` ([`plan_float`] over this `base`, `selection` and
+    /// `translation`) rather than planning again: the fold has to plan first to know
+    /// whether there is a cut at all (`fold::apply::float_cut`), and the plan sorts
+    /// every tile key of the layer — once is enough. With a plan in hand there is
+    /// nothing left to refuse.
     pub(crate) fn float(
         &self,
         pool: &TilePool,
         base: &TileMap,
         selection: &Selection,
         translation: stark_model::geom::IVec2,
-    ) -> Option<(TileMap, TileMap)> {
-        let plan = plan_float(base, selection, translation)?;
+        plan: FloatPlan,
+    ) -> (TileMap, TileMap) {
         // The mask, brought into the layer's frame once — every gate below reads it.
         let shifted = self.shifted_selection(pool, selection, translation, &plan.partial);
 
@@ -608,7 +615,7 @@ impl TransformRenderer {
             "the float's staging and draw walks disagree"
         );
         scope.finish();
-        Some((remaining, lifted))
+        (remaining, lifted)
     }
 
     /// The whole-plane affine (§16): one quad per selected source tile, pure
@@ -1006,7 +1013,7 @@ impl TransformRenderer {
         // is one shader whatever exists (§6.8's pattern).
         let under = self
             .zeroes
-            .or(from.base.get(&dest).map(TilePairHandle::targets));
+            .or(from.base.get(&dest).map(TilePairHandle::sources));
         let carried = self.zeroes.or(parcel.map(Channels::targets));
         // A gating read: the base is cut by `coverage · opacity`, the identical
         // factor the parcel side took at the source (`pack::combine_uniform`).

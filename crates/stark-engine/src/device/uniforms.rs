@@ -13,9 +13,9 @@
 //! compositor does, so a [`UniformSlots`] keeps one buffer, grown past the high-water
 //! mark by powers of two. An
 //! *operation's* uniforms — a fill's, a merge's, a stroke's — are leased instead,
-//! through the `SubmitScope` in `gpu::scratch` (`run_slots` and its siblings), from a
-//! pool that recycles them across operations and releases each only behind the submit
-//! that names it. Both lay their slots out by [`Slot`].
+//! through the `SubmitScope` in [`scratch`](crate::device::scratch) (`run_slots` and
+//! its siblings), from a pool that recycles them across operations and releases each
+//! only behind the submit that names it. Both lay their slots out by [`Slot`].
 //!
 //! # Why the vertex side lives here too
 //!
@@ -55,7 +55,7 @@ impl<T: bytemuck::Pod> Slot<T> {
     ///
     /// **Never the whole buffer**: displaced by any offset but 0, a window that wide
     /// runs off the buffer's end, and a pooled buffer is a bucket whose tail holds
-    /// whatever its last lease left there (`gpu::scratch`).
+    /// whatever its last lease left there ([`scratch`](crate::device::scratch)).
     pub(crate) fn window(buf: &wgpu::Buffer) -> wgpu::BindingResource<'_> {
         wgpu::BindingResource::Buffer(wgpu::BufferBinding {
             buffer: buf,

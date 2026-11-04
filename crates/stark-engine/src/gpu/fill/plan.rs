@@ -46,7 +46,8 @@ pub(crate) fn plan(op: &FillOp, gate: &Selection) -> Option<Vec<TileCoord>> {
                 tiles_of(reach, MAX_FILL_TILES)?
             }
         }
-        // `All`, or a lasso with no vertices. Only the gate can bound these.
+        // `All`, which only the gate can bound — or a shape whose box cannot be
+        // measured (a non-finite coordinate), which fills nothing.
         None => {
             if !matches!(op.shape(), SelectionShape::All) {
                 return Some(Vec::new());
@@ -89,15 +90,15 @@ mod tests {
         assert!(!coords.is_empty());
     }
 
+    /// No region — what a lasso too short to enclose anything decodes as
+    /// (`SelectionShape::Nothing`) — plans no tile, rather than failing, whatever the
+    /// feather and whatever is selected.
     #[test]
-    fn an_empty_lasso_fills_nothing_rather_than_failing() {
-        let op = FillOp::new(
-            SelectionShape::Lasso(Vec::new()),
-            0.0,
-            Srgb::new([1.0; 3]),
-            1.0,
-        );
-        assert_eq!(plan(&op, &Selection::everything()), Some(Vec::new()));
+    fn no_region_fills_nothing_rather_than_failing() {
+        for feather in [0.0, 500.0] {
+            let op = FillOp::new(SelectionShape::Nothing, feather, Srgb::new([1.0; 3]), 1.0);
+            assert_eq!(plan(&op, &Selection::everything()), Some(Vec::new()));
+        }
     }
 
     #[test]

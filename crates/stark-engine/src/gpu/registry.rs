@@ -62,7 +62,7 @@ use crate::device::context::GpuContext;
 use stark_model::DocError;
 
 /// How many bytes of built objects a store holds before it evicts the least recently
-/// used unpinned one — `gpu::scratch`'s `POOL_BUDGET` shape, and the same figure:
+/// used unpinned one — [`device::scratch`](crate::device::scratch)'s `POOL_BUDGET` shape, and the same figure:
 /// sixteen 2048² substrate bakes, where `SubstrateScale` admits seventy-six rungs a
 /// document could cross. Only what [`Resource::resident_bytes`] reports is counted.
 const BUILT_BUDGET: u64 = 256 << 20;

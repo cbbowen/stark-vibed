@@ -12,7 +12,7 @@
 //! [`UniformSlots`]: crate::device::uniforms::UniformSlots
 
 use crate::colorspace::ColorSpace;
-use crate::device::channels::Targets;
+use crate::device::channels::Sources;
 use crate::device::context::GpuContext;
 use crate::device::desc::{self, Bindings};
 use crate::device::uniforms::UniformSlots;
@@ -113,16 +113,10 @@ impl FilterPass {
             Bindings::shared_by(device, "stark filter bgl", &stages, fcd::F, &[fcd::F]),
             Bindings::if_reached(device, "stark filter space bgl", &stages, fmd::PIGMENT_LUT),
         ];
-        // Every entry point the layout was built over, not `fs_main` alone: the bind
-        // group answers for the whole layout, so a LUT only one of them reached is
-        // still a slot to fill.
-        let reads_lut = stages.iter().any(|s| match *s {
-            Stages::Render(vs, fs) => vs.reads(fmd::PIGMENT_LUT) || fs.reads(fmd::PIGMENT_LUT),
-            Stages::Compute(k) => k.reads(fmd::PIGMENT_LUT),
-        });
+        // Every entry point the layout was built over (`PigmentLut::read_by`).
         assert_eq!(
             pigment.is_some(),
-            reads_lut,
+            PigmentLut::read_by(&stages, fmd::PIGMENT_LUT),
             "the filter pass is given a pigment LUT exactly where its shader reads one",
         );
         let layout = desc::pipeline_layout_of(device, "stark filter layout", &[&bgls[0], &bgls[1]]);
@@ -191,7 +185,7 @@ impl FilterPass {
         &self,
         device: &wgpu::Device,
         uniform: wgpu::BindingResource<'_>,
-        back: Targets<'_>,
+        back: Sources<'_>,
         blur: Option<(&wgpu::TextureView, &wgpu::TextureView)>,
     ) -> [wgpu::BindGroup; 2] {
         let (blur_light, blur_aux) = blur.unwrap_or((&self.blur_zero.0, &self.blur_zero.1));
@@ -242,7 +236,7 @@ impl FilterPass {
             self.bind_group(
                 &ctx.device,
                 slots.resource(),
-                b.back,
+                b.back.into(),
                 blur.map(|f| f.planes()),
             )
         });

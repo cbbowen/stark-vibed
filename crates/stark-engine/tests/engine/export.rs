@@ -6,16 +6,14 @@
 //! output size, that a frame contributes nothing to its own export, that scale is a
 //! resolution and not a crop, and that chrome never reaches a file.
 
-use crate::common::palette::{BLACK, RED_SOFT};
+use crate::common::palette::RED_SOFT;
 use crate::common::*;
 use stark_engine::command::Tool;
-use stark_engine::command::{
-    DocCommand, Edit, GestureCommand, InputSample, PeerCommand, ViewCommand,
-};
+use stark_engine::command::{DocCommand, Edit, GestureCommand, InputSample, ViewCommand};
 use stark_engine::{Background, Engine, ExportScale, Rendered, RgbaImage};
 use stark_model::Srgb;
 use stark_model::document::LayerId;
-use stark_model::document::{MatteRegion, Parcel, Place, SelectionOp};
+use stark_model::document::{MatteRegion, SelectionOp};
 use stark_model::geom::Vec2;
 
 /// A 120×80 frame centred on the canvas origin.
@@ -29,15 +27,7 @@ const FRAME: MatteRegion = MatteRegion::OutsideRect {
 const WIDE: &[Vec2] = &[Vec2::new(-110.0, 0.0), Vec2::new(110.0, 0.0)];
 
 fn add_frame(engine: &mut Engine) -> LayerId {
-    added(
-        engine,
-        DocCommand::AddMatte {
-            carrier: None,
-            at: Place::Top,
-            region: FRAME,
-            paint: Parcel::Solid(Srgb::new(BLACK)),
-        },
-    )
+    add_matte(engine, FRAME)
 }
 
 fn corners(img: &RgbaImage) -> [[u8; 4]; 4] {
@@ -112,7 +102,7 @@ fn scale_changes_resolution_not_framing() {
 
     // Same framing: the four corners and the centre agree between the two, which
     // they could not if 2× had zoomed in on a sub-rect instead of resolving finer.
-    let near = |a: [u8; 4], b: [u8; 4]| (0..3).all(|c| (a[c] as i32 - b[c] as i32).abs() <= 12);
+    let near = |a: [u8; 4], b: [u8; 4]| apart(rgb(a), rgb(b)) <= 12;
     for (a, b) in corners(&one).iter().zip(corners(&two).iter()) {
         assert!(
             near(*a, *b),
@@ -644,33 +634,51 @@ fn export_is_rgba_whatever_the_target_format_is() {
     }
 }
 
-/// The frame's *live* rect is what exports — a preview drag included, since the
-/// dialog reports a size while the user is still dragging (§15.7).
+/// The plan describes the export it will produce — with a frame drag held as well as
+/// at rest, since the dialog reports a size while the user is still dragging (§15.7),
+/// and after the release, which moves both.
+///
+/// Mid-drag the two still read the **committed** frame (`Engine::export_rect` reads
+/// the timeline, not the drag's preview), so what is asked of the held drag is only
+/// that they agree, not which rect they agree on.
 #[test]
 fn export_plan_reports_the_size_it_will_produce() {
     let Some(mut engine) = engine_or_skip() else {
         return;
     };
     let frame = add_frame(&mut engine);
-    let plan = engine
-        .export_plan(Some(frame), ExportScale::Factor(2.0))
-        .expect("plan");
-    assert_eq!((plan.size.width, plan.size.height), (240, 160));
-    assert_eq!(plan.zoom, 2.0);
+    let planned = |engine: &mut Engine, what: &str| {
+        let plan = engine
+            .export_plan(Some(frame), ExportScale::Factor(2.0))
+            .expect("plan");
+        assert_eq!(plan.zoom, 2.0);
 
-    let img = export(
-        &mut engine,
-        Some(frame),
-        ExportScale::Factor(2.0),
-        Background::Substrate,
-        Rendered::Live,
-    );
+        let img = export(
+            engine,
+            Some(frame),
+            ExportScale::Factor(2.0),
+            Background::Substrate,
+            Rendered::Live,
+        );
+        assert_eq!(
+            (img.width, img.height),
+            (plan.size.width, plan.size.height),
+            "{what}: the plan must describe what export actually produces"
+        );
+        (plan.size.width, plan.size.height)
+    };
+    assert_eq!(planned(&mut engine, "at rest"), (240, 160));
+
+    // The frame pulled out to 160×100 and held there, then let go.
+    let (min, max) = (Vec2::new(-80.0, -50.0), Vec2::new(80.0, 50.0));
+    engine.process(ViewCommand::Preview(Some(Edit::MatteRect(frame, min, max))));
+    planned(&mut engine, "mid-drag");
+    engine.process(DocCommand::Set(Edit::MatteRect(frame, min, max)));
     assert_eq!(
-        (img.width, img.height),
-        (plan.size.width, plan.size.height),
-        "the plan must describe what export actually produces"
+        planned(&mut engine, "released"),
+        (320, 200),
+        "the plan did not follow the released frame"
     );
-    let _ = PeerCommand::SetActiveLayer(frame);
 }
 
 /// [`Rendered::Committed`] leaves the in-flight stroke out, and

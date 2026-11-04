@@ -305,15 +305,14 @@ impl PresenceTx {
     /// the wire ([`PeerFrame::sanitized`](stark_model::peer::PeerFrame::sanitized)),
     /// `None` means *unchanged*, and peers would go on showing the name that was just
     /// cleared.
+    ///
+    /// Trimmed, then through [`stark_model::sanitize::name`], the funnel every name
+    /// that travels takes: this one is sent with every heartbeat, so a pasted megabyte
+    /// capped only by the *receiver* would still be a megabyte on the wire each time.
     pub(crate) fn set_name(&mut self, name: &str) {
-        let name = name.trim();
-        self.name_chosen = !name.is_empty();
-        self.name.clear();
-        if self.name_chosen {
-            self.name.push_str(name);
-        } else {
-            self.name.push_str(&default_name(self.actor));
-        }
+        let chosen = stark_model::sanitize::name(Some(name.trim().to_owned()));
+        self.name_chosen = chosen.is_some();
+        self.name = chosen.unwrap_or_else(|| default_name(self.actor));
     }
 
     /// Where this client's pointer is, or `None` when it is off the canvas.
@@ -1034,6 +1033,16 @@ mod tests {
             Some("ada"),
             "the new session's peers have never been told it",
         );
+    }
+
+    /// A name is capped where it is **sent**, not only where it is received: it
+    /// rides every heartbeat, so a pasted megabyte capped by the receiver alone would
+    /// still cross the wire each time (`stark_model::sanitize::name`).
+    #[test]
+    fn a_long_name_is_capped_before_it_is_sent() {
+        let mut presence = PresenceTx::new();
+        presence.set_name(&"€".repeat(stark_model::MAX_NAME * 4));
+        assert_eq!(presence.name().chars().count(), stark_model::MAX_NAME);
     }
 
     /// [`PresenceTx::adopt_identity`] takes the id-derived name as a default and leaves

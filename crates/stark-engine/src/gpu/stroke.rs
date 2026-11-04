@@ -27,9 +27,9 @@ use std::sync::Arc;
 
 use crate::assets::AssetStore;
 use crate::colorspace::ColorSpace;
-use crate::device::channels::Zeroes;
+use crate::device::channels::{ChannelFormats, Channels, Zeroes};
 use crate::device::context::GpuContext;
-use crate::device::tile::{AllocSource, TileMap, TilePairHandle, TilePool};
+use crate::device::tile::{AllocSource, TileMap, TilePool};
 use crate::document::PaintTiles;
 use crate::document::liquify::LiquifyRun;
 use crate::document::selection::Selection;
@@ -273,7 +273,7 @@ impl StrokeRenderer {
         let space = color_space.as_ref();
         Self {
             ctx: ctx.clone(),
-            swept: SweepKit::new(&ctx.device, space),
+            swept: SweepKit::new(ctx, space),
             integrate: swept::integrate_pass(&ctx.device, space),
             erase: erase::erase_pass(&ctx.device, space),
             dynamics: build_dynamics_kit(ctx, space, tile_bgl),
@@ -443,11 +443,14 @@ impl StrokeRenderer {
         }
     }
 
-    /// Acquire a persistent tile: the document's channel trio, with the residual
+    /// Acquire a fresh tile's channels to write: the document's trio, with the residual
     /// exactly where the color space has one (§6.7).
-    fn acquire_tile(&self, pool: &TilePool, source: AllocSource) -> TilePairHandle {
-        use crate::device::channels::{ChannelFormats, Channels};
-        Channels::acquire(pool, ChannelFormats::of(self.color_space.as_ref()), source).into_tile()
+    ///
+    /// [`Channels`] rather than a tile: a pass may write them, and only
+    /// [`Channels::into_tile`], once it has, makes them something the document shares
+    /// (§5.2).
+    fn acquire_channels(&self, pool: &TilePool, source: AllocSource) -> Channels {
+        Channels::acquire(pool, ChannelFormats::of(self.color_space.as_ref()), source)
     }
 
     /// Resolve the constants both render paths read for one stroke — see
@@ -477,7 +480,7 @@ impl StrokeRenderer {
         let ceiling_lane = rec.brush.effect.opacity_modulated();
         StrokeConstants {
             channels: l.lat,
-            resid: [l.res[0], l.res[1], l.res[2], 0.0],
+            resid: l.res,
             opacity,
             ceiling_lane,
             capped: opacity < 1.0 || ceiling_lane || selection.is_active(),
@@ -528,11 +531,11 @@ struct StrokeConstants {
     /// which both paths apply per fragment from the fragment's own arc length,
     /// never per segment.
     channels: [f32; 3],
-    /// The same color's **residual** (§6.7) in `.xyz`; `.w` unused. Zero in a space
-    /// with no residual, and zero because that space's channels above are already the
-    /// whole color — both paths write this lane unconditionally, since the uniform it
-    /// lands in is one Rust struct across both shader variants.
-    resid: [f32; 4],
+    /// The same color's **residual** (§6.7). Zero in a space with no residual, and zero
+    /// because that space's channels above are already the whole color — both paths
+    /// write this lane unconditionally, since the uniform it lands in is one Rust struct
+    /// across both shader variants.
+    resid: [f32; 3],
     /// The **stroke's ceiling**: the effect's opacity (`BrushEffect::opacity`)
     /// times the selection mask's (`Selection::opacity`, §6.8) — the ceiling on
     /// what a saturated stroke does, whichever effect and whichever path. Each
@@ -577,8 +580,8 @@ struct StrokeConstants {
     /// it) + 1/NOISE_TILE_PX, and per-channel amplitude. Inactive jitter zeroes
     /// frequency *and* amplitude, so with the zero tile bound the shader's early-out
     /// keeps the deposit bit-identical.
-    nfreq: [f32; 4],
-    namp: [f32; 4],
+    nfreq: [f32; 3],
+    namp: [f32; 3],
     /// The seed the stroke's own noise tile is baked from ([`noise_seed`]) — the
     /// field `TipCache::noise_view` binds. Not a uniform lane, but resolved here
     /// beside the lookup it feeds for the same reason as the rest: the two paths
@@ -610,23 +613,26 @@ impl StrokeConstants {
 /// sweep's `TileXform` and the dynamics loop's `Stamp` slots so both paths jitter
 /// identically. Inactive jitter zeroes frequency *and* amplitude, so with the
 /// zero tile bound the shader's early-out keeps the deposit bit-identical.
-fn noise_uniform(rec: &StrokeRecord) -> ([f32; 4], [f32; 4]) {
+fn noise_uniform(rec: &StrokeRecord) -> ([f32; 3], [f32; 3]) {
     let cd = rec.brush.color_dynamics();
     let (freq, amp) = if cd.is_active() {
         (cd.frequency, cd.amplitude)
     } else {
         ([0.0; 2], [0.0; 3])
     };
-    (
-        [freq[0], freq[1], 1.0 / NOISE_TILE_PX, 0.0],
-        [amp[0], amp[1], amp[2], 0.0],
-    )
+    ([freq[0], freq[1], 1.0 / NOISE_TILE_PX], amp)
 }
 
 /// The `n`-th draw of the stroke's splitmix64 stream. Every per-stroke
 /// randomness is its own draw off the record's `seed`, so each is deterministic
 /// from the record (replay and live == committed hold, §6.2) and independent of
 /// the others.
+///
+/// Draws 1 ([`noise_seed`]) and 3 ([`jitter_seed`]) are taken; **draw 2 is retired**,
+/// its consumer gone. The numbering is not closed up over the gap, because a draw *is*
+/// its index: renumbering the jitter to 2 would hand every stroke ever recorded a
+/// different gate pattern, and move the pixels of every golden and every saved
+/// document with it.
 fn draw(seed: u64, n: u64) -> u64 {
     let mut z = seed.wrapping_add(0x9E3779B97F4A7C15u64.wrapping_mul(n));
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);

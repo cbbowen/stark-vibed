@@ -234,8 +234,6 @@ pub(super) struct WetKernels {
     /// 1×1 zero. Such a slot carries `lambda_bleed = 0` and never reads it, so this is
     /// the §6.8 stand-in pattern rather than a case the shader has to branch on.
     pub(super) bleed_placeholder: wgpu::TextureView,
-    /// The ceiling lane's 1×1 zero (§6.2), bound where a stroke has no lane.
-    pub(super) levels_placeholder: wgpu::TextureView,
     /// Bilinear clamp sampler for the region and reservoir lookups.
     pub(super) sampler: wgpu::Sampler,
 }
@@ -329,24 +327,28 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
     let module = desc::Module::new(device, "stark dynamics loop", dynamics);
     let liquify = stark_shaders::liquify(color_space.resid());
     let liquify_module = desc::Module::new(device, "stark liquify field", liquify);
-    // The prefix volume's layout, over the kernels that read it — **filtered from the
-    // whole list rather than listed** (§6.10), which is the same question
-    // `Kernel::build` asks of each one.
-    let every: [EntryPoint; 11] = [
-        dynamics.snapshot,
-        dynamics.bleed_weight,
-        dynamics.exchange,
-        dynamics.bake,
-        dynamics.deposit,
-        dynamics.cell_hoist,
-        dynamics.deposit_coarse,
-        dynamics.settle,
-        liquify.snapshot_field,
-        liquify.warp,
-        liquify.warp_apply,
+    // Every kernel the loop and the warp dispatch, **one table** both the prefix
+    // volume's layout and the kernels themselves are derived from — so a kernel added
+    // here is one the layout already answers for. The layout is the kernels that read
+    // the volume, **filtered from the whole list rather than listed** (§6.10), which is
+    // the same question `Kernel::build` asks of each one.
+    let (dy, lq) = (&module, &liquify_module);
+    let kernels: [(&str, &desc::Module, EntryPoint); 11] = [
+        ("stark dynamics snapshot", dy, dynamics.snapshot),
+        ("stark dynamics bleed weight", dy, dynamics.bleed_weight),
+        ("stark dynamics exchange", dy, dynamics.exchange),
+        ("stark dynamics bake", dy, dynamics.bake),
+        ("stark dynamics deposit", dy, dynamics.deposit),
+        ("stark dynamics cell hoist", dy, dynamics.cell_hoist),
+        ("stark dynamics deposit coarse", dy, dynamics.deposit_coarse),
+        ("stark dynamics settle", dy, dynamics.settle),
+        ("stark liquify snapshot field", lq, liquify.snapshot_field),
+        ("stark liquify warp", lq, liquify.warp),
+        ("stark liquify warp apply", lq, liquify.warp_apply),
     ];
-    let readers: Vec<Stages> = every
-        .into_iter()
+    let readers: Vec<Stages> = kernels
+        .iter()
+        .map(|&(_, _, entry)| entry)
         .filter(|e| reads_prefix(*e))
         .map(Stages::Compute)
         .collect();
@@ -357,18 +359,30 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
         scd::PREFIX_TEX,
         &[],
     );
-    let wet_kernel = |label: &str, entry| Kernel::build(device, &module, label, entry, &prefix_bgl);
-    let warp_kernel =
-        |label: &str, entry| Kernel::build(device, &liquify_module, label, entry, &prefix_bgl);
+    // In the table's order, which is the one place it is stated.
+    let [
+        snapshot,
+        bleed_weight,
+        exchange,
+        bake,
+        deposit,
+        hoist,
+        deposit_coarse,
+        settle,
+        snapshot_field,
+        warp,
+        apply,
+    ] = kernels
+        .map(|(label, module, entry)| Kernel::build(device, module, label, entry, &prefix_bgl));
     let wet = WetKernels {
-        snapshot: wet_kernel("stark dynamics snapshot", dynamics.snapshot),
-        bleed_weight: wet_kernel("stark dynamics bleed weight", dynamics.bleed_weight),
-        exchange: wet_kernel("stark dynamics exchange", dynamics.exchange),
-        bake: wet_kernel("stark dynamics bake", dynamics.bake),
-        deposit: wet_kernel("stark dynamics deposit", dynamics.deposit),
-        hoist: wet_kernel("stark dynamics cell hoist", dynamics.cell_hoist),
-        deposit_coarse: wet_kernel("stark dynamics deposit coarse", dynamics.deposit_coarse),
-        settle: wet_kernel("stark dynamics settle", dynamics.settle),
+        snapshot,
+        bleed_weight,
+        exchange,
+        bake,
+        deposit,
+        hoist,
+        deposit_coarse,
+        settle,
         // The 1×1 a painting segment binds where a firing binds the real scratch (§6.8's
         // stand-in pattern): such a slot carries `lambda_bleed = 0` and never reads it.
         bleed_placeholder: desc::zero_texture(
@@ -376,19 +390,12 @@ pub(in crate::gpu::stroke) fn build_dynamics_kit(
             d::BLEED_W_W.storage_format(),
             "stark dynamics bleed w 1x1",
         ),
-        // The same stand-in for the ceiling lane (§6.2): a stroke whose ceiling the pen
-        // does not drive carries `ceiling_lane = 0` and never reads it.
-        levels_placeholder: desc::zero_texture(
-            ctx,
-            crate::gpu::stroke::swept::CEILING_FORMAT,
-            "stark dynamics levels 1x1",
-        ),
         sampler: desc::linear_sampler(device, "stark dynamics exchange sampler"),
     };
     let warp = WarpKernels {
-        snapshot_field: warp_kernel("stark liquify snapshot field", liquify.snapshot_field),
-        warp: warp_kernel("stark liquify warp", liquify.warp),
-        apply: warp_kernel("stark liquify warp apply", liquify.warp_apply),
+        snapshot_field,
+        warp,
+        apply,
     };
 
     // ---- Region → tile write-back: the aux narrow pass. The color and residual

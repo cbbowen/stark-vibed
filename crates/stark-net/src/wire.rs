@@ -165,15 +165,23 @@ use iroh::EndpointId;
 /// texels, and an exact quarter turn where radians could not hold one. A peer on 29
 /// computes different pixels from the same actions, and that two peers do not is the
 /// whole of what §12.1 promises.
-/// 31: three meaning changes and no shape change, so a file reads either way. Every
+/// 31: meaning changes and no shape change, so a file reads either way. Every
 /// name the log carries — a layer's, a guide's, a placed picture's — is held to
 /// `MAX_NAME` by `ActionKind::sanitized`, where only the local command door held it
 /// before and a `PlaceImage`'s was held nowhere: a peer on 30 would keep a long name
 /// this build cuts. A round tip's `NaN` hardness lands on the default rather than on
-/// 0, so the two builds bake a different tip from the same stroke. And a fill counts
+/// 0, so the two builds bake a different tip from the same stroke. A fill counts
 /// the apron band once rather than twice, so its plan and its footprint name a band
 /// of tiles fewer — the same paint, but a different answer to which actions commute,
-/// which is the disagreement §12.6 cannot see.
+/// which is the disagreement §12.6 cannot see. A lasso is a `Lasso` — three
+/// vertices at least — and a vertex list too short to be one decodes as
+/// `SelectionShape::Nothing` (§6.8): a `Fill` naming one used to paint every tile it
+/// planned solid and now lays nothing; a `Select` naming one is declined as it
+/// always was. A fill's region is rasterized over the fill's own planned tiles, so a
+/// fill the selection tools' wider cover would have refused past
+/// `MAX_SELECTION_TILES` now lands. And the stroke budget floors a hairline's radius
+/// *before* stretching it, so a stretched tip under half a px is cut into the
+/// segments its reach asks for.
 pub(crate) const ALPN: &[u8] = b"stark/collab/31";
 
 /// The number [`ALPN`] ends with, as a number, for a ticket to carry — see

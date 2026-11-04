@@ -2,7 +2,6 @@
 
 use crate::common::palette::RED;
 use crate::common::*;
-use stark_assetid::Picture;
 use stark_engine::Engine;
 use stark_engine::command::{DocCommand, Edit};
 use stark_engine::testing::{AllocSource, TilePool};
@@ -14,13 +13,11 @@ use stark_model::{AssetId, AssetNeed, ColorSpaceId, Srgb, SubstrateId};
 /// imports under an id of its own.
 fn picture(tint: u8) -> Vec<u8> {
     const SIDE: u32 = 64;
-    Picture {
-        width: SIDE,
-        height: SIDE,
-        pixels: [220, tint, 25, 255].repeat((SIDE * SIDE) as usize),
-    }
-    .encode()
-    .expect("a well-formed picture")
+    picture_png(
+        SIDE,
+        SIDE,
+        [220, tint, 25, 255].repeat((SIDE * SIDE) as usize),
+    )
 }
 
 /// Import `png` and place it centred on the canvas origin, answering its id.

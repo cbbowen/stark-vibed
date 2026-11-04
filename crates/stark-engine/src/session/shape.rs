@@ -6,6 +6,7 @@ use crate::command::Tool;
 use crate::gesture::LiveGesture;
 use stark_model::Srgb;
 use stark_model::document::{
+    Lasso,
     FillOp, LayerId, SelectionMode, SelectionOp, SelectionShape, ShapeAction,
 };
 use stark_model::geom::Vec2;
@@ -149,7 +150,7 @@ impl ShapeDrag {
                 if points.last().is_none_or(|q| *q != self.current) {
                     points.push(self.current);
                 }
-                (points.len() >= 3).then_some(SelectionShape::Lasso(points))
+                Lasso::new(points).map(SelectionShape::Lasso)
             }
         }
     }

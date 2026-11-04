@@ -81,7 +81,7 @@ impl View {
 /// [`CompositorPasses`](super::CompositorPasses) keeps only the layouts and
 /// pipelines, which never change.
 ///
-/// **A slot per view, not one uniform**, for the reason `gpu::uniforms` gives:
+/// **A slot per view, not one uniform**, for the reason [`device::uniforms`](crate::device::uniforms) gives:
 /// `write_buffer` is a queue operation, so N rewrites before one submit leave every
 /// pass reading the last value written. A frame has one view; the eyedropper has up
 /// to [`MAX_SAMPLES`](stark_model::gradient::MAX_SAMPLES), a gradient trace sampling

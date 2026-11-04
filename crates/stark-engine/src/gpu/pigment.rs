@@ -15,7 +15,7 @@
 //! Mixbox 2.0 (c) 2022 Secret Weapons, authors Sarka Sochorova and Ondrej Jamriska.
 //! Licensed CC BY-NC 4.0; see `vendor/mixbox/LICENSE`.
 
-use stark_shaders::{Binding, EntryPoint};
+use stark_shaders::{Binding, Stages};
 
 use crate::device::context::GpuContext;
 
@@ -42,16 +42,27 @@ pub(crate) struct PigmentLut {
 }
 
 impl PigmentLut {
-    /// The LUT `fs` reads, or `None` where it reaches none.
+    /// The LUT `pipelines` read, or `None` where none of them reaches one.
     ///
     /// **The shader's answer, not the space's.** Only the pigment builds of
     /// `blend.wesl` and `filter.wesl` declare a LUT, so a colorimetric space's layout
-    /// has no slot
-    /// for it — there is nothing to stand in for, and no `needs_pigment_lut` for a space
-    /// to answer twice. `lut` is the caller's own module's declaration, the two being
-    /// different slots of different modules (§6.10).
-    pub(crate) fn of(ctx: &GpuContext, fs: EntryPoint, lut: Binding) -> Option<Self> {
-        fs.reads(lut).then(|| Self::load(ctx))
+    /// has no slot for it — there is nothing to stand in for, and no
+    /// `needs_pigment_lut` for a space to answer twice. `lut` is the caller's own
+    /// module's declaration, the two being different slots of different modules
+    /// (§6.10).
+    ///
+    /// **Every stage of every pipeline**, the list the slot's layout was built over
+    /// (`Bindings::if_reached`): the bind group answers for the whole layout, so a LUT
+    /// any one stage reaches is a slot to fill, and asking the fragment stage alone
+    /// would leave a vertex-stage read with a slot and nothing in it.
+    pub(crate) fn of(ctx: &GpuContext, pipelines: &[Stages], lut: Binding) -> Option<Self> {
+        Self::read_by(pipelines, lut).then(|| Self::load(ctx))
+    }
+
+    /// Whether any stage of `pipelines` reads `lut` — [`of`](Self::of)'s question,
+    /// for a pass handed a LUT another built to check it is owed one.
+    pub(crate) fn read_by(pipelines: &[Stages], lut: Binding) -> bool {
+        pipelines.iter().any(|s| s.reads(lut))
     }
 
     /// Decode and upload the vendored LUT.

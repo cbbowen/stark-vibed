@@ -93,8 +93,22 @@ impl Engine {
         // is: `SOLO` authors no action in a shared session, so nothing this actor mints
         // from here on can land on one of these — and there is no per-actor counter to
         // recover (§17.9).
+        self.enter_shared(identity, log);
+        true
+    }
+
+    /// Become `identity` in a shared session whose log is `log` — the steps hosting and
+    /// joining share, so the two cannot drift: the document re-materialized from the
+    /// log onto the origin (which supersedes a drag over it), this client authoring as
+    /// the identity's actor and presenting as it, and the outbox opened.
+    ///
+    /// What it leaves to the caller is the one thing they differ on. A join resumes the
+    /// clock past the log it was handed (`resync_counters`); a host must not, since
+    /// lowering the clock to its shared prefix could reissue an id a withheld redo
+    /// suffix already holds.
+    fn enter_shared(&mut self, identity: Identity, log: Vec<Action>) {
+        let actor = identity.actor;
         let initial = self.origin();
-        // The document is re-materialized from its log, which supersedes a drag over it.
         self.change_committed(Drag::Supersede, |timeline, ctx| {
             *timeline =
                 Timeline::Replicated(ReplicatedTimeline::from_log(actor, initial, log, ctx));
@@ -103,7 +117,6 @@ impl Engine {
         self.authoring.actor = actor;
         self.presence.adopt_identity(identity);
         self.authoring.outbox = Some(Vec::new());
-        true
     }
 
     /// Join a shared session (the peer side): replace the document with the
@@ -127,27 +140,11 @@ impl Engine {
         // Before anything is disturbed, which is the whole of what the type buys:
         // `adopt` empties the document on its second line.
         let validated = super::file::ValidatedFile::new(file)?;
-        let identity = identity.into();
-        let actor = identity.actor;
         // Everything the shared log needs before it can be replayed, in the order that
         // makes it a replay rather than an approximation.
-        self.adopt(validated);
-        let initial = self.origin();
-        self.change_committed(Drag::Supersede, |timeline, ctx| {
-            *timeline = Timeline::Replicated(ReplicatedTimeline::from_log(
-                actor,
-                initial,
-                file.actions.clone(),
-                ctx,
-            ));
-            true
-        });
-        self.authoring.actor = actor;
-        self.presence.adopt_identity(identity);
+        self.adopt(&validated);
+        self.enter_shared(identity.into(), file.actions.clone());
         self.resync_counters(&file.actions);
-        self.authoring.outbox = Some(Vec::new());
-        // Whatever the replayed log left the document on.
-        self.apply_document_substrate();
         Ok(())
     }
 
@@ -197,8 +194,21 @@ impl Engine {
     /// Integrate an action authored by a peer (§12.1). Idempotent —
     /// duplicates are rejected by id. Advances the Lamport clock past the
     /// remote action so future local ids order after everything seen.
+    ///
+    /// **Refused once the device has died** (§5): nothing applied after that point
+    /// could render, and a fold that half-ran on a lost device is a state no peer
+    /// holds. The refusal is here, on the one door every peer action comes through,
+    /// rather than asked of each frontend's collaboration pump — which is how it went
+    /// unasked. The action is not lost to the session: a client that recovers rejoins,
+    /// and reconciliation hands it back (§17.5).
     pub fn merge_remote(&mut self, action: Action) -> bool {
-        self.authoring.clock = self.authoring.clock.max(action.id.lamport + 1);
+        if self.shared.gpu.health().has_failed() {
+            return false;
+        }
+        // Saturating, as a layer number does (§14.6): the id is a peer's or a file's
+        // to state, and `u64::MAX + 1` would panic a debug build and wrap a release
+        // one onto 0 — ordering every later local action before the one just seen.
+        self.authoring.clock = self.authoring.clock.max(action.id.lamport.saturating_add(1));
         let author = action.id.actor;
         let merged = self.change_committed(Drag::Keep, |timeline, ctx| timeline.merge(action, ctx));
         if merged {
@@ -207,8 +217,6 @@ impl Engine {
             // both the live copy and the committed one are drawn.
             self.peers.clear_gesture(author);
         }
-        // A peer may have switched the substrate (§6.4).
-        self.apply_document_substrate();
         merged
     }
 
@@ -241,7 +249,12 @@ impl Engine {
     ///
     /// Conservative in the same direction as `PresenceTx::publish_due`: it may say yes
     /// where the drain then finds nothing, never the reverse.
+    ///
+    /// Judged at the instant [`take_presence`](Self::take_presence) would act at —
+    /// `now` through the roster's clock, which never steps back — so a caller whose
+    /// clock did step back is not told "nothing due" by one and expired by the other.
     pub fn presence_due(&self, now: f64) -> bool {
+        let now = self.peers.clock_at(now);
         self.peers.expiry_due(now)
             || (self.is_shared()
                 && self.presence.publish_due(
@@ -332,5 +345,72 @@ impl Engine {
     /// Everyone else in the session, in ascending [`ActorId`] order (empty solo).
     pub fn peers(&self) -> impl Iterator<Item = &Peer> {
         self.peers.iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::command::DocCommand;
+    use crate::view::Extent2;
+
+    fn engine(gpu: crate::GpuContext) -> Engine {
+        Engine::new(gpu, wgpu::TextureFormat::Rgba8Unorm, Extent2::new(64, 64))
+    }
+
+    /// **A device that has failed takes no peer action** (§5) — and one that has not
+    /// takes the same action, so the refusal is the device's and not the action's.
+    ///
+    /// The failure is the cheapest real one there is: a texture past the device's
+    /// limits, which the uncaptured-error handler records as `Invalid`. Not a loss —
+    /// but every failure means the operation that hit it produced nothing, and the
+    /// frontend stops (`GpuHealth::has_failed`).
+    #[test]
+    fn a_failed_device_refuses_peer_actions() {
+        let (Some(host_gpu), Some(peer_gpu)) = (
+            crate::testing::context_or_skip(),
+            crate::testing::context_or_skip(),
+        ) else {
+            return;
+        };
+        let mut host = engine(host_gpu);
+        host.start_collaboration(ActorId(1));
+        let mut peer = engine(peer_gpu.clone());
+        peer.join_collaboration(&host.document_file(), ActorId(2))
+            .expect("join a session this build can render");
+
+        host.process(DocCommand::AddLayer {
+            carrier: None,
+            above: None,
+        });
+        host.process(DocCommand::AddLayer {
+            carrier: None,
+            above: None,
+        });
+        let mut sent = host.take_outbox().into_iter();
+        let (first, second) = (sent.next().expect("one"), sent.next().expect("two"));
+        assert!(peer.merge_remote(first), "a healthy device merges");
+
+        let over = peer_gpu.device.limits().max_texture_dimension_2d + 1;
+        let _refused = peer_gpu.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("stark merge test: past the limit"),
+            size: wgpu::Extent3d {
+                width: over,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let _ = peer_gpu.device.poll(wgpu::PollType::wait_indefinitely());
+        assert!(peer_gpu.health().has_failed(), "the failure was recorded");
+
+        let clock = peer.authoring.clock;
+        assert!(!peer.merge_remote(second), "a failed device merges nothing");
+        assert_eq!(peer.authoring.clock, clock, "nor does it take the action's clock");
     }
 }

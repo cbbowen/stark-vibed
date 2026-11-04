@@ -41,20 +41,6 @@ fn paint_stroke(engine: &mut Engine) {
     );
 }
 
-// Lit paint is never a pure primary, so assert channel *dominance* rather than
-// near-saturation (the media pass legitimately shades and desaturates color). Under
-// the reference light (§6.3) the substrate is achromatic, so the neutral PAPER carries
-// no dominance at all while red paint dominates by ~210 and blue BG by ~180 — 60 is
-// conservative rather than merely sufficient. The margin is wide because the
-// separation it states is the one that matters, not because the number is tight; a
-// warm tint alone can push a neutral substrate to ~33 levels of false dominance.
-// Tests below self-check this.
-fn is_red(c: [u8; 4]) -> bool {
-    leads(rgb(c), Lead::Red, MARGIN_LIT)
-}
-fn is_blue(c: [u8; 4]) -> bool {
-    leads(rgb(c), Lead::Blue, MARGIN_LIT)
-}
 // Every test that reads the live preview's *color* — either directly, or by holding
 // it against what commits — is gated off under `debug-unfrozen`, which repaints the
 // live tail magenta by design (see this crate's `Cargo.toml`). The tint has its own
@@ -75,7 +61,7 @@ fn live_preview_shows_stroke_before_commit() {
 
     assert!(engine.observe().is_stroking);
     let preview = engine.render_to_image();
-    assert!(is_red(center(&preview)), "preview should show the stroke");
+    assert!(lit_red(center(&preview)), "preview should show the stroke");
 }
 
 /// The unfrozen-tail tint is a *view* setting: it must change the live preview and
@@ -120,7 +106,7 @@ fn tinting_the_live_tail_does_not_change_what_commits() {
     // And what landed is the stroke's own color: a tint that reached the stroke
     // *record* would repaint the whole stroke magenta in the single commit pass.
     assert!(
-        is_red(center(&committed)),
+        lit_red(center(&committed)),
         "the tint leaked into the committed stroke"
     );
 }
@@ -160,7 +146,7 @@ fn a_stroke_too_wide_for_one_region_still_moves_paint() {
     ];
     long_band(&mut engine, &across);
     assert!(
-        !is_blue(center(&engine.render_to_image())),
+        !lit_blue(center(&engine.render_to_image())),
         "the undercoat did not land, so there is nothing to scrape"
     );
 
@@ -171,7 +157,7 @@ fn a_stroke_too_wide_for_one_region_still_moves_paint() {
     w.dynamics.lift = 1.0;
     stroke_with(&mut engine, scrape, &across);
     assert!(
-        is_blue(center(&engine.render_to_image())),
+        lit_blue(center(&engine.render_to_image())),
         "a stroke too wide for one region left the paint under it untouched"
     );
 }
@@ -203,7 +189,9 @@ fn straight_run() -> Vec<Vec2> {
 /// The stroke's rendered width where it crosses screen column `x`: how many rows
 /// there read as paint.
 fn painted_height(img: &stark_engine::RgbaImage, x: u32) -> u32 {
-    (0..img.height).filter(|&y| is_red(img.pixel(x, y))).count() as u32
+    (0..img.height)
+        .filter(|&y| lit_red(img.pixel(x, y)))
+        .count() as u32
 }
 
 /// The taper's whole point: the stroke leaves and enters as a point while its body
@@ -636,22 +624,25 @@ fn stroke_commit_undo_redo() {
     assert!(engine.observe().can_undo);
 
     let committed = engine.render_to_image();
-    assert!(is_red(center(&committed)), "committed center should be red");
     assert!(
-        is_blue(committed.pixel(10, 10)),
+        lit_red(center(&committed)),
+        "committed center should be red"
+    );
+    assert!(
+        lit_blue(committed.pixel(10, 10)),
         "untouched corner should be substrate blue"
     );
 
     engine.process(DocCommand::Undo);
     assert!(engine.observe().can_redo);
     assert!(
-        is_blue(center(&engine.render_to_image())),
+        lit_blue(center(&engine.render_to_image())),
         "after undo, center should be the substrate"
     );
 
     engine.process(DocCommand::Redo);
     assert!(
-        is_red(center(&engine.render_to_image())),
+        lit_red(center(&engine.render_to_image())),
         "after redo, center should be red again"
     );
 }

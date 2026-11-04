@@ -8,9 +8,9 @@
 //!
 //! Footprints are **conservative**. A false conflict only costs the fast path; a
 //! missed one silently diverges peers, so every arm of the fold ([`Materialize`],
-//! in `stark-engine`'s `document/apply.rs`) must read and write only what its
+//! in `stark-engine`'s `fold/apply.rs`) must read and write only what its
 //! kind's footprint declares. That locality is what makes the splice sound (see
-//! `timeline.rs`), and `stark-engine`'s `document/audit.rs` holds every debug fold
+//! `timeline.rs`), and `stark-engine`'s `fold/audit.rs` holds every debug fold
 //! to it.
 //!
 //! [`Materialize`]: super::Materialize
@@ -185,7 +185,11 @@ impl Resource {
 
     /// The layer this resource is about, or `None` for the ones that are about the
     /// document — the tree's shape, a mask, the canvas.
-    fn layer(&self) -> Option<LayerId> {
+    ///
+    /// Public so a reader that needs the same question (`stark-engine`'s `is_noop_on`,
+    /// asking whether the layer a claim names exists) asks it here rather than in a
+    /// second exhaustive match a new `Resource` could slip past.
+    pub fn layer(&self) -> Option<LayerId> {
         match self {
             Resource::Paint(id, _)
             | Resource::Existence(id)
@@ -317,8 +321,8 @@ fn path_rect(rec: &StrokeRecord, pad: f32) -> TileRect {
 }
 
 /// The conservative footprint of an action, mirroring exactly what its arm of the
-/// fold touches (`stark-engine`'s `document/apply.rs`, checked on every debug fold by
-/// its `document/audit.rs`). `Undo`'s is empty: it is never materialized — the
+/// fold touches (`stark-engine`'s `fold/apply.rs`, checked on every debug fold by
+/// its `fold/audit.rs`). `Undo`'s is empty: it is never materialized — the
 /// timeline resolves it into the effectiveness of its target instead.
 pub fn compute_footprint(action: &Action) -> Footprint {
     let actor = action.id.actor;

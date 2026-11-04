@@ -194,7 +194,7 @@ a fill converts its parcel with — so an image and a fill of the same color lan
 the same paint, in an Oklab document and a pigment one alike. It runs per texel
 here rather than once per fill, which is the cost of an image being a picture,
 and it is paid on import and on replay. The store is `f32 → f16` into the tile's
-own channels, which is why `gpu::half`'s encoder is **signed**: an Oklab latent's
+own channels, which is why `device::half`'s encoder is **signed**: an Oklab latent's
 `a` and `b` axes run either side of zero, and the non-negative encoder it grew
 from would have folded every negative one onto `+0` — no error, no NaN, just
 every imported photograph pulled towards green.

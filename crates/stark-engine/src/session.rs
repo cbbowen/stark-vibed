@@ -427,9 +427,51 @@ impl Session {
         // here also retires the hover, which would otherwise resurrect a pre-press
         // mark at pen-up (§18.1.10).
         let runup = self.take_hover_context(sample.pos, tolerance);
+        self.open_stroke(sample, &runup, seed, tolerance, rope, translation);
+    }
+
+    /// Begin a stroke **replayed** from `sample` on — a recorded or generated hand
+    /// (`Engine::replay_stroke_seeded`), rather than a pen arriving.
+    ///
+    /// What makes it [`start_stroke`](Self::start_stroke) minus the two things a
+    /// press means and a replay does not:
+    ///
+    /// - **No run-up.** The samples handed in *are* the whole hand, so a hover window
+    ///   that happens to sit near the first one is evidence about some other motion;
+    ///   seeding the fitter from it would make the same samples and seed fit a
+    ///   different curve depending on where the pointer last hovered. The hover is
+    ///   still retired, as any press retires it (§18.1.10).
+    /// - **No tool switch.** A press with the brush is the artist taking the brush;
+    ///   a replay into this session is not a choice of tool, and must leave an armed
+    ///   selection tool armed.
+    pub(crate) fn start_replay(
+        &mut self,
+        sample: InputSample,
+        seed: u64,
+        tolerance: f32,
+        rope: f32,
+        translation: stark_model::geom::IVec2,
+    ) {
+        self.clear_hover();
+        let tolerance = InputTolerance::new(tolerance);
+        self.open_stroke(sample, &[], seed, tolerance, rope, translation);
+    }
+
+    /// The hand's stroke, opened at `sample` with `runup` leading into it — the half
+    /// of [`start_stroke`](Self::start_stroke) and [`start_replay`](Self::start_replay)
+    /// they share.
+    fn open_stroke(
+        &mut self,
+        sample: InputSample,
+        runup: &[InputSample],
+        seed: u64,
+        tolerance: InputTolerance,
+        rope: f32,
+        translation: stark_model::geom::IVec2,
+    ) {
         self.gesture_ordinal += 1;
         let mut fitter = PathFitter::with_tolerance(tolerance);
-        fitter.seed_runup(&runup);
+        fitter.seed_runup(runup);
         fitter.push(sample);
         self.hand = Hand::Stroking(StrokeBuilder {
             brush: self.brush,

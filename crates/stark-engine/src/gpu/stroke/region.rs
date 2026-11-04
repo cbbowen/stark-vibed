@@ -221,7 +221,8 @@ fn segment_bounds(s: &Sweep) -> (Vec2, Vec2) {
 /// argument that lets a live tail resume a frozen head ([`ToolState`](super::ToolState)).
 ///
 /// Greedy: extend the run until one more segment would push its region past
-/// [`REGION_BUDGET_DIM`], or its dispatch batch past [`MAX_STAMPS`]. A run always holds
+/// [`REGION_BUDGET_DIM`], or its segment count past [`MAX_STAMPS`] — segments, not the
+/// slots they plan (see there). A run always holds
 /// at least one segment, so **a piece may exceed the budget**, and only in that one
 /// way: a brush whose single segment wants more gets a piece of exactly that segment.
 /// What it may never exceed is [`MAX_REGION_DIM`], the size a texture can be, which

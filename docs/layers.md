@@ -1449,7 +1449,7 @@ let image = readback.await;
 
 That is the shape any `!Send` engine behind a shared cell wants for an async GPU
 operation, and it makes the discipline structural rather than a comment asking to
-be believed. `gpu::readback` is async, with the *only* target-specific line being
+be believed. `device::readback` is async, with the *only* target-specific line being
 how the callback gets driven: native blocks on `Wait` before awaiting (a
 non-blocking `Poll` deadlocks — the executor parks the sole thread and nothing
 polls again), while web relies on the await itself yielding. The blocking

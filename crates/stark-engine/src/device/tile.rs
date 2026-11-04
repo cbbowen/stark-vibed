@@ -528,33 +528,6 @@ impl TilePairHandle {
         }
     }
 
-    /// Encode the write-back's slice of this tile out of region-sized channel
-    /// textures (§6.2): one `TILE_TEX` block from each at `origin` — the color, the
-    /// narrowed aux, and the residual where the color space has one. Copies, so the
-    /// tile is bit-identical to the region block it was cut from, and every
-    /// rewritten tile's apron to its neighbour's interior (§6.4).
-    pub(crate) fn copy_from_region(
-        &self,
-        encoder: &mut wgpu::CommandEncoder,
-        color: &wgpu::Texture,
-        aux: &wgpu::Texture,
-        resid: Option<&wgpu::Texture>,
-        origin: wgpu::Origin3d,
-    ) {
-        // The pairing is the color space's, decided once for tile and region alike
-        // (§6.7) — a mismatch here means the two were built against different spaces.
-        debug_assert_eq!(
-            self.0.resid.is_some(),
-            resid.is_some(),
-            "tile and region were built against different color spaces"
-        );
-        self.0.color.copy_into(encoder, color, origin);
-        self.0.aux.copy_into(encoder, aux, origin);
-        if let (Some(t), Some(src)) = (&self.0.resid, resid) {
-            t.copy_into(encoder, src, origin);
-        }
-    }
-
     /// Whether two handles are the same allocation. A tile's texels are never
     /// rewritten once a commit lands — copy-on-write hands out a fresh tile
     /// instead (§5.2) — so identity doubles as "unchanged", which is

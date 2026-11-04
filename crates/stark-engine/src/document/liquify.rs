@@ -38,6 +38,7 @@ use std::rc::Rc;
 
 use rpds::HashTrieMap;
 
+use super::patch::same_tile;
 use crate::device::tile::{TexHandle, TileMap, TilePairHandle};
 use stark_model::geom::{TileCoord, TileRect};
 
@@ -63,11 +64,7 @@ impl LiquifyRun {
     /// so a shared handle *is* an unchanged tile, a handle the undo splice put back
     /// included.
     pub(crate) fn is_fresh(&self, tiles: &TileMap, within: TileRect) -> bool {
-        let same = |c: &TileCoord, want: Option<&TilePairHandle>| match (tiles.get(c), want) {
-            (None, None) => true,
-            (Some(a), Some(b)) => a.same(b),
-            _ => false,
-        };
+        let same = |c: &TileCoord, want: Option<&TilePairHandle>| same_tile(tiles.get(c), want);
         self.produced
             .iter()
             .filter(|(c, _)| within.contains(**c))

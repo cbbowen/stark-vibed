@@ -24,7 +24,7 @@ pub use crate::device::tile::TileChannels;
 /// The recycling tile pool (§6.1) and the tag `acquire_tex` demands of a caller, for
 /// the one integration test that drives a pool directly (`tests/engine/reset.rs`, whose
 /// claim is about what a reset releases). The pool's own behaviour is tested where it
-/// lives, in `gpu::tile`.
+/// lives, in [`device::tile`](crate::device::tile).
 pub use crate::device::tile::{AllocSource, TilePool};
 pub use crate::document::guides::Guide;
 pub use crate::document::layer::{CompositeParams, Layer, LayerContent, PropValue};

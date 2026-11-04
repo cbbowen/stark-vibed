@@ -51,8 +51,80 @@ pub const MAX_SELECTION_TILES: usize = 1024;
 /// drawing but a document — a lasso is a `Vec` whose length a file or a peer states.
 pub const MAX_LASSO_POINTS: usize = 4096;
 
+/// Fewest vertices a [`Lasso`] may carry: the fewest that enclose an area.
+pub const MIN_LASSO_POINTS: usize = 3;
+
+/// A closed freehand polygon — the lasso — that **can enclose something** (§6.8):
+/// at least [`MIN_LASSO_POINTS`] vertices and at most [`MAX_LASSO_POINTS`], held by
+/// [`Lasso::new`] and so by every lasso there is.
+///
+/// A type rather than a `Vec` because every reader used to re-ask the question, and
+/// one that did not answered wrongly: a polygon of one or two vertices has no edges,
+/// the mask pass read "no edges" as "leave the previous selection alone", and a fill
+/// — whose previous selection is the whole canvas — painted every tile it planned.
+/// With the bound held here, a lasso in hand always has edges, and the question
+/// has nowhere left to be asked.
+///
+/// Finiteness is **not** part of the invariant: a non-finite vertex is a shape with
+/// no box, which [`SelectionShape::bounds`] answers for every shape at once.
+#[derive(Clone, PartialEq)]
+pub struct Lasso(Vec<Vec2>);
+
+/// The vertex list and nothing around it: a lasso *is* its vertices, and a
+/// `SelectionShape::Lasso` prints as it did before the type held its bound.
+impl std::fmt::Debug for Lasso {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list().entries(&self.0).finish()
+    }
+}
+
+impl Lasso {
+    /// The lasso through `points`, or `None` when there are too few of them to
+    /// enclose anything.
+    ///
+    /// **A long lasso is decimated rather than refused**, on `Gradient`'s argument
+    /// (§19): it describes a perfectly good region and simply describes it with more
+    /// vertices than the pass can carry. Evenly around the cycle, which is what keeps
+    /// the loop a loop — the first vertex is kept and the closing edge is implicit.
+    ///
+    /// The index goes through `pick_index` because `usize` is 32 bits in the browser:
+    /// spelled `i * points.len() / MAX_LASSO_POINTS` here, the product wraps on a loop
+    /// past ~1.05M vertices onto a valid-but-wrong index — a different polygon than a
+    /// native peer reads from the same bytes.
+    pub fn new(points: Vec<Vec2>) -> Option<Self> {
+        if points.len() < MIN_LASSO_POINTS {
+            return None;
+        }
+        Some(Self(if points.len() > MAX_LASSO_POINTS {
+            (0..MAX_LASSO_POINTS)
+                .map(|i| points[crate::geom::pick_index(i, points.len(), MAX_LASSO_POINTS)])
+                .collect()
+        } else {
+            points
+        }))
+    }
+
+    /// The vertices, in order around the loop; the closing edge is implicit.
+    pub fn points(&self) -> &[Vec2] {
+        &self.0
+    }
+
+    /// The same loop shifted whole by `by` — the vertex count is unchanged, so the
+    /// invariant rides through.
+    pub fn translated(&self, by: Vec2) -> Self {
+        Self(self.0.iter().map(|p| *p + by).collect())
+    }
+}
+
 /// A region-producing shape, in canvas space (§6.8).
+///
+/// **Decoded through [`RawSelectionShape`]**, whose lasso is a bare vertex list: the
+/// wire is unchanged (§8), and a list that cannot enclose anything lands as
+/// [`SelectionShape::Nothing`] — said by the value rather than re-derived by each
+/// reader.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, carbonite::Schema)]
+#[serde(from = "RawSelectionShape", into = "RawSelectionShape")]
+#[carbonite(as = "RawSelectionShape")]
 pub enum SelectionShape {
     /// The whole canvas. Costs no tiles — this is how "select all" / "deselect" is
     /// expressed, and it is the only shape that can be unbounded.
@@ -63,7 +135,58 @@ pub enum SelectionShape {
     Ellipse { center: Vec2, radii: Vec2 },
     /// A closed freehand polygon — the lasso. Decimated before it is recorded (the
     /// mask shader is O(vertices) per texel), so this stays small in the log.
+    Lasso(Lasso),
+    /// **No region**: what a vertex list too short to be a [`Lasso`] decodes as, from
+    /// a file or a peer. No gesture builds one — the session closes a lasso only once
+    /// it can enclose something.
+    ///
+    /// Not on the wire as itself: it is written as the empty lasso it stands for
+    /// ([`RawSelectionShape`]), so the encoding has no variant an older build lacks.
+    /// It has no box ([`bounds`](Self::bounds) is `None`), which is the answer every
+    /// reader already gives a shape it cannot measure: a selection op through it is
+    /// declined — the selection is left as it was, which is what a degenerate lasso
+    /// always did — and a fill through it lays nothing. What it rules out is the
+    /// reading that went wrong: a lasso with vertices but no edges, which the mask
+    /// pass took for "leave the previous mask alone" and a fill, whose previous mask
+    /// is the whole canvas, took for "everywhere".
+    Nothing,
+}
+
+/// The wire shape of a [`SelectionShape`] — the enum as it was before [`Lasso`] held
+/// its bound, so the encoding is unchanged (§8). Its only job is to be what
+/// `#[serde(from)]` deserializes before the lasso's constructor runs.
+#[derive(Serialize, Deserialize, carbonite::Schema)]
+#[serde(rename = "SelectionShape")]
+enum RawSelectionShape {
+    All,
+    Rect { min: Vec2, max: Vec2 },
+    Ellipse { center: Vec2, radii: Vec2 },
     Lasso(Vec<Vec2>),
+}
+
+impl From<RawSelectionShape> for SelectionShape {
+    fn from(raw: RawSelectionShape) -> Self {
+        match raw {
+            RawSelectionShape::All => Self::All,
+            RawSelectionShape::Rect { min, max } => Self::Rect { min, max },
+            RawSelectionShape::Ellipse { center, radii } => Self::Ellipse { center, radii },
+            // Clamped on the way in rather than refused, as `RawFillOp` is: one
+            // unreadable op would refuse the whole log (§8).
+            RawSelectionShape::Lasso(points) => Lasso::new(points).map_or(Self::Nothing, Self::Lasso),
+        }
+    }
+}
+
+impl From<SelectionShape> for RawSelectionShape {
+    fn from(shape: SelectionShape) -> Self {
+        match shape {
+            SelectionShape::All => Self::All,
+            SelectionShape::Rect { min, max } => Self::Rect { min, max },
+            SelectionShape::Ellipse { center, radii } => Self::Ellipse { center, radii },
+            SelectionShape::Lasso(lasso) => Self::Lasso(lasso.0),
+            SelectionShape::Nothing => Self::Lasso(Vec::new()),
+        }
+    }
 }
 
 impl SelectionShape {
@@ -85,8 +208,9 @@ impl SelectionShape {
     }
 
     /// The shape's canvas-space bounding box, or `None` when there is no box to give:
-    /// the shape is unbounded ([`Self::All`]), degenerate (a lasso with no vertices),
-    /// or **not measurable** (any coordinate non-finite).
+    /// the shape is unbounded ([`Self::All`]), names no region ([`Self::Nothing`]), or
+    /// is **not measurable** (any coordinate non-finite). A lasso always has vertices
+    /// to measure ([`Lasso`]).
     ///
     /// The third case is the one worth naming. A `None` here declines a selection op
     /// outright (`Selection::plan` returns `None`), fills nothing on the fill path, and
@@ -102,18 +226,19 @@ impl SelectionShape {
     pub fn bounds(&self) -> Option<(Vec2, Vec2)> {
         let finite = |lo: Vec2, hi: Vec2| (lo.is_finite() && hi.is_finite()).then_some((lo, hi));
         match self {
-            Self::All => None,
+            Self::All | Self::Nothing => None,
             Self::Rect { min, max } => finite(*min, *max),
             // Radii are non-negative out of [`sanitized`], so there is no sign to
             // compensate for here.
             Self::Ellipse { center, radii } => finite(*center - *radii, *center + *radii),
-            Self::Lasso(points) => Bounds::of(points.iter().copied()).finite(),
+            Self::Lasso(lasso) => Bounds::of(lasso.points().iter().copied()).finite(),
         }
     }
 
-    /// The same shape with no more vertices than a mask pass can carry — the shape's
-    /// half of the funnel [`SelectionOp::at`] and
-    /// [`FillOp::with_paint`](super::fill::FillOp::with_paint) are.
+    /// The same shape with its analytic values normalized — the shape's half of the
+    /// funnel [`SelectionOp::at`] and
+    /// [`FillOp::with_paint`](super::fill::FillOp::with_paint) are. A lasso has
+    /// nothing left to normalize: [`Lasso::new`] held its bound already.
     ///
     /// The ellipse's radii are the one analytic value with a *nearest legal* reading —
     /// a radius is a distance, so a negative one describes the same ellipse — and
@@ -123,23 +248,8 @@ impl SelectionShape {
     /// **The rect is deliberately left inverted.** `max < min` is not a mistake to
     /// repair: the plan, the footprint and `selection.wesl` all read it as the empty
     /// region, so ordering the corners would change what an existing document means.
-    ///
-    /// **A long lasso is decimated rather than refused**, on `Gradient`'s argument
-    /// (§19): it describes a perfectly good region and simply describes it with more
-    /// vertices than the pass can carry. Evenly around the cycle, which is what keeps
-    /// the loop a loop — the first vertex is kept and the closing edge is implicit.
-    ///
-    /// The index goes through `pick_index` because `usize` is 32 bits in the browser:
-    /// spelled `i * points.len() / MAX_LASSO_POINTS` here, the product wraps on a loop
-    /// past ~1.05M vertices onto a valid-but-wrong index — a different polygon than a
-    /// native peer reads from the same bytes.
     pub fn sanitized(self) -> Self {
         match self {
-            Self::Lasso(points) if points.len() > MAX_LASSO_POINTS => Self::Lasso(
-                (0..MAX_LASSO_POINTS)
-                    .map(|i| points[crate::geom::pick_index(i, points.len(), MAX_LASSO_POINTS)])
-                    .collect(),
-            ),
             Self::Ellipse { center, radii } => Self::Ellipse {
                 center,
                 radii: radii.abs(),
@@ -170,7 +280,8 @@ impl SelectionShape {
                 center: *center + by,
                 radii: *radii,
             },
-            Self::Lasso(points) => Self::Lasso(points.iter().map(|p| *p + by).collect()),
+            Self::Lasso(lasso) => Self::Lasso(lasso.translated(by)),
+            Self::Nothing => Self::Nothing,
         }
     }
 }
@@ -430,9 +541,9 @@ mod tests {
         assert_eq!(back(&wire(&clean)), clean);
     }
 
-    /// **A lasso is decimated to something a mask pass can carry**, and the funnel is
-    /// where that happens — the frontend's `LASSO_MIN_STEP` decimates live input and
-    /// says nothing about what a file or a peer states the length of.
+    /// **A lasso is decimated to something a mask pass can carry**, and its
+    /// constructor is where that happens — the frontend's `LASSO_MIN_STEP` decimates
+    /// live input and says nothing about what a file or a peer states the length of.
     ///
     /// Two things ride on the bound; see [`MAX_LASSO_POINTS`].
     #[test]
@@ -443,14 +554,8 @@ mod tests {
                 Vec2::new(t.cos() * 500.0, t.sin() * 500.0)
             })
             .collect();
-        let op = SelectionOp::new(
-            SelectionMode::Replace,
-            SelectionShape::Lasso(long.clone()),
-            0.0,
-        );
-        let SelectionShape::Lasso(kept) = &op.shape else {
-            panic!("a lasso stays a lasso")
-        };
+        let lasso = Lasso::new(long.clone()).expect("a long loop is a lasso");
+        let kept = lasso.points();
         assert_eq!(kept.len(), MAX_LASSO_POINTS);
         assert_eq!(kept[0], long[0], "the loop still starts where it started");
         // Evenly around the cycle and in order, so the polygon keeps its shape
@@ -461,15 +566,61 @@ mod tests {
         );
 
         // Idempotent: a decimated loop is already short enough, so a second pass
-        // through the funnel must not thin it again (§8 — a load is not an edit).
-        let again = SelectionOp::new(SelectionMode::Replace, op.shape.clone(), 0.0);
-        assert_eq!(again.shape, op.shape);
+        // through the constructor must not thin it again (§8 — a load is not an
+        // edit).
+        assert_eq!(Lasso::new(kept.to_vec()).as_ref(), Some(&lasso));
 
         // …and an ordinary loop is untouched.
-        let small = SelectionShape::Lasso(long[..8].to_vec());
+        let small = &long[..8];
+        assert_eq!(Lasso::new(small.to_vec()).expect("a lasso").points(), small);
+    }
+
+    /// **A vertex list that cannot enclose anything is not a lasso**, and one that
+    /// arrives from a file or a peer lands as the empty region rather than refusing
+    /// the log it rides in (§8).
+    ///
+    /// The case this rules out: a lasso of one or two vertices has no edges, and the
+    /// mask pass read "no edges" as "leave the previous selection alone" — which, for
+    /// a fill, whose previous selection is the whole canvas, painted every tile the
+    /// fill had planned.
+    #[test]
+    fn a_lasso_too_short_to_enclose_anything_names_no_region() {
+        let wire = |shape: &RawSelectionShape| carbonite::to_vec_static(shape).expect("encodes");
+        for n in 0..MIN_LASSO_POINTS {
+            let points: Vec<Vec2> = (0..n).map(|i| Vec2::splat(i as f32 * 40.0)).collect();
+            assert!(Lasso::new(points.clone()).is_none(), "{n} vertices make no lasso");
+            let landed =
+                carbonite::from_slice_static::<SelectionShape>(&wire(&RawSelectionShape::Lasso(points)))
+                    .expect("a short lasso still decodes");
+            assert_eq!(landed, SelectionShape::Nothing, "{n} vertices name no region");
+        }
+        // No box, which every reader answers without a tile: a selection op declined,
+        // a fill that lays nothing.
+        assert_eq!(SelectionShape::Nothing.bounds(), None);
+        assert_eq!(SelectionShape::Nothing.coverage_outside(), 0.0);
+        // Written as the empty lasso it stands for, and read back as itself.
         assert_eq!(
-            SelectionOp::new(SelectionMode::Replace, small.clone(), 0.0).shape,
-            small,
+            carbonite::from_slice_static::<SelectionShape>(
+                &carbonite::to_vec_static(&SelectionShape::Nothing).expect("encodes"),
+            )
+            .expect("decodes"),
+            SelectionShape::Nothing,
+        );
+
+        // Three is enough, and comes through bit for bit.
+        let tri = vec![Vec2::ZERO, Vec2::new(9.0, 0.0), Vec2::new(0.0, 9.0)];
+        let shape = SelectionShape::Lasso(Lasso::new(tri.clone()).expect("three vertices"));
+        assert_eq!(
+            carbonite::from_slice_static::<SelectionShape>(&wire(&RawSelectionShape::Lasso(tri)))
+                .expect("decodes"),
+            shape,
+        );
+        assert_eq!(
+            carbonite::from_slice_static::<SelectionShape>(
+                &carbonite::to_vec_static(&shape).expect("encodes"),
+            )
+            .expect("decodes"),
+            shape,
         );
     }
 

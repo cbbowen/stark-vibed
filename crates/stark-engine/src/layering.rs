@@ -27,10 +27,11 @@
 //!   `crate::Engine` would otherwise look like an edge to nothing;
 //! - **an alias** — `use crate::gpu as g;` then `g::stroke`, or a trait method reaching
 //!   a type never named;
-//! - **a relative path** — `super::super::tile` is invisible. There were three such in
-//!   the crate when this was written and the moves turned them all absolute; a new one
-//!   would slip past. `crate::`-rooted paths are the house style, not a rule this
-//!   checks;
+//! - **a relative path** — `super::super::tile` is invisible. One that stays inside
+//!   its own top-level module (`gpu::stroke::dynamics` reaching `gpu::stroke`'s
+//!   `region`, as several do) names nothing across a tier and so cannot be wrong
+//!   here; one that climbed *out* of its top-level module would slip past.
+//!   `crate::`-rooted paths are the house style for those, not a rule this checks;
 //! - **a type parameter's own crate** — `stark_model` and `wgpu` edges are not the
 //!   subject.
 //!

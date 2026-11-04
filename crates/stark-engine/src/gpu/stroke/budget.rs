@@ -14,6 +14,7 @@ use stark_model::document::{BrushDynamics, BrushParams, BrushShape};
 use stark_model::geom::{TILE_APRON, TILE_SIZE, TILE_TEX};
 
 use super::dynamics::BLEED_TRAVEL_QUANTUM;
+use super::tips::tip_radius;
 
 /// The optical depth one full pass of an opaque tip lays over a point — the ceiling
 /// `volume::tau_of` holds a saturated mask texel to.
@@ -40,7 +41,7 @@ pub(super) const TAU_PER_PASS: f32 = 6.9;
 /// At 2048² that is ~67 MB for a piece: color and aux are both `Rgba16Float`, so each
 /// is 2048² × 8 B = 32 MiB. Per *piece* rather than per stroke, because a piece's
 /// region is a `ScratchPool` lease its `SubmitScope` releases at the flush that submits
-/// it (`gpu::scratch`), so the next piece takes the same memory.
+/// it ([`scratch`](crate::device::scratch)), so the next piece takes the same memory.
 ///
 /// **A target, not a ceiling** — [`MAX_REGION_DIM`] is the ceiling. Cutting is by
 /// *segment*, so a piece fits this only while a single segment does; a brush whose tip
@@ -86,9 +87,13 @@ const _: () = assert!(
 /// also emits a bleed slot per crossing of the bleed cadence — up to
 /// `dynamics::bleed::MAX_BLEED_FIRES_PER_SEGMENT` of them — and the pen-up settle, so a
 /// piece plans at most `(1 + MAX_BLEED_FIRES_PER_SEGMENT) · MAX_STAMPS + 1` slots. At
-/// one `uniforms::Slot` stride apiece that is ~17.8 MB. Making the cut count planned
-/// slots instead would couple `chunk_segments` to the bleed cadence to save megabytes
-/// only a bleeding brush pays at all.
+/// one `uniforms::Slot` stride apiece that is ~17.8 MB.
+///
+/// The cut counts segments and not the slots they plan, though it could: the chunker
+/// already walks each segment's firings, for their windows
+/// (`region::chunk_segments_within`). What counting slots would buy is a tighter bound
+/// on megabytes only a bleeding brush pays, at the price of a piece whose segment count
+/// moves with the bleed cadence.
 pub(super) const MAX_STAMPS: usize = 4096;
 /// How far the tool may travel per exchange, as a fraction of the brush radius
 /// (§6.2) — which, since the tool exchanges once per *segment*, is simply a cap on the
@@ -175,7 +180,7 @@ fn region_extent_budget() -> f32 {
 /// scale either knob down ([`Modulation`](stark_model::document::Modulation)), so the
 /// brush's value bounds every segment's.
 fn tip_reach(b: &BrushParams) -> f32 {
-    b.size.max(0.5) * BrushParams::elongation(b.stretch)
+    tip_radius(b.size) * BrushParams::elongation(b.stretch)
 }
 
 /// The canvas extent a tip reaching `reach` occupies, apron included — the part of
@@ -191,7 +196,7 @@ fn tip_extent(reach: f32) -> f32 {
 /// cadence is denominated in — so a stretched tip does not pay for it twice.
 fn bleed_reach(b: &BrushParams) -> f32 {
     if axes(b).bleed > 0.0 {
-        BLEED_TRAVEL_QUANTUM * b.size.max(0.5)
+        BLEED_TRAVEL_QUANTUM * tip_radius(b.size)
     } else {
         0.0
     }
@@ -268,7 +273,8 @@ pub fn max_stretch(b: &BrushParams) -> f32 {
     // gate. `fit_len` is monotone in the knob and this starts a hair above the
     // frontier, so it is a short walk; `knob > 0.0` bounds it regardless, an
     // unstretched tip being the smallest extent the brush has.
-    let mut knob = (1.0 - b.size.max(0.5) / max_tip_reach(b)).clamp(0.0, BrushParams::MAX_STRETCH);
+    let mut knob =
+        (1.0 - tip_radius(b.size) / max_tip_reach(b)).clamp(0.0, BrushParams::MAX_STRETCH);
     while knob > 0.0 && !drawable(knob) {
         knob = f32::from_bits(knob.to_bits() - 1);
     }
@@ -348,7 +354,7 @@ pub(super) fn liquify_len(b: &BrushParams, rise: f32) -> f32 {
     if s <= 0.0 || q <= 0.0 {
         return f32::INFINITY;
     }
-    let radius = b.size.max(0.5);
+    let radius = tip_radius(b.size);
     // The rise in px, floored at the texel; an infinite rise — a mask whose
     // coverage never climbs that far — prices as no slope at all.
     let rise_px = (rise.max(0.0) * radius).max(LIQUIFY_RISE_FLOOR_PX);
@@ -458,8 +464,10 @@ pub(super) fn flatten_budget(
     // stays a simple polygon only while the inner rim clears the centre of curvature,
     // and the reservoir's crescent seams are a misplacement measured across the tip, so
     // an extent drawn out `s` times may bend `s` times less. The brush's own elongation
-    // and not a segment's — a modulation only ever scales the knob down.
-    tol.max_arc_curvature = MAX_TIP_TURN / (b.size * BrushParams::elongation(b.stretch)).max(0.5);
+    // and not a segment's — a modulation only ever scales the knob down. The reach is
+    // `tip_reach`'s, floored on the radius before it is drawn out: floored after, a
+    // hairline stretched `s` times was priced as an unstretched one.
+    tol.max_arc_curvature = MAX_TIP_TURN / tip_reach(b);
     // **`drain` is deliberately not bought here.** A `0.02 / drain` px cap per segment
     // dominates everything else (at `drain = 0.02`, one segment per pixel), and it buys
     // nothing: both paths evaluate the falloff from the fragment's own arc length, so
@@ -676,7 +684,7 @@ const SUPERSAMPLE_EDGE_PX: f32 = 0.75;
 pub(super) fn supersample_scale(b: &BrushParams) -> u32 {
     let Some(p) = b.paint() else { return 1 };
     let mass = stark_shaders::mirror::paint_common::OPACITY_K * p.flow * TAU_PER_PASS;
-    let ramp = (super::tips::shoulder_per_radius(&b.shape) * b.size.max(0.5)).max(1.0);
+    let ramp = (super::tips::shoulder_per_radius(&b.shape) * tip_radius(b.size)).max(1.0);
     // `mass ≤ 0` (a brush laying nothing) divides to ∞ or NaN, and neither is
     // under the threshold — the comparison answers 1 without a guard.
     if ramp * EDGE_10_90 / mass < SUPERSAMPLE_EDGE_PX {

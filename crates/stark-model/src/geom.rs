@@ -258,10 +258,10 @@ impl FromIterator<TileCoord> for TileRect {
 /// a browser would decimate a *different* polygon than a native peer decodes from the
 /// same bytes: a §6.8 divergence no 64-bit test host can see.
 ///
-/// Both decimations in the crate go through here — [`SelectionShape::sanitized`] and
+/// Both decimations in the crate go through here — [`Lasso::new`] and
 /// `gradient::thin`.
 ///
-/// [`SelectionShape::sanitized`]: crate::document::SelectionShape::sanitized
+/// [`Lasso::new`]: crate::document::Lasso::new
 pub(crate) fn pick_index(i: usize, span: usize, out_of: usize) -> usize {
     debug_assert!(out_of > 0, "an evenly-spaced pick needs somewhere to land");
     (i as u64 * span as u64 / out_of as u64) as usize

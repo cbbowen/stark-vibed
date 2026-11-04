@@ -119,6 +119,7 @@ fn the_pen_bake_paints_what_the_follow_stroke_bake_does_at_zero_angle() {
         return;
     };
     let id = engine.import_brush(&blob_png(160, 160)).expect("import");
+    let bare = engine.render_to_image();
 
     let draw = |engine: &mut stark_engine::Engine, orientation| {
         let mut b = brush(RED_SOFT, 60.0);
@@ -137,24 +138,26 @@ fn the_pen_bake_paints_what_the_follow_stroke_bake_does_at_zero_angle() {
         img
     };
 
+    const RESAMPLING: u8 = 12;
     let follow = draw(&mut engine, OrientationSource::FollowStroke);
     let pen = draw(&mut engine, OrientationSource::Pen);
 
-    let worst = (0..follow.height)
-        .flat_map(|y| (0..follow.width).map(move |x| (x, y)))
-        .map(|(x, y)| {
-            let (a, b) = (follow.pixel(x, y), pen.pixel(x, y));
-            (0..3)
-                .map(|c| (a[c] as i32 - b[c] as i32).abs())
-                .max()
-                .expect("three channels")
-        })
-        .max()
-        .expect("a viewport of pixels");
-    assert!(
-        worst <= 12,
-        "the pen bake's zero-angle mark is {worst} levels off the follow-stroke bake's \
-         — the padded volume is not standing for the same tip"
+    // Two bakes that both painted nothing agree perfectly, so each has to be shown to
+    // have painted — by more than the agreement below forgives, or it says nothing.
+    for (name, mark) in [("follow-stroke", &follow), ("pen", &pen)] {
+        assert_images_differ(
+            &bare,
+            mark,
+            RESAMPLING,
+            format_args!("the {name} bake's stroke"),
+        );
+    }
+    assert_images(
+        &follow,
+        &pen,
+        RESAMPLING,
+        "the pen bake's zero-angle mark is off the follow-stroke bake's \
+         — the padded volume is not standing for the same tip",
     );
 }
 

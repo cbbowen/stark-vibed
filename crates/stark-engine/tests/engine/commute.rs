@@ -11,7 +11,7 @@
 use crate::common::collab::{pair, pair_sized, snap, sync, sync_into};
 use crate::common::palette::{BLUE_VIVID, GREEN_SOFT, RED_VIVID};
 use crate::common::{
-    Probe, assert_images, engine_or_skip, engine_or_skip_sized, on_substrate, paint,
+    Probe, add_layer, assert_images, engine_or_skip, engine_or_skip_sized, on_substrate, paint,
 };
 use stark_engine::Extent2;
 use stark_engine::command::DocCommand;
@@ -188,10 +188,7 @@ fn undo_splices_past_another_layers_stroke() {
     sync(&mut a, &mut b);
     // B adds its own layer (which becomes B's active layer) and paints a
     // crossing stroke there.
-    b.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
+    add_layer(&mut b);
     paint(
         &mut b,
         GREEN_SOFT,

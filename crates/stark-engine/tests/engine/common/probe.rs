@@ -299,6 +299,11 @@ pub fn layer_tiles(engine: &Engine, layer: LayerId) -> Vec<stark_model::geom::Ti
 /// Every tile of `layer` on `a` and `b`, compared **bitwise** lane by lane: `None`
 /// when they agree, else how many lanes differ, the largest difference and where. A
 /// residual one side holds and the other does not is a difference too.
+///
+/// **A layer neither side holds a tile of is reported, not agreed with.** Every caller
+/// asks whether a stroke committed one way replays the same, and two empty layers
+/// would answer that having compared nothing — a stroke that never landed reads as a
+/// perfect replay of itself.
 pub fn tiles_differ(a: &Engine, b: &Engine, layer: LayerId) -> Option<String> {
     let keys = |e: &Engine| -> Vec<stark_model::geom::TileCoord> {
         let mut k = layer_tiles(e, layer);
@@ -306,6 +311,11 @@ pub fn tiles_differ(a: &Engine, b: &Engine, layer: LayerId) -> Option<String> {
         k
     };
     let (ka, kb) = (keys(a), keys(b));
+    if ka.is_empty() && kb.is_empty() {
+        return Some(format!(
+            "neither side holds a tile of {layer:?}, so there is nothing to compare"
+        ));
+    }
     if ka != kb {
         return Some(format!(
             "tile sets differ: {} against {}",

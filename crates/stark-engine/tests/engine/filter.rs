@@ -353,10 +353,7 @@ fn a_carried_filter_reaches_only_its_own_group() {
         22.0,
         &[Vec2::new(-90.0, 0.0), Vec2::new(-40.0, 0.0)],
     );
-    engine.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
+    add_layer(&mut engine);
     paint(
         &mut engine,
         RED_SOFT,
@@ -1073,10 +1070,7 @@ fn a_filters_id_is_not_reused_after_a_reload() {
     let existing = loaded.observe().layers.len();
     assert_eq!(existing, 2, "the filter came back with the log");
 
-    loaded.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
+    add_layer(&mut loaded);
     let after: Vec<LayerId> = loaded.observe().layers.iter().map(|l| l.id).collect();
     let mut unique = after.clone();
     unique.sort();

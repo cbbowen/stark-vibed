@@ -67,7 +67,8 @@ pub use image::{MAX_IMAGE_TILES, image_tiles};
 pub use layer::{BlendMode, DRAGO_K, DRAGO_K_RANGE, LayerId, MatteRegion, Place};
 pub use paint::{GradientAxis, GradientParcel, Parcel};
 pub use selection::{
-    MAX_LASSO_POINTS, MAX_SELECTION_TILES, SelectionMode, SelectionOp, SelectionShape,
+    Lasso, MAX_LASSO_POINTS, MAX_SELECTION_TILES, MIN_LASSO_POINTS, SelectionMode, SelectionOp,
+    SelectionShape,
 };
 pub use transform::{
     Homography, MAX_TRANSFORM_TILES, PerspectiveMap, TransformMap, affine_usable, rect_corners,

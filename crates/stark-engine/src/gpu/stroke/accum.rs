@@ -4,11 +4,12 @@
 //!
 //! The plain deposit lands each parcel the moment it is swept. Two effects have a law
 //! that is neither of §6.2's composable forms — the erase's `1 − opacity·w` (§6.12) and
-//! the deposit's scaled coverage below full opacity (§6.2) — so applying it per piece
-//! would compound at every cut a live stroke makes. Those keep the *composable* half
-//! summing across pieces, a parcel per touched tile, and land the law once per tile per
-//! render against **pristine** paint: the tile as the stroke first found it, never an
-//! earlier piece's output. The parcels and the pristine handles ride the stroke's carry
+//! the deposit's under a ceiling or supersampled (§6.2; the condition is stated once,
+//! at `render_swept`'s `carries`) — so applying it per piece would compound at every
+//! cut a live stroke makes. Those keep the *composable* half summing across pieces, a
+//! parcel per touched tile, and land the law once per tile per render against
+//! **pristine** paint: the tile as the stroke first found it, never an earlier piece's
+//! output. The parcels and the pristine handles ride the stroke's carry
 //! ([`ParcelCarry`]), and a resuming piece *copies* the parcel it resumed rather than
 //! writing it, which is what lets the live tail re-render from the same frozen head
 //! every frame.
@@ -32,7 +33,7 @@ use std::sync::Arc;
 
 use stark_model::geom::TileCoord;
 
-use crate::device::channels::Targets;
+use crate::device::channels::Sources;
 use crate::device::desc;
 use crate::device::scratch::{Kept, Key, LeasedTex, SubmitScope};
 use crate::device::tile::{AllocSource, TileMap, TilePairHandle};
@@ -128,6 +129,18 @@ impl<'a> ParcelLanes<'a> {
         &lane.view
     }
 
+    /// Lane `i`, or `stand_in` where it is a hole — for a lane the landing shader
+    /// declares whether or not this stroke carries it, the ceiling (§6.2), whose 1×1
+    /// zero the uniform's flag keeps unread. Whether the lane is there is the key list's
+    /// answer already, so it is not asked a second time of the stroke.
+    pub(super) fn lane_or(
+        &self,
+        i: usize,
+        stand_in: &'a wgpu::TextureView,
+    ) -> &'a wgpu::TextureView {
+        self.0[i].map_or(stand_in, |lane| &lane.view)
+    }
+
     /// The lanes in key order, as the sweep attaches them: a hole attaches nothing.
     fn views(self) -> impl Iterator<Item = Option<&'a wgpu::TextureView>> {
         self.0.into_iter().map(|lane| lane.map(|l| &l.view))
@@ -221,8 +234,9 @@ pub(super) enum ParcelEffect {
 
 /// How a render's parcels are resumed and kept.
 pub(super) enum Lanes<'p> {
-    /// Nothing to resume and nothing to keep: the deposit at full opacity, whose law
-    /// composes across pieces on its own (§6.2).
+    /// Nothing to resume and nothing to keep: the swept deposit where its law composes
+    /// across pieces on its own (§6.2) — wherever `render_swept`'s `carries`, the one
+    /// statement of that condition, does not hold.
     Fresh,
     /// The carried shape (§6.2, §6.12): resume what the previous piece captured, and
     /// keep this render's parcels if a later piece will resume them.
@@ -257,7 +271,7 @@ pub(super) struct Landing<'a> {
     /// The paint the stroke found under this tile, as the landing pass reads it: the
     /// pristine tile's channels, or the renderer's 1×1 zeroes where the layer has
     /// none — which for [`ParcelEffect::Erase`] never happens.
-    pub(super) base: Targets<'a>,
+    pub(super) base: Sources<'a>,
     /// The stroke's parcel over this tile so far, in the effect's lane order.
     pub(super) parcel: ParcelLanes<'a>,
     /// The selection coverage here (§6.8) — the coverage *alone*: the mask's opacity
@@ -376,12 +390,12 @@ pub(super) fn land_tiles(
         }
 
         // The whole stroke's parcel so far, landed on the pristine paint.
-        let dst = r.acquire_tile(scene.pool, AllocSource::IntegrateDestination);
+        let dst = r.acquire_channels(scene.pool, AllocSource::IntegrateDestination);
         let mask = r.selection.mask_for(scene.selection, *coord);
         // The group holds its own references to every view in it, so it outlives the
         // borrow of `pristine` that described it.
         let bg = bind(&Landing {
-            base: r.zeroes.or(pristine.as_ref().map(TilePairHandle::targets)),
+            base: r.zeroes.or(pristine.as_ref().map(TilePairHandle::sources)),
             parcel: work,
             mask: mask.view(),
         });
@@ -392,7 +406,7 @@ pub(super) fn land_tiles(
             desc::Bound::one(&bg),
         );
 
-        map = map.insert(*coord, dst);
+        map = map.insert(*coord, dst.into_tile());
         dirty.push(*coord);
         if let (Some(tiles), Some(parcel)) = (&mut carry, parcel) {
             tiles.insert_mut(

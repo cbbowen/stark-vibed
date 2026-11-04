@@ -687,6 +687,58 @@ impl SubmitScope {
         LeasedSlots::new(buf, 1)
     }
 
+    /// Stage `instances` into a leased **vertex** buffer for the whole run — a sweep's
+    /// segments, which every tile's draw reads a range of.
+    ///
+    /// Leased and written through the scope, never `create_buffer_init`: that maps at
+    /// creation, and Chrome/Dawn caps map-at-creation buffers well below the normal
+    /// `maxBufferSize`, so a long stroke would panic in `createBuffer`. An instance list
+    /// is also rebuilt on every pointer move, so the pool hands back the previous
+    /// move's ([`BufKey`]).
+    ///
+    /// `None` for none, as [`run_slots`](Self::run_slots) answers: no draw will bind
+    /// it, and staging opens the piece.
+    pub(crate) fn run_vertices<T: bytemuck::Pod>(
+        &mut self,
+        label: &'static str,
+        instances: &[T],
+    ) -> Option<wgpu::Buffer> {
+        self.vertices(label, instances, Self::take_run_buffer)
+    }
+
+    /// [`run_vertices`](Self::run_vertices) for the piece being recorded, released at
+    /// its own submit like everything else the piece takes.
+    pub(crate) fn piece_vertices<T: bytemuck::Pod>(
+        &mut self,
+        label: &'static str,
+        instances: &[T],
+    ) -> Option<wgpu::Buffer> {
+        self.vertices(label, instances, Self::take_piece_buffer)
+    }
+
+    /// The two above, over the lease tier `take` checks out of.
+    fn vertices<T: bytemuck::Pod>(
+        &mut self,
+        label: &'static str,
+        instances: &[T],
+        take: fn(&mut Self, BufKey) -> wgpu::Buffer,
+    ) -> Option<wgpu::Buffer> {
+        if instances.is_empty() {
+            return None;
+        }
+        let bytes: &[u8] = bytemuck::cast_slice(instances);
+        let buf = take(
+            self,
+            BufKey {
+                size: bytes.len() as u64,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                label,
+            },
+        );
+        self.write_lease(&buf, bytes);
+        Some(buf)
+    }
+
     /// Stage `uniforms` one per [`Slot`] into a leased buffer for the whole run — an
     /// operation's per-tile or per-draw uniforms.
     ///

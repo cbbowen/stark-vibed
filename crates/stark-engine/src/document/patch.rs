@@ -21,7 +21,7 @@ use super::liquify::LiquifyRun;
 use super::selection::Selection;
 use super::state::{DocState, LayerSite};
 use super::substrate::Substrate;
-use crate::device::tile::TilePairHandle;
+use crate::device::tile::{TileMap, TilePairHandle};
 use stark_model::Srgb;
 use stark_model::document::ActorId;
 use stark_model::document::LayerId;
@@ -164,8 +164,18 @@ fn capture_resource(resource: &Resource, to: &DocState, from: &DocState, ops: &m
             // Present or absent on both sides: the action no-oped.
             _ => {}
         },
+        // Only where the two states disagree, as the tiles and the run are: a restore
+        // is a tree rebuild, and a `Layer` claim expands into every property, so
+        // undoing a group removal would otherwise rebuild the tree once per property
+        // per layer to write back values already there. A layer `from` lacks comes back
+        // whole — `to`'s properties with it — by its own `Existence` op, which runs
+        // first (`unapply`); one absent with no such op is absent on both sides.
         Resource::Prop(id, prop) => {
-            if let Some(value) = to.layer(*id).and_then(|l| l.prop(*prop)) {
+            let value_in = |state: &DocState| state.layer(*id).and_then(|l| l.prop(*prop));
+            if let Some(value) = value_in(to)
+                && from.contains_layer(*id)
+                && value_in(from).as_ref() != Some(&value)
+            {
                 ops.push(PatchOp::Prop(*id, value));
             }
         }
@@ -286,47 +296,71 @@ fn tile_diff(
         // Absent layer or matte on either side: the action no-oped on paint.
         return;
     };
-    let mut tiles = Vec::new();
-    // **Walk whichever side is smaller**: the rect the action declared, or the maps
-    // themselves. A stroke claims the handful of tiles it painted while the layer
-    // under it may hold thousands, and this runs once per cached state in a shift
-    // window. `TileRect::ALL` saturates its count, so a whole-layer claim (a
-    // transform, a removal) still takes the map walk, which is the smaller side there.
-    //
-    // Both walks answer identically: a coord outside `rect` is skipped by one and
-    // never visited by the other.
-    let span = rect.count();
-    if span < to_tiles.size() as u64 + from_tiles.size() as u64 {
-        for coord in rect.coords() {
-            let (old, new) = (to_tiles.get(&coord), from_tiles.get(&coord));
-            match (old, new) {
-                (_, Some(h)) if !old.is_some_and(|o| o.same(h)) => {
-                    tiles.push((coord, old.cloned()));
-                }
-                // Arrived where the earlier state had none: restoring means removing.
-                (Some(h), None) => tiles.push((coord, Some(h.clone()))),
-                _ => {}
-            }
-        }
-    } else {
-        for (coord, handle) in from_tiles.iter() {
-            if !rect.contains(*coord) {
-                continue;
-            }
-            let old = to_tiles.get(coord);
-            if !old.is_some_and(|h| h.same(handle)) {
-                tiles.push((*coord, old.cloned()));
-            }
-        }
-        for (coord, handle) in to_tiles.iter() {
-            if rect.contains(*coord) && from_tiles.get(coord).is_none() {
-                tiles.push((*coord, Some(handle.clone())));
-            }
-        }
-    }
+    // Restoring means putting `to`'s entry back — its handle, or its absence.
+    let tiles: Vec<_> = changed_tiles(&to_tiles, &from_tiles, rect)
+        .into_iter()
+        .map(|(coord, old)| (coord, old.cloned()))
+        .collect();
     if !tiles.is_empty() {
         ops.push(PatchOp::Tiles { layer, tiles });
     }
+}
+
+/// Whether two optional tile entries are the same tile — both absent, or the same
+/// allocation ([`TilePairHandle::same`]). Identity is change detection: committed
+/// tiles are never rewritten in place (§5.2).
+pub(crate) fn same_tile(a: Option<&TilePairHandle>, b: Option<&TilePairHandle>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.same(b),
+        _ => false,
+    }
+}
+
+/// **Every coord inside `within` where two tile maps disagree**, with `a`'s entry
+/// there — the one statement of "which tiles changed", for undo's restore
+/// ([`tile_diff`]), the §12.6 audit and anything else that diffs two states' paint.
+///
+/// Identity rather than content ([`same_tile`]), and three ways to be cheap, each of
+/// which answers exactly as the plain walk would:
+///
+/// - **One root, no walk.** A layer no fold touched still holds the *same persistent
+///   map* (`Layer::with_tiles`), so the common case — a declined transform, a layer a
+///   removal carried, every layer of an audit but the one painted — is one pointer
+///   test.
+/// - **Walk whichever side is smaller**: the rect, or the maps. A stroke claims the
+///   handful of tiles it painted while the layer under it may hold thousands, and
+///   undo runs this once per cached state in a shift window. `TileRect::ALL`
+///   saturates its count, so a whole-layer claim takes the map walk, which is the
+///   smaller side there.
+///
+/// Sorted row-major, so the answer does not inherit the maps' hash order.
+pub(crate) fn changed_tiles<'a>(
+    a: &'a TileMap,
+    b: &TileMap,
+    within: TileRect,
+) -> Vec<(TileCoord, Option<&'a TilePairHandle>)> {
+    if a.ptr_eq(b) {
+        return Vec::new();
+    }
+    let differs = |coord: &TileCoord| !same_tile(a.get(coord), b.get(coord));
+    let mut out: Vec<_> = if within.count() < a.size() as u64 + b.size() as u64 {
+        within
+            .coords()
+            .filter(differs)
+            .map(|c| (c, a.get(&c)))
+            .collect()
+    } else {
+        // Every key of either map, once: `b`'s keys `a` lacks are differences by
+        // construction, so only `a`'s need the identity test from that side.
+        a.keys()
+            .chain(b.keys().filter(|c| !a.contains_key(c)))
+            .filter(|c| within.contains(**c) && differs(c))
+            .map(|c| (*c, a.get(c)))
+            .collect()
+    };
+    out.sort_unstable_by_key(|(c, _)| (c.y, c.x));
+    out
 }
 
 #[cfg(test)]

@@ -28,7 +28,6 @@ use crate::common::*;
 use stark_engine::command::{DocCommand, Edit};
 #[cfg(feature = "mixbox")]
 use stark_model::ColorSpaceId;
-use stark_model::Srgb;
 use stark_model::document::{BrushEffect, BrushParams, BrushShape, PaintEffect};
 use stark_model::geom::Vec2;
 
@@ -78,10 +77,7 @@ fn an_invisible_layer_does_not_repaint_the_one_below() {
     let mut under = engine_or_skip().expect("engine");
     stroke_with(&mut under, soft(RED_SOFT, 120.0), UNDER);
     let under_alone = under.render_to_image();
-    under.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
+    add_layer(&mut under);
     stroke_with(&mut under, soft(BLUE, 60.0), OVER);
     let stacked = under.render_to_image();
 
@@ -126,7 +122,7 @@ fn an_off_size_render_matches_one_at_the_substrates_own_size() {
     use stark_engine::Extent2;
     use stark_engine::command::ViewCommand;
     use stark_engine::{Background, ExportScale, Rendered};
-    use stark_model::document::{BlendMode, MatteRegion, Parcel, Place};
+    use stark_model::document::{BlendMode, MatteRegion};
 
     // The piece: a frame whose rect is exactly the exported size, centred on the
     // canvas origin, so both exports render the identical view.
@@ -146,11 +142,7 @@ fn an_off_size_render_matches_one_at_the_substrates_own_size() {
             ],
         );
         // A second layer, multiplied over the first.
-        engine.process(DocCommand::AddLayer {
-            carrier: None,
-            above: None,
-        });
-        let top = engine.observe().active_layer;
+        let top = add_layer(&mut engine);
         engine.process(DocCommand::Set(Edit::LayerBlend(top, BlendMode::Multiply)));
         paint(
             &mut engine,
@@ -158,16 +150,11 @@ fn an_off_size_render_matches_one_at_the_substrates_own_size() {
             26.0,
             &[Vec2::new(-80.0, 40.0), Vec2::new(90.0, -30.0)],
         );
-        let frame = added(
+        let frame = add_matte(
             &mut engine,
-            DocCommand::AddMatte {
-                carrier: None,
-                at: Place::Top,
-                region: MatteRegion::OutsideRect {
-                    min: -HALF,
-                    max: HALF,
-                },
-                paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
+            MatteRegion::OutsideRect {
+                min: -HALF,
+                max: HALF,
             },
         );
         // The view is the export's, so nothing about the substrate's size can reach
@@ -216,7 +203,7 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
     use stark_engine::Extent2;
     use stark_engine::command::ViewCommand;
     use stark_engine::{Background, EnvironmentId, ExportScale, Offscreen, Rendered};
-    use stark_model::document::{MatteRegion, Parcel, Place};
+    use stark_model::document::MatteRegion;
 
     let Some(mut engine) = engine_or_skip_sized(Extent2::new(200, 150)) else {
         return;
@@ -238,15 +225,13 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
                 Vec2::new(-30.0, 50.0),
             ],
         );
-        engine.process(DocCommand::AddMatte {
-            carrier: None,
-            at: Place::Top,
-            region: MatteRegion::OutsideRect {
+        add_matte(
+            engine,
+            MatteRegion::OutsideRect {
                 min: Vec2::new(-80.0, -60.0),
                 max: Vec2::new(80.0, 60.0),
             },
-            paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
-        });
+        );
     };
     let shot = |engine: &mut stark_engine::Engine, into: &mut Offscreen, scale: f32| {
         let frame = engine.observe().layers.last().expect("matte").id;
@@ -341,7 +326,7 @@ fn a_kept_offscreen_renders_what_a_fresh_one_would() {
 fn a_kept_offscreen_survives_a_frame_with_more_merges_than_the_last() {
     use stark_engine::Extent2;
     use stark_engine::{Background, ExportScale, Offscreen, Rendered};
-    use stark_model::document::{BlendMode, MatteRegion, Parcel, Place};
+    use stark_model::document::{BlendMode, MatteRegion};
 
     let Some(mut engine) = engine_or_skip_sized(Extent2::new(200, 150)) else {
         return;
@@ -354,16 +339,11 @@ fn a_kept_offscreen_survives_a_frame_with_more_merges_than_the_last() {
         24.0,
         &[Vec2::new(-40.0, 0.0), Vec2::new(40.0, 0.0)],
     );
-    let frame = added(
+    let frame = add_matte(
         &mut engine,
-        DocCommand::AddMatte {
-            carrier: None,
-            at: Place::Top,
-            region: MatteRegion::OutsideRect {
-                min: Vec2::new(-80.0, -60.0),
-                max: Vec2::new(80.0, 60.0),
-            },
-            paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
+        MatteRegion::OutsideRect {
+            min: Vec2::new(-80.0, -60.0),
+            max: Vec2::new(80.0, 60.0),
         },
     );
 
@@ -382,10 +362,7 @@ fn a_kept_offscreen_survives_a_frame_with_more_merges_than_the_last() {
     // against that.
     let mut merges = 0;
     let mut add_merge = |engine: &mut stark_engine::Engine| {
-        engine.process(DocCommand::AddLayer {
-            carrier: None,
-            above: None,
-        });
+        add_layer(engine);
         paint(
             engine,
             BLUE,

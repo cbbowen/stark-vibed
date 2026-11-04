@@ -40,15 +40,7 @@ fn outside(img: &RgbaImage) -> [u8; 4] {
 }
 
 fn add_frame(engine: &mut Engine) -> LayerId {
-    added(
-        engine,
-        DocCommand::AddMatte {
-            carrier: None,
-            at: Place::Top,
-            region: HOLE,
-            paint: Parcel::Solid(Srgb::new(BLACK)),
-        },
-    )
+    add_matte(engine, HOLE)
 }
 
 /// The core claim: a frame matte covers everything outside its rect and nothing
@@ -93,39 +85,45 @@ fn frame_covers_outside_and_spares_inside() {
 /// stroke is thick, so a surviving height field shows up as shading differences.
 #[test]
 fn opaque_matte_erases_relief_beneath() {
-    let Some(mut engine) = engine_or_skip() else {
+    let (Some(mut engine), Some(mut bare)) = (engine_or_skip(), engine_or_skip()) else {
         return;
     };
-    // A fat, heavy stroke right through the region the matte will cover.
-    paint(&mut engine, RED_SOFT, 45.0, WIDE_STROKE);
-    add_frame(&mut engine);
-    let over_paint = engine.render_to_image();
-
-    let Some(mut bare) = engine_or_skip() else {
-        return;
-    };
-    add_frame(&mut bare);
-    let over_nothing = bare.render_to_image();
-
     // Compare only the matte-covered band, well clear of the frame's lit edge
     // (a genuine height cliff, present in both images but sensitive to sampling).
-    let (w, h) = (over_paint.width, over_paint.height);
-    let mut worst = 0i32;
-    for y in (h / 2 - 20)..(h / 2 + 20) {
-        for x in 4..40 {
-            let (a, b) = (at(&over_paint, x, y), at(&over_nothing, x, y));
-            for c in 0..3 {
-                worst = worst.max((a[c] as i32 - b[c] as i32).abs());
-            }
-        }
-    }
+    let band = |a: &RgbaImage, b: &RgbaImage| {
+        let h = a.height;
+        ((h / 2 - 20)..(h / 2 + 20))
+            .flat_map(|y| (4..40).map(move |x| (x, y)))
+            .map(|(x, y)| texel_delta(at(a, x, y), at(b, x, y)))
+            .max()
+            .expect("a band of texels")
+    };
+    // How far the two may sit apart under the matte.
+    const ERASED: u8 = 2;
+
+    // A fat, heavy stroke right through the region the matte will cover.
+    paint(&mut engine, RED_SOFT, 45.0, WIDE_STROKE);
+    // Bare canvas under an opaque matte matches bare canvas under it trivially, so
+    // first: without the matte, the band holds paint, and the paint has height.
+    let unmatted = band(&engine.render_to_image(), &bare.render_to_image());
     assert!(
-        worst <= 2,
+        unmatted > ERASED,
+        "the stroke does not reach the band the matte will cover \
+         (max channel difference {unmatted}), so the comparison below is vacuous"
+    );
+    let (height, _) = paint_at(&engine, LayerId::ROOT, Vec2::new(-106.0, 0.0))
+        .expect("the stroke minted a tile under the band");
+    assert!(height > 0.0, "the paint under the band carries no relief");
+
+    add_frame(&mut engine);
+    add_frame(&mut bare);
+    let worst = band(&engine.render_to_image(), &bare.render_to_image());
+    assert!(
+        worst <= ERASED,
         "impasto beneath an opaque matte is embossing through it \
          (max channel difference {worst}); the matte's aux blend must be `over`, \
          not additive — §15.4.2"
     );
-    let _ = w;
 }
 
 /// A matte takes layer opacity like any other layer — this is what makes the
@@ -660,12 +658,7 @@ fn a_translated_matte_is_the_frame_made_at_the_shifted_rect() {
         layer: moved,
         to: D,
     }));
-    b.process(DocCommand::AddMatte {
-        carrier: None,
-        at: Place::Top,
-        region: HOLE.translated(D.as_vec2()),
-        paint: Parcel::Solid(Srgb::new(BLACK)),
-    });
+    add_matte(&mut b, HOLE.translated(D.as_vec2()));
     let made = b.observe().layers.last().expect("matte").id;
     assert_images(
         &a.render_to_image(),

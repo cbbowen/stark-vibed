@@ -282,7 +282,7 @@ pub enum DocCommand {
         /// name, which is what the clipboard hands over.
         name: Option<String>,
         /// The picture's content id, from `Engine::import_picture`. An id this engine
-        /// does not hold places an empty layer and warns — see `document::apply`.
+        /// does not hold places an empty layer and warns — see [`fold::apply`](crate::fold::apply).
         image: AssetId,
     },
 

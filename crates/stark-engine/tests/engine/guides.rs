@@ -22,7 +22,7 @@
 //! opposite sides of the crate boundary and so can only be checked by drawing
 //! it (§20.9).
 
-use crate::common::collab::pair;
+use crate::common::collab::{pair, sync, sync_into};
 use crate::common::{
     Probe, engine_or_skip, engine_or_skip_in_format, engine_or_skip_sized, srgb_code,
 };
@@ -196,9 +196,7 @@ fn guides_reach_a_peer() {
         second,
         Some("  the wall  ".into()),
     ));
-    for action in a.take_outbox() {
-        b.merge_remote(action);
-    }
+    sync_into(&mut a, &mut b);
     assert_eq!(roster(&b), roster(&a), "a peer sees a different roster");
     assert_eq!(
         roster(&b)[1].1.as_deref(),
@@ -219,9 +217,7 @@ fn guides_reach_a_peer() {
 
     // …and a removal is a fact about the document like the rest of it.
     a.process(DocCommand::RemoveGuide(first));
-    for action in a.take_outbox() {
-        b.merge_remote(action);
-    }
+    sync_into(&mut a, &mut b);
     assert_eq!(roster(&b), roster(&a));
     assert_eq!(roster(&b).len(), 1);
 }
@@ -288,9 +284,7 @@ fn an_eye_is_this_client_s_alone() {
         return;
     };
     let id = add(&mut a, distinctive(), Some("the ground"));
-    for action in a.take_outbox() {
-        b.merge_remote(action);
-    }
+    sync_into(&mut a, &mut b);
     assert_eq!(
         visible_guides(&a),
         vec![false],
@@ -376,13 +370,7 @@ fn concurrent_adds_cannot_collide() {
     // Same lamport on both sides: neither has heard the other.
     add(&mut a, distinctive(), Some("mine"));
     add(&mut b, PerspectiveGuide::default(), Some("theirs"));
-    let (out_a, out_b) = (a.take_outbox(), b.take_outbox());
-    for action in out_a {
-        b.merge_remote(action);
-    }
-    for action in out_b {
-        a.merge_remote(action);
-    }
+    sync(&mut a, &mut b);
 
     let ids: Vec<GuideId> = roster(&a).iter().map(|g| g.0).collect();
     assert_eq!(ids.len(), 2, "one add landed on top of the other");

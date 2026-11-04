@@ -21,10 +21,9 @@
 //! average.
 
 use crate::common::*;
-use stark_engine::command::DocCommand;
 use stark_engine::{Background, ExportScale, Rendered, RgbaImage};
-use stark_model::Srgb;
-use stark_model::document::{BrushParams, BrushShape, MatteRegion, Parcel, Place};
+use stark_model::color::{linear_to_srgb, srgb_to_linear};
+use stark_model::document::{BrushParams, BrushShape, MatteRegion};
 use stark_model::geom::Vec2;
 
 /// The frame the exports are taken against: a rect whose size divides by [`SS`], so
@@ -33,22 +32,6 @@ const HALF: f32 = 96.0;
 /// The minification under test. 1:4 is where `supersample` saturates, so this also
 /// pins the cap's behaviour.
 const SS: u32 = 4;
-
-fn srgb_to_linear(c: f32) -> f32 {
-    if c <= 0.04045 {
-        c / 12.92
-    } else {
-        ((c + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-fn linear_to_srgb(c: f32) -> f32 {
-    if c <= 0.0031308 {
-        c * 12.92
-    } else {
-        1.055 * c.powf(1.0 / 2.4) - 0.055
-    }
-}
 
 /// `img` box-averaged by `n` in light — the CPU statement of what `resolve.wesl`
 /// does, written out rather than shared so the test does not agree with the shader
@@ -130,15 +113,13 @@ fn hatched(engine: &mut stark_engine::Engine) {
             &[Vec2::new(x, -HALF), Vec2::new(x + 34.0, HALF)],
         );
     }
-    engine.process(DocCommand::AddMatte {
-        carrier: None,
-        at: Place::Top,
-        region: MatteRegion::OutsideRect {
+    add_matte(
+        engine,
+        MatteRegion::OutsideRect {
             min: Vec2::new(-HALF, -HALF),
             max: Vec2::new(HALF, HALF),
         },
-        paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
-    });
+    );
 }
 
 fn shot(engine: &mut stark_engine::Engine, scale: f32) -> RgbaImage {

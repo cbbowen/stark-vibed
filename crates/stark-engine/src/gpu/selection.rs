@@ -25,19 +25,18 @@ use crate::device::desc;
 use crate::device::tile::mask_tex_origin;
 use crate::document::selection::Selection;
 use crate::view::Extent2;
-use stark_model::document::{SelectionOp, SelectionShape};
+use stark_model::document::{Lasso, SelectionOp, SelectionShape};
 use stark_model::geom::{TILE_TEX, TileCoord, Vec2};
 
 /// The lasso's closed edge list, as `selection.wesl` reads it: one texel per edge
-/// holding `(a.xy, b.xy)` in canvas px. Empty for a polygon that cannot enclose area.
+/// holding `(a.xy, b.xy)` in canvas px — never empty, since a [`Lasso`] always has
+/// the vertices to enclose something.
 ///
 /// Here rather than in the model (§2): the document says what a lasso *is* — its
 /// vertex list, and `MAX_LASSO_POINTS` bounding it — while turning one into edge
 /// texels is a statement about this pass's buffer layout.
-fn lasso_edges(points: &[Vec2]) -> Vec<[f32; 4]> {
-    if points.len() < 3 {
-        return Vec::new();
-    }
+fn lasso_edges(lasso: &Lasso) -> Vec<[f32; 4]> {
+    let points = lasso.points();
     (0..points.len())
         .map(|i| {
             let a = points[i];
@@ -69,7 +68,7 @@ use stark_shaders::mirror::selection as sel;
 use stark_shaders::mirror::selection::binding as sb;
 use stark_shaders::mirror::selection::decl as sd;
 
-use crate::device::scratch::{BufKey, Key, LeasedTex, ScratchPool, SubmitScope};
+use crate::device::scratch::{Key, LeasedTex, ScratchPool, SubmitScope};
 use crate::device::tile::{AllocSource, MASK_FORMAT, TilePool};
 
 // Generated from the two shaders' own declarations (§6.7). `selection.wesl` and
@@ -261,16 +260,8 @@ impl SelectionRenderer {
         op: &SelectionOp,
     ) -> Option<Selection> {
         let plan = prev.plan(op)?;
-        let edges = match &op.shape() {
-            SelectionShape::Lasso(points) => lasso_edges(points),
-            _ => Vec::new(),
-        };
-        // A lasso that encloses nothing has no boundary; treat it as a no-op rather
-        // than rasterizing an empty edge list (which would read as "all outside").
-        if matches!(op.shape(), SelectionShape::Lasso(_)) && edges.is_empty() {
-            return Some(prev.clone());
-        }
-        let params = shader_params(op, edges.len());
+        let edges = edges_of(op.shape());
+        let params = shader_params(op.shape(), op.mode(), op.feather(), op.opacity(), &edges);
 
         // Union and Subtract build on the previous mask (it survives where the shape
         // does not reach); Replace and Intersect start from nothing.
@@ -293,6 +284,47 @@ impl SelectionRenderer {
                 edges: &edges,
             },
         ))
+    }
+
+    /// The coverage `shape` lands at with `feather`, rasterized over **exactly
+    /// `coords`** — the fill's region (§18.0.4), and the reason a fill's edge and a
+    /// marquee's edge cannot drift apart: the same pass, a `Replace` at full strength,
+    /// so the value at a texel is the one a selection op would have struck there.
+    ///
+    /// Only the caller's tiles, rather than the cover [`Selection::plan`] would name
+    /// for the shape. The caller has planned what it reads, under its own cap
+    /// (`fill::plan` walks the gate rather than the shape's box), so a cover planned
+    /// again here would be both work nobody reads and a second refusal rule — one
+    /// that turned a fill its plan accepted away whenever the shape's box outgrew
+    /// `MAX_SELECTION_TILES`. Everywhere outside `coords` reads the shape's own
+    /// coverage at infinity, which is 1 for [`SelectionShape::All`] (and so costs no
+    /// rasterize) and 0 for every bounded shape.
+    pub(crate) fn coverage(
+        &self,
+        pool: &TilePool,
+        shape: &SelectionShape,
+        feather: f32,
+        coords: &[TileCoord],
+    ) -> Selection {
+        if matches!(shape, SelectionShape::All) {
+            return Selection::everything();
+        }
+        let edges = edges_of(shape);
+        self.rasterize(
+            pool,
+            // `Replace` never reads what it replaces; any mask will do for the bind.
+            &Selection::everything(),
+            HashTrieMap::new(),
+            coords,
+            RasterShape {
+                outside: shape.coverage_outside(),
+                level: 1.0,
+                opacity: 1.0,
+                hull: None,
+                params: shader_params(shape, SelectionMode::Replace, feather, 1.0, &edges),
+                edges: &edges,
+            },
+        )
     }
 
     /// Invert the selection: every mask tile reflects through the mask's own level,
@@ -343,7 +375,7 @@ impl SelectionRenderer {
     /// and `MASK_FORMAT` — a region is up to `MAX_REGION_DIM`² of `R8Unorm`, so a live
     /// stroke leases one from the scratch pool rather than creating one per pointer
     /// move. The pass writes every texel it owns, clear included, so the pool's
-    /// no-zero-init contract is met (`gpu::scratch`).
+    /// no-zero-init contract is met ([`device::scratch`](crate::device::scratch)).
     ///
     /// The coverage alone, like [`mask_for`](Self::mask_for): the loop's ceiling
     /// already carries the mask's opacity (`Stamp::opacity`), and a mask that
@@ -392,16 +424,7 @@ impl SelectionRenderer {
                     })
             }));
         }
-        let instances = (!origins.is_empty()).then(|| {
-            let bytes: &[u8] = bytemuck::cast_slice(&origins);
-            let buf = scope.take_piece_buffer(BufKey {
-                size: bytes.len() as u64,
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-                label: "stark selection region instances",
-            });
-            scope.write_lease(&buf, bytes);
-            buf
-        });
+        let instances = scope.piece_vertices("stark selection region instances", &origins);
 
         // Everything the selection has no tile for takes the constant coverage that
         // reigns there.
@@ -589,12 +612,27 @@ fn mode_code(mode: SelectionMode) -> u32 {
     }
 }
 
-/// The op's own half of `selection.wesl`'s uniform: its shape, kind, mode, edge count
-/// and strength. The tile origin is the rasterize's, once per tile.
-pub(crate) fn shader_params(op: &SelectionOp, edges: usize) -> MaskUniform {
+/// The edges [`RasterShape::edges`] binds for `shape`: the lasso's, and none for the
+/// analytic shapes, which bind the 1×1 stand-in instead.
+fn edges_of(shape: &SelectionShape) -> Vec<[f32; 4]> {
+    match shape {
+        SelectionShape::Lasso(lasso) => lasso_edges(lasso),
+        _ => Vec::new(),
+    }
+}
+
+/// An op's own half of `selection.wesl`'s uniform: its shape, kind, mode, feather,
+/// edge count and strength. The tile origin is the rasterize's, once per tile.
+fn shader_params(
+    shape: &SelectionShape,
+    mode: SelectionMode,
+    feather: f32,
+    strength: f32,
+    edges: &[[f32; 4]],
+) -> MaskUniform {
     // The kind codes are `selection.wesl`'s, generated from its declarations
-    // (§6.10) — see `SelectionMode::code` for why they are not written here.
-    let (kind, shape) = match &op.shape() {
+    // (§6.10) — see [`mode_code`] for why they are not written here.
+    let (kind, shape) = match shape {
         SelectionShape::All => (sel::KIND_ALL, [0.0; 4]),
         SelectionShape::Rect { min, max } => (sel::KIND_RECT, [min.x, min.y, max.x, max.y]),
         // Radii non-negative by `SelectionShape::sanitized`, which every op passes
@@ -603,14 +641,19 @@ pub(crate) fn shader_params(op: &SelectionOp, edges: usize) -> MaskUniform {
             (sel::KIND_ELLIPSE, [center.x, center.y, radii.x, radii.y])
         }
         SelectionShape::Lasso(_) => (sel::KIND_LASSO, [0.0; 4]),
+        // No region has no box, so nothing plans a tile for it — a selection op is
+        // declined and a fill plans none — and no pass reaches this. Stated as the
+        // inverted rect the shader reads as empty, so the match is total rather than
+        // a panic.
+        SelectionShape::Nothing => (sel::KIND_RECT, [0.0, 0.0, -1.0, -1.0]),
     };
     MaskUniform {
-        feather: op.feather(),
+        feather,
         shape,
         kind,
-        mode: mode_code(op.mode()),
-        edge_count: edges as u32,
-        strength: op.opacity(),
+        mode: mode_code(mode),
+        edge_count: edges.len() as u32,
+        strength,
         ..Default::default()
     }
 }
@@ -625,16 +668,12 @@ mod tests {
     #[test]
     fn lasso_edges_close_the_loop() {
         let pts = vec![Vec2::ZERO, Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0)];
-        let edges = lasso_edges(&pts);
+        let edges = lasso_edges(&Lasso::new(pts).expect("three vertices"));
         assert_eq!(edges.len(), 3);
         assert_eq!(
             edges[2],
             [0.0, 1.0, 0.0, 0.0],
             "last edge returns to the start"
-        );
-        assert!(
-            lasso_edges(&pts[..2]).is_empty(),
-            "a segment encloses nothing"
         );
     }
 }

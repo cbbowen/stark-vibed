@@ -340,7 +340,7 @@ struct GpuKeep {
     /// color-space independent and is handed back in rather than rebuilt (§6.8).
     selection: SelectionRenderer,
     /// The working textures and buffers every recording leases and gives back
-    /// (`gpu::scratch`) — **one pool for the whole stack**, so a stroke's ring, a
+    /// ([`device::scratch`](crate::device::scratch)) — **one pool for the whole stack**, so a stroke's ring, a
     /// transform's parcel and a merge's expansions feed one another's free lists.
     ///
     /// Kept across a color-space rebuild, unlike the renderers it serves: a checkout

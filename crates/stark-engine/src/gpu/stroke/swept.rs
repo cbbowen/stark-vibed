@@ -1,12 +1,13 @@
 //! The swept fast path (§6.2): one quad per segment, coverage integrated along the
 //! sweep through a precomputed prefix-τ texture, over-blended so optical depth sums
-//! exactly. Carries no brush state between segments — a range needs nothing from its
-//! predecessor but the arc length.
+//! exactly. Carries no brush state between segments; whether it carries its *parcel*
+//! between pieces is one condition, stated once at `render_swept`'s `carries`.
 
 use std::ops::Range;
 
 use crate::colorspace::ColorSpace;
-use crate::device::channels::{ChannelFormats, Targets};
+use crate::device::channels::{ChannelFormats, Sources};
+use crate::device::context::GpuContext;
 use crate::device::desc;
 use stark_model::document::StrokeRecord;
 use stark_model::geom::{TILE_APRON, TILE_TEX, TileCoord, Vec2};
@@ -29,7 +30,7 @@ use super::accum::{
 use super::region::tiles_with_segments;
 use super::segments::{Segment, SegmentInstance};
 use super::{ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene};
-use crate::device::scratch::{BufKey, Key, LeasedSlots, SubmitScope};
+use crate::device::scratch::{Key, LeasedSlots, SubmitScope};
 use crate::gpu::substrate::SubstrateMap;
 
 // A segment's centreline is an arc rather than a chord (§6.2), so its swept geometry is
@@ -201,11 +202,19 @@ pub(super) struct SweepKit {
     pub(super) uniform_bgl: desc::Bindings,
     pub(super) prefix_bgl: desc::Bindings,
     pub(super) noise_bgl: desc::Bindings,
+    /// **The one stand-in for a ceiling lane a stroke does not carry** (§6.2, §6.8's
+    /// pattern): a 1×1 zero at [`CEILING_FORMAT`], bound by the integrate, the erase
+    /// (for its moment lane too) and the stamp loop wherever the pen does not drive the
+    /// ceiling. Each of those reads the lane only under a flag such a stroke clears, so
+    /// what matters is that it *binds*: in the lane's own format, it binds wherever the
+    /// lane does.
+    pub(super) ceiling_zero: wgpu::TextureView,
     pipelines: [wgpu::RenderPipeline; SWEEPS.len()],
 }
 
 impl SweepKit {
-    pub(super) fn new(device: &wgpu::Device, color_space: &dyn ColorSpace) -> Self {
+    pub(super) fn new(ctx: &GpuContext, color_space: &dyn ColorSpace) -> Self {
+        let device = &ctx.device;
         // Each layout is the union over every row (§6.10). Group 0 is one buffer for the
         // whole piece with a slot per tile, selected by a dynamic offset; group 1 the
         // prefix-τ volume (§6.6); group 2 the noise field with its repeat sampler beside
@@ -257,6 +266,7 @@ impl SweepKit {
             uniform_bgl,
             prefix_bgl,
             noise_bgl,
+            ceiling_zero: desc::zero_texture(ctx, CEILING_FORMAT, "stark ceiling lane 1x1"),
             pipelines,
         }
     }
@@ -351,18 +361,22 @@ impl StrokeRenderer {
             ..
         } = range;
 
-        // Uncapped, the parcel lands by one of §6.2's piece-composable forms, so a range
-        // needs nothing from its predecessor but the arc length. Under a ceiling
-        // (`StrokeConstants::capped`) its finished coverage is scaled, which is neither
-        // — so the path takes the erase pass's shape instead: the parcel accumulates
-        // across pieces, every piece re-derived from pristine paint under the whole of
-        // it (`accum::ParcelCarry`), or a stroke crossing itself would outrun the dial
-        // or the mask.
+        // **Whether the swept path carries its parcel across pieces** — the one place
+        // the condition is stated; every doc that says the swept path is stateless
+        // means "unless this holds".
         //
-        // A supersampled stroke needs the same shape one level up: the resolve averages the parcel's *finished* visible alpha, and an
-        // average of per-piece parcels differs from the whole parcel averaged by the
-        // covariance of the subsample alphas — worth a quarter of the alpha at a rim
-        // texel where pieces meet.
+        // Uncapped and at 1×, the parcel lands by one of §6.2's piece-composable forms,
+        // so a range needs nothing from its predecessor but the arc length. Under a
+        // ceiling (`StrokeConstants::capped`) its finished coverage is scaled, which is
+        // neither — so the path takes the erase pass's shape instead: the parcel
+        // accumulates across pieces, every piece re-derived from pristine paint under the
+        // whole of it (`accum::ParcelCarry`), or a stroke crossing itself would outrun
+        // the dial or the mask.
+        //
+        // A supersampled stroke needs the same shape one level up: the resolve averages
+        // the parcel's *finished* visible alpha, and an average of per-piece parcels
+        // differs from the whole parcel averaged by the covariance of the subsample
+        // alphas — worth a quarter of the alpha at a rim texel where pieces meet.
         let carries = k.capped || ss > 1;
 
         // The per-stroke buffers and the working parcels ride in the scope, and only
@@ -409,16 +423,12 @@ impl StrokeRenderer {
                 effect: ParcelEffect::Deposit,
             },
             |l: &Landing<'_>| {
-                let parcel = Targets {
+                let parcel = Sources {
                     color: l.parcel.lane(fo::COLOR),
                     aux: l.parcel.lane(fo::AUX),
                     resid: l.base.resid.is_some().then(|| l.parcel.lane(fo::RESID)),
                 };
-                let ceiling = if k.ceiling_lane {
-                    l.parcel.lane(fo::CEILING)
-                } else {
-                    &self.zeroes.aux
-                };
+                let ceiling = l.parcel.lane_or(fo::CEILING, &self.swept.ceiling_zero);
                 integrate_bind_group(self, l.base, parcel, l.mask, &opacity, ceiling)
             },
         )
@@ -611,18 +621,10 @@ impl SweepDraws {
             .collect();
         let xforms = scope.run_slots("stark sweep xforms", &xforms)?;
 
-        // Leased and written through the scope, never `create_buffer_init`: that maps
-        // at creation, and Chrome/Dawn caps map-at-creation buffers well below the
-        // normal `maxBufferSize`, so a long stroke would panic in `createBuffer`. It is
-        // also the largest buffer the stroke path builds, rebuilt on every pointer move,
-        // so the pool hands back the previous move's (`scratch::BufKey`).
-        let bytes: &[u8] = bytemuck::cast_slice(&instances);
-        let instances = scope.take_run_buffer(BufKey {
-            size: bytes.len() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            label: "stark sweep instances",
-        });
-        scope.write_lease(&instances, bytes);
+        // The largest buffer the stroke path builds, rebuilt on every pointer move — so
+        // leased, for `run_vertices`'s reasons. Not empty: every tile in `coords` has a
+        // run of at least one segment.
+        let instances = scope.run_vertices("stark sweep instances", &instances)?;
 
         let xform = r
             .swept
@@ -653,11 +655,32 @@ impl SweepDraws {
         pipeline: &wgpu::RenderPipeline,
         i: usize,
     ) {
-        pass.set_pipeline(pipeline);
-        desc::Bound::new(&self.groups, &[self.xforms.offset(i)]).set(pass);
-        pass.set_vertex_buffer(0, self.instances.slice(..));
-        pass.draw(0..SWEEP_VERTS, self.runs[i].clone());
+        draw_sweep(
+            pass,
+            pipeline,
+            desc::Bound::new(&self.groups, &[self.xforms.offset(i)]),
+            &self.instances,
+            self.runs[i].clone(),
+        );
     }
+}
+
+/// One instanced draw of the sweep's strip: `segments` of `instances` through
+/// `pipeline`, one of [`SWEEPS`], with its three groups `bound` — **the one draw of the
+/// swept extent**, a tile's run of a piece ([`SweepDraws::draw`]) and the stamp loop's
+/// per-segment ceiling lane alike (§6.2), so the lane's sums are the sweep's by
+/// construction rather than by a second copy of its binding.
+pub(super) fn draw_sweep(
+    pass: &mut wgpu::RenderPass<'_>,
+    pipeline: &wgpu::RenderPipeline,
+    bound: desc::Bound<'_>,
+    instances: &wgpu::Buffer,
+    segments: Range<u32>,
+) {
+    pass.set_pipeline(pipeline);
+    bound.set(pass);
+    pass.set_vertex_buffer(0, instances.slice(..));
+    pass.draw(0..SWEEP_VERTS, segments);
 }
 
 /// One segment as the sweep is instanced with — the same record for every draw of
@@ -703,13 +726,11 @@ pub(super) fn tile_xform(
         // target covers the same canvas extent, only on a finer grid.
         half_footprint: 0.5 / ss as f32,
         color: k.channels,
-        // Three lanes of a four-lane constant, as `dynamics::plan` takes the same one:
-        // the shader reads a colour and has no use for a fourth.
-        resid: [k.resid[0], k.resid[1], k.resid[2]],
+        resid: k.resid,
         drain: k.drain_px,
         tooth_softness: k.tooth_softness,
-        noise_freq: [k.nfreq[0], k.nfreq[1], k.nfreq[2]],
-        noise_amp: [k.namp[0], k.namp[1], k.namp[2]],
+        noise_freq: k.nfreq,
+        noise_amp: k.namp,
         jitter_eps: k.jitter_eps,
         jitter_seed: k.jitter_seed,
         ndc: [2.0 / size.0, 2.0 / size.1],
@@ -734,17 +755,17 @@ pub(super) fn xform_group(
 
 /// The integrate pass's bind group: the pristine paint under a tile, the parcel the
 /// stroke laid over it, the selection coverage, the stroke's opacity ceiling, and
-/// the ceiling lane — the parcel's own under a pen-driven opacity, the 1×1 zero
-/// otherwise (the uniform says which, and the shader reads the lane only when
-/// it does).
+/// the ceiling lane — the parcel's own under a pen-driven opacity,
+/// [`SweepKit::ceiling_zero`] otherwise (the uniform says which, and the shader reads
+/// the lane only when it does).
 ///
 /// A residual build asks for both residual slots, and both are there: the base's
 /// residual, the zero standing in for it and the parcel's third lane are all present
 /// exactly when the space has one (§6.7).
 fn integrate_bind_group(
     r: &StrokeRenderer,
-    base: Targets<'_>,
-    parcel: Targets<'_>,
+    base: Sources<'_>,
+    parcel: Sources<'_>,
     mask: &wgpu::TextureView,
     opacity: &LeasedSlots<Integrate>,
     ceiling: &wgpu::TextureView,

@@ -7,9 +7,10 @@
 //!
 //! Which tiles it writes is settled first, on the CPU and with no device, by [`plan()`].
 //!
-//! The region's coverage is rasterized by [`SelectionRenderer`] — a `Replace` op over an
-//! empty mask *is* the shape's coverage, so the analytic shapes, the feather ramp and the
-//! tile caps are shared with the selection tools rather than reimplemented for paint.
+//! The region's coverage is rasterized by [`SelectionRenderer::coverage`] — a `Replace`
+//! op *is* the shape's coverage, so the analytic shapes and the feather ramp are shared
+//! with the selection tools rather than reimplemented for paint. The tiles it covers are
+//! the plan's, so the cap a fill answers to is the fill's own.
 //! What is left is one pass of `fill.wesl` per written tile, stacking the parcel by the
 //! law `paint_common.wesl` shares with the brush.
 //!
@@ -30,7 +31,6 @@ use crate::device::tile::{AllocSource, TileMap, TilePool};
 use crate::document::selection::Selection;
 use crate::gpu::selection::SelectionRenderer;
 use stark_model::document::{FillOp, GradientAxis, Parcel};
-use stark_model::document::{SelectionMode, SelectionOp, SelectionShape};
 
 // Generated from `fill.wesl`'s own declarations (§6.7).
 use stark_shaders::mirror::fill::Fill as FillUniform;
@@ -124,18 +124,13 @@ impl FillRenderer {
             return Some(base.clone());
         }
 
-        // The shape's own coverage, as mask tiles: `Replace` over the unrestricted
-        // selection is exactly "the shape, and nothing else", which is why a fill's
-        // edge and a marquee's edge cannot drift apart. `All` needs no rasterize — its
-        // coverage is 1 everywhere, and the gate is then the whole boundary.
-        let region = match op.shape() {
-            SelectionShape::All => Selection::everything(),
-            shape => self.selection.apply(
-                pool,
-                &Selection::everything(),
-                &SelectionOp::new(SelectionMode::Replace, shape.clone(), op.feather()),
-            )?,
-        };
+        // The shape's own coverage, as mask tiles over exactly the tiles this fill
+        // writes (`SelectionRenderer::coverage`): the selection tools' pass, so a
+        // fill's edge and a marquee's edge cannot drift apart, but not their cover —
+        // the plan above is the one statement of which tiles a fill reaches.
+        let region = self
+            .selection
+            .coverage(pool, op.shape(), op.feather(), &coords);
 
         let device = &self.ctx.device;
         let mut scope = self.scratch.scope(&self.ctx, "stark fill");
@@ -162,7 +157,7 @@ impl FillRenderer {
         for (i, coord) in coords.iter().enumerate() {
             // Bare canvas reads the 1×1 zeroes, all three at once, through the one
             // answer to that question (`Zeroes::or`, §6.8's pattern).
-            let under = self.zeroes.or(base.get(coord).map(TilePairHandle::targets));
+            let under = self.zeroes.or(base.get(coord).map(TilePairHandle::sources));
             let region_mask = self.selection.mask_for(&region, *coord);
             // As a gate: the coverage and the opacity it is read at, which the
             // uniform above already carries (`SelectionRenderer::gate_for`).
@@ -227,23 +222,67 @@ fn fill_uniform(space: &dyn ColorSpace, op: &FillOp, gate_opacity: f32) -> FillU
             uniform.r = l.res;
         }
         Parcel::Gradient(g) => {
-            let stops = g.gradient.stops();
-            uniform.stops = stops.len() as f32;
-            uniform.axis = match g.axis {
-                GradientAxis::Linear { from, to } => [from.x, from.y, to.x, to.y],
-                GradientAxis::Radial { center, radius } => {
-                    uniform.axis_kind = 1.0;
-                    [center.x, center.y, radius, 0.0]
-                }
-            };
-            for (i, stop) in stops.iter().enumerate() {
-                let l = space.rgb_to_latent(stop.color);
-                uniform.stop_c[i] = [l.lat[0], l.lat[1], l.lat[2], stop.t];
-                uniform.stop_r[i] = [l.res[0], l.res[1], l.res[2], 0.0];
-            }
+            let RampLanes {
+                stops,
+                axis_kind,
+                axis,
+                stop_c,
+                stop_r,
+            } = ramp_lanes(space, &g.gradient, g.axis);
+            (uniform.stops, uniform.axis_kind, uniform.axis) = (stops, axis_kind, axis);
+            (uniform.stop_c, uniform.stop_r) = (stop_c, stop_r);
         }
     }
     uniform
+}
+
+/// A gradient's lanes as `ramp_common.wesl` reads them (§22.4) — the stop count, the
+/// axis and its kind, and every stop converted to this space's channels.
+///
+/// **One packing for both readers of a ramp**: `fill.wesl`'s parcel and
+/// `matte.wesl`'s paint declare the same lanes under the same names, and were packed by
+/// two copies of the same loop. The axis kind is the shader's own constant
+/// (`ramp_common::AXIS_*`), never a literal.
+pub(crate) struct RampLanes {
+    pub stops: f32,
+    pub axis_kind: f32,
+    pub axis: [f32; 4],
+    pub stop_c: [[f32; 4]; stark_model::gradient::MAX_STOPS],
+    pub stop_r: [[f32; 4]; stark_model::gradient::MAX_STOPS],
+}
+
+/// [`RampLanes`] for `gradient` along `axis`, converted through `space` on the CPU,
+/// once per parcel.
+///
+/// Bounded by `Gradient`'s own invariant rather than by a check here: a ramp holds at
+/// most `gradient::MAX_STOPS`, the length both shaders declare their stop arrays at.
+/// Truncating instead would hide a broken invariant behind a wrong picture.
+pub(crate) fn ramp_lanes(
+    space: &dyn ColorSpace,
+    gradient: &stark_model::gradient::Gradient,
+    axis: GradientAxis,
+) -> RampLanes {
+    use stark_shaders::mirror::ramp_common::{AXIS_LINEAR, AXIS_RADIAL};
+    let stops = gradient.stops();
+    let (axis_kind, axis) = match axis {
+        GradientAxis::Linear { from, to } => (AXIS_LINEAR, [from.x, from.y, to.x, to.y]),
+        GradientAxis::Radial { center, radius } => {
+            (AXIS_RADIAL, [center.x, center.y, radius, 0.0])
+        }
+    };
+    let mut lanes = RampLanes {
+        stops: stops.len() as f32,
+        axis_kind,
+        axis,
+        stop_c: [[0.0; 4]; stark_model::gradient::MAX_STOPS],
+        stop_r: [[0.0; 4]; stark_model::gradient::MAX_STOPS],
+    };
+    for (i, stop) in stops.iter().enumerate() {
+        let l = space.rgb_to_latent(stop.color);
+        lanes.stop_c[i] = [l.lat[0], l.lat[1], l.lat[2], stop.t];
+        lanes.stop_r[i] = [l.res[0], l.res[1], l.res[2], 0.0];
+    }
+    lanes
 }
 
 #[cfg(test)]
@@ -251,7 +290,7 @@ mod tests {
     use super::*;
     use crate::colorspace::OkLabColorSpace;
     use stark_model::Srgb;
-    use stark_model::document::GradientParcel;
+    use stark_model::document::{GradientParcel, SelectionShape};
     use stark_model::geom::Vec2;
     use stark_model::gradient::{Gradient, GradientStop};
 

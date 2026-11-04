@@ -54,8 +54,9 @@ pub(super) type Lru<K, V> = Arc<Mutex<Vec<(K, V)>>>;
 
 /// `key`'s entry in `lru` — the hit moved to the back, or `build`'s result pushed there
 /// — and, while `over` says the list holds too much, the oldest entries handed back for
-/// the caller to release. A GPU resource dropped is not one freed (`gpu::scratch`), so
-/// which release it gets is the caller's to say.
+/// the caller to release. A GPU resource dropped is not one freed
+/// ([`scratch`](crate::device::scratch)), so which release it gets is the caller's to
+/// say.
 ///
 /// **What "too much" is belongs to the caller**: a count for the tip and noise caches,
 /// whose entries are all one size, and a byte budget for the mask volumes, which run

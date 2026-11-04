@@ -11,7 +11,8 @@ use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_model::Srgb;
 use stark_model::document::LayerId;
 use stark_model::document::{
-    BrushParams, BrushShape, FillOp, SelectionMode, SelectionOp, SelectionShape,
+    BrushParams, BrushShape, FillOp, MatteRegion, Parcel, Place, SelectionMode, SelectionOp,
+    SelectionShape,
 };
 use stark_model::geom::Vec2;
 use stark_model::{Gradient, GradientStop};
@@ -368,6 +369,25 @@ pub fn added(engine: &mut Engine, cmd: impl Into<stark_engine::command::InputCom
         .map(|l| l.id)
         .find(|id| !before.contains(id))
         .expect("the command added a layer")
+}
+
+/// A mat-board black frame at the top of the stack, covering everything outside
+/// `region` (§15.2), and the id of its layer.
+///
+/// The matte the export, framing and view suites lay to crop to, and that the matte
+/// suite reads the coverage of: black, so [`is_dark`] reads it, and on top, so nothing
+/// is composited over it. A file wanting another paint or another place is asking
+/// about the paint or the place, and spells the command out.
+pub fn add_matte(engine: &mut Engine, region: MatteRegion) -> LayerId {
+    added(
+        engine,
+        DocCommand::AddMatte {
+            carrier: None,
+            at: Place::Top,
+            region,
+            paint: Parcel::Solid(Srgb::new(palette::BLACK)),
+        },
+    )
 }
 
 /// A gradient of the given stops, `(position, sRGB)` (§22).

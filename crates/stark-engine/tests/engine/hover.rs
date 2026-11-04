@@ -21,8 +21,7 @@ use stark_engine::command::Tool;
 use stark_engine::command::{GestureCommand, HoverReport, InputSample, PeerCommand, ViewCommand};
 use stark_engine::path::DEFAULT_TOLERANCE;
 use stark_engine::{Background, Engine, ExportScale, Rendered};
-use stark_model::Srgb;
-use stark_model::document::{MatteRegion, Parcel, Place};
+use stark_model::document::MatteRegion;
 use stark_model::geom::Vec2;
 
 /// The two reports of the standard hover, ending with the cursor at the canvas
@@ -313,16 +312,11 @@ fn an_unpaintable_layer_refuses_the_mark() {
         return;
     };
     engine.process(ViewCommand::set_brush(brush(RED_SOFT, 10.0)));
-    let matte = added(
+    let matte = add_matte(
         &mut engine,
-        stark_engine::command::DocCommand::AddMatte {
-            carrier: None,
-            at: Place::Top,
-            region: MatteRegion::OutsideRect {
-                min: Vec2::new(-120.0, -120.0),
-                max: Vec2::new(120.0, 120.0),
-            },
-            paint: Parcel::Solid(Srgb::new([0.0, 0.0, 0.0])),
+        MatteRegion::OutsideRect {
+            min: Vec2::new(-120.0, -120.0),
+            max: Vec2::new(120.0, 120.0),
         },
     );
     engine.process(PeerCommand::SetActiveLayer(matte));

@@ -629,26 +629,19 @@ fn texel_extent(v: Vec2) -> wgpu::Extent3d {
 }
 
 /// Every tile whose texture block overlaps the box at `origin` of extent `w × h`,
-/// in canvas px — the tiles a base composite over that box draws.
+/// in canvas px — the tiles a base composite over that box draws, in the row-major
+/// order `TileRect::coords` walks.
+///
+/// Quantized by [`TileRect::covering`], the model's one quantizer, rather than a
+/// floor-and-cast of its own: that one widens through `i64` and refuses a box it
+/// cannot measure, where a bare `as i32` saturates silently onto a different set of
+/// tiles. A box with no measure composites nothing.
 fn tiles_over(origin: Vec2, w: u32, h: u32) -> Vec<TileCoord> {
     let hi = origin + Vec2::new(w as f32, h as f32);
     // A block reaches an apron past its interior on every side, so a tile whose
-    // interior ends an apron short of the box still overlaps it.
-    let apron = TILE_APRON as f32;
-    let tile = TILE_SIZE as f32;
-    let (x0, x1) = (
-        ((origin.x - apron) / tile).floor() as i32,
-        ((hi.x + apron - 1.0) / tile).floor() as i32,
-    );
-    let (y0, y1) = (
-        ((origin.y - apron) / tile).floor() as i32,
-        ((hi.y + apron - 1.0) / tile).floor() as i32,
-    );
-    let mut out = Vec::with_capacity(((x1 - x0 + 1) * (y1 - y0 + 1)).max(0) as usize);
-    for y in y0..=y1 {
-        for x in x0..=x1 {
-            out.push(TileCoord::new(x, y));
-        }
-    }
-    out
+    // interior ends an apron short of the box still overlaps it. `hi` is exclusive,
+    // so its last texel is a px short of it.
+    let apron = Vec2::splat(TILE_APRON as f32);
+    TileRect::covering(origin - apron, hi + apron - Vec2::ONE, 0)
+        .map_or_else(Vec::new, |r| r.coords().collect())
 }

@@ -16,7 +16,7 @@ use crate::device::tile::TileMap;
 use super::super::incremental::{Carried, LoopCarry, LoopTiles};
 use super::super::region::chunk_segments;
 use super::super::segments::{BleedFire, Segment};
-use super::super::swept::{SweepPass, segment_instance, tile_xform, xform_group};
+use super::super::swept::{SweepPass, draw_sweep, segment_instance, tile_xform, xform_group};
 use super::super::volume::ResolvedTip;
 use super::super::{Complaint, ResolvedRange, StrokeCarry, StrokeRenderer, StrokeScene, ToolState};
 use super::bleed::bleed_fires;
@@ -27,9 +27,8 @@ use super::region::{
 };
 use super::tool::{BRUSH_RES, ToolPingPong};
 use super::trio::{Life, Trio};
-use crate::device::scratch::{BufKey, Key, LeasedSlots, LeasedTex, SubmitScope};
+use crate::device::scratch::{Key, LeasedSlots, LeasedTex, SubmitScope};
 use stark_shaders::mirror::stamp::SegmentInstance;
-use stark_shaders::mirror::stamp_common::SWEEP_VERTS;
 /// The label on the loop's compute pass, which the ceiling lane's render pass cuts in
 /// two and which resumes under the same name after it.
 const LOOP_PASS: &str = "stark dynamics stamp loop";
@@ -185,13 +184,13 @@ impl CeilingLane {
     /// into per segment, so a render attachment rather than storage, and read by the
     /// deposits between draws — cleared (the pool hands back stale texels), seeded from
     /// the carry, and given the piece's own draw state.
-    fn open<'p>(
-        &'p self,
+    fn open(
+        &self,
         region: &mut RegionRun<'_>,
         piece: &Piece,
         segments: &[Segment],
         bbox: RegionBox,
-    ) -> LanePiece<'p> {
+    ) -> LanePiece {
         let (r, consts) = (region.r, region.consts);
         let RegionBox { origin, w, h } = bbox;
         let lane = region.scope.take_piece(Key {
@@ -210,37 +209,38 @@ impl CeilingLane {
         );
         self.carried.seed(&mut region.scope, piece, &lane.tex);
         let instances: Vec<SegmentInstance> = segments.iter().map(segment_instance).collect();
-        let bytes: &[u8] = bytemuck::cast_slice(&instances);
-        let buf = region.scope.take_piece_buffer(BufKey {
-            size: bytes.len() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            label: "stark dynamics levels instances",
-        });
-        region.scope.write_lease(&buf, bytes);
+        // `None` for a piece of firings alone, which draws no segment over the lane.
+        let instances = region
+            .scope
+            .piece_vertices("stark dynamics levels instances", &instances);
         let xform = tile_xform(consts, origin, (w as f32, h as f32), 1);
         LanePiece {
             lane,
-            xform: xform_group(r, &mut region.scope, &xform),
-            instances: buf,
-            prefix: &self.prefix,
-            noise: &self.noise,
+            groups: [
+                xform_group(r, &mut region.scope, &xform),
+                self.prefix.clone(),
+                self.noise.clone(),
+            ],
+            instances,
         }
     }
 }
 
 /// One piece's ceiling lane (§6.2): the region-sized lane, the piece's segments
 /// instanced as the sweep draws them, and the three groups `stamp.wesl::fs_levels` is
-/// drawn with — two of them the run's own, borrowed rather than copied per piece.
-struct LanePiece<'a> {
+/// drawn with — two of them the run's own, cloned per piece, which is an `Arc` bump.
+struct LanePiece {
     lane: LeasedTex,
-    xform: wgpu::BindGroup,
-    instances: wgpu::Buffer,
-    prefix: &'a wgpu::BindGroup,
-    noise: &'a wgpu::BindGroup,
+    /// In `@group` order, as [`SweepDraws`](super::super::swept::SweepDraws) holds
+    /// them: this piece's region transform, then the run's prefix-τ and noise.
+    groups: [wgpu::BindGroup; 3],
+    /// The piece's segments, or `None` where it has none to draw.
+    instances: Option<wgpu::Buffer>,
 }
 
-impl LanePiece<'_> {
-    /// What a dispatch binds where a stroke without a lane binds the kit's 1×1 zero.
+impl LanePiece {
+    /// What a dispatch binds where a stroke without a lane binds
+    /// [`SweepKit::ceiling_zero`](super::super::swept::SweepKit::ceiling_zero).
     fn view(&self) -> &wgpu::TextureView {
         &self.lane.view
     }
@@ -249,19 +249,22 @@ impl LanePiece<'_> {
     /// accumulates by blending, the one read-modify-write of a region texel the loop
     /// makes without a snapshot.
     fn draw(&self, region: &mut RegionRun<'_>, index: u32) {
-        let kit = &region.r.swept;
-        let pipeline = kit.pipeline(SweepPass::Levels);
+        let pipeline = region.r.swept.pipeline(SweepPass::Levels);
         let mut pass = desc::begin_pass(
             region.scope.encoder(),
             "stark dynamics ceiling lane",
             desc::Attachments::loaded([Some(&self.lane.view)]),
         );
-        pass.set_pipeline(pipeline);
-        kit.uniform_bgl.set(&mut pass, &self.xform, &[0]);
-        kit.prefix_bgl.set(&mut pass, self.prefix, &[]);
-        kit.noise_bgl.set(&mut pass, self.noise, &[]);
-        pass.set_vertex_buffer(0, self.instances.slice(..));
-        pass.draw(0..SWEEP_VERTS, index..index + 1);
+        // Offset 0: one transform, staged for the whole region.
+        draw_sweep(
+            &mut pass,
+            pipeline,
+            desc::Bound::new(&self.groups, &[0]),
+            self.instances
+                .as_ref()
+                .expect("a segment is drawn only from a piece that has segments"),
+            index..index + 1,
+        );
     }
 
     /// The lane itself, the piece done with it — taking it out is what hands the run's
@@ -533,19 +536,16 @@ impl<'a> DynamicsRun<'a> {
             let ctx = self.region.plan_ctx(region_origin);
             let plan = dynamics_plan(&ctx, segments, fires, first, settle);
             let under = snapshot_scratch(&mut self.region, plan.dsize);
+            let needs = Needs::of(&plan.slots);
             // The cell scratch (§6.2), only when some slot actually takes the coarse
             // path — a small or hard tip allocates nothing and binds nothing.
-            let cells = plan
-                .slots
-                .iter()
-                .any(|d| matches!(d.step, WetStep::Segment { cells: Some(_), .. }))
+            let cells = needs
+                .cells
                 .then(|| cell_scratch(&mut self.region, plan.dsize));
             // The bleed pair's mobility scratch (§6.2), only when some slot is a firing —
             // a brush that does not bleed allocates nothing and binds the 1×1 stand-in.
-            let bleed = plan
-                .slots
-                .iter()
-                .any(|d| matches!(d.step, WetStep::Bleed))
+            let bleed = needs
+                .bleed
                 .then(|| bleed_scratch(&mut self.region, plan.dsize));
             let stamps = self.region.upload(&plan.slots);
             let bind = self.bind_piece(
@@ -557,7 +557,7 @@ impl<'a> DynamicsRun<'a> {
                     lane: lane.as_ref().map(LanePiece::view),
                 },
                 &stamps,
-                Needs::of(&plan.slots),
+                needs,
             );
             (plan, stamps, bind)
         };
@@ -746,7 +746,7 @@ impl<'a> DynamicsRun<'a> {
                 b::BLEED_W_W => view(mobility()),
                 // The ceiling lane (§6.2), by the stand-in argument again: a stroke
                 // whose ceiling the pen does not drive carries `ceiling_lane = 0`.
-                b::REGION_LEVELS => view(lane.unwrap_or(&kit.levels_placeholder)),
+                b::REGION_LEVELS => view(lane.unwrap_or(&r.swept.ceiling_zero)),
                 b::SUBSTRATE_TEX => view(&self.region.scene.substrate.view),
                 b::DEPTH_TEX => view(&self.depth),
                 b::SAMP => samp(&kit.sampler),
@@ -947,7 +947,7 @@ fn record_loop(
     dsize: u32,
     stamps: &LeasedSlots<Stamp>,
     bind: &PieceBindings,
-    lane: Option<&LanePiece<'_>>,
+    lane: Option<&LanePiece>,
 ) {
     let kit = &region.r.dynamics.wet;
     // The reservoir half of `exchange`, which the extent half is laid beside on x:
@@ -1079,10 +1079,10 @@ struct Cells {
     res: Option<wgpu::TextureView>,
 }
 
-/// Which of a piece's bind groups its plan will bind — one flag per group
-/// [`record_loop`] reaches for, read off the plan's steps exactly as its
-/// arms consume them. `bleed_weight` and `coarse` are gated the same way, by the
-/// scratch they need.
+/// What a piece's plan will reach for, read off its steps in one walk exactly as
+/// [`record_loop`]'s arms consume them: one flag per bind group, and one per scratch a
+/// plan may not need at all — which in turn gates the groups over it, `coarse` and
+/// `bleed_weight`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Needs {
     snapshot: bool,
@@ -1090,6 +1090,10 @@ struct Needs {
     bake: bool,
     deposit: bool,
     settle: bool,
+    /// The cell scratch (§6.2): some segment takes the coarse path.
+    cells: bool,
+    /// The bleed pair's mobility scratch (§6.2): some slot is a firing.
+    bleed: bool,
 }
 
 impl Needs {
@@ -1099,6 +1103,8 @@ impl Needs {
         bake: false,
         deposit: false,
         settle: false,
+        cells: false,
+        bleed: false,
     };
 
     fn of(plan: &[LoopDispatch<WetStep>]) -> Self {
@@ -1110,10 +1116,12 @@ impl Needs {
                     n.exchange = true;
                     // A coarse segment deposits through its own cell group.
                     n.deposit |= cells.is_none();
+                    n.cells |= cells.is_some();
                 }
                 WetStep::Bleed => {
                     n.snapshot = true;
                     n.deposit = true;
+                    n.bleed = true;
                 }
                 WetStep::Settle => {
                     n.snapshot = true;
@@ -1197,7 +1205,7 @@ struct CoarseBindings {
 mod tests {
     use super::*;
 
-    /// Each wet step asks for exactly the groups its arm of
+    /// Each wet step asks for exactly the groups and scratch its arm of
     /// [`record_loop`] binds — read the arms, then this.
     #[test]
     fn each_wet_step_asks_for_the_groups_its_arm_binds() {
@@ -1224,6 +1232,7 @@ mod tests {
             Needs {
                 exchange: true,
                 bake: true,
+                cells: true,
                 ..Needs::NONE
             }
         );
@@ -1232,6 +1241,7 @@ mod tests {
             Needs {
                 snapshot: true,
                 deposit: true,
+                bleed: true,
                 ..Needs::NONE
             }
         );

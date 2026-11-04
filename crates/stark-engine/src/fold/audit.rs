@@ -24,38 +24,13 @@ use std::collections::{BTreeMap, BTreeSet};
 #[cfg(debug_assertions)]
 use stark_model::document::Action;
 use stark_model::document::{Footprint, LayerId, Prop, Resource};
-use stark_model::geom::TileCoord;
+use stark_model::geom::TileRect;
 
 use crate::document::layer::Layer;
 use crate::document::liquify::LiquifyRun;
+use crate::document::patch::changed_tiles;
 use crate::document::selection::Selection;
 use crate::document::state::DocState;
-
-/// One addressable difference between two states, named as the [`Resource`] that owns
-/// it — the same vocabulary a footprint speaks, so coverage is a containment test
-/// rather than an interpretation.
-#[derive(Debug)]
-enum Diff {
-    /// One tile of one layer's paint changed hands. Handle identity is the change
-    /// test, for the reason `patch.rs` diffs by it: a committed tile is never
-    /// rewritten in place, so a shared handle *is* an unchanged tile (§5.2).
-    Tile(LayerId, TileCoord),
-    /// One layer's liquify run changed hands (§6.13) — by handle, for the reason a
-    /// tile is: a run is replaced, never edited.
-    Liquify(LayerId),
-    /// Everything else, named directly.
-    Named(Resource),
-}
-
-impl std::fmt::Display for Diff {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Diff::Tile(layer, coord) => write!(f, "tile {coord:?} of {layer:?}"),
-            Diff::Liquify(layer) => write!(f, "liquify run of {layer:?}"),
-            Diff::Named(r) => write!(f, "{r:?}"),
-        }
-    }
-}
 
 /// Every difference between two states that `footprint` does not declare, described
 /// for a human — empty when the fold was honest.
@@ -71,7 +46,7 @@ pub fn undeclared(before: &DocState, after: &DocState, footprint: &Footprint) ->
     differences(before, after)
         .into_iter()
         .filter(|d| !covered(d, &footprint.writes))
-        .map(|d| d.to_string())
+        .map(|d| format!("{d:?}"))
         .collect()
 }
 
@@ -100,22 +75,14 @@ pub(super) fn audit(before: &DocState, after: &DocState, action: &Action, footpr
 }
 
 /// Whether the declared writes account for one difference — through
-/// [`Resource::overlaps`], the *same* predicate the timeline commutes by.
+/// [`Resource::overlaps`], the *same* predicate the timeline commutes by, for every
+/// difference alike: a changed tile is named as the one-tile `Paint` claim it is, so
+/// there is no second reading of "covers" for a coarse claim to look finer under.
 ///
 /// Equality would not do: `Resource::Layer` stands for everything about one layer,
 /// so a coarse claim has to keep covering every fine difference under it.
-fn covered(diff: &Diff, writes: &[Resource]) -> bool {
-    match diff {
-        Diff::Tile(layer, coord) => writes.iter().any(|w| match w {
-            Resource::Paint(l, r) => l == layer && r.contains(*coord),
-            Resource::Layer(l) => l == layer,
-            _ => false,
-        }),
-        Diff::Liquify(layer) => writes
-            .iter()
-            .any(|w| matches!(w, Resource::LiquifyRun(l) | Resource::Layer(l) if l == layer)),
-        Diff::Named(r) => writes.iter().any(|w| w.overlaps(r)),
-    }
+fn covered(diff: &Resource, writes: &[Resource]) -> bool {
+    writes.iter().any(|w| w.overlaps(diff))
 }
 
 /// Every layer in the tree, by id — the traversal flattened so two states can be
@@ -147,23 +114,23 @@ fn selections_agree(a: &Selection, b: &Selection) -> bool {
 }
 
 /// Everything that differs between two states, as resources.
-fn differences(before: &DocState, after: &DocState) -> Vec<Diff> {
+fn differences(before: &DocState, after: &DocState) -> Vec<Resource> {
     let mut out = Vec::new();
     // The id and the scale as one value, as `Resource::Substrate` is one resource for
     // the two (§6.4).
     if before.substrate() != after.substrate() {
-        out.push(Diff::Named(Resource::Substrate));
+        out.push(Resource::Substrate);
     }
     if before.substrate_color() != after.substrate_color() {
-        out.push(Diff::Named(Resource::SubstrateColor));
+        out.push(Resource::SubstrateColor);
     }
     if shape(before) != shape(after) {
-        out.push(Diff::Named(Resource::StackOrder));
+        out.push(Resource::StackOrder);
     }
     // The guide roster is one coarse resource (§20.5), so this compares it as one
     // thing: every guide and the order they sit in.
     if before.guides() != after.guides() {
-        out.push(Diff::Named(Resource::Guides));
+        out.push(Resource::Guides);
     }
 
     // Every actor either state has a mask for. An absent entry *is* the unrestricted
@@ -176,7 +143,7 @@ fn differences(before: &DocState, after: &DocState) -> Vec<Diff> {
         .collect();
     for actor in actors {
         if !selections_agree(&before.selection_of(actor), &after.selection_of(actor)) {
-            out.push(Diff::Named(Resource::Selection(actor)));
+            out.push(Resource::Selection(actor));
         }
     }
 
@@ -186,33 +153,27 @@ fn differences(before: &DocState, after: &DocState) -> Vec<Diff> {
         let (Some(x), Some(y)) = (a.get(&id), b.get(&id)) else {
             // Arrived or departed. A layer on one side only has no properties to
             // compare — its whole record is the difference.
-            out.push(Diff::Named(Resource::Existence(id)));
+            out.push(Resource::Existence(id));
             continue;
         };
         // At exactly the granularity [`Prop`] splits a layer into, since that is the
         // granularity undo restores it at.
         for p in Prop::ALL.iter().filter(|p| x.prop(**p) != y.prop(**p)) {
-            out.push(Diff::Named(Resource::Prop(id, *p)));
+            out.push(Resource::Prop(id, *p));
         }
         // A layer the fold did not touch still holds the *same persistent root*
         // (`Layer::with_tiles`), so the common case is one pointer test rather than
-        // a scan of every tile of every layer on every fold in the workspace.
+        // a scan of every tile of every layer on every fold in the workspace — which
+        // `changed_tiles` makes for every caller, not this one alone.
         if !LiquifyRun::same(x.liquify_run(), y.liquify_run()) {
-            out.push(Diff::Liquify(id));
+            out.push(Resource::LiquifyRun(id));
         }
-        if let (Some(tx), Some(ty)) = (x.tiles(), y.tiles())
-            && !tx.ptr_eq(ty)
-        {
-            for (coord, handle) in tx.iter() {
-                if !ty.get(coord).is_some_and(|h| h.same(handle)) {
-                    out.push(Diff::Tile(id, *coord));
-                }
-            }
-            for coord in ty.keys() {
-                if tx.get(coord).is_none() {
-                    out.push(Diff::Tile(id, *coord));
-                }
-            }
+        if let (Some(tx), Some(ty)) = (x.tiles(), y.tiles()) {
+            out.extend(
+                changed_tiles(tx, ty, TileRect::ALL)
+                    .into_iter()
+                    .map(|(coord, _)| Resource::Paint(id, TileRect::at(coord))),
+            );
         }
     }
     out

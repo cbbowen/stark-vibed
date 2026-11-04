@@ -362,4 +362,54 @@ mod tests {
             }
         }
     }
+
+    /// A replay takes no run-up from the hover and leaves the tool alone — what a
+    /// press means and a replay does not (`Session::start_replay`): the same samples
+    /// and seed fit the same record whatever the pointer was doing.
+    ///
+    /// The press arm of the same setup takes the run-up, so this cannot pass by the
+    /// hover never having reached the press.
+    #[test]
+    fn a_replay_takes_no_run_up_and_keeps_the_tool() {
+        let hovered = |replay: bool| {
+            let mut s = session(ShapeAction::default());
+            for x in [0.0, 6.0, 12.0, 18.0] {
+                s.hover_to(InputSample::at(Vec2::new(x, 0.0)), TOLERANCE, 50.0);
+            }
+            assert!(s.hover_held(), "the window has something to offer");
+            s.tool = Tool::SelectLasso;
+            let first = InputSample::at(Vec2::new(19.0, 0.0));
+            let open = if replay {
+                Session::start_replay
+            } else {
+                Session::start_stroke
+            };
+            open(&mut s, first, 7, TOLERANCE, 0.0, stark_model::geom::IVec2::ZERO);
+            s.gesture_to(InputSample::at(Vec2::new(60.0, 10.0)));
+            assert!(!s.hover_held(), "either way the hover is retired");
+            (s.preview_record().expect("in flight"), s.tool())
+        };
+        let (pressed, pressed_tool) = hovered(false);
+        assert!(pressed.start > 0.0, "a press takes the hover as run-up");
+        assert_eq!(pressed_tool, Tool::Brush, "a press takes the brush");
+
+        let (replayed, replayed_tool) = hovered(true);
+        assert_eq!(replayed.start, 0.0, "a replay begins at its first sample");
+        assert_eq!(replayed_tool, Tool::SelectLasso, "a replay chooses no tool");
+
+        let mut clean = session(ShapeAction::default());
+        clean.start_replay(
+            InputSample::at(Vec2::new(19.0, 0.0)),
+            7,
+            TOLERANCE,
+            0.0,
+            stark_model::geom::IVec2::ZERO,
+        );
+        clean.gesture_to(InputSample::at(Vec2::new(60.0, 10.0)));
+        assert_eq!(
+            clean.preview_record().expect("in flight"),
+            replayed,
+            "a hover changes nothing a replay records",
+        );
+    }
 }

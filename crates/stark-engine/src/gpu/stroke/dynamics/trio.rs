@@ -86,7 +86,7 @@ impl Trio {
     }
 
     /// The views a pass binds or attaches, so the loop's scratch reaches the shared
-    /// attachment and count rules (`gpu::channels`).
+    /// attachment and count rules ([`channels`](crate::device::channels)).
     pub(super) fn targets(&self) -> Targets<'_> {
         Targets {
             color: &self.color.view,

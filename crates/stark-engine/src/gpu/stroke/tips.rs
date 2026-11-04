@@ -40,7 +40,7 @@ const ROUND_TIPS_KEPT: usize = 4;
 /// *re*-rendered: the live one, per pointer move, and the brush editor's pinned preview
 /// per edit, with a few more for a peer's live stroke (§12). Evicted tiles are
 /// `destroy()`ed rather than dropped: they go at the rate strokes do, and a dropped
-/// texture is not a freed one (`gpu::scratch`).
+/// texture is not a freed one ([`scratch`](crate::device::scratch)).
 const NOISE_TILES_KEPT: usize = 4;
 
 /// The brush textures both paths resolve, and the lazily-baked caches behind them.
@@ -288,6 +288,24 @@ const SOFT_FALLOFF: f32 = 2.5;
 /// two branches meeting on it.
 pub(super) const SOFT_SHOULDER: f32 = 0.50;
 
+/// The narrowest a tip's radius ever is, in canvas px: a hairline.
+///
+/// A tapered or pressure-thinned tip, or a brush sized below it, is held here rather
+/// than allowed to reach a degenerate zero-width sweep — which would divide by zero in
+/// the dynamics loop's reservoir cadence, let a segment's ramp reach the `|ramp| = 2`
+/// its positivity rests on (`segments::Sweep::tip`), and leave every budget priced in
+/// the radius (`budget`) pricing against nothing.
+pub(super) const MIN_TIP_RADIUS: f32 = 0.5;
+
+/// `radius` floored at [`MIN_TIP_RADIUS`] — **the one statement of the floor**, which
+/// every reader of a tip's size goes through so the order of operations cannot differ
+/// between them: the floor is on the *radius*, and anything drawn out of it (a
+/// stretched tip's reach, a shoulder) is drawn out of the floored value. A NaN lands
+/// on the floor, as `f32::max` does.
+pub(super) fn tip_radius(radius: f32) -> f32 {
+    radius.max(MIN_TIP_RADIUS)
+}
+
 /// The width of the tip's coverage falloff — its **shoulder** — per unit radius:
 /// [`SOFT_SHOULDER`]`·(1−hardness)` for the round tip, and 0 for a `Stamp`, which may
 /// be arbitrarily hard and is treated as the sharpest case.
@@ -325,7 +343,7 @@ pub(super) fn effective_hardness(hardness: f32, radius: f32) -> f32 {
     // own softest falloff (`radius < 1/SOFT_SHOULDER`, some 3 px) asks for a hardness
     // below the dial, and the answer there is the softest tip there is rather than a
     // negative one.
-    hardness.min((1.0 - 1.0 / (SOFT_SHOULDER * radius.max(0.5))).max(0.0))
+    hardness.min((1.0 - 1.0 / (SOFT_SHOULDER * tip_radius(radius))).max(0.0))
 }
 
 /// One round tip's profile: what `hardness` resolves to before any radius is involved.
@@ -642,8 +660,8 @@ mod tests {
             for h in [0.0f32, 0.3, 0.7, 0.9, 0.99, 1.0] {
                 let eff = effective_hardness(h, radius);
                 let shoulder =
-                    shoulder_per_radius(&BrushShape::Round { hardness: eff }) * radius.max(0.5);
-                if radius.max(0.5) >= carries_one {
+                    shoulder_per_radius(&BrushShape::Round { hardness: eff }) * tip_radius(radius);
+                if tip_radius(radius) >= carries_one {
                     assert!(
                         shoulder >= 1.0 - 1e-5,
                         "radius {radius}, hardness {h}: baked shoulder is {shoulder} px",

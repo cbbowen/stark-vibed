@@ -11,7 +11,7 @@ use super::live::Held;
 use crate::command::{DocCommand, Edit, GestureCommand, PeerCommand, ViewCommand};
 use crate::fold::Step;
 use crate::gesture::LiveGesture;
-use stark_model::document::{ActionId, ActionKind, GuideId, LayerId, TransformMap};
+use stark_model::document::{ActionId, ActionKind, GuideId, LayerId};
 
 /// The name to record, given what a frontend collected: surrounding whitespace
 /// trimmed, then the model's funnel for every travelling name
@@ -111,24 +111,7 @@ impl Engine {
             // conjugates. Each family is its own kind, since the wire never carries
             // the routing enum.
             Edit::Transform { layer, map } => {
-                let translation = self.frame_of(layer);
-                match map {
-                    TransformMap::Affine(affine) => ActionKind::Transform {
-                        layer,
-                        affine,
-                        translation,
-                    },
-                    TransformMap::Perspective(map) => ActionKind::TransformPerspective {
-                        layer,
-                        map,
-                        translation,
-                    },
-                    TransformMap::Warp(map) => ActionKind::TransformWarp {
-                        layer,
-                        map,
-                        translation,
-                    },
-                }
+                ActionKind::transform(layer, map, self.frame_of(layer))
             }
         })
     }
@@ -136,16 +119,11 @@ impl Engine {
     /// Commit what `edit` mints — or, where it mints nothing, drop the drag preview
     /// as a declined commit would ([`commit`](Self::commit)'s bargain).
     fn commit_edit(&mut self, edit: Edit) {
-        // A committed scale is a substrate the registry bakes, and a `SubstrateMap` is
-        // built from the substrate and its scale together — so laying it at another
-        // size invalidates the bound one exactly as `SetSubstrate` does.
-        let rebakes = matches!(edit, Edit::SubstrateScale(_));
+        // A committed scale rebinds the substrate as `SetSubstrate` does — through the
+        // door every committed change takes (`change_committed`).
         match self.edit_kind(edit) {
             Some(kind) => self.commit(kind),
             None => self.preview.hold(None),
-        }
-        if rebakes {
-            self.apply_document_substrate();
         }
     }
 
@@ -310,13 +288,10 @@ impl Engine {
                     });
                 }
             }
-            DocCommand::SetSubstrate(id) => {
-                self.commit(ActionKind::SetSubstrate(id));
-                // Unconditional, and a no-op when the substrate did not move: the
-                // registry is brought level with the document rather than with what
-                // this command asked for.
-                self.apply_document_substrate();
-            }
+            // The registry follows the document through `change_committed`, so it is
+            // brought level with what the document now holds rather than with what this
+            // command asked for.
+            DocCommand::SetSubstrate(id) => self.commit(ActionKind::SetSubstrate(id)),
             DocCommand::AddLayer { carrier, above } => {
                 self.mint_layer(|a, number| ActionKind::AddLayer {
                     id: LayerId::new(a, 0),
@@ -619,13 +594,22 @@ impl Engine {
         let first = it.next()?;
         // Replayed samples are already in canvas space and came from a fit or from a
         // generator, not from a device, so there is no device tolerance to declare.
+        //
+        // `start_replay` rather than `start_stroke`: no hover run-up and no tool
+        // switch, which are what a *press* means (see there) — so the same samples
+        // and seed fit the same curve whatever this session was doing.
         let frame = self.frame_of(self.session.active_layer());
         self.session
-            .start_stroke(*first, seed, crate::path::DEFAULT_TOLERANCE, rope, frame);
+            .start_replay(*first, seed, crate::path::DEFAULT_TOLERANCE, rope, frame);
         for s in it {
             self.session.gesture_to(*s);
         }
         let committed = match self.session.end_gesture() {
+            // Through `commit_with_id` and **not** `commit_stroke`, deliberately: a
+            // replay is the reference render the fast-commit path is defined against
+            // (`commit_stroke`: "with nothing offered, the fold renders the stroke
+            // exactly as a replay does"), so it must never be offered tiles a preview
+            // drew — and here there was no preview fold to draw any.
             Some(LiveGesture::Stroke(rec)) => {
                 let id = self.next_action_id();
                 self.commit_with_id(id, ActionKind::CommitStroke(rec));

@@ -12,6 +12,7 @@ use super::guide::{GuideId, PerspectiveGuide};
 use super::layer::{BlendMode, LayerId, MatteRegion, Place};
 use super::paint::Parcel;
 use super::selection::SelectionOp;
+use super::transform::TransformMap;
 use crate::Srgb;
 use crate::geom::{Affine2, IVec2, Vec2};
 use crate::sanitize::{self, at_least_zero, clamp01, unit_or};
@@ -446,7 +447,7 @@ pub enum ActionKind {
     ///
     /// The one action in this list whose promise is about *pixels that do not change*:
     /// a merge is offered exactly where the pair composites identically to the one
-    /// layer. Which pairs those are is `stark-engine`'s `document::merge::plan`, a pure
+    /// layer. Which pairs those are is `stark-engine`'s `fold::merge::plan`, a pure
     /// function of the state, so the log carries only the two ids and every peer and
     /// every replay re-derives the same answer.
     ///
@@ -632,6 +633,54 @@ pub enum ActionKind {
 }
 
 impl ActionKind {
+    /// The transform action for `map` on `layer` at the frame `translation` (§16,
+    /// §14.12) — one kind per family, since the wire never carries the routing enum.
+    /// The inverse of [`as_transform`](Self::as_transform).
+    pub fn transform(layer: LayerId, map: TransformMap, translation: IVec2) -> Self {
+        match map {
+            TransformMap::Affine(affine) => Self::Transform {
+                layer,
+                affine,
+                translation,
+            },
+            TransformMap::Perspective(map) => Self::TransformPerspective {
+                layer,
+                map,
+                translation,
+            },
+            TransformMap::Warp(map) => Self::TransformWarp {
+                layer,
+                map,
+                translation,
+            },
+        }
+    }
+
+    /// The layer, map and frame of a transform action — `None` for every other kind.
+    /// **The one place the three transform kinds are read back as one**, so the fold,
+    /// its preview and anything else that routes them do not each restate the
+    /// destructure. The inverse of [`transform`](Self::transform).
+    pub fn as_transform(&self) -> Option<(LayerId, TransformMap, IVec2)> {
+        match self {
+            Self::Transform {
+                layer,
+                affine,
+                translation,
+            } => Some((*layer, TransformMap::Affine(*affine), *translation)),
+            Self::TransformPerspective {
+                layer,
+                map,
+                translation,
+            } => Some((*layer, TransformMap::Perspective(*map), *translation)),
+            Self::TransformWarp {
+                layer,
+                map,
+                translation,
+            } => Some((*layer, TransformMap::Warp(map.clone()), *translation)),
+            _ => None,
+        }
+    }
+
     /// Every layer id this action **mints** — what the engine's mint door checks are
     /// the action's own (§17.9).
     ///
@@ -962,6 +1011,29 @@ pub struct Action {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The transform constructor and its reading are inverses, family by family, and
+    /// nothing else reads as a transform.
+    #[test]
+    fn a_transform_reads_back_as_the_map_it_was_made_from() {
+        use crate::document::{PerspectiveMap, WarpMap, rect_corners};
+        let (lo, hi) = (Vec2::ZERO, Vec2::splat(64.0));
+        let layer = LayerId::ROOT;
+        let frame = IVec2::new(3, -4);
+        for map in [
+            TransformMap::Affine(crate::geom::Affine2::from_translation(Vec2::new(5.0, 1.0))),
+            TransformMap::Perspective(PerspectiveMap {
+                min: lo,
+                max: hi,
+                corners: rect_corners(lo, hi),
+            }),
+            TransformMap::Warp(WarpMap::identity(lo, hi, 2, 2)),
+        ] {
+            let kind = ActionKind::transform(layer, map.clone(), frame);
+            assert_eq!(kind.as_transform(), Some((layer, map, frame)));
+        }
+        assert_eq!(ActionKind::InvertSelection.as_transform(), None);
+    }
     use crate::document::{FillOp, Parcel, SelectionMode, SelectionShape};
 
     /// [`ActionTag::index`] is a cast, which is only the position in

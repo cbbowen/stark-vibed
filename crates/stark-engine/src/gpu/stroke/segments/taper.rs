@@ -136,7 +136,7 @@ impl Taper {
     /// same 1 for it.
     pub(super) fn resolve(b: &BrushParams, total: Option<f32>) -> Self {
         let (start, end) = b.taper_px();
-        let radius = b.size.max(0.5);
+        let radius = crate::gpu::stroke::tips::tip_radius(b.size);
         let shoulder = crate::gpu::stroke::tips::shoulder_per_radius(&b.shape);
         match total {
             Some(total) if start + end > total => {

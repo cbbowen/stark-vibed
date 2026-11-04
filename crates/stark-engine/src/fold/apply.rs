@@ -22,7 +22,7 @@ use crate::document::selection::Selection;
 use crate::document::state::DocState;
 use crate::gpu::selection::SelectionRenderer;
 use crate::gpu::stroke::StrokeRenderer;
-use crate::gpu::transform::plan::plan_float;
+use crate::gpu::transform::plan::{FloatPlan, plan_float};
 
 /// Side-channel passed through [`Materialize::fold`]: the GPU resources needed to
 /// render a stroke (§5).
@@ -193,9 +193,37 @@ fn declined(state: DocState, why: &'static str) -> DocState {
     state
 }
 
-/// Why [`transform_onto`] declines, for the three arms that call it.
-const TRANSFORM_DECLINED: &str =
-    "transform declined (no paint layer, unusable map or too many tiles)";
+/// The renderer's kinds a drag previews — a fill and the three transform families —
+/// folded onto `state`: `Ok` with the document, `Err` with why it was declined, and
+/// `None` for every other kind.
+///
+/// **One routing for the fold and its preview** ([`apply`], [`preview_of`]), so the
+/// kinds a preview can show and the function each folds through are stated once: a
+/// fourth transform family, or a second previewable fill, lands in both by landing
+/// here.
+fn edit_onto(
+    kind: &ActionKind,
+    state: &DocState,
+    ctx: &ApplyCtx,
+    actor: ActorId,
+) -> Option<Result<DocState, &'static str>> {
+    if let ActionKind::Fill {
+        layer,
+        op,
+        translation: frame,
+    } = kind
+    {
+        return Some(
+            fill_onto(state, ctx, actor, *layer, op, *frame)
+                .ok_or("fill declined (no paint layer, unbounded region or too many tiles)"),
+        );
+    }
+    let (layer, map, frame) = kind.as_transform()?;
+    Some(
+        transform_onto(state, ctx, actor, layer, &map, frame)
+            .ok_or("transform declined (no paint layer, unusable map or too many tiles)"),
+    )
+}
 
 /// `state` with `op` filled into `layer` through the author's mask (§18.0.4): the
 /// `Fill` arm of the fold, and every preview of a fill (§22.4).
@@ -274,10 +302,10 @@ fn stroke_apply(
     rec: &StrokeRecord,
 ) -> DocState {
     if ctx.stroke.refuses(rec) {
-        return state;
+        return declined(state, "stroke refused (past the tiles a render takes)");
     }
     let Some(base) = state.layer(rec.layer).and_then(Layer::paint) else {
-        return state;
+        return declined(state, "stroke onto a layer holding no paint");
     };
     let painted = match ctx.prepared.take_if(|p| p.is_render_of(rec, base)) {
         Some(prepared) => prepared.painted,
@@ -328,11 +356,7 @@ fn place_apply(
     // `insert_layer` would decline it, but the name and the tiles would still land on
     // the layer that holds it.
     if state.contains_layer(id) {
-        tracing::warn!(
-            ?id,
-            "placement names a layer the document already holds; ignored"
-        );
-        return state;
+        return declined(state, "placement names a layer the document already holds");
     }
     let state = add(&state);
     if !state.contains_layer(id) {
@@ -369,11 +393,10 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
         return declined(state, "merge down no longer offered here");
     };
     if plan.dest != dest {
-        tracing::warn!("merge down no longer names this destination; ignored");
-        return state;
+        return declined(state, "merge down no longer names this destination");
     }
     let Some(lower) = state.layer(dest).and_then(Layer::tiles) else {
-        return state;
+        return declined(state, "merge down onto a layer holding no paint");
     };
     // What the survivor's tiles become, and what its params become — `None` for
     // "its own, untouched", which is the whole content of a filter merge.
@@ -417,7 +440,7 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
             // Both sides are paint that carries nothing — `plan` said so — so the
             // tile map is there to be read.
             let Some(upper) = state.layer(source).and_then(Layer::tiles) else {
-                return state;
+                return declined(state, "merge down of a layer holding no paint");
             };
             // The source restated in the destination's frame (§14.12), by the
             // whole-pixel shift whose tile caps `offer` has already checked
@@ -469,23 +492,41 @@ fn merge_apply(state: DocState, ctx: &ApplyCtx, source: LayerId, dest: LayerId) 
         .remove_layer(source)
 }
 
-/// Whether a float of `layer` by `actor`, at the frame `frame`, would cut anything
-/// (§16.12) — every refusal [`float_apply`] makes of the source and the selection: a
-/// layer holding no paint ([`Layer::tiles`]), a universal selection (nothing is
-/// *selected*; moving everything is `TranslateLayers`), and an empty or oversized cut
-/// (`plan_float`). What the command asks before it spends an action.
+/// The cut a float of `layer` by `actor`, at the frame `frame`, would make (§16.12):
+/// the source's tiles, the author's selection and the plan over them — or `None` for
+/// every refusal [`float_apply`] makes of the source and the selection: a layer
+/// holding no paint ([`Layer::tiles`]), a universal selection (nothing is *selected*;
+/// moving everything is `TranslateLayers`), and an empty or oversized cut
+/// (`plan_float`).
+///
+/// **Planned once**, for the question and the answer alike: the command's
+/// [`float_cut_offered`] asks it before spending an action, and the fold hands the
+/// very plan it was answered with to the renderer, which used to plan the same tiles
+/// again.
+fn float_cut(
+    state: &DocState,
+    actor: ActorId,
+    layer: LayerId,
+    frame: IVec2,
+) -> Option<(&crate::device::tile::TileMap, Selection, FloatPlan)> {
+    let selection = state.selection_of(actor);
+    if selection.is_universal() {
+        return None;
+    }
+    let base = state.layer(layer).and_then(Layer::tiles)?;
+    let plan = plan_float(base, &selection, frame)?;
+    Some((base, selection, plan))
+}
+
+/// Whether a float of `layer` by `actor`, at the frame `frame`, would cut anything —
+/// [`float_cut`], asked by the command before it spends an action.
 pub(crate) fn float_cut_offered(
     state: &DocState,
     actor: ActorId,
     layer: LayerId,
     frame: IVec2,
 ) -> bool {
-    let selection = state.selection_of(actor);
-    !selection.is_universal()
-        && state
-            .layer(layer)
-            .and_then(Layer::tiles)
-            .is_some_and(|base| plan_float(base, &selection, frame).is_some())
+    float_cut(state, actor, layer, frame).is_some()
 }
 
 /// The body of [`ActionKind::FloatSelection`] (§16.12): cut what the author's
@@ -493,8 +534,8 @@ pub(crate) fn float_cut_offered(
 /// source's stack, and consume the selection — the float *is* the selection now.
 ///
 /// Every refusal is deterministic, so peers and replays agree: those of
-/// [`float_cut_offered`], and a child id the document already holds (two layers under
-/// one id is §17.9's failure).
+/// [`float_cut`], and a child id the document already holds (two layers under one id
+/// is §17.9's failure).
 fn float_apply(
     state: DocState,
     ctx: &ApplyCtx,
@@ -504,23 +545,18 @@ fn float_apply(
     translation: IVec2,
     number: Option<u32>,
 ) -> DocState {
-    if !float_cut_offered(&state, actor, layer, translation) {
+    if state.contains_layer(child) {
+        return declined(state, "float names a child the document already holds");
+    }
+    let Some((base, selection, plan)) = float_cut(&state, actor, layer, translation) else {
         return declined(
             state,
             "float declined (no paint layer, nothing selected, or an empty or oversized cut)",
         );
-    }
-    if state.contains_layer(child) {
-        return declined(state, "float names a child the document already holds");
-    }
-    let selection = state.selection_of(actor);
-    let cut = state.layer(layer).and_then(Layer::tiles).and_then(|base| {
-        ctx.transform
-            .float(&ctx.pool, base, &selection, translation)
-    });
-    let Some((remaining, lifted)) = cut else {
-        return declined(state, "float cut nothing");
     };
+    let (remaining, lifted) = ctx
+        .transform
+        .float(&ctx.pool, base, &selection, translation, plan);
     // Unnamed but numbered — a float is new content rather than a copy, so it is
     // described the way a fresh layer is (§14.6) — at identity params, shown, and
     // standing at the frame the cut was made in. Both the frame and the number are
@@ -611,45 +647,14 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             let selection = ctx.selection.invert(&ctx.pool, &prev);
             state.with_selection(actor, selection)
         }
-        ActionKind::Transform {
-            layer,
-            affine,
-            translation: frame,
-        } => transform_onto(
-            &state,
-            ctx,
-            actor,
-            *layer,
-            &TransformMap::Affine(*affine),
-            *frame,
-        )
-        .unwrap_or_else(|| declined(state, TRANSFORM_DECLINED)),
-        ActionKind::TransformPerspective {
-            layer,
-            map,
-            translation: frame,
-        } => transform_onto(
-            &state,
-            ctx,
-            actor,
-            *layer,
-            &TransformMap::Perspective(*map),
-            *frame,
-        )
-        .unwrap_or_else(|| declined(state, TRANSFORM_DECLINED)),
-        ActionKind::TransformWarp {
-            layer,
-            map,
-            translation: frame,
-        } => transform_onto(
-            &state,
-            ctx,
-            actor,
-            *layer,
-            &TransformMap::Warp(map.clone()),
-            *frame,
-        )
-        .unwrap_or_else(|| declined(state, TRANSFORM_DECLINED)),
+        // The renderer's kinds a drag previews, through the one function the
+        // preview calls too (`edit_onto`), so the two cannot route them apart.
+        kind @ (ActionKind::Fill { .. }
+        | ActionKind::Transform { .. }
+        | ActionKind::TransformPerspective { .. }
+        | ActionKind::TransformWarp { .. }) => edit_onto(kind, &state, ctx, actor)
+            .expect("`edit_onto` folds every kind this arm names")
+            .unwrap_or_else(|why| declined(state, why)),
         ActionKind::MergeLayerDown { source, dest } => merge_apply(state, ctx, *source, *dest),
         ActionKind::FloatSelection {
             layer,
@@ -657,16 +662,6 @@ fn apply(action: &Action, state: DocState, ctx: &mut ApplyCtx) -> DocState {
             translation: frame,
             number,
         } => float_apply(state, ctx, actor, *layer, *child, *frame, *number),
-        ActionKind::Fill {
-            layer,
-            op,
-            translation: frame,
-        } => fill_onto(&state, ctx, actor, *layer, op, *frame).unwrap_or_else(|| {
-            declined(
-                state,
-                "fill declined (no paint layer, unbounded region or too many tiles)",
-            )
-        }),
 
         // Everything that needs no renderer, written out rather than swept up by a
         // `_`: which side of the line a new kind belongs on is a question the
@@ -896,49 +891,11 @@ pub(crate) fn preview_of(
     ctx: &ApplyCtx,
 ) -> Option<DocState> {
     let kind = kind.sanitized();
+    if let Some(edit) = edit_onto(&kind, state, ctx, actor) {
+        return edit.ok();
+    }
     match &kind {
-        ActionKind::Fill {
-            layer,
-            op,
-            translation: frame,
-        } => fill_onto(state, ctx, actor, *layer, op, *frame),
-        ActionKind::Transform {
-            layer,
-            affine,
-            translation: frame,
-        } => transform_onto(
-            state,
-            ctx,
-            actor,
-            *layer,
-            &TransformMap::Affine(*affine),
-            *frame,
-        ),
-        ActionKind::TransformPerspective {
-            layer,
-            map,
-            translation: frame,
-        } => transform_onto(
-            state,
-            ctx,
-            actor,
-            *layer,
-            &TransformMap::Perspective(*map),
-            *frame,
-        ),
-        ActionKind::TransformWarp {
-            layer,
-            map,
-            translation: frame,
-        } => transform_onto(
-            state,
-            ctx,
-            actor,
-            *layer,
-            &TransformMap::Warp(map.clone()),
-            *frame,
-        ),
-        // The pure half's partition is exhaustive, so this arm is every other kind.
+        // The pure half's partition is exhaustive, so this is every other kind.
         other => match apply_pure(other, state.clone(), actor) {
             Folded::Done(shown) => Some(shown),
             Folded::NeedsRenderer(_) => {
@@ -989,7 +946,7 @@ pub(crate) fn is_noop_on(kind: &ActionKind, state: &DocState, actor: ActorId) ->
     }
     let named = footprint.reads.iter().chain(&footprint.writes);
     if named
-        .filter_map(layer_named)
+        .filter_map(Resource::layer)
         .any(|id| !state.contains_layer(id))
     {
         return false;
@@ -1018,23 +975,6 @@ fn never_a_noop(resource: &Resource) -> bool {
         | Resource::Substrate
         | Resource::SubstrateColor
         | Resource::Guides => false,
-    }
-}
-
-/// The layer this resource names, if it names one — what [`is_noop_on`] checks the
-/// document holds.
-fn layer_named(resource: &Resource) -> Option<LayerId> {
-    match resource {
-        Resource::Paint(id, _)
-        | Resource::Existence(id)
-        | Resource::Prop(id, _)
-        | Resource::Layer(id)
-        | Resource::LiquifyRun(id) => Some(*id),
-        Resource::StackOrder
-        | Resource::Selection(_)
-        | Resource::Substrate
-        | Resource::SubstrateColor
-        | Resource::Guides => None,
     }
 }
 

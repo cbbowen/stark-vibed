@@ -9,7 +9,7 @@ use crate::colorspace::ColorSpace;
 use crate::device::tile::TilePairHandle;
 use crate::document::CompositeParams;
 use stark_model::document::{
-    ChromaticAberration, ColorAdjust, Filter, FocalBlur, GradientAxis, GradientParcel, MatteRegion,
+    ChromaticAberration, ColorAdjust, Filter, FocalBlur, GradientParcel, MatteRegion,
     Parcel,
 };
 use stark_model::geom::Vec2;
@@ -81,25 +81,23 @@ impl MatteDraw {
                 )
             }
             Parcel::Gradient(GradientParcel { gradient, axis }) => {
-                let mut ramp = stark_shaders::mirror::matte::Ramp::default();
-                let stops = gradient.stops();
-                ramp.stops = stops.len() as f32;
-                ramp.axis = match axis.translated(offset) {
-                    GradientAxis::Linear { from, to } => [from.x, from.y, to.x, to.y],
-                    GradientAxis::Radial { center, radius } => {
-                        ramp.axis_kind = 1.0;
-                        [center.x, center.y, radius, 0.0]
-                    }
+                // The fill's packing, lane for lane (`fill::ramp_lanes`): the two
+                // shaders read a ramp through the one `ramp_common.wesl`.
+                let crate::gpu::fill::RampLanes {
+                    stops,
+                    axis_kind,
+                    axis,
+                    stop_c,
+                    stop_r,
+                } = crate::gpu::fill::ramp_lanes(cs, gradient, axis.translated(offset));
+                let ramp = stark_shaders::mirror::matte::Ramp {
+                    stops,
+                    axis_kind,
+                    axis,
+                    stop_c,
+                    stop_r,
+                    ..Default::default()
                 };
-                // Bounded by `Gradient`'s own invariant rather than by a check here: a
-                // ramp holds at most `gradient::MAX_STOPS`, the length `matte.wesl`
-                // declares `stop_c` at. Truncating instead would hide a broken
-                // invariant behind a wrong picture.
-                for (i, stop) in stops.iter().enumerate() {
-                    let l = cs.rgb_to_latent(stop.color);
-                    ramp.stop_c[i] = [l.lat[0], l.lat[1], l.lat[2], stop.t];
-                    ramp.stop_r[i] = [l.res[0], l.res[1], l.res[2], 0.0];
-                }
                 ([0.0; 4], [0.0; 4], Some(Box::new(ramp)))
             }
         };

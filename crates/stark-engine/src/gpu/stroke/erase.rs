@@ -184,16 +184,12 @@ impl StrokeRenderer {
                         eb::BASE_RESID => wgpu::BindingResource::TextureView(
                             l.base.resid.expect("a residual build has one"),
                         ),
-                        eb::CEILING => wgpu::BindingResource::TextureView(if k.ceiling_lane {
-                            l.parcel.lane(fe::CEILING)
-                        } else {
-                            &self.zeroes.aux
-                        }),
-                        eb::MOMENT => wgpu::BindingResource::TextureView(if k.ceiling_lane {
-                            l.parcel.lane(fe::MOMENT)
-                        } else {
-                            &self.zeroes.aux
-                        }),
+                        eb::CEILING => wgpu::BindingResource::TextureView(
+                            l.parcel.lane_or(fe::CEILING, &self.swept.ceiling_zero),
+                        ),
+                        eb::MOMENT => wgpu::BindingResource::TextureView(
+                            l.parcel.lane_or(fe::MOMENT, &self.swept.ceiling_zero),
+                        ),
                         other => unreachable!("the erase group holds no binding {other}"),
                     })
             },

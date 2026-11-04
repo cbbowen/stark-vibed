@@ -24,7 +24,7 @@
 
 use stark_model::document::{
     Action, ActionId, ActionKind, ActorId, BlendMode, BrushEffect, BrushParams, FillOp, Filter,
-    GradientAxis, GradientParcel, GuideId, LayerId, MatteRegion, Parcel, PerspectiveGuide,
+    GradientAxis, GradientParcel, GuideId, Lasso, LayerId, MatteRegion, Parcel, PerspectiveGuide,
     PerspectiveMap, Place, SelectionMode, SelectionOp, SelectionShape, StrokeRecord, ToothParams,
     WarpMap, affine_usable, rect_corners,
 };
@@ -492,13 +492,13 @@ fn gated_geometry_is_refused_rather_than_repaired() {
                 center: v,
                 radii: Vec2::splat(4.0),
             },
-            SelectionShape::Lasso(vec![Vec2::ZERO, Vec2::splat(9.0), v]),
+            SelectionShape::Lasso(Lasso::new(vec![Vec2::ZERO, Vec2::splat(9.0), v]).expect("a lasso")),
             // …including one whose bad vertex is not the extreme in either axis,
             // which is exactly what a `min`/`max` fold steps over.
-            SelectionShape::Lasso(vec![Vec2::ZERO, v, Vec2::splat(9.0)]),
+            SelectionShape::Lasso(Lasso::new(vec![Vec2::ZERO, v, Vec2::splat(9.0)]).expect("a lasso")),
             // …and one at index 0, the position a fold *seeded* from the first
             // vertex tests nowhere else.
-            SelectionShape::Lasso(vec![v, Vec2::ZERO, Vec2::splat(9.0)]),
+            SelectionShape::Lasso(Lasso::new(vec![v, Vec2::ZERO, Vec2::splat(9.0)]).expect("a lasso")),
         ];
         for shape in shapes {
             assert!(
@@ -529,7 +529,7 @@ fn gated_geometry_is_refused_rather_than_repaired() {
         "an ordinary shape still has a box",
     );
     assert!(
-        SelectionShape::Lasso(vec![ok, wide, Vec2::new(0.0, 64.0)])
+        SelectionShape::Lasso(Lasso::new(vec![ok, wide, Vec2::new(0.0, 64.0)]).expect("a lasso"))
             .bounds()
             .is_some(),
     );

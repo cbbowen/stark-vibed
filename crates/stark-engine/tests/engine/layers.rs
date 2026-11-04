@@ -198,11 +198,7 @@ fn a_duplicates_ids_are_not_reused_after_a_reload() {
     let existing: Vec<LayerId> = loaded.observe().layers.iter().map(|l| l.id).collect();
     assert_eq!(existing.len(), 3, "the copy came back with the log");
 
-    loaded.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
-    let added = loaded.observe().active_layer;
+    let added = add_layer(&mut loaded);
     assert!(
         !existing.contains(&added),
         "the next layer takes a fresh id: {added:?} against {existing:?}"
@@ -224,9 +220,11 @@ fn undoing_an_add_leaves_the_brush_somewhere_it_can_paint() {
         carrier: None,
         above: None,
     });
-    assert_eq!(
+    // Against the root rather than `top`, which *is* the active layer: asking whether
+    // the active layer is the active layer would pass whatever the add armed.
+    assert_ne!(
         engine.observe().active_layer,
-        top(&engine),
+        ROOT,
         "the add armed its layer"
     );
 

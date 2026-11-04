@@ -79,6 +79,17 @@ pub enum Stages {
 }
 
 impl Stages {
+    /// Whether any stage of this pipeline reaches `decl` — the question
+    /// [`layout_if_reached`] answers for a layout, asked of one binding, so a caller
+    /// deciding what to *fill* a slot with reads the same stages the layout that
+    /// holds the slot was built from.
+    pub fn reads(&self, decl: Binding) -> bool {
+        match self {
+            Self::Compute(k) => k.reads(decl),
+            Self::Render(vs, fs) => vs.reads(decl) || fs.reads(decl),
+        }
+    }
+
     /// Append this pipeline's entry points to `out`.
     fn push_to(self, out: &mut Vec<EntryPoint>) {
         match self {
@@ -114,7 +125,7 @@ pub fn layout_of(
 /// only at dispatch. Those need [`layout_of`] each.
 ///
 /// `dynamic` names the uniforms bound as one slot of a larger buffer
-/// (`gpu::uniforms`), which is the one thing about a `var<uniform>` the WGSL cannot
+/// (`stark-engine`'s `device::uniforms`), which is the one thing about a `var<uniform>` the WGSL cannot
 /// say: it is identical either way. Everything named must be such a uniform of this
 /// group, which is checked — but a uniform *left out* of it is not, and comes out
 /// whole-bound to fail at the first `set_bind_group` that passes an offset.

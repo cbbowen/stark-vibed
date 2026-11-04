@@ -110,7 +110,7 @@ pub struct EngineShared {
     /// A color-space rebuild replaces the pool and the stroke renderer; `selection`
     /// survives one, a mask being one coverage channel whatever the paint is.
     apply: ApplyCtx,
-    /// The working textures and buffers every recording leases (`gpu::scratch`), one
+    /// The working textures and buffers every recording leases ([`device::scratch`](crate::device::scratch)), one
     /// pool for the whole stack. Held here as well as inside the renderers that lease
     /// from it, because a rebuild has to carry it across and those renderers do not
     /// survive one (`GpuKeep`).
@@ -294,14 +294,6 @@ impl Engine {
         Scaffold::of(self.session.shown_guides(doc).map(|g| &g.camera))
     }
 
-    /// Whether the GPU is still usable, and what went wrong if not (§5) — the same
-    /// fact [`ObservableState::gpu_failure`] projects, as a **request** for a caller
-    /// that holds the engine and has no projection to hand. The collaboration pump is
-    /// that caller: it services peer traffic without taking an observation each time
-    /// (§17.5), and must stop applying anything once the device has died.
-    pub fn gpu_failure(&self) -> Option<crate::error::DeviceFailure> {
-        self.shared.gpu.health().failure()
-    }
 
     /// The current committed document state.
     pub(crate) fn document(&self) -> &DocState {

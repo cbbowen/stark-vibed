@@ -33,7 +33,7 @@ use super::kit::{LoopPass, Prefix};
 use super::plan::{LoopDispatch, PlanCtx};
 use crate::device::channels::{TILE_AUX_FORMAT, Targets};
 use crate::device::desc;
-use crate::device::scratch::{BufKey, Key, LeasedSlots, LeasedTex, SubmitScope};
+use crate::device::scratch::{Key, LeasedSlots, LeasedTex, SubmitScope};
 use crate::device::tile::{AllocSource, TileMap};
 use crate::gpu::composite::view_uniform;
 // The region composite runs `composite.wesl`, so it draws that shader's own
@@ -201,7 +201,7 @@ impl<'a> RegionRun<'a> {
     /// `base`'s tiles into this encoder, and the caller replaces its map with what the
     /// piece returns — dropping every tile handle the new map supersedes. A
     /// `TilePairHandle`'s drop *is* its release to `TilePool`'s free list
-    /// (`gpu::tile::GpuTex::drop`), so without this the next `acquire_tex` could render
+    /// (`device::tile::GpuTex::drop`), so without this the next `acquire_tex` could render
     /// over a texture this encoder is still compositing from. Consecutive pieces share
     /// the tiles around their cut, `region::cover` growing every segment's box by an
     /// apron, so that is the ordinary case rather than a corner. The clone is an `rpds`
@@ -370,16 +370,7 @@ pub(super) fn composite_tiles(
             ));
         }
     }
-    let tile_inst = (!tile_origins.is_empty()).then(|| {
-        let bytes: &[u8] = bytemuck::cast_slice(&tile_origins);
-        let buf = scope.take_piece_buffer(BufKey {
-            size: bytes.len() as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            label: "stark dynamics region tile instances",
-        });
-        scope.write_lease(&buf, bytes);
-        buf
-    });
+    let tile_inst = scope.piece_vertices("stark dynamics region tile instances", &tile_origins);
     {
         let mut pass =
             desc::begin_pass(scope.encoder(), "stark dynamics region composite", targets);
@@ -494,7 +485,7 @@ pub(super) fn slice_region(
 
     let mut new_map = base.clone();
     for coord in &piece.tiles {
-        let dst = r.acquire_tile(pool, AllocSource::DynamicsWriteback);
+        let dst = r.acquire_channels(pool, AllocSource::DynamicsWriteback);
         dst.copy_from_region(
             scope.encoder(),
             color_tex,
@@ -502,7 +493,7 @@ pub(super) fn slice_region(
             resid_tex,
             piece.block_origin(*coord),
         );
-        new_map = new_map.insert(*coord, dst);
+        new_map = new_map.insert(*coord, dst.into_tile());
     }
     new_map
 }

@@ -11,6 +11,7 @@
 //! the feather ramp, continuity across tile boundaries, and the outline overlay — for
 //! each of the two masking sites in turn (§9).
 
+use crate::common::collab::sync_into;
 use crate::common::palette::RED;
 use crate::common::*;
 use stark_engine::RgbaImage;
@@ -21,7 +22,7 @@ use stark_model::document::BrushDynamics;
 use stark_model::document::{
     BrushEffect, BrushParams, BrushShape, FillOp, SelectionMode, SelectionOp,
 };
-use stark_model::document::{SelectionShape, ShapeAction};
+use stark_model::document::{Lasso, SelectionShape, ShapeAction};
 use stark_model::geom::Vec2;
 
 /// Canvas-space box the tests select and paint across. Comfortably inside the 256²
@@ -206,11 +207,14 @@ fn lasso_masks_its_interior() {
         return;
     };
     // A triangle covering the left half of the stroke's path.
-    let tri = SelectionShape::Lasso(vec![
-        Vec2::new(-60.0, -50.0),
-        Vec2::new(-60.0, 50.0),
-        Vec2::new(-5.0, 0.0),
-    ]);
+    let tri = SelectionShape::Lasso(
+        Lasso::new(vec![
+            Vec2::new(-60.0, -50.0),
+            Vec2::new(-60.0, 50.0),
+            Vec2::new(-5.0, 0.0),
+        ])
+        .expect("a lasso"),
+    );
     select(&mut engine, SelectionMode::Replace, tri);
     crossing_stroke(&mut engine);
     let img = engine.render_to_image();
@@ -598,15 +602,7 @@ fn the_outline_is_drawn_on_the_boundary_only() {
 
     // Differences must hug the rectangle's edges: sample a band across the right
     // boundary (x = 0) and well inside/outside it.
-    let changed = |p: Vec2| {
-        let (x, y) = screen_of(p);
-        let i = ((y * bare.width + x) * 4) as usize;
-        (0..3)
-            .map(|k| (bare.pixels[i + k] as i32 - outlined.pixels[i + k] as i32).abs())
-            .max()
-            .unwrap_or(0)
-            > 8
-    };
+    let changed = |p: Vec2| apart(texel(&bare, p), texel(&outlined, p)) > 8;
     assert!(changed(Vec2::new(0.0, 0.0)), "the boundary is outlined");
     assert!(
         !changed(Vec2::new(-20.0, 0.0)),
@@ -677,15 +673,7 @@ fn a_partial_selection_is_still_outlined() {
     )));
     let outlined = engine.render_to_image();
 
-    let changed = |p: Vec2| {
-        let (x, y) = screen_of(p);
-        let i = ((y * bare.width + x) * 4) as usize;
-        (0..3)
-            .map(|k| (bare.pixels[i + k] as i32 - outlined.pixels[i + k] as i32).abs())
-            .max()
-            .unwrap_or(0)
-            > 8
-    };
+    let changed = |p: Vec2| apart(texel(&bare, p), texel(&outlined, p)) > 8;
     assert!(
         changed(Vec2::new(0.0, 0.0)),
         "a selection at 0.4 drew no outline"
@@ -1250,11 +1238,14 @@ fn golden_selection_stencil() {
     )));
     engine.process(DocCommand::Select(op(
         SelectionMode::Subtract,
-        SelectionShape::Lasso(vec![
-            Vec2::new(-46.0, -90.0),
-            Vec2::new(22.0, 14.0),
-            Vec2::new(-84.0, 34.0),
-        ]),
+        SelectionShape::Lasso(
+            Lasso::new(vec![
+                Vec2::new(-46.0, -90.0),
+                Vec2::new(22.0, 14.0),
+                Vec2::new(-84.0, 34.0),
+            ])
+            .expect("a lasso"),
+        ),
     )));
 
     // With the mask in force, the stripes come out cut to its silhouette, with the
@@ -1375,9 +1366,7 @@ fn a_peer_s_outline_is_their_colour_on_any_display() {
     // The peer's selection is document state, so it travels in the log (§17.1); that
     // the peer is *here* is presence, so it does not.
     select(&mut b, SelectionMode::Replace, rect(BOX_MIN, BOX_MAX));
-    for action in b.take_outbox() {
-        a.merge_remote(action);
-    }
+    sync_into(&mut b, &mut a);
 
     let shot = |e: &mut Engine, t: Transfer| {
         e.process(ViewCommand::SetOutput(Output::new(t, 1.0)));

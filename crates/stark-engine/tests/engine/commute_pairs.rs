@@ -61,7 +61,7 @@
 //! CLAUDE.md names twice. The `.config/nextest.toml` window is what it runs behind:
 //! ~5 s is a real adapter's number, and CI renders on lavapipe.
 
-use crate::common::{Probe, assert_images, engine_or_skip, on_substrate};
+use crate::common::{Probe, add_layer, assert_images, engine_or_skip, on_substrate};
 use stark_engine::command::{DocCommand, Edit, InputCommand, PeerCommand};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::document::{
@@ -111,10 +111,7 @@ fn base(e: &mut Engine) -> DocumentFile {
     // cost more than the rest of the table put together. What the tooth needs is
     // *relief*, not resolution.
     on_substrate(e, &grain());
-    e.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
+    add_layer(e);
     for (layer, y) in [(A, 90.0f32), (LayerId::solo(1), 150.0)] {
         e.process(PeerCommand::SetActiveLayer(layer));
         crate::common::paint(
@@ -127,10 +124,7 @@ fn base(e: &mut Engine) -> DocumentFile {
     // A third layer, carried by the second, painted on — which is what makes
     // `GROUP` a group and lets the table hold a subtree removal against an edit
     // inside the subtree.
-    e.process(DocCommand::AddLayer {
-        carrier: None,
-        above: None,
-    });
+    add_layer(e);
     e.process(DocCommand::MoveLayer {
         id: INNER,
         carrier: Some(GROUP),
@@ -303,10 +297,11 @@ fn spliced_and_canonical(
 fn vocabulary(e: &mut Engine, file: &DocumentFile) -> Vec<(&'static str, Action)> {
     let ramp = Parcel::Solid(Srgb::new([0.2, 0.5, 0.9]));
     let mut out = Vec::new();
+    // A row whose command commits nothing is a row the table silently stops asking
+    // about, so it fails here, by name, rather than as a shorter table.
     let mut push = |name: &'static str, action: Option<Action>| {
-        if let Some(a) = action {
-            out.push((name, a));
-        }
+        let action = action.unwrap_or_else(|| panic!("the {name} row committed no action"));
+        out.push((name, action));
     };
 
     // **One stroke, not two.** A stroke is the most expensive row — it is rendered
@@ -510,11 +505,6 @@ fn a_pair_that_claims_to_commute_does() {
     };
     let file = base(&mut engine);
     let vocab = vocabulary(&mut engine, &file);
-    assert!(
-        vocab.len() >= 20,
-        "the table lost rows: {} actions minted",
-        vocab.len(),
-    );
 
     let (mut commuting, mut conflicting) = (0usize, 0usize);
     // The last pair checked, kept for the reuse assertion below.

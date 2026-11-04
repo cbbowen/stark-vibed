@@ -138,6 +138,14 @@ impl Engine {
     /// away, a peer's merge arrives having done the same, and a seek crosses additions
     /// wholesale (§17.9). All of them come through here, and none has to know it.
     ///
+    /// **And so does the substrate** (§6.4). A `SetSubstrate`, a committed scale, an
+    /// undo or a seek across either, a peer's switch, a load's replay and a reset onto
+    /// a file's initial substrate all move it — and each used to remember to rebind
+    /// the registry itself, beside a list of which edits rebake. Here, nothing that
+    /// moves the document can forget, and a kind added tomorrow that moves the
+    /// substrate is covered by moving it. Cheap when nothing did: the registry's `set`
+    /// returns on its first comparison.
+    ///
     /// The drag preview does *not* come through here: it moves what is drawn without
     /// changing the document
     /// (see [`ObservableState::doc_revision`](super::ObservableState::doc_revision)).
@@ -147,6 +155,11 @@ impl Engine {
         f: impl FnOnce(&mut Timeline, &mut ApplyCtx) -> bool,
     ) -> bool {
         let moved = f(&mut self.timeline.0, &mut self.shared.apply);
+        // Ahead of the drag's refold, which reads the registry's in-use substrate
+        // (`live`'s tooth): folded after, a held drag would bite the old one.
+        if moved {
+            self.apply_document_substrate();
+        }
         match (moved, drag) {
             (true, Drag::Supersede) => self.preview.supersede(),
             (true, Drag::Keep) => self.refold_held(),
@@ -187,9 +200,6 @@ impl Engine {
             let id = self.next_action_id();
             self.commit_with_id(id, ActionKind::Undo(target));
         }
-        // A step across a `SetSubstrate` — or a `SetSubstrateScale` — moves the
-        // document's substrate (§6.4).
-        self.apply_document_substrate();
     }
 
     /// Log one action and apply it — **unless the document already reads that way**
@@ -383,7 +393,7 @@ impl Engine {
             lamport: self.authoring.clock,
             actor: self.actor(),
         };
-        self.authoring.clock += 1;
+        self.authoring.clock = self.authoring.clock.saturating_add(1);
         id
     }
 
