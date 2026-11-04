@@ -271,7 +271,8 @@ pub fn pick_color(state: AppState, pos: Vec2) {
     // everything it needs, so nothing holds the renderer while the browser's event
     // loop runs the copy, which it must be free to do since the UI re-renders during
     // it (the same bargain `files::export_png` makes).
-    let Some(readback) = crate::state::with_engine_quiet(state, |r| r.pick_color(pos, options))
+    let Some(readback) =
+        crate::state::with_engine_quiet(state, |r| r.desk.engine_mut().pick_color(pos, options))
     else {
         return;
     };

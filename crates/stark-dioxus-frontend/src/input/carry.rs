@@ -129,7 +129,8 @@ impl PickMove {
     /// Detached, because the answer to a press must land even though the release
     /// may already have happened ([`Carry::settled`]).
     fn ask(self, press: u64, at: Vec2) {
-        let Some(readback) = crate::state::with_engine_quiet(self.state, |r| r.pick_layer(at))
+        let Some(readback) =
+            crate::state::with_engine_quiet(self.state, |r| r.desk.engine_mut().pick_layer(at))
         else {
             // No engine: nothing to answer with, and no gesture to leave
             // waiting for an answer that is not coming.

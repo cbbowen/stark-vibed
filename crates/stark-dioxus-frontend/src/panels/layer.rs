@@ -108,7 +108,7 @@ pub fn LayerPanel() -> Element {
         hr {}
 
         div { class: "layer-header",
-            // No "+ Background": the substrate is made at most once, so it is a frame-bar chip
+            // No "+ Background": the backing is made at most once, so it is a frame-bar chip
             // (§15.5).
             CommandButton { command: Command::AddLayer, class: "layer-add" }
             // A filter is the third kind of layer (§21); where it lands is what it acts on.

@@ -180,11 +180,7 @@ pub fn panel_boxes() -> Vec<(String, f32, f32)> {
 /// The panel stack's `(scrollTop, scrollHeight, clientHeight)` in CSS px (§11), or
 /// `None` before it has mounted.
 pub fn stack_scroll() -> Option<(f32, f32, f32)> {
-    let el = web_sys::window()?
-        .document()?
-        .query_selector(".panel-stack")
-        .ok()
-        .flatten()?;
+    let el = panel_stack()?;
     Some((
         el.scroll_top() as f32,
         el.scroll_height() as f32,
@@ -195,12 +191,18 @@ pub fn stack_scroll() -> Option<(f32, f32, f32)> {
 /// Scroll the panel stack to `top`. The browser clamps it, and the `scroll` event it
 /// raises is what tells the rail (`layout::PanelScrollbar`) where it ended up.
 pub fn set_stack_scroll(top: f32) {
-    if let Some(el) = web_sys::window()
-        .and_then(|w| w.document())
-        .and_then(|d| d.query_selector(".panel-stack").ok().flatten())
-    {
+    if let Some(el) = panel_stack() {
         el.set_scroll_top(top.max(0.0).round() as i32);
     }
+}
+
+/// The panel stack's element, once it has mounted.
+fn panel_stack() -> Option<web_sys::Element> {
+    web_sys::window()?
+        .document()?
+        .query_selector(".panel-stack")
+        .ok()
+        .flatten()
 }
 
 /// The layer panel's entries, each under its `data-layer` id — see [`element_boxes`].
@@ -248,17 +250,34 @@ pub fn viewport_height() -> f32 {
 /// moves focus to `document.body`, outside the app's tree, and an element listener
 /// would go quiet.
 ///
-/// Registered once for the life of the page, so the closure is `forget`ten. The other
-/// window listeners below follow the same rule.
+/// Registered once for the life of the page ([`listen`]), as every window listener
+/// below is.
 pub fn on_window_key(kind: &str, mut handler: impl FnMut(KeyEvent) + 'static) {
+    listen(kind, false, move |e: web_sys::KeyboardEvent| {
+        handler(KeyEvent(e))
+    });
+}
+
+/// Route the window's `kind` events to `handler` for the life of the page — the
+/// closure is `forget`ten, since nothing ever takes a window listener down — in the
+/// **capture** phase when `capture`. The one door the `on_window_*` and
+/// [`on_before_unload`] listeners go through.
+fn listen<E>(kind: &str, capture: bool, handler: impl FnMut(E) + 'static)
+where
+    E: wasm_bindgen::convert::FromWasmAbi + 'static,
+{
     use wasm_bindgen::JsCast;
     use wasm_bindgen::closure::Closure;
 
     let Some(window) = web_sys::window() else {
         return;
     };
-    let cb = Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |e| handler(KeyEvent(e)));
-    let _ = window.add_event_listener_with_callback(kind, cb.as_ref().unchecked_ref());
+    let cb = Closure::<dyn FnMut(E)>::new(handler);
+    let _ = window.add_event_listener_with_callback_and_bool(
+        kind,
+        cb.as_ref().unchecked_ref(),
+        capture,
+    );
     cb.forget();
 }
 
@@ -269,19 +288,7 @@ pub fn on_window_key(kind: &str, mut handler: impl FnMut(KeyEvent) + 'static) {
 /// `PointerEvent` in others, and `target` and `prevent_default` are on the base
 /// interface.
 pub fn on_window_event(kind: &str, mut handler: impl FnMut(WindowEvent) + 'static) {
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen::closure::Closure;
-
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let cb = Closure::<dyn FnMut(web_sys::Event)>::new(move |e| handler(WindowEvent(e)));
-    let _ = window.add_event_listener_with_callback_and_bool(
-        kind,
-        cb.as_ref().unchecked_ref(),
-        true, // useCapture
-    );
-    cb.forget();
+    listen(kind, true, move |e: web_sys::Event| handler(WindowEvent(e)));
 }
 
 /// Route the window's `kind` pointer events ("pointerdown", "pointerup", …) to
@@ -292,19 +299,9 @@ pub fn on_window_event(kind: &str, mut handler: impl FnMut(WindowEvent) + 'stati
 /// handler in the tree opens a stroke, and a release no `stopPropagation` can skip
 /// never leaves the brush swapped.
 pub fn on_window_pointer(kind: &str, mut handler: impl FnMut(RawPointer) + 'static) {
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen::closure::Closure;
-
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let cb = Closure::<dyn FnMut(web_sys::PointerEvent)>::new(move |e| handler(raw_of(&e)));
-    let _ = window.add_event_listener_with_callback_and_bool(
-        kind,
-        cb.as_ref().unchecked_ref(),
-        true, // useCapture
-    );
-    cb.forget();
+    listen(kind, true, move |e: web_sys::PointerEvent| {
+        handler(raw_of(&e))
+    });
 }
 
 fn raw_of(e: &web_sys::PointerEvent) -> RawPointer {
@@ -420,16 +417,8 @@ fn on_text_entry(target: &web_sys::EventTarget) -> bool {
 /// When focus leaves the window (Alt+Tab, the browser's chrome) the keyup is delivered
 /// elsewhere, so anything armed on a keydown must also disarm here (`crate::slots`).
 /// `blur` rather than `visibilitychange`: a visible window can lack the keyboard.
-pub fn on_window_blur(handler: impl FnMut() + 'static) {
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen::closure::Closure;
-
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let cb = Closure::<dyn FnMut()>::new(handler);
-    let _ = window.add_event_listener_with_callback("blur", cb.as_ref().unchecked_ref());
-    cb.forget();
+pub fn on_window_blur(mut handler: impl FnMut() + 'static) {
+    listen("blur", false, move |_: web_sys::Event| handler());
 }
 
 /// Ask the browser to confirm before the page goes away (reload, closed tab, followed
@@ -440,13 +429,9 @@ pub fn on_window_blur(handler: impl FnMut() + 'static) {
 /// `returnValue` for older engines. Browsers skip the prompt on a page never
 /// interacted with.
 pub fn on_before_unload(confirm: impl Fn() -> bool + 'static) {
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen::closure::Closure;
-
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let cb = Closure::<dyn FnMut(web_sys::BeforeUnloadEvent)>::new(
+    listen(
+        "beforeunload",
+        false,
         move |e: web_sys::BeforeUnloadEvent| {
             if !confirm() {
                 return;
@@ -455,8 +440,6 @@ pub fn on_before_unload(confirm: impl Fn() -> bool + 'static) {
             e.set_return_value("This painting has changes that are not in a file yet.");
         },
     );
-    let _ = window.add_event_listener_with_callback("beforeunload", cb.as_ref().unchecked_ref());
-    cb.forget();
 }
 
 /// Run `handler` **inside** the next animation-frame callback, ahead of the browser's
@@ -795,11 +778,7 @@ fn blob_opened(request: &web_sys::IdbOpenDbRequest) -> wasm_bindgen_futures::JsF
         let failed = Closure::once_into_js(move |event: web_sys::Event| {
             let error = fired_at::<web_sys::IdbRequest>(&event)
                 .and_then(|opened| opened.error().ok().flatten());
-            let why = error.map_or_else(
-                || JsValue::from_str("the open failed with no reason given"),
-                JsValue::from,
-            );
-            let _ = reject.call1(&JsValue::NULL, &why);
+            reject_with(&reject, error, "the open failed with no reason given");
         });
         request.set_onblocked(Some(blocked.unchecked_ref()));
         request.set_onsuccess(Some(opened.unchecked_ref()));
@@ -843,11 +822,7 @@ fn blob_pending(request: web_sys::IdbRequest) -> wasm_bindgen_futures::JsFuture 
         let failed = Closure::once_into_js(move |event: web_sys::Event| {
             let error = fired_at::<web_sys::IdbRequest>(&event)
                 .and_then(|failed| failed.error().ok().flatten());
-            let why = error.map_or_else(
-                || JsValue::from_str("the request failed with no reason given"),
-                JsValue::from,
-            );
-            let _ = reject.call1(&JsValue::NULL, &why);
+            reject_with(&reject, error, "the request failed with no reason given");
         });
         request.set_onsuccess(Some(done.unchecked_ref()));
         request.set_onerror(Some(failed.unchecked_ref()));
@@ -873,16 +848,21 @@ fn blob_committed(tx: &web_sys::IdbTransaction) -> wasm_bindgen_futures::JsFutur
         let abort = Closure::once_into_js(move |event: web_sys::Event| {
             // Null after an `abort()` called with no error behind it.
             let error = fired_at::<web_sys::IdbTransaction>(&event).and_then(|tx| tx.error());
-            let why = error.map_or_else(
-                || JsValue::from_str("the write was aborted with no reason given"),
-                JsValue::from,
-            );
-            let _ = reject.call1(&JsValue::NULL, &why);
+            reject_with(&reject, error, "the write was aborted with no reason given");
         });
         tx.set_oncomplete(Some(complete.unchecked_ref()));
         tx.set_onabort(Some(abort.unchecked_ref()));
     });
     wasm_bindgen_futures::JsFuture::from(promise)
+}
+
+/// Reject a promise with the `DOMException` IndexedDB gave, or with `fallback` where it
+/// gave none.
+fn reject_with(reject: &js_sys::Function, error: Option<web_sys::DomException>, fallback: &str) {
+    use wasm_bindgen::JsValue;
+
+    let why = error.map_or_else(|| JsValue::from_str(fallback), JsValue::from);
+    let _ = reject.call1(&JsValue::NULL, &why);
 }
 
 /// What an IndexedDB event was fired at, as the type its handler was attached to.
@@ -987,6 +967,16 @@ pub async fn blob_delete(key: &str) {
     let _ = deleted.await;
 }
 
+/// `bytes` as a Blob of type `mime` (empty for none) — copied into the JS heap, which
+/// the Blob then owns.
+fn blob_of(bytes: &[u8], mime: &str) -> Option<web_sys::Blob> {
+    let array = js_sys::Uint8Array::from(bytes);
+    let parts = js_sys::Array::of1(&array.buffer());
+    let options = web_sys::BlobPropertyBag::new();
+    options.set_type(mime);
+    web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options).ok()
+}
+
 /// Hand `bytes` to the browser as a file download named `filename`, through a
 /// synthetic `<a download>` on an object URL.
 ///
@@ -995,13 +985,7 @@ pub async fn blob_delete(key: &str) {
 pub fn download_bytes(bytes: &[u8], filename: &str, mime: &str) -> Result<(), String> {
     use wasm_bindgen::JsCast;
 
-    // Copied into the JS heap, which the Blob then owns.
-    let array = js_sys::Uint8Array::from(bytes);
-    let parts = js_sys::Array::of1(&array.buffer());
-    let options = web_sys::BlobPropertyBag::new();
-    options.set_type(mime);
-    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &options)
-        .map_err(|_| "could not build the blob".to_string())?;
+    let blob = blob_of(bytes, mime).ok_or("could not build the blob")?;
     let url = web_sys::Url::create_object_url_with_blob(&blob)
         .map_err(|_| "could not create an object URL".to_string())?;
 
@@ -1185,10 +1169,8 @@ async fn decode_to_canvas(bytes: Vec<u8>, cap: u32) -> Result<Decoded, String> {
     use wasm_bindgen::JsCast;
 
     let window = web_sys::window().ok_or("no window")?;
-    let array = js_sys::Uint8Array::from(bytes.as_slice());
-    let parts = js_sys::Array::of1(&array.buffer());
-    let blob = web_sys::Blob::new_with_u8_array_sequence(&parts)
-        .map_err(|_| "could not wrap the image bytes".to_string())?;
+    // Untyped: `createImageBitmap` sniffs the format from the bytes.
+    let blob = blob_of(&bytes, "").ok_or("could not wrap the image bytes")?;
     let promise = window
         .create_image_bitmap_with_blob(&blob)
         .map_err(|_| "image decoding unavailable".to_string())?;
@@ -1246,45 +1228,36 @@ pub async fn decode_image(bytes: Vec<u8>) -> Result<Decoded, String> {
 /// permission, while the async read prompts in Chrome and lacks image support in some
 /// engines.
 pub fn on_window_paste(handler: impl Fn(Vec<u8>) + 'static) {
-    use wasm_bindgen::JsCast;
-    use wasm_bindgen::closure::Closure;
-
-    let Some(window) = web_sys::window() else {
-        return;
-    };
     // Shared: each paste spawns a task that needs its own handle.
     let handler = std::rc::Rc::new(handler);
-    let cb =
-        Closure::<dyn FnMut(web_sys::ClipboardEvent)>::new(move |e: web_sys::ClipboardEvent| {
-            if e.target().is_some_and(|t| on_text_entry(&t)) {
-                return;
-            }
-            let Some(data) = e.clipboard_data() else {
-                return;
-            };
-            let items = data.items();
-            // The first image only: a clipboard often carries one image several times
-            // over (a PNG and an HTML fragment naming it).
-            let file = (0..items.length())
-                .filter_map(|i| items.get(i))
-                .filter(|item| item.kind() == "file" && item.type_().starts_with("image/"))
-                .find_map(|item| item.get_as_file().ok().flatten());
-            let Some(file) = file else {
-                return;
-            };
-            // Only once there is an image, so a text paste still reaches its handler.
-            e.prevent_default();
-            let handler = handler.clone();
-            wasm_bindgen_futures::spawn_local(async move {
-                let name = file.name();
-                match read_file(file).await {
-                    Ok(bytes) => handler(bytes),
-                    Err(reason) => {
-                        tracing::error!(name, reason, "the pasted image could not be read");
-                    }
+    listen("paste", false, move |e: web_sys::ClipboardEvent| {
+        if e.target().is_some_and(|t| on_text_entry(&t)) {
+            return;
+        }
+        let Some(data) = e.clipboard_data() else {
+            return;
+        };
+        let items = data.items();
+        // The first image only: a clipboard often carries one image several times
+        // over (a PNG and an HTML fragment naming it).
+        let file = (0..items.length())
+            .filter_map(|i| items.get(i))
+            .filter(|item| item.kind() == "file" && item.type_().starts_with("image/"))
+            .find_map(|item| item.get_as_file().ok().flatten());
+        let Some(file) = file else {
+            return;
+        };
+        // Only once there is an image, so a text paste still reaches its handler.
+        e.prevent_default();
+        let handler = handler.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let name = file.name();
+            match read_file(file).await {
+                Ok(bytes) => handler(bytes),
+                Err(reason) => {
+                    tracing::error!(name, reason, "the pasted image could not be read");
                 }
-            });
+            }
         });
-    let _ = window.add_event_listener_with_callback("paste", cb.as_ref().unchecked_ref());
-    cb.forget();
+    });
 }

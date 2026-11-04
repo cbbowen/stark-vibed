@@ -191,7 +191,7 @@ pub fn capture(state: AppState, path: Vec<Vec2>) {
     // what it needs, and the UI re-renders while the browser runs the copy (the
     // same bargain as `input::pick_color`).
     let Some(readback) = crate::state::with_engine_quiet(state, |r| {
-        r.pick_gradient(
+        r.desk.engine_mut().pick_gradient(
             &path,
             PickOptions {
                 source: PickSource::Composite,

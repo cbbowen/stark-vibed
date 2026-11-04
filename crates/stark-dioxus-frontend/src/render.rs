@@ -130,12 +130,6 @@ impl Renderer {
         self.desk.engine_mut().process(command);
     }
 
-    /// Replay a full stroke as one commit — a single render, no per-sample
-    /// live-preview refresh (see `Engine::replay_stroke`).
-    pub fn replay_stroke(&mut self, samples: &[InputSample]) {
-        self.desk.engine_mut().replay_stroke(samples);
-    }
-
     /// Replay a full stroke with a caller-chosen jitter seed, so repeated
     /// replays of the same samples keep the same color dynamics and dither
     /// (see `Engine::replay_stroke_seeded`).
@@ -303,41 +297,6 @@ impl Renderer {
         );
         self.desk.engine().gpu().queue.present(frame);
         true
-    }
-
-    /// Sample the canvas color at `at` — the eyedropper (§18.0.2).
-    ///
-    /// The same borrow bargain as [`Renderer::export`], and it matters more here:
-    /// the sample is taken mid-gesture, so the caller has to be able to drop its
-    /// write guard before awaiting or the UI's own re-render will panic on a
-    /// renderer it still holds borrowed.
-    pub fn pick_color(
-        &mut self,
-        at: stark_model::geom::Vec2,
-        options: stark_engine::PickOptions,
-    ) -> impl std::future::Future<Output = Option<[f32; 3]>> + use<> {
-        self.desk.engine_mut().pick_color(at, options)
-    }
-
-    /// Sample a gradient along a traced path — the gradient capture (§22.2).
-    /// The same borrow bargain as [`Renderer::pick_color`].
-    pub fn pick_gradient(
-        &mut self,
-        path: &[stark_model::geom::Vec2],
-        options: stark_engine::PickOptions,
-    ) -> impl std::future::Future<Output = Option<stark_model::Gradient>> + use<> {
-        self.desk.engine_mut().pick_gradient(path, options)
-    }
-
-    /// Which layer's paint the canvas shows at `at` — the layer carry's hit test
-    /// (§16.11). The same borrow bargain as [`Renderer::pick_color`], and it
-    /// matters here for that reason exactly: this one opens a drag, so the
-    /// gesture goes on driving the renderer while the readback is in flight.
-    pub fn pick_layer(
-        &mut self,
-        at: stark_model::geom::Vec2,
-    ) -> impl std::future::Future<Output = Option<stark_model::document::LayerId>> + use<> {
-        self.desk.engine_mut().pick_layer(at)
     }
 
     /// Match the surface + engine viewport to a new canvas size (CSS pixels).

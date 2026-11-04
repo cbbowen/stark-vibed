@@ -870,11 +870,11 @@ fn paint_reference_stroke(r: &mut Renderer) {
         brush: stark_ui::brush_editor::reference_brush(),
         color: stark_ui::brush_editor::REFERENCE_COLOR,
     });
-    r.replay_stroke(&samples);
+    r.desk.engine_mut().replay_stroke(&samples);
 }
 
 /// Re-render the test stroke with the current brush: undo the committed one,
-/// push the brush, replay as a single commit, paint. `Renderer::replay_stroke`
+/// push the brush, replay as a single commit, paint. `Engine::replay_stroke_seeded`
 /// skips the per-sample live-preview refresh (O(n²) across a replay), so the
 /// whole re-stroke is one full-stroke render — about a frame's worth of GPU —
 /// and the finished stroke is presented in one go, no progressive redraw.
