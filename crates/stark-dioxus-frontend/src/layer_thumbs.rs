@@ -39,8 +39,10 @@
 //!
 //! Keyed on `(LayerId, content_revision)` — a number that moves exactly when a
 //! layer's own tiles do and stands when anything else about it changes
-//! (`PaintTiles::revision`). So painting one layer regenerates one thumbnail and
-//! every other row is a hit; a slider drag, a rename, a reorder and a run of undo
+//! (`PaintTiles::revision`) — and on what places those tiles in the picture: the
+//! layer's translation and the piece's rect ([`Subject`]). So painting one layer
+//! regenerates one thumbnail and every other row is a hit, unless the paint grew the
+//! piece, which reframes every row; a slider drag, a rename, a reorder and a run of undo
 //! through property edits regenerate nothing at all. Keying on `doc_revision`
 //! instead — the obvious choice, and what the navigator can afford because it is
 //! one picture — would re-render every row on every commit.
@@ -63,9 +65,9 @@
 use dioxus::prelude::*;
 
 use stark_engine::Extent2;
-use stark_engine::{ExportScale, LayerInfo};
+use stark_engine::{ExportScale, LayerInfo, ObservableState};
 use stark_model::document::LayerId;
-use stark_model::geom::IVec2;
+use stark_model::geom::{IVec2, Vec2};
 
 use crate::platform::sleep_ms;
 use crate::state::AppState;
@@ -143,6 +145,12 @@ pub struct Subject {
     /// without minting a revision (§14.12.4), and a key of the revision alone
     /// left the row showing the paint where it used to be.
     pub translation: IVec2,
+    /// The piece's rect at the moment it was rendered (`bounds::piece_rect`) — the
+    /// window every row is framed on. Painting another layer into new tiles, or moving
+    /// the frame's edges, reframes **every** row without touching this one's tiles,
+    /// and a key of the layer's own facts alone left the rows that were not repainted
+    /// framed on the old piece, no longer comparable with the ones that were.
+    pub piece: Option<(Vec2, Vec2)>,
 }
 
 /// Whether `subject` is a picture of `layer`, whatever revision it was taken at.
@@ -205,18 +213,24 @@ fn worth_rendering(l: &LayerInfo) -> bool {
 ///
 /// Top-down, which is the order the panel draws in: the rows a user is looking at
 /// fill first.
-fn wanted(layers: &[LayerInfo]) -> Vec<Subject> {
+fn wanted(o: &ObservableState) -> Vec<Subject> {
+    wanted_in(&o.layers, stark_ui::bounds::piece_rect(o))
+}
+
+/// [`wanted`] over a roster and the piece every row in it is framed on.
+fn wanted_in(layers: &[LayerInfo], piece: Option<(Vec2, Vec2)>) -> Vec<Subject> {
     layers
         .iter()
         .rev()
         .filter(|l| worth_rendering(l))
         .filter_map(|l| {
-            // The picture is a function of the tiles *and* of where the frame
-            // puts them in the piece (§14.12), so both key it.
+            // The picture is a function of the tiles *and* of where they sit in the
+            // piece (§14.12) *and* of where the piece is, so all three key it.
             Some(Subject {
                 layer: l.id,
                 revision: l.content_revision?,
                 translation: l.translation,
+                piece,
             })
         })
         .collect()
@@ -227,13 +241,7 @@ fn wanted(layers: &[LayerInfo]) -> Vec<Subject> {
 /// nothing is stale; safe to call from a render effect.
 pub fn refresh(state: AppState) {
     state.layer_thumbs.pictures.refresh(
-        move || {
-            state
-                .obs
-                .peek()
-                .as_ref()
-                .map_or_else(Vec::new, |obs| wanted(&obs.layers))
-        },
+        move || state.obs.peek().as_ref().map_or_else(Vec::new, wanted),
         // Never render with a hand on the canvas. This render takes the engine's
         // own borrow, so one landing mid-stroke spends its cost exactly where it
         // is least affordable — and `canvas_active` covers strokes, marquees,
@@ -333,6 +341,7 @@ mod tests {
             layer: LayerId::solo(id),
             revision,
             translation: IVec2::ZERO,
+            piece: None,
         }
     }
 
@@ -356,7 +365,7 @@ mod tests {
     /// its revision now, which the picture of the last one does not hold.
     #[test]
     fn but_it_is_still_the_row_to_render_next() {
-        assert_eq!(wanted(&[paint(1, 8)]), [subject(1, 8)]);
+        assert_eq!(wanted_in(&[paint(1, 8)], None), [subject(1, 8)]);
     }
 
     /// A translate moves no tile and mints no revision (§14.12.4), but the row is
@@ -370,11 +379,26 @@ mod tests {
             ..paint(1, 8)
         };
         assert_eq!(
-            wanted(&[moved]),
+            wanted_in(&[moved], None),
             [Subject {
                 translation: d,
                 ..subject(1, 8)
             }]
+        );
+    }
+
+    /// Every row is framed on the piece, so when the piece moves — another layer
+    /// painted into new tiles, the frame's edges dragged — every row is the row to
+    /// render next, though none of its own tiles moved.
+    #[test]
+    fn a_moved_piece_reframes_every_row() {
+        let was = Some((Vec2::ZERO, Vec2::new(256.0, 256.0)));
+        let now = Some((Vec2::ZERO, Vec2::new(512.0, 256.0)));
+        let held = wanted_in(&[paint(1, 8), paint(2, 3)], was);
+        let wanted = wanted_in(&[paint(1, 8), paint(2, 3)], now);
+        assert!(
+            held.iter().zip(&wanted).all(|(a, b)| a != b),
+            "no row's picture is current"
         );
     }
 
@@ -390,6 +414,9 @@ mod tests {
             opacity: 0.0,
             ..paint(2, 8)
         };
-        assert!(wanted(&[hidden, clear]).is_empty(), "neither is wanted");
+        assert!(
+            wanted_in(&[hidden, clear], None).is_empty(),
+            "neither is wanted"
+        );
     }
 }

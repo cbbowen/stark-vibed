@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::platform::Canvas;
 use stark_engine::Extent2;
-use stark_engine::command::ViewCommand;
 use stark_engine::command::InputCommand;
+use stark_engine::command::ViewCommand;
 use stark_engine::{Engine, GpuContext};
 use stark_ui::desk::Desk;
 

@@ -118,6 +118,18 @@ pub fn piece_frame(o: &ObservableState) -> Option<stark_model::document::LayerId
         .map(|l| l.id)
 }
 
+/// The canvas rect that **is the piece**: the [`piece_frame`]'s hole, else the painted
+/// bounds ([`content`]), else `None` — `Engine::export_plan`'s framing over the same
+/// frame, read off the projection (§15.6).
+///
+/// For a picture framed on the piece to *key* on: a layer thumbnail moves when this
+/// does, though nothing about its own layer changed.
+pub fn piece_rect(o: &ObservableState) -> Option<(Vec2, Vec2)> {
+    piece_frame(o)
+        .and_then(|id| o.layer(id)?.matte.as_ref()?.rect)
+        .or_else(|| content(o))
+}
+
 /// How long a change has to stop arriving before a miniature is drawn again, in
 /// seconds.
 ///
