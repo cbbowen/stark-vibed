@@ -675,7 +675,7 @@ version N      version N+1 (one stroke over 3 tiles)
 A `GpuTile` returns to the `TilePool` exactly when its `Arc` refcount hits zero —
 i.e. when no `history` snapshot references it. **History retention drives GPU
 memory reclamation for free.** No manual GC, no leak. It is also why tile
-*identity* works as change detection in `Action::inverse` (§12.6).
+*identity* works as change detection in `Centralizer::inverse` (§12.6).
 
 That returns a tile to the *pool*; the pool then decides when to return it to the
 *driver*. It measures its own peak concurrent demand over an epoch of acquires and

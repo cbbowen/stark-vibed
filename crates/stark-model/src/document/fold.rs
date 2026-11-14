@@ -7,7 +7,7 @@
 //! actions commute; the other owns what the fold produces.**
 //!
 //! `stark-engine` implements [`Materialize`] for its `DocState` and stores a
-//! `history::History<Logged<DocState>>`. [`Footprint`] remains the centralizer, so
+//! `history::History<Logged<DocState>>`. Its [`Footprint`] decides what commutes, so
 //! undo splices an action out past everything it commutes with (§12.6) rather than
 //! replaying the log after it.
 
@@ -40,7 +40,7 @@ pub trait Materialize: Clone {
     /// implementor that restores only what its footprint names makes history surgery
     /// cheaper (§12.6) without changing what it means. `footprint` is the one the
     /// [`Logged`] already carries, so it cannot disagree with the one the fold claimed
-    /// — and the one [`inverse`](history::Action::inverse) then audits this against.
+    /// — and the one [`inverse`](history::Centralizer::inverse) then audits this against.
     fn unfold(&mut self, footprint: &Footprint, previous: &Self) {
         let _ = footprint;
         self.clone_from(previous);
@@ -137,7 +137,10 @@ impl<S: Materialize> std::ops::Deref for Logged<S> {
 impl<S: Materialize> history::Action for Logged<S> {
     type State = S;
     type Context = S::Ctx;
-    type Centralizer<'a> = &'a Footprint;
+    type Centralizer<'a>
+        = &'a Logged<S>
+    where
+        Self: 'a;
     // Applying an action never fails: GPU work reports failure through wgpu's device
     // error callbacks rather than return values, and an action that cannot be
     // honoured is declined by leaving the state alone (see [`Materialize::fold`]).
@@ -155,6 +158,20 @@ impl<S: Materialize> history::Action for Logged<S> {
         }
         Ok(after)
     }
+}
+
+/// The entry is its own centralizer, borrowed rather than rebuilt: both halves read the
+/// footprint each `Logged` already carries (see the type's note), and `inverse` audits
+/// against the action beside it. `commutes` is the hot one — it runs once per later
+/// action, per removal.
+impl<'a, S: Materialize> history::Centralizer<'a, Logged<S>> for &'a Logged<S> {
+    fn for_action(logged: &'a Logged<S>) -> Self {
+        logged
+    }
+
+    fn commutes(&self, other: &Logged<S>) -> bool {
+        !self.footprint.conflicts(other.footprint())
+    }
 
     /// **Audited exactly as [`apply`](history::Action::apply) is**, and it is the
     /// direction §12.6 is really about: what an unfold writes becomes the replay base
@@ -168,18 +185,5 @@ impl<S: Materialize> history::Action for Logged<S> {
         if let Some(before) = before {
             S::audit(&before, state, &self.action, &self.footprint);
         }
-    }
-}
-
-/// Borrowed from the action rather than rebuilt: both halves read the footprint each
-/// `Logged` already carries (see the type's note). `commutes` is the hot one — it runs
-/// once per later action, per removal.
-impl<'a, S: Materialize> history::Centralizer<'a, Logged<S>> for &'a Footprint {
-    fn for_action(action: &'a Logged<S>) -> Self {
-        action.footprint()
-    }
-
-    fn commutes(&self, other: &Logged<S>) -> bool {
-        !self.conflicts(other.footprint())
     }
 }

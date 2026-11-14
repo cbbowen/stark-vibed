@@ -32,7 +32,7 @@ thiserror = { workspace = true }
 # path. Nor would turning the feature off state anything: mixbox, core_maths and
 # num-traits all take libm's defaults, so unification enables `arch` regardless.
 libm = "0.2"
-# `Materialize`/`Logged` (`fold`) and `Footprint`'s `Centralizer` impl live here
+# `Materialize`/`Logged` (`fold`) and its `Centralizer` impl live here
 # rather than beside `DocState`, because the orphan rule puts them where `Action`
 # is — which is also where they belong: the model owns *that* an action folds over
 # a state and which actions commute, the engine owns what the state is.

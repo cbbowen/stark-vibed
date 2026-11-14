@@ -1,4 +1,4 @@
-//! [`unapply`]: the implementation of `Action::inverse` (§12.6) — remove one
+//! [`unapply`]: the implementation of `Centralizer::inverse` (§12.6) — remove one
 //! action's effect from a state by restoring what it wrote from the state it was
 //! originally applied to.
 //!
@@ -114,7 +114,7 @@ impl PatchOp {
 /// `state` with every resource `footprint` writes restored to the value it holds
 /// in `previous` — the state the action was originally applied to. Valid
 /// exactly when every action applied between the two commutes with that action
-/// (the `Action::inverse` contract, which the history's commutation gate
+/// (the `Centralizer::inverse` contract, which the history's commutation gate
 /// upholds). Entries `state` already agrees on cost nothing.
 ///
 /// **Driven by the footprint's own write list**, resource for resource, rather
@@ -508,7 +508,7 @@ mod tests {
         }
     }
 
-    /// **The two states are not adjacent** — the whole subtlety of `Action::inverse`
+    /// **The two states are not adjacent** — the whole subtlety of `Centralizer::inverse`
     /// (§12.6). Here `B`'s opacity is undone across a rename of `C` that commutes with
     /// it; a patch restoring more than its footprint would take the rename with it.
     #[test]

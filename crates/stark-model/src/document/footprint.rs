@@ -218,7 +218,7 @@ impl Footprint {
     /// Whether the two actions may fail to commute: any write here overlapping any
     /// read *or* write there (and vice versa). Reads never conflict with reads.
     ///
-    /// What the `history::Centralizer` impl on `&Footprint` (in the `fold` module)
+    /// What the `history::Centralizer` impl on `&Logged` (in the `fold` module)
     /// commutes by. A false conflict only costs the fast path; a missed one silently
     /// diverges peers (§12.6).
     pub fn conflicts(&self, other: &Footprint) -> bool {

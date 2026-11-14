@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 
-use history::History;
+use history::{History, Version};
 
 /// The log entry `history` actually stores: an [`Action`] addressed to the state it
 /// folds into (§2). [`Logged`] lives in `stark-model` because the orphan rule puts the
@@ -511,9 +511,14 @@ impl ReplicatedTimeline {
         // Indices into `log`, not borrows, so the arms below can take `&mut
         // self` and clone only what they materialize.
         let eff = effective_indices(&self.log, &self.undone);
-        let mat: Vec<ActionId> = self.history.actions().map(|a| a.id).collect();
+        // Each with the version it is applied at, which is how a removal names it.
+        let mat: Vec<(Version, ActionId)> = self
+            .history
+            .versions_and_actions()
+            .map(|(v, a)| (v, a.id))
+            .collect();
         let diverge = (0..mat.len().min(eff.len()))
-            .take_while(|&i| mat[i] == self.log[eff[i]].id)
+            .take_while(|&i| mat[i].1 == self.log[eff[i]].id)
             .count();
 
         // The history is a prefix of the sequence (usually an exact one, or one
@@ -529,7 +534,7 @@ impl ReplicatedTimeline {
         // Exactly one materialized action left the sequence (an undo landed):
         // let the history shift it out through the commuting run after it.
         if eff.len() + 1 == mat.len()
-            && (diverge..eff.len()).all(|i| self.log[eff[i]].id == mat[i + 1])
+            && (diverge..eff.len()).all(|i| self.log[eff[i]].id == mat[i + 1].1)
         {
             // The history doesn't report which path it took, so re-derive it for the
             // stats — off the **cached** footprints each `Logged` carries. `Logged`
@@ -548,7 +553,8 @@ impl ReplicatedTimeline {
                 self.stats.rebuilds += 1;
                 self.stats.replayed += (suffix - commuting) as u64;
             }
-            self.history.remove_action_with(diverge, ctx);
+            self.history
+                .remove_action_applied_at_with(mat[diverge].0, ctx);
             return;
         }
 

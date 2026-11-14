@@ -1,6 +1,6 @@
 //! The commutation fast path (§12.6): an undo whose target commutes
 //! with everything materialized after it is shifted out of the history —
-//! `Footprint` as the action's `Centralizer`, `Action::inverse` restoring what
+//! `Footprint` deciding what commutes, `Centralizer::inverse` restoring what
 //! it wrote — instead of rewinding and replaying; redo re-materializes at the
 //! top of the stack (§12.3), so it is a plain append.
 //!

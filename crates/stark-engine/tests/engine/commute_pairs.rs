@@ -237,8 +237,11 @@ fn ordered(e: &mut Engine, file: &DocumentFile, first: &Action, second: &Action)
 /// This is the property the fast path actually rests on, and it is *not* the one
 /// [`ordered`] checks. `history`'s `Centralizer` contract is about the inverse:
 ///
-/// > if `Centralizer::for_action(a).commutes(b)`, then for all `s`,
-/// > `a.inverse(b.apply(a.apply(s)))` must be equivalent to `b.apply(s)`.
+/// > with `c = Centralizer::for_action(a)` and `c.commutes(b)`, then for all `s`,
+/// > `c.inverse(&s, b.apply(a.apply(s)))` must be equivalent to `b.apply(s)`.
+///
+/// (The contract asks it of a whole run of commuting `b`s at once; a pair is the
+/// case this table can enumerate.)
 ///
 /// Swapping two actions and getting the same picture does not imply it, and a group
 /// removal is the case that shows the gap: it wipes the paint whichever order it runs

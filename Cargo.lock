@@ -4298,8 +4298,8 @@ dependencies = [
 
 [[package]]
 name = "history"
-version = "0.5.0"
-source = "git+https://github.com/cbbowen/history#c62eb132254fc8577de86bfa968dac233b508e86"
+version = "0.6.0"
+source = "git+https://github.com/cbbowen/history#6b188af67e95d2efa7408ec7069519beef712cde"
 
 [[package]]
 name = "hkdf"

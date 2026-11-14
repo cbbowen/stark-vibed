@@ -237,7 +237,7 @@ exactly the pixels already on screen — so the timeline does not run it.
   own layer's rename/removal; a selection edit blocks only its *own author's*
   later strokes. `Footprint` is the action's **`Centralizer`**. False conflicts
   only cost the fast path; a missed one would silently diverge peers.
-- **`Action::inverse`** (`document/patch.rs`). Removes an action's effect from a
+- **`Centralizer::inverse`** (`document/patch.rs`). Removes an action's effect from a
   state by restoring what its footprint wrote from the state it was originally
   applied to — the replaced tile *handles* (`Arc` bumps; tiles are CoW, so
   identity is change detection), the prior prop value, the prior selection.
