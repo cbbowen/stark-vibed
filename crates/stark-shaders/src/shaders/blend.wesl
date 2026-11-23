@@ -18,8 +18,8 @@
 //
 // Two consequences the medium owns rather than the code. Pigment cannot be brighter
 // than the light falling on it, and the LUT is defined on `[0,1]` sRGB, so a `Radiance`
-// layer's overshoot (see `BlendMode::Drago`) clips at white there instead of surviving
-// into the media pass's highlight roll-off. And `Multiply` — a glaze, which *is* a
+// layer's overshoot (see `BlendMode::Drago`) — and an `Illuminate` layer's — clips at
+// white there instead of surviving into the media pass's highlight roll-off. And `Multiply` — a glaze, which *is* a
 // pigment operation — still takes the road out to light, because `c` is how much of a
 // pigment is present rather than how much light gets through, so multiplying
 // concentrations would not be a quantity. Two glazes attenuate light, which is a

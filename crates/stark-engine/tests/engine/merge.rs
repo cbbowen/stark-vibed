@@ -36,13 +36,14 @@ use stark_model::geom::{IVec2, TILE_SIZE, Vec2};
 const ROOT: LayerId = LayerId::ROOT;
 
 /// Every mode that combines rather than covers, each at the setting a fresh layer
-/// wears — the three a same-mode merge has to hold for. `Drago`'s bend is part of the
+/// wears — the four a same-mode merge has to hold for. `Drago`'s bend is part of the
 /// mode (§18.0.4), so "sharing a mode" here means sharing the curve too; which pairs
 /// that admits is `document::merge`'s own to pin, and it does.
-const MODES: [BlendMode; 3] = [
+const MODES: [BlendMode; 4] = [
     BlendMode::Reinhard,
     BlendMode::Drago { k: DRAGO_K },
     BlendMode::Multiply,
+    BlendMode::Illuminate,
 ];
 
 /// PALE at just over half opacity: the merge identity must hold over partially

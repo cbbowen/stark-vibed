@@ -46,6 +46,33 @@
 // laid down in either.
 //
 //
+// ILLUMINATE: LIGHT ON A SURFACE
+//
+// The mode Hard Light stands in for. Read the layer as a photograph of a **gray card**
+// under the scene's light, `g·E`, and the backdrop as albedo under neutral ambient
+// light, `ρ`. What a lit surface returns is `ρ·E`, so
+//
+//     f(a, b) = a·b / g
+//
+// which is Multiply with its unit moved from white to the card: `T(x) = g·e^{-x}`, and
+// the quantity that adds is **exposure**. The card is the identity, so the one law
+// shades below it and lights above it with no seam between the two; black albedo
+// stays black under any light, where Hard Light's Screen half would lift it; and a
+// neutral light scales all three tristimulus values alike, so it moves a color's
+// luminance and leaves its chromaticity exactly where it was.
+//
+// **No tone curve, and that is forced rather than chosen.** A curve with an asymptote
+// reads display white as unbounded radiance, so white paint could never be shaded; a
+// curve without one overshoots anyway, as it must — white paper in more than ambient
+// light *is* brighter than white paper. The media pass is the identity up to white
+// (§6.3), so the only curve that agrees with how the albedo is shown is none, and the
+// overshoot goes where `Drago`'s does: into the highlight roll-off.
+//
+// It is a **gain**, not a sum: two of these stacked multiply, which is right for a
+// shadow, an occlusion or a gel and wrong for two lamps. Lamps add — group them under
+// an emissive mode and set the group to this one.
+//
+//
 // WHY NORMALIZED XYZ
 //
 // The combination runs in CIE XYZ divided by the display white (D65), not in the
@@ -93,6 +120,20 @@ const MODE_NORMAL: u32 = 0u;
 const MODE_REINHARD: u32 = 1u;
 const MODE_DRAGO: u32 = 2u;
 const MODE_MULTIPLY: u32 = 3u;
+const MODE_ILLUMINATE: u32 = 4u;
+
+// `Illuminate`'s gray card, as normalized light — its identity, and the albedo of the
+// neutral surface the layer is read as a photograph of. `#808080` exactly: the gray
+// every 8-bit tool calls 50%, Oklab `L = 0.60`, and a quarter stop off the
+// photographic 18% card. White is therefore `1/g ≈ 4.6×` ambient, 2.2 stops over.
+const ILLUMINATE_GRAY: f32 = 0.2158605;
+
+// The most light `Illuminate` reads from either side, in display whites. Unlike the
+// curves it does not clamp at white — an overshoot is light that is really there, and
+// clamping it would make a bright layer and a dark one stop commuting — so this is
+// only what keeps a deep stack finite in the half-float accumulator: the product of
+// two inputs at the ceiling is `64²/g ≈ 19000`, under f16's 65504.
+const LIGHT_CEILING: f32 = 64.0;
 
 struct Blend {
     // Which mode (see the codes above).
@@ -362,6 +403,9 @@ fn merge_triple(
 //     transmittance there (`T(x) = e^{-x}` makes the added quantity optical density).
 //     The expansion does not collapse, but it does not need to: bilinear is affine in
 //     each argument, which is all that matters.
+//   · `Illuminate` is the same bilinear form with a gain, so it is settled in light
+//     too. In units of the gray card it *is* Multiply's expansion term for term, which
+//     is where its associativity at any coverage comes from.
 //
 // **Why the space is the whole question.** Porter-Duff weighs each layer by its
 // coverage, and a weighted average commutes with the blend function only where that
@@ -387,6 +431,13 @@ fn combined_light(xb: vec3<f32>, cb_a: f32, xs: vec3<f32>, cs_raw_a: f32) -> vec
         let lb = emission(xb);
         let ls = emission(xs);
         return tonemap(merge_triple(lb * cb_a, cb_a, ls * cs_a, cs_a, lb + ls) / a);
+    }
+    if b.mode == MODE_ILLUMINATE {
+        // Floored for Multiply's reason below; the ceiling is `LIGHT_CEILING`'s.
+        let lb = clamp(xb, vec3<f32>(0.0), vec3<f32>(LIGHT_CEILING));
+        let ls = clamp(xs, vec3<f32>(0.0), vec3<f32>(LIGHT_CEILING));
+        let lit = lb * ls / ILLUMINATE_GRAY;
+        return merge_triple(lb * cb_a, cb_a, ls * cs_a, cs_a, lit) / a;
     }
     // Clamped into `[0,1]` first: the curves are defined on light between black and
     // display white, and a channel outside that came from a color outside the gamut

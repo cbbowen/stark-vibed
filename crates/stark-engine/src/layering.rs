@@ -62,8 +62,9 @@ const ROOT: &str = "(the crate root)";
 const TIERS: &[&[&str]] = &[
     // Named by everyone, naming no one.
     &[ROOT],
-    // The leaves: no `crate::` path leaves any of these. `filters` and `guides` read the
-    // generated shader mirror and are named by a frontend, not from in here (§6.10).
+    // The leaves: no `crate::` path leaves any of these. `blends`, `filters` and `guides`
+    // read the generated shader mirror and are named by a frontend, not from in here
+    // (§6.10).
     &[
         "view",
         "colorspace",
@@ -71,6 +72,7 @@ const TIERS: &[&[&str]] = &[
         "gesture",
         "noise",
         "projection",
+        "blends",
         "filters",
         "guides",
         "path",

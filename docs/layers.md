@@ -239,7 +239,9 @@ associative, with an identity:
   associativity. Grouping three glow layers changes nothing at all.
 - **`Multiply` at any coverage:** exactly invariant. The `mix(…, αb)` tail and
   multiply's white identity cancel, and both routes give `A·(1−s+sB)·(1−t+tC)`
-  for a backdrop `A` under layers `B, C` at coverage `s, t`.
+  for a backdrop `A` under layers `B, C` at coverage `s, t`. `Illuminate` is the
+  same expansion with `B`, `C` measured in gray cards (§6.3), so it is exactly
+  invariant too.
 - **The emissive modes at partial coverage:** a small drift. For `A=0.4, B=0.6,
   C=0.8` at `s=t=0.5` under Glow: `0.6902` ungrouped, `0.6886` grouped.
 

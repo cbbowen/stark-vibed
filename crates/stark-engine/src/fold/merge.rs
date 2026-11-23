@@ -337,10 +337,11 @@ mod tests {
     const C: LayerId = LayerId::solo(2);
     const D: LayerId = LayerId::solo(3);
 
-    const MODES: [BlendMode; 3] = [
+    const MODES: [BlendMode; 4] = [
         BlendMode::Reinhard,
         BlendMode::Drago { k: DRAGO_K },
         BlendMode::Multiply,
+        BlendMode::Illuminate,
     ];
 
     /// Three paint layers in the root stack, bottom-to-top: A, B, C.

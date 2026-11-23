@@ -213,6 +213,11 @@ pub fn blend_hint(mode: BlendMode, layer: &LayerInfo) -> &'static str {
             "Takes light away instead of adding it, the way stacked glazes do \u{2014} \
              white leaves the layer below alone, black hides it. For shadows and tinting."
         }
+        BlendMode::Illuminate => {
+            "Lights what is below it, the way light falls on a surface \u{2014} mid gray \
+             (#808080) leaves it alone, darker shades it, lighter lights it, on past \
+             white. For painting light and shadow over flat color."
+        }
     }
 }
 
@@ -1103,6 +1108,19 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The gray the Illuminate hover names is the one the blend pass holds neutral
+    /// (§6.3) — the hover is prose and cannot read the shader, so this reads both.
+    #[test]
+    fn the_illuminate_hint_names_the_gray_the_pass_holds_neutral() {
+        let code = stark_model::color::linear_to_srgb(stark_engine::blends::ILLUMINATE_GRAY);
+        let hex = crate::color::hex_of([code; 3]);
+        let hint = blend_hint(BlendMode::Illuminate, &arranged(false, true, true).info);
+        assert!(
+            hint.contains(&hex),
+            "the hover says {hint:?}, the pass {hex}"
+        );
     }
 
     /// Carry and Release come out of the row whole. Each was spelled twice — once per

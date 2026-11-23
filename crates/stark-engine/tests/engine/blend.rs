@@ -16,12 +16,17 @@
 //! for the two halves — and both are really tests of the channels ↔ light conversion,
 //! since a mode with an exact neutral element can only return its input unchanged if
 //! the round trip out to XYZ and back is faithful.
+//!
+//! `Illuminate` is multiply with its unit moved to a **gray card**, so it has a third
+//! identity and a section of its own: what it is derived to be is an exposure.
 
-use crate::common::palette::{COOL, WARM};
+use crate::common::palette::{BLACK, COOL, PALE, WARM};
 use crate::common::*;
+use stark_engine::blends::ILLUMINATE_GRAY;
 use stark_engine::command::{DocCommand, Edit};
 use stark_engine::{Engine, RgbaImage};
 use stark_model::ColorSpaceId;
+use stark_model::color::{linear_to_srgb, srgb_to_linear};
 // Both users of this are `#[cfg(feature = "mixbox")]`, so the import is too —
 // the second configuration is the only gate that catches one that is not (§6.7).
 #[cfg(feature = "mixbox")]
@@ -51,9 +56,14 @@ fn layer_with(engine: &mut Engine, color: [f32; 3], points: &[Vec2]) {
 /// to. `a_layers_bend_moves_the_overlap` is the one test that varies it.
 const RADIANCE: BlendMode = BlendMode::Drago { k: DRAGO_K };
 
-/// Every mode that **combines** rather than covers — the three that reach the blend
-/// pass with something to say, and the three that weigh coverage in their own space.
-const COMBINING: [BlendMode; 3] = [BlendMode::Reinhard, RADIANCE, BlendMode::Multiply];
+/// Every mode that **combines** rather than covers — the four that reach the blend
+/// pass with something to say, and the four that weigh coverage in their own space.
+const COMBINING: [BlendMode; 4] = [
+    BlendMode::Reinhard,
+    RADIANCE,
+    BlendMode::Multiply,
+    BlendMode::Illuminate,
+];
 
 /// A brush that reaches **full coverage**: six times the ordinary flow, and a tip
 /// hard enough that the interior is flat rather than a dome.
@@ -666,6 +676,119 @@ fn a_layers_bend_moves_the_overlap() {
 }
 
 // ---------------------------------------------------------------------------
+// Illuminate: light on a surface.
+// ---------------------------------------------------------------------------
+
+/// `Illuminate`'s gray card as a brush color, `stops` of exposure away from neutral.
+fn card(stops: f32) -> [f32; 3] {
+    [linear_to_srgb(ILLUMINATE_GRAY * stops.exp2()); 3]
+}
+
+/// What a full-canvas, fully covering `over` renders as above a bed of `under`, read
+/// at the centre.
+///
+/// **Fills, not strokes**: a fill at opacity 1 covers exactly, so the three laws below
+/// are read with no coverage in them at all, and every pair they compare stands on the
+/// same relief.
+fn filled(space: ColorSpaceId, under: [f32; 3], over: &[([f32; 3], BlendMode)]) -> Option<[u8; 4]> {
+    let mut engine = engine_or_skip_with(space)?;
+    fill_canvas(&mut engine, under, 1.0);
+    for &(color, mode) in over {
+        let layer = add_layer(&mut engine);
+        fill_canvas(&mut engine, color, 1.0);
+        engine.process(DocCommand::Set(Edit::LayerBlend(layer, mode)));
+    }
+    Some(center(&engine.render_to_image()))
+}
+
+/// **A stop of light is a factor of two in the surface, and nothing else moves** —
+/// `f(a, b) = a·b/g`, the whole law, with the gray card as its zero.
+///
+/// Each case lights an albedo with the card `stops` away from neutral and compares it
+/// with the same albedo scaled in linear light and laid as ordinary paint. Zero stops
+/// is the identity, which makes it the round-trip check `Multiply` has in white; the
+/// others say the mode is an exposure, and — because the comparison is per channel —
+/// that a neutral light leaves the chromaticity where it was, which is what Hard
+/// Light's two halves cannot do.
+#[test]
+fn illuminate_is_an_exposure_about_the_gray_card() {
+    // Dim enough that a stop up stays inside the cube, where both sides are exact.
+    const ALBEDO: [f32; 3] = [0.62, 0.45, 0.30];
+    let spaces = [ColorSpaceId::Oklab, ColorSpaceId::Mixbox];
+    for space in spaces.into_iter().filter(|s| stark_engine::available(*s)) {
+        for stops in [-2.0_f32, -1.0, 0.0, 1.0] {
+            let scaled = ALBEDO.map(|c| linear_to_srgb(srgb_to_linear(c) * stops.exp2()));
+            let Some(lit) = filled(space, ALBEDO, &[(card(stops), BlendMode::Illuminate)]) else {
+                return;
+            };
+            let painted =
+                filled(space, ALBEDO, &[(scaled, BlendMode::Normal)]).expect("second engine");
+            let worst = texel_delta(lit, painted);
+            assert!(
+                worst <= 2,
+                "{space:?} at {stops:+} stops: the lit surface is {lit:?}, the albedo \
+                 scaled in light is {painted:?} — off by {worst}"
+            );
+        }
+    }
+}
+
+/// **No light makes a black surface bright.** The brightest light the layer can hold,
+/// over black, is black — where Hard Light's Screen half returns white. A specular is
+/// a different thing from lit albedo, and it is `Glow`'s to paint.
+#[test]
+fn illuminate_leaves_black_black() {
+    const WHITE: [f32; 3] = [1.0, 1.0, 1.0];
+    let Some(lit) = filled(
+        ColorSpaceId::Oklab,
+        BLACK,
+        &[(WHITE, BlendMode::Illuminate)],
+    ) else {
+        return;
+    };
+    let black =
+        filled(ColorSpaceId::Oklab, BLACK, &[(BLACK, BlendMode::Normal)]).expect("second engine");
+    let worst = texel_delta(lit, black);
+    assert!(
+        worst <= 2,
+        "white light on a black surface came back {lit:?} against black's {black:?}"
+    );
+}
+
+/// **A bright light and a shadow commute, past white.** Between them the surface is
+/// lit to several times display white, and that is light which is really there: clamp
+/// it on the way back in — as the curves clamp theirs — and the shadow laid second
+/// lands on white rather than on the surface, a stop and a half too dark.
+///
+/// The third case is the control: the same product reached without ever leaving
+/// `[0,1]`, so the pair is held to the right answer and not only to each other.
+#[test]
+fn illuminate_commutes_through_an_overshoot() {
+    const WHITE: [f32; 3] = [1.0, 1.0, 1.0];
+    let (light, shadow) = (
+        (WHITE, BlendMode::Illuminate),
+        (card(-3.0), BlendMode::Illuminate),
+    );
+    // White is a gain of `1/g` and the shadow one of `1/8`, which as one light is the
+    // card times both: an eighth of white.
+    let both = [linear_to_srgb(0.125); 3];
+    let Some(shadow_last) = filled(ColorSpaceId::Oklab, PALE, &[light, shadow]) else {
+        return;
+    };
+    let light_last = filled(ColorSpaceId::Oklab, PALE, &[shadow, light]).expect("second engine");
+    let at_once =
+        filled(ColorSpaceId::Oklab, PALE, &[(both, BlendMode::Illuminate)]).expect("third engine");
+    for (name, got) in [("shadow last", shadow_last), ("light last", light_last)] {
+        let worst = texel_delta(got, at_once);
+        assert!(
+            worst <= 2,
+            "{name}: {got:?} against the one light they multiply to, {at_once:?} \
+             (off by {worst})"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The pigment space.
 // ---------------------------------------------------------------------------
 
@@ -744,6 +867,19 @@ fn golden_multiply_layer() {
         BlendMode::Multiply,
     )));
     assert_golden("blend_multiply", &engine.render_to_image(), 6);
+}
+
+#[test]
+fn golden_illuminate_layer() {
+    let Some(mut engine) = engine_or_skip() else {
+        return;
+    };
+    crossed(&mut engine);
+    engine.process(DocCommand::Set(Edit::LayerBlend(
+        top(&engine),
+        BlendMode::Illuminate,
+    )));
+    assert_golden("blend_illuminate", &engine.render_to_image(), 6);
 }
 
 /// **Black is black in a pigment document** — the defect the residual channel exists

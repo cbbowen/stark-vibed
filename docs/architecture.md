@@ -92,6 +92,7 @@ stark/
 │   │   │   ├── peer.rs         # presence: the roster built from the frames (§17.4)
 │   │   │   ├── presence.rs     # the publish latch, and Identity (§17.5)
 │   │   │   ├── error.rs        # EngineError + Result; folds DocError in
+│   │   │   ├── blends.rs       # the blend pass's host-side numbers (§6.10, §6.3)
 │   │   │   ├── filters.rs      # the filter passes' host-side numbers (§6.10, §21)
 │   │   │   ├── document/       # the state the log folds into; names no renderer
 │   │   │   │   ├── state.rs     # DocState: layers, selections, substrate, guides

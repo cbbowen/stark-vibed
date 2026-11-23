@@ -41,6 +41,7 @@ fn blend_code(mode: BlendMode) -> u32 {
         BlendMode::Reinhard => bc::MODE_REINHARD,
         BlendMode::Drago { .. } => bc::MODE_DRAGO,
         BlendMode::Multiply => bc::MODE_MULTIPLY,
+        BlendMode::Illuminate => bc::MODE_ILLUMINATE,
     }
 }
 

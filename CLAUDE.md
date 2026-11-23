@@ -93,9 +93,9 @@ crates/
                    descriptors, channels, uniforms, readback. Below `document`
     gpu/           the passes: stroke renderer, compositor, the substrate bake
     layering.rs    the tier table, read off the source — see §2.1 and the rule below
-    filters.rs     what a frontend needs in order to predict or draw what a filter
-    guides.rs      pass or the guide overlay will do, read off the generated shader
-                   mirror rather than transcribed (§6.10)
+    blends.rs      what a frontend needs in order to predict, draw or say what the
+    filters.rs     blend pass, a filter pass or the guide overlay will do, read off
+    guides.rs      the generated shader mirror rather than transcribed (§6.10)
   stark-shaders/   WESL sources, the build step that links them, and the host
                    mirrors generated from them (§6.10)
     src/shaders/   the WESL tree; `lib/` under it holds the binding-free leaves
@@ -319,7 +319,7 @@ per-test tolerance hides exactly that drift. Deleting a golden re-blesses it.
 - **Anything reading the generated shader mirror belongs with the shaders**
   (§6.10). `stark-model` compiles without `stark-shaders` at all, so a constant it
   wants from a `.wesl` declaration is a signal the item is the engine's —
-  `filters.rs` and `guides.rs` are where those collected, one per pass that owes
+  `blends.rs`, `filters.rs` and `guides.rs` are where those collected, one per pass that owes
   the chrome a number.
 - **Never transcribe onto the host what a `.wesl` file already states** (§6.10).
   Uniform lanes, constants, vertex formats, binding indices and binding *types*

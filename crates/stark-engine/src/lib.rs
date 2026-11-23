@@ -69,6 +69,7 @@
 #![warn(unreachable_pub)]
 
 pub(crate) mod assets;
+pub mod blends;
 pub(crate) mod colorspace;
 pub mod command;
 pub(crate) mod device;

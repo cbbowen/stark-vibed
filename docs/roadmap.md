@@ -34,7 +34,7 @@ Status lives here and nowhere else.
 | 13 | Per-client state: owned selections + presence (§17) | done |
 | — | Transform (§16) | done — engine, exactness tests, and the ellipse gesture UI; snapping + clipboard remain |
 | — | Frames, mattes, export (§15) | done — P1/P2/P3; the general region (P4) remains |
-| — | Blend modes (§6.3) | done — Glow / Radiance / Multiply |
+| — | Blend modes (§6.3) | done — Glow / Radiance / Multiply / Illuminate |
 | — | Eyedropper (§18.0.2) | done |
 | — | View mirror & rotate (§18.1.2) | done |
 | — | Timeline mode / scrubber (§18.2.4) | done |

@@ -122,6 +122,7 @@ opinion about the display's primaries.
 | `Glow` | Reinhard `x/(1+x)` | `(a + b − 2ab)/(1 − ab)` | black | asymptotic — **cannot** blow out; stack a hundred and it approaches white without clipping. Glazes, mist, rim light. |
 | `Radiance` | Drago `k·log(1 + x/k)` | `k·log(e^{a/k} + e^{b/k} − 1)` | black | no asymptote, so it *does* push past display white — deliberately, into pass B's highlight roll-off as a bloom with a filmic shoulder instead of a clip. |
 | `Multiply` | `e^{-x}` | `ab` | **white** (black annihilates) | the conjugation collapses to plain `ab` and the added quantity is **optical density** — Beer-Lambert, what stacked glazes do. |
+| `Illuminate` | `g·e^{-x}` | `ab/g` | the **gray card** `g` (black annihilates) | light on a surface: the added quantity is **exposure**. Shades below the card and lights above it on one law, past display white into pass B's roll-off. What Hard Light stands in for. |
 
 **`Radiance`'s `k` is the layer's own** — the first per-mode parameter, and the
 reason `BlendMode` is a data-carrying enum rather than a bare one. It lives on the
@@ -150,7 +151,52 @@ no physical referent — hence multiply, not Screen. Multiply in normalized XYZ
 rather than RGB also means two saturated glazes cross without the dead channel an
 RGB multiply produces when one primary sits near zero.
 
-Being conjugations of `+` makes all three commutative and associative with a
+**`Illuminate` is the lighting layer**, derived rather than assembled. Hard Light
+serves that purpose by switching formula at 50% gray — Multiply below, Screen
+above — which is two unrelated curves meeting at a kink, in gamma-encoded RGB.
+Here the layer is read as what it is painted to be: a photograph of a **gray
+card** under the scene's light, `g·E`, over a backdrop that is albedo under
+neutral ambient light, `ρ`. A lit surface returns `ρ·E`, so `f(a,b) = ab/g`, and
+four things follow from that being the whole of it:
+
+- **The card is the identity, and nothing happens there.** Darker shades and
+  lighter lights by the same law, so there is no seam to paint across.
+- **A neutral light is a pure exposure.** It scales all three tristimulus values
+  alike, so a shadow moves a color's luminance and leaves its chromaticity exactly
+  where it was — the hue and saturation drift of a gamma-space multiply is not
+  there to correct.
+- **Black albedo stays black**, where Screen lifts it toward the light. No light
+  makes a black surface bright; what a painter means by a highlight on black is a
+  specular, which is not lit albedo and is `Glow`'s or `Radiance`'s to paint.
+- **It lights past white.** A white surface in more than ambient light is brighter
+  than white, so the result overshoots as `Radiance`'s does and comes back through
+  pass B's roll-off — or, on an HDR surface, as the brightness it is (§6.5).
+
+**It carries no tone curve, and that is forced.** The emissive modes undo a curve
+because their inputs are lamps, which have no ceiling. An albedo has one, and the
+curve has to respect it: one with an asymptote reads display white as unbounded
+radiance, so white paint could never be shaded at all, and one without overshoots
+anyway. The media pass is the identity up to white, so the only curve that agrees
+with how the albedo is already shown is none.
+
+`g` is `#808080` (`blend_common.wesl`'s `ILLUMINATE_GRAY`, 21.6% reflectance): the
+gray every 8-bit tool calls 50% and every existing lighting layer is filled with,
+Oklab `L = 0.60` on the picker, and a quarter stop off the photographic 18% card.
+White is therefore `1/g ≈ 4.6×` ambient — 2.2 stops of light above neutral, and
+no floor beneath it. The chrome reads the number through `stark_engine::blends`
+rather than restating it (§6.10).
+
+Two things it is not. It is a **gain**, so two of these stacked multiply — right
+for a shadow, an occlusion pass or a gel, wrong for two lamps, which add: put the
+lamps in a group under `Glow` and set the *group* to `Illuminate`. And it does not
+clamp what it reads at white, as the curves do, because the overshoot between two
+of these is light that is really there — clamp it and a shadow laid over a bright
+light lands on white instead of on the surface, so the pair stops commuting. It
+holds its inputs to `LIGHT_CEILING` (64× white) only so a deep stack stays finite
+in the half-float accumulator. In a pigment document the overshoot clips at white
+regardless, as `Radiance`'s does: pigment is not brighter than the light on it.
+
+Being conjugations of `+` makes all four commutative and associative with a
 neutral element, so reordering a stack of them is not a color decision. **That
 holds at any coverage, and for a long time it did not.** Porter-Duff weighs a
 layer by its coverage in the *working space* — the `(1 − αb)·Cs` term — which
@@ -172,6 +218,8 @@ only the space changes:
 - `Multiply` is Beer-Lambert, so it is bilinear in **light**, light being a
   transmittance there. The expansion does not collapse and does not need to:
   bilinear is affine in each argument, which is all a weighted average asks for.
+- `Illuminate` is the same bilinear form with a gain, so it is settled in light as
+  well — and in units of the gray card it *is* Multiply's expansion, term for term.
 
 Multiply was **not** exempt, and the first attempt at this said it was. Its blend
 function is bilinear in *light*, and the working space is Oklab — so mixing

@@ -182,13 +182,15 @@ use iroh::EndpointId;
 /// `MAX_SELECTION_TILES` now lands. And the stroke budget floors a hairline's radius
 /// *before* stretching it, so a stretched tip under half a px is cut into the
 /// segments its reach asks for.
-pub(crate) const ALPN: &[u8] = b"stark/collab/31";
+/// 32: `BlendMode` gained `Illuminate` (§6.3) — a variant added to an enum every
+/// `SetLayerBlend` gossips, which a peer without it cannot decode.
+pub(crate) const ALPN: &[u8] = b"stark/collab/32";
 
 /// The number [`ALPN`] ends with, as a number, for a ticket to carry — see
 /// `ticket`'s `TicketBody::proto` for why a link names it. Kept in step with
 /// [`ALPN`] by a test rather than by building the byte-string from it: two
 /// tokens side by side are not worth the compile-time ceremony.
-pub(crate) const PROTO: u32 = 31;
+pub(crate) const PROTO: u32 = 32;
 
 /// Upper bound on an encoded request, over any transport.
 ///

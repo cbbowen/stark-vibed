@@ -155,7 +155,8 @@ impl From<Option<LayerId>> for Place {
 ///
 /// **The guarantee holds at any coverage**: a layer's coverage weighs it in the space
 /// where its own blend function is affine — emission for the emissive modes, light
-/// itself for [`Multiply`](Self::Multiply) — not in the working space, since applying
+/// itself for [`Multiply`](Self::Multiply) and [`Illuminate`](Self::Illuminate) — not
+/// in the working space, since applying
 /// a curve to a coverage-averaged color is not the same as averaging the curve
 /// (§18.0.4).
 ///
@@ -233,6 +234,28 @@ pub enum BlendMode {
     /// white being multiply's identity; on a toned substrate it is a divergence from
     /// what a real glaze would do.
     Multiply,
+    /// **Illuminate** — light falling on a surface: the mode Hard Light stands in for.
+    /// The layer is read as a photograph of a **gray card** under the scene's light and
+    /// the backdrop as albedo under neutral ambient light, so what comes back is the
+    /// albedo under that light,
+    ///
+    /// ```text
+    ///     f(a, b) = a·b / g
+    /// ```
+    ///
+    /// with `g` the card — `#808080`, `blend_common.wesl`'s `ILLUMINATE_GRAY`. It is
+    /// [`Multiply`](Self::Multiply) with its unit moved from white to the card
+    /// (`T(x) = g·e^{-x}`, and the quantity that adds is **exposure**), so the neutral
+    /// element is the **gray card**: darker shades, lighter lights, on one law with no
+    /// seam at the card. Black still annihilates — no light makes a black surface
+    /// bright — and a neutral light leaves a color's chromaticity exactly alone.
+    ///
+    /// Like [`Drago`](Self::Drago) it pushes past display white, into the media pass's
+    /// highlight roll-off: a white surface in more than ambient light is brighter than
+    /// white. It shares `Multiply`'s blindness to the substrate, and it is a **gain**,
+    /// so two of them stacked multiply — lamps that should *add* go in a group under
+    /// an emissive mode, with the group set to this one.
+    Illuminate,
 }
 
 /// The bend a [`BlendMode::Drago`] layer **starts at**, in units of display white —
@@ -259,16 +282,17 @@ pub const DRAGO_K_RANGE: (f32, f32) = (0.125, 4.0);
 impl BlendMode {
     /// Every mode **at its default setting**, in the order a frontend should offer
     /// them: `Normal` first, then increasingly emphatic light, then the one that takes
-    /// light away.
+    /// light away, then the one that does either.
     ///
     /// A list of modes, not of settings of them — which is why a picker built from it
     /// selects its current row with [`same_mode`](Self::same_mode) rather than `==`,
     /// so a tuned `k` is never quietly reset by re-picking the mode it belongs to.
-    pub const ALL: [BlendMode; 4] = [
+    pub const ALL: [BlendMode; 5] = [
         Self::Normal,
         Self::Reinhard,
         Self::Drago { k: DRAGO_K },
         Self::Multiply,
+        Self::Illuminate,
     ];
 
     /// What this mode is called: the painter-facing name, not the tonemap's.
@@ -280,6 +304,7 @@ impl BlendMode {
             Self::Reinhard => "Glow",
             Self::Drago { .. } => "Radiance",
             Self::Multiply => "Multiply",
+            Self::Illuminate => "Illuminate",
         }
     }
 
@@ -317,7 +342,7 @@ impl BlendMode {
             Self::Drago { k } => Self::Drago {
                 k: crate::sanitize::finite_in(k, DRAGO_K, DRAGO_K_RANGE),
             },
-            Self::Normal | Self::Reinhard | Self::Multiply => self,
+            Self::Normal | Self::Reinhard | Self::Multiply | Self::Illuminate => self,
         }
     }
 
@@ -456,6 +481,7 @@ mod tests {
         enum Old {
             Multiply,
             Drago { k: f32 },
+            Illuminate,
             Normal,
             Reinhard,
         }
@@ -468,6 +494,7 @@ mod tests {
         assert_eq!(read(&Old::Normal), BlendMode::Normal);
         assert_eq!(read(&Old::Reinhard), BlendMode::Reinhard);
         assert_eq!(read(&Old::Multiply), BlendMode::Multiply);
+        assert_eq!(read(&Old::Illuminate), BlendMode::Illuminate);
         assert_eq!(
             read(&Old::Drago { k: DRAGO_K }),
             BlendMode::Drago { k: DRAGO_K },
@@ -519,7 +546,12 @@ mod tests {
         // funnel it passes through would change.
         assert_eq!(BlendMode::ALL[2].sanitized(), BlendMode::ALL[2]);
         // The modes without parameters have nothing to sanitize and are untouched.
-        for mode in [BlendMode::Normal, BlendMode::Reinhard, BlendMode::Multiply] {
+        for mode in [
+            BlendMode::Normal,
+            BlendMode::Reinhard,
+            BlendMode::Multiply,
+            BlendMode::Illuminate,
+        ] {
             assert_eq!(mode.sanitized(), mode);
             assert_eq!(mode.drago_k(), DRAGO_K, "the uniform still needs a number");
         }
