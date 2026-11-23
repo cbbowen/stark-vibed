@@ -32,10 +32,7 @@
   --panel-ink: 21 20 19;
   --panel-background:
     var(--panel-noise),
-    linear-gradient(
-      to bottom,
-      rgb(var(--panel-ink) / 0.9) 36px,
-      rgb(var(--panel-ink) / 0.75));
+    rgb(var(--panel-ink) / 0.9);
   /* The same chrome with the tenth of the canvas that shows through it closed up.
      A panel floats over the painting and is worth seeing past; a dialog is modal —
      nothing behind it is being read — and a title band with rows sliding under it
