@@ -682,6 +682,18 @@ hr {
   margin-bottom: 2px;
 }
 
+/* A slider's figure (`widgets::figure`), one width for every slider. Where it stands
+   left of its track — a folded row in minimal mode, a bar — a figure that narrowed from
+   `10` to `9` moved the track's left edge under the pointer, and the value jumped. Wide
+   enough for the widest, `400%`; tabular so the digits do not jitter either. */
+.slider-readout {
+  display: inline-block;
+  flex: none;
+  min-width: 5ch;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 /* The track and its fill, drawn by hand because the value has to stay readable
    with the browser's paint given up: a native range fills its travelled half in
    the platform's accent blue, and the panels are done with blue. The fill

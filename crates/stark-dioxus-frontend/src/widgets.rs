@@ -85,8 +85,9 @@ pub enum SliderShape {
 /// A `None` `glyph` is a to-do (see [`stark_ui::icons::SIZE`]). A marked row folds onto
 /// one line in minimal mode; an unmarked one keeps its word and cannot, or the tracks
 /// would start at a ragged edge. `readout` sits beside the word, never inside it, since
-/// minimal mode hides the name and not the value. `title` goes on the whole line, or on
-/// the track in a [`SliderShape::Bar`].
+/// minimal mode hides the name and not the value, and in a fixed-width column
+/// ([`figure`]). `title` goes on the whole line, or on the track in a
+/// [`SliderShape::Bar`].
 #[component]
 pub fn Slider(
     label: String,
@@ -117,12 +118,12 @@ pub fn Slider(
             div {
                 class: if glyph.is_some() { "slider-row marked" } else { "slider-row" },
                 title: line_title,
-                div { class: "slider-label", {name} {readout} }
+                div { class: "slider-label", {name} {figure(readout)} }
                 {track}
             }
         },
         SliderShape::Bar => rsx! {
-            span { class: "bar-sub", {name} {readout} }
+            span { class: "bar-sub", {name} {figure(readout)} }
             {track}
         },
         SliderShape::Knob => rsx! {
@@ -133,6 +134,14 @@ pub fn Slider(
             }
         },
     }
+}
+
+/// A [`Slider`]'s readout in its own fixed-width column (`.slider-readout`). Where it
+/// stands left of the track (a folded row, a bar), a figure that changed width with its
+/// digit count would move the track under the pointer mid-drag. A knob's readout is on
+/// its own line (`.filter-knob-value`).
+fn figure(readout: Option<String>) -> Option<Element> {
+    readout.map(|r| rsx! { span { class: "slider-readout", "{r}" } })
 }
 
 /// The range input every slider is: its fill, its step, and the drag's end.
